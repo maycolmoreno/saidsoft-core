@@ -1,0 +1,83 @@
+{% extends "panel/base.html" %}
+{% block title %}Despliegue v{{ despliegue.version }} · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-2">
+    <h1 class="text-xl font-semibold text-slate-900">Despliegue v{{ despliegue.version }}</h1>
+    <span class="text-xs px-2.5 py-1 rounded-full
+        {% if despliegue.estado == 'completado' %}bg-green-50 text-green-700
+        {% elif despliegue.estado == 'pausado' %}bg-red-50 text-red-700
+        {% elif despliegue.estado == 'publicando' %}bg-blue-50 text-blue-700
+        {% else %}bg-slate-50 text-slate-600{% endif %}">
+        {{ despliegue.get_estado_display }}
+    </span>
+</div>
+<p class="text-sm text-slate-500 mb-6">{{ despliegue.descripcion|default:"Sin descripción." }}</p>
+
+<div class="grid grid-cols-4 gap-4 mb-6 text-sm">
+    <div class="bg-white rounded-lg border border-slate-200 p-4">
+        <div class="text-slate-400 text-xs uppercase mb-1">Destino</div>
+        <div class="text-slate-900 font-medium">{{ despliegue.get_destino_tipo_display }}</div>
+        {% if despliegue.grupos.all %}<div class="text-slate-500 text-xs mt-1">{% for g in despliegue.grupos.all %}{{ g.codigo }} {% endfor %}</div>{% endif %}
+        {% if despliegue.farmacias.all %}<div class="text-slate-500 text-xs mt-1">{% for f in despliegue.farmacias.all %}{{ f.codigo }} {% endfor %}</div>{% endif %}
+    </div>
+    <div class="bg-white rounded-lg border border-slate-200 p-4">
+        <div class="text-slate-400 text-xs uppercase mb-1">Modo de aplicación</div>
+        <div class="text-slate-900 font-medium">{{ despliegue.get_modo_aplicacion_display }}</div>
+        {% if despliegue.ventana_fecha_hora %}<div class="text-slate-500 text-xs mt-1">{{ despliegue.ventana_fecha_hora }}</div>{% endif %}
+    </div>
+    <div class="bg-white rounded-lg border border-slate-200 p-4">
+        <div class="text-slate-400 text-xs uppercase mb-1">SHA-256</div>
+        <div class="text-slate-900 font-mono text-xs break-all">{{ despliegue.sha256|slice:":16" }}…</div>
+    </div>
+    <div class="bg-white rounded-lg border border-slate-200 p-4">
+        <div class="text-slate-400 text-xs uppercase mb-1">Creado / aprobado por</div>
+        <div class="text-slate-900">{{ despliegue.creado_por.username }}</div>
+        <div class="text-slate-500 text-xs">{{ despliegue.aprobado_por.username|default:"pendiente de aprobación" }}</div>
+    </div>
+</div>
+
+<div class="flex items-center gap-3 mb-8">
+    {% if puede_aprobar %}
+    <form method="post" action="{% url 'panel:despliegue_aprobar' despliegue.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="bg-green-600 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-green-700">
+            Aprobar
+        </button>
+    </form>
+    {% elif despliegue.estado == 'pendiente_aprobacion' %}
+    <span class="text-sm text-slate-500 italic">Esperando aprobación de otro usuario (regla de cuatro ojos).</span>
+    {% endif %}
+
+    {% if despliegue.estado == 'aprobado' %}
+    <form method="post" action="{% url 'panel:despliegue_publicar' despliegue.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="bg-blue-600 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-blue-700">
+            Publicar por MQTT
+        </button>
+    </form>
+    {% endif %}
+
+    {% if despliegue.estado == 'publicando' %}
+    <form method="post" action="{% url 'panel:despliegue_pausar' despliegue.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="border border-red-300 text-red-700 text-sm font-medium rounded-md px-4 py-2 hover:bg-red-50">
+            Pausar
+        </button>
+    </form>
+    {% endif %}
+    {% if despliegue.estado == 'pausado' %}
+    <form method="post" action="{% url 'panel:despliegue_reanudar' despliegue.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="border border-blue-300 text-blue-700 text-sm font-medium rounded-md px-4 py-2 hover:bg-blue-50">
+            Reanudar
+        </button>
+    </form>
+    {% endif %}
+</div>
+
+<div id="progreso-wrap"
+     hx-get="{% url 'panel:despliegue_progreso_partial' despliegue.pk %}"
+     hx-trigger="load, every 4s"
+     hx-swap="innerHTML">
+</div>
+{% endblock %}

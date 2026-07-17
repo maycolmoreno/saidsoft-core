@@ -1,0 +1,84 @@
+{% extends "panel/base.html" %}
+{% block title %}Dashboard · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold text-slate-900">Dashboard</h1>
+    <a href="{% url 'panel:despliegue_crear' %}" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">
+        + Nuevo despliegue
+    </a>
+</div>
+
+{% if total_pendientes %}
+<a href="{% url 'panel:estaciones_lista' %}" class="block mb-6 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 hover:bg-amber-100">
+    <strong>{{ total_pendientes }}</strong> estación(es) esperando aprobación de enrolamiento.
+</a>
+{% endif %}
+
+<h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Matriz de cumplimiento por grupo</h2>
+<div class="bg-white rounded-lg border border-slate-200 overflow-hidden mb-8">
+    <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <tr>
+                <th class="text-left px-4 py-3">Grupo</th>
+                <th class="text-left px-4 py-3">Versión objetivo</th>
+                <th class="text-left px-4 py-3">Farmacias</th>
+                <th class="text-left px-4 py-3">Estaciones</th>
+                <th class="text-left px-4 py-3">En línea</th>
+                <th class="text-left px-4 py-3">Conformidad</th>
+                <th class="text-left px-4 py-3">Pendientes</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+        {% for g in grupos %}
+            <tr class="hover:bg-slate-50">
+                <td class="px-4 py-3 font-medium text-slate-900">{{ g.codigo }}</td>
+                <td class="px-4 py-3 text-slate-600">{{ g.version_objetivo|default:"—" }}</td>
+                <td class="px-4 py-3 text-slate-600">{{ g.total_farmacias }}</td>
+                <td class="px-4 py-3 text-slate-600">{{ g.total_estaciones }}</td>
+                <td class="px-4 py-3 text-slate-600">{{ g.online }} / {{ g.total_estaciones }}</td>
+                <td class="px-4 py-3">
+                    {% if g.pct_conforme is not None %}
+                    <div class="flex items-center gap-2">
+                        <div class="w-24 h-2 rounded-full bg-slate-100 overflow-hidden">
+                            <div class="h-full {% if g.pct_conforme == 100 %}bg-green-500{% elif g.pct_conforme >= 50 %}bg-amber-500{% else %}bg-red-500{% endif %}"
+                                 style="width: {{ g.pct_conforme }}%"></div>
+                        </div>
+                        <span class="text-slate-600 text-xs">{{ g.pct_conforme }}%</span>
+                    </div>
+                    {% else %}
+                    <span class="text-slate-400 text-xs">sin estaciones</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% if g.pendientes %}
+                        <span class="text-amber-700 font-medium">{{ g.pendientes }}</span>
+                    {% else %}
+                        <span class="text-slate-400">0</span>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">Sin grupos registrados todavía.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Despliegues en curso</h2>
+<div class="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100">
+    {% for d in despliegues_activos %}
+    <a href="{% url 'panel:despliegue_detalle' d.pk %}" class="flex items-center justify-between px-4 py-3 hover:bg-slate-50">
+        <div>
+            <span class="font-medium text-slate-900">v{{ d.version }}</span>
+            <span class="text-slate-500 text-sm ml-2">{{ d.get_destino_tipo_display }}</span>
+        </div>
+        <span class="text-xs px-2.5 py-1 rounded-full
+            {% if d.estado == 'pausado' %}bg-red-50 text-red-700{% else %}bg-blue-50 text-blue-700{% endif %}">
+            {{ d.get_estado_display }}
+        </span>
+    </a>
+    {% empty %}
+    <div class="px-4 py-6 text-center text-slate-400 text-sm">No hay despliegues en curso.</div>
+    {% endfor %}
+</div>
+{% endblock %}

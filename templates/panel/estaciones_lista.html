@@ -1,0 +1,67 @@
+{% extends "panel/base.html" %}
+{% block title %}Estaciones · SAIDSOFT{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold text-slate-900 mb-6">Estaciones</h1>
+
+<div id="pendientes-wrap" hx-get="{% url 'panel:estaciones_pendientes_partial' %}" hx-trigger="load, every 15s" hx-swap="innerHTML"></div>
+
+<form method="get" class="flex items-center gap-3 mb-4">
+    <select name="grupo" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+        <option value="">Todos los grupos</option>
+        {% for g in grupos %}
+        <option value="{{ g.codigo }}" {% if g.codigo == filtro_grupo %}selected{% endif %}>{{ g.codigo }}</option>
+        {% endfor %}
+    </select>
+    <select name="estado_conexion" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+        <option value="">Cualquier estado</option>
+        <option value="online" {% if filtro_estado == 'online' %}selected{% endif %}>En línea</option>
+        <option value="offline" {% if filtro_estado == 'offline' %}selected{% endif %}>Fuera de línea</option>
+        <option value="nunca_conectada" {% if filtro_estado == 'nunca_conectada' %}selected{% endif %}>Nunca conectada</option>
+    </select>
+    <label class="flex items-center gap-1.5 text-sm text-slate-600">
+        <input type="checkbox" name="desactualizadas" value="1" onchange="this.form.submit()" {% if filtro_desactualizadas %}checked{% endif %}>
+        Solo desactualizadas
+    </label>
+</form>
+
+<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <tr>
+                <th class="text-left px-4 py-3">Código</th>
+                <th class="text-left px-4 py-3">Farmacia / Grupo</th>
+                <th class="text-left px-4 py-3">Versión POS</th>
+                <th class="text-left px-4 py-3">SO</th>
+                <th class="text-left px-4 py-3">Conexión</th>
+                <th class="text-left px-4 py-3">Último heartbeat</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+        {% for e in estaciones %}
+            <tr class="hover:bg-slate-50">
+                <td class="px-4 py-3 font-medium text-slate-900">{{ e.codigo }}</td>
+                <td class="px-4 py-3 text-slate-600">{{ e.farmacia.codigo }} · {{ e.farmacia.grupo.codigo }}</td>
+                <td class="px-4 py-3">
+                    <span class="{% if e.desactualizada %}text-amber-700 font-medium{% else %}text-slate-600{% endif %}">
+                        {{ e.version_pos|default:"—" }}
+                    </span>
+                    {% if e.desactualizada %}<span class="text-xs text-amber-600 ml-1">desactualizada</span>{% endif %}
+                </td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.so_nombre }} {{ e.so_build }}</td>
+                <td class="px-4 py-3">
+                    <span class="text-xs px-2 py-0.5 rounded-full
+                        {% if e.estado_conexion == 'online' %}bg-green-50 text-green-700
+                        {% elif e.estado_conexion == 'offline' %}bg-slate-100 text-slate-600
+                        {% else %}bg-slate-50 text-slate-400{% endif %}">
+                        {{ e.get_estado_conexion_display }}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.ultimo_heartbeat|default:"nunca" }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">Sin estaciones para este filtro.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

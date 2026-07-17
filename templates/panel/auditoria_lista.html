@@ -1,0 +1,33 @@
+{% extends "panel/base.html" %}
+{% block title %}Auditoría · SAIDSOFT{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold text-slate-900 mb-6">Auditoría</h1>
+<p class="text-sm text-slate-500 mb-4">Últimos 200 eventos. Registro inmutable de acciones sobre el panel.</p>
+
+<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <tr>
+                <th class="text-left px-4 py-3">Fecha</th>
+                <th class="text-left px-4 py-3">Usuario</th>
+                <th class="text-left px-4 py-3">Acción</th>
+                <th class="text-left px-4 py-3">Objeto</th>
+                <th class="text-left px-4 py-3">IP</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+        {% for ev in eventos %}
+            <tr class="hover:bg-slate-50">
+                <td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">{{ ev.timestamp|date:"d/m/Y H:i:s" }}</td>
+                <td class="px-4 py-3 text-slate-900">{{ ev.usuario.username|default:"sistema" }}</td>
+                <td class="px-4 py-3"><code class="text-xs bg-slate-100 px-1.5 py-0.5 rounded">{{ ev.accion }}</code></td>
+                <td class="px-4 py-3 text-slate-600">{{ ev.objeto_repr }}</td>
+                <td class="px-4 py-3 text-slate-400 text-xs">{{ ev.ip_address|default:"—" }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">Sin eventos registrados todavía.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

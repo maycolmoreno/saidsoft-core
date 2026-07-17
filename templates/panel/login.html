@@ -1,0 +1,32 @@
+{% extends "panel/base.html" %}
+{% block title %}Ingresar · SAIDSOFT{% endblock %}
+{% block content_anon %}
+<div class="min-h-screen flex items-center justify-center bg-slate-100">
+    <div class="w-full max-w-sm bg-white rounded-lg shadow-sm border border-slate-200 p-8">
+        <h1 class="text-xl font-semibold text-slate-900 mb-1">SAIDSOFT</h1>
+        <p class="text-sm text-slate-500 mb-6">Panel de gestión y despliegues</p>
+        {% if form.errors %}
+            <div class="mb-4 rounded-md bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2.5">
+                Usuario o contraseña incorrectos.
+            </div>
+        {% endif %}
+        <form method="post">
+            {% csrf_token %}
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-slate-700 mb-1" for="id_username">Usuario</label>
+                <input type="text" name="username" id="id_username" autofocus required
+                       class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900">
+            </div>
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-slate-700 mb-1" for="id_password">Contraseña</label>
+                <input type="password" name="password" id="id_password" required
+                       class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900">
+            </div>
+            <input type="hidden" name="next" value="{{ next }}">
+            <button type="submit" class="w-full bg-slate-900 text-white rounded-md py-2 text-sm font-medium hover:bg-slate-800">
+                Ingresar
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

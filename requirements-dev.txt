@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Broker MQTT embebido en Python, solo para desarrollo local sin instalar
+# un servicio de Windows. En producción se usa EMQX/Mosquitto real (ver PLAN_MODERNIZACION.md).
+amqtt>=0.11

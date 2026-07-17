@@ -1,0 +1,59 @@
+{% load i18n %}
+<div class="bg-white rounded-lg border border-slate-200 p-5 mb-6">
+    <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-medium text-slate-700">Progreso: {{ aplicados }} / {{ total }} aplicados</span>
+        <span class="text-sm text-slate-500">{{ pct_completado }}%</span>
+    </div>
+    <div class="w-full h-2.5 rounded-full bg-slate-100 overflow-hidden mb-3">
+        <div class="h-full bg-green-500" style="width: {{ pct_completado }}%"></div>
+    </div>
+    <div class="flex gap-4 text-xs text-slate-500">
+        <span>Pendientes: {{ conteo.pendiente }}</span>
+        <span>Descargando: {{ conteo.descargando }}</span>
+        <span>Aplicando: {{ conteo.aplicando }}</span>
+        <span class="text-green-700">Aplicados: {{ conteo.aplicado }}</span>
+        {% if errores %}<span class="text-red-700 font-medium">Errores/rollback: {{ errores }}</span>{% endif %}
+    </div>
+</div>
+
+<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <tr>
+                <th class="text-left px-4 py-3">Estación</th>
+                <th class="text-left px-4 py-3">Farmacia</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Versión previa → nueva</th>
+                <th class="text-left px-4 py-3">Actualizado</th>
+                <th class="text-right px-4 py-3"></th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+        {% for r in resultados %}
+            <tr class="hover:bg-slate-50">
+                <td class="px-4 py-3 font-medium text-slate-900">{{ r.estacion.codigo }}</td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{{ r.estacion.farmacia.codigo }}</td>
+                <td class="px-4 py-3">
+                    <span class="text-xs px-2 py-0.5 rounded-full
+                        {% if r.estado == 'aplicado' %}bg-green-50 text-green-700
+                        {% elif r.estado == 'error' or r.estado == 'rollback' %}bg-red-50 text-red-700
+                        {% elif r.estado == 'pendiente' %}bg-slate-50 text-slate-500
+                        {% else %}bg-blue-50 text-blue-700{% endif %}">
+                        {{ r.get_estado_display }}
+                    </span>
+                    {% if r.detalle_error %}<div class="text-xs text-red-600 mt-1">{{ r.detalle_error }}</div>{% endif %}
+                </td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{{ r.version_previa|default:"—" }} → {{ r.version_nueva|default:"—" }}</td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{{ r.fecha_actualizacion|date:"d/m H:i:s" }}</td>
+                <td class="px-4 py-3 text-right">
+                    <a href="/admin/despliegues/resultadodespliegue/{{ r.pk }}/change/" class="text-xs text-slate-400 hover:text-slate-700 underline" target="_blank">
+                        ver línea de tiempo
+                    </a>
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">Todavía no se ha publicado a ninguna estación.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
