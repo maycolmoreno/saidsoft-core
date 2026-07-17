@@ -26,4 +26,26 @@ urlpatterns = [
     path('despliegues/<int:pk>/reanudar/', views.despliegue_reanudar, name='despliegue_reanudar'),
 
     path('auditoria/', views.auditoria_lista, name='auditoria_lista'),
+
+    # Módulo de Activos
+    path('colaboradores/', views.colaboradores_lista, name='colaboradores_lista'),
+    path('colaboradores/nuevo/', views.colaborador_crear, name='colaborador_crear'),
+
+    path('ordenes-compra/', views.ordenes_compra_lista, name='ordenes_compra_lista'),
+    path('ordenes-compra/nueva/', views.orden_compra_crear, name='orden_compra_crear'),
+    path('ordenes-compra/<int:pk>/', views.orden_compra_detalle, name='orden_compra_detalle'),
+    path('ordenes-compra/<int:pk>/recibir/', views.orden_compra_recibir, name='orden_compra_recibir'),
+
+    path('activos/', views.activos_lista, name='activos_lista'),
+    path('activos/nuevo/', views.activo_crear, name='activo_crear'),
+    path('activos/<int:pk>/', views.activo_detalle, name='activo_detalle'),
+    path('activos/<int:pk>/asignar/', views.activo_asignar, name='activo_asignar'),
+    path('activos/<int:pk>/devolver/', views.activo_devolver, name='activo_devolver'),
+    path('activos/<int:pk>/reparacion/enviar/', views.activo_reparacion_enviar, name='activo_reparacion_enviar'),
+    path('activos/<int:pk>/reparacion/retorno/', views.activo_reparacion_retorno, name='activo_reparacion_retorno'),
+    path('activos/<int:pk>/baja/', views.activo_baja, name='activo_baja'),
+    path('activos/<int:pk>/consumible/', views.activo_consumible_entregar, name='activo_consumible_entregar'),
+
+    path('bodegas/', views.bodegas_lista, name='bodegas_lista'),
+    path('bodegas/<int:pk>/stock/ingresar/', views.bodega_stock_ingresar, name='bodega_stock_ingresar'),
 ]

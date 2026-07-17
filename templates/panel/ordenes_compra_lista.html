@@ -1,0 +1,41 @@
+{% extends "panel/base.html" %}
+{% block title %}Órdenes de compra · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold text-slate-900">Órdenes de compra</h1>
+    <a href="{% url 'panel:orden_compra_crear' %}" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">
+        + Nueva OC
+    </a>
+</div>
+
+<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <tr>
+                <th class="text-left px-4 py-3">N° OC</th>
+                <th class="text-left px-4 py-3">Proveedor</th>
+                <th class="text-left px-4 py-3">Bodega(s) destino</th>
+                <th class="text-left px-4 py-3">Fecha emisión</th>
+                <th class="text-left px-4 py-3">Estado</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+        {% for oc in ordenes %}
+            <tr class="hover:bg-slate-50 cursor-pointer" onclick="window.location='{% url 'panel:orden_compra_detalle' oc.pk %}'">
+                <td class="px-4 py-3 font-medium text-slate-900">{{ oc.numero_oc }}</td>
+                <td class="px-4 py-3 text-slate-600">{{ oc.proveedor }}</td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{% for b in oc.bodegas_destino.all %}{{ b.codigo }} {% endfor %}</td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{{ oc.fecha_emision }}</td>
+                <td class="px-4 py-3">
+                    <span class="text-xs px-2.5 py-1 rounded-full {% if oc.estado == 'recibida' %}bg-green-50 text-green-700{% else %}bg-amber-50 text-amber-700{% endif %}">
+                        {{ oc.get_estado_display }}
+                    </span>
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">Sin órdenes de compra todavía.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,4 +1,4 @@
-# SAIDSOFT — núcleo (Fase 1 y 2)
+# SAIDSOFT — núcleo (Fases 1, 2 y 2b)
 
 Reemplazo de `projectDJango` (Django 1.8/Python 2.7) + `projectNodeJS` del sistema
 original (código de referencia en `C:\Proyectos\SAIDSOFT`, sin tocar), sobre
@@ -15,7 +15,9 @@ apps/catalogo/           Grupo (TRX), Farmacia, Estación
 apps/despliegues/        Despliegue, ResultadoDespliegue, EventoDespliegue (línea de tiempo inmutable)
 apps/auditoria/          EventoAuditoria (acciones del panel) + registrar_evento()
 apps/mqtt_worker/        worker MQTT (reemplaza projectNodeJS/index.js) + simulador de agente
-apps/panel/               panel HTMX: dashboard, estaciones, despliegues, auditoría (Fase 2)
+apps/activos/             inventario de activos CRESIO: Bodega, Colaborador, OrdenCompra,
+                          Activo (código CR-TIPO-NNNN), EventoActivo (historial inmutable) (Fase 2b)
+apps/panel/               panel HTMX: dashboard, estaciones, despliegues, activos, auditoría
 templates/panel/          plantillas del panel (Tailwind + HTMX)
 static_src/input.css      fuente de Tailwind (@source apunta a templates/ y apps/)
 static/css/app.css        CSS compilado (versionado, no requiere Node en el servidor)
@@ -38,6 +40,7 @@ cp .env.example .env                 # completar SECRET_KEY, etc.
 python manage.py migrate
 python manage.py seed_demo           # carga TRX001/ML001 y TRX004/MAM01
 python manage.py createsuperuser
+python manage.py seed_activos        # carga bodegas, colaboradores, una OC y activos de ejemplo
 ```
 
 Necesitas **tres procesos corriendo en paralelo**:
@@ -92,6 +95,24 @@ p.single('/saidsof/enrolamiento/solicitar/', json.dumps({
 }), hostname='localhost', port=1883)
 "
 ```
+
+## Módulo de Activos (Fase 2b)
+
+Implementa los 4 flujos CRESIO (Compra → Ingreso a bodega → Asignación → Desvinculación)
+con el mismo patrón que despliegues: `Activo` guarda el estado actual, `EventoActivo`
+es el historial inmutable (ingreso, asignación, consumible entregado, devolución, envío/
+retorno de reparación, baja) con `detalle` en JSON. Toda la lógica de transición de
+estado vive en `apps/activos/services.py`, reutilizada por panel y admin.
+
+- **Código de activo** `CR-[TIPO]-[NNNN]`: secuencial global por tipo (no reinicia por
+  bodega/año), generado en `services.generar_codigo_activo`.
+- **Un activo nunca se elimina** — `Activo.delete()` y `EventoActivo.delete()` lanzan
+  `NotImplementedError`; "Dado de baja" es un estado, no un borrado. `ActivoAdmin` también
+  bloquea el permiso de borrado.
+- **Colaboradores**: carga manual por ahora (según lo acordado); la integración con
+  RRHH/nómina queda prevista para más adelante sin cambiar el modelo.
+- **Stock de consumibles**: se descuenta al entregar (`registrar_consumible_entregado`,
+  valida que haya suficiente) y se repone desde "Bodegas y stock" en el panel.
 
 ## Notas de diseño
 
