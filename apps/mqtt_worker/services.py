@@ -34,20 +34,39 @@ def _farmacia_desde_codigo_estacion(codigo_estacion: str) -> Farmacia | None:
     return Farmacia.objects.filter(codigo=codigo_farmacia).first()
 
 
+def _respuesta_aceptado(estacion) -> dict:
+    return {
+        'aceptado': True,
+        'token': estacion.token_enrolamiento,
+        'estado_aprobacion': estacion.estado_aprobacion,
+        'farmacia': estacion.farmacia.codigo,
+        'grupo': estacion.farmacia.grupo.codigo,
+    }
+
+
 def manejar_enrolamiento(payload: dict) -> dict:
     """Un agente nuevo se presenta. Lo crea en estado pendiente si su farmacia existe."""
     close_old_connections()
     codigo = payload.get('codigo', '')
+    hardware_id = payload.get('hardware_id', '')
 
-    if Estacion.objects.filter(codigo=codigo).exists():
-        estacion = Estacion.objects.select_related('farmacia__grupo').get(codigo=codigo)
-        return {
-            'aceptado': True,
-            'token': estacion.token_enrolamiento,
-            'estado_aprobacion': estacion.estado_aprobacion,
-            'farmacia': estacion.farmacia.codigo,
-            'grupo': estacion.farmacia.grupo.codigo,
-        }
+    estacion = Estacion.objects.select_related('farmacia__grupo').filter(codigo=codigo).first()
+    if estacion is not None:
+        # Re-enrolamiento (el agente perdió su identidad.json). No entregamos el token
+        # solo porque alguien diga el código: exigimos que el hardware_id coincida con el
+        # que se fijó la primera vez, para que un equipo ajeno en la VPN no pueda pedir el
+        # token de una estación existente y suplantarla.
+        if estacion.hardware_id and estacion.hardware_id != hardware_id:
+            logger.warning(
+                'Re-enrolamiento rechazado por hardware_id distinto para %s (posible suplantación)', codigo,
+            )
+            return {'aceptado': False, 'motivo': 'hardware no coincide, requiere reaprobación manual en el panel'}
+        # Trust-on-first-use: si nunca se guardó un hardware_id (estación creada antes de
+        # este mecanismo), se fija el primero que llegue.
+        if not estacion.hardware_id and hardware_id:
+            estacion.hardware_id = hardware_id
+            estacion.save(update_fields=['hardware_id'])
+        return _respuesta_aceptado(estacion)
 
     farmacia = _farmacia_desde_codigo_estacion(codigo)
     if farmacia is None:
@@ -57,19 +76,14 @@ def manejar_enrolamiento(payload: dict) -> dict:
     estacion = Estacion.objects.create(
         codigo=codigo,
         farmacia=farmacia,
+        hardware_id=hardware_id,
         numero_serie=payload.get('numero_serie', ''),
         so_nombre=payload.get('so_nombre', ''),
         so_build=payload.get('so_build', ''),
         version_agente=payload.get('version_agente', ''),
     )
     logger.info('Nueva estación enrolada (pendiente de aprobación): %s', codigo)
-    return {
-        'aceptado': True,
-        'token': estacion.token_enrolamiento,
-        'estado_aprobacion': estacion.estado_aprobacion,
-        'farmacia': farmacia.codigo,
-        'grupo': farmacia.grupo.codigo,
-    }
+    return _respuesta_aceptado(estacion)
 
 
 def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:

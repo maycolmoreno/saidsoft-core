@@ -133,12 +133,31 @@ estado vive en `apps/activos/services.py`, reutilizada por panel y admin.
   `token`), para que el agente sepa a qué tópicos de despliegue suscribirse sin tener
   que consultar la base de datos directamente.
 
+## Seguridad y robustez
+
+- **Enrolamiento verificado por hardware**: el agente reporta un `hardware_id` estable
+  (MachineGuid de Windows). En el primer enrolamiento se fija; en cada re-enrolamiento
+  (el agente perdió su `identidad.json`) el servidor exige que coincida antes de
+  devolver el token. Así un equipo ajeno en la VPN no puede pedir el token de una
+  estación existente solo con su código. Si no coincide, se rechaza y se registra como
+  posible suplantación (`apps/mqtt_worker/services.py::manejar_enrolamiento`).
+- **Reporte de despliegue solo de estaciones aprobadas**: `manejar_estado_despliegue`
+  valida token *y* estado de aprobación.
+- **Acciones de estado solo por POST**: aprobar/publicar/pausar/reanudar despliegues y
+  aprobar/rechazar estaciones usan `@require_POST`, para que ni un link ni un
+  `<img src>` malicioso disparen la acción por GET (donde CSRF no aplica).
+- **Estaciones OFFLINE**: el comando `marcar_estaciones_offline` (corre por cron/Programador
+  de tareas, ej. cada minuto) pasa a offline las estaciones sin heartbeat reciente. El
+  agente solo sabe ponerse online; esto cierra el otro lado.
+
 ## Notas de diseño
 
 - **Aprobación de cuatro ojos**: quien crea un despliegue no puede aprobarlo — verificado
   tanto en `apps/panel/views.py::despliegue_aprobar` como en el admin.
 - **Freno automático**: si el % de estaciones en error supera `umbral_error_pct`, el despliegue
-  pasa a `pausado` solo (`apps/despliegues/services.py::evaluar_freno_automatico`).
+  pasa a `pausado` solo (`apps/despliegues/services.py::evaluar_freno_automatico`). Al
+  **reanudar** manualmente se marca `freno_omitido`, para que no se vuelva a frenar en bucle
+  (el operador ya vio los errores y decidió continuar).
 - **Mensajes MQTT con `retain=True`**: una estación apagada al momento de publicar el
   despliegue lo recibe igual al encender.
 - `version_pos` de una `Estacion` se actualiza tanto por heartbeat como al confirmar `ok`

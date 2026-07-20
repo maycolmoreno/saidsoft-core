@@ -6,6 +6,7 @@ from django.db.models import Count, F, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.http import require_POST
 
 from apps.activos import services as activos_services
 from apps.activos.forms import (
@@ -98,6 +99,7 @@ def estaciones_pendientes_partial(request):
 
 
 @login_required
+@require_POST
 def estacion_aprobar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
     estacion.estado_aprobacion = Estacion.EstadoAprobacion.APROBADA
@@ -107,6 +109,7 @@ def estacion_aprobar(request, pk):
 
 
 @login_required
+@require_POST
 def estacion_rechazar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
     estacion.estado_aprobacion = Estacion.EstadoAprobacion.RECHAZADA
@@ -116,14 +119,14 @@ def estacion_rechazar(request, pk):
 
 
 @login_required
+@require_POST
 def estaciones_aprobar_lote(request):
-    if request.method == 'POST':
-        ids = request.POST.getlist('estacion_ids')
-        estaciones = Estacion.objects.filter(pk__in=ids, estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE)
-        for estacion in estaciones:
-            estacion.estado_aprobacion = Estacion.EstadoAprobacion.APROBADA
-            estacion.save(update_fields=['estado_aprobacion'])
-            registrar_evento(usuario=request.user, accion='estacion.aprobar', objeto=estacion, request=request)
+    ids = request.POST.getlist('estacion_ids')
+    estaciones = Estacion.objects.filter(pk__in=ids, estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE)
+    for estacion in estaciones:
+        estacion.estado_aprobacion = Estacion.EstadoAprobacion.APROBADA
+        estacion.save(update_fields=['estado_aprobacion'])
+        registrar_evento(usuario=request.user, accion='estacion.aprobar', objeto=estacion, request=request)
     return estaciones_pendientes_partial(request)
 
 
@@ -230,6 +233,7 @@ def despliegue_progreso_partial(request, pk):
 
 
 @login_required
+@require_POST
 def despliegue_aprobar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
     if despliegue.estado != Despliegue.Estado.PENDIENTE_APROBACION:
@@ -246,6 +250,7 @@ def despliegue_aprobar(request, pk):
 
 
 @login_required
+@require_POST
 def despliegue_publicar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
     if despliegue.estado != Despliegue.Estado.APROBADO:
@@ -261,6 +266,7 @@ def despliegue_publicar(request, pk):
 
 
 @login_required
+@require_POST
 def despliegue_pausar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
     if despliegue.estado == Despliegue.Estado.PUBLICANDO:
@@ -272,13 +278,17 @@ def despliegue_pausar(request, pk):
 
 
 @login_required
+@require_POST
 def despliegue_reanudar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
     if despliegue.estado == Despliegue.Estado.PAUSADO:
         despliegue.estado = Despliegue.Estado.PUBLICANDO
-        despliegue.save(update_fields=['estado'])
+        # Reanudar es una decisión consciente del operador: marca que ya vio los errores,
+        # para que el próximo reporte de error no lo vuelva a frenar en un bucle.
+        despliegue.freno_omitido = True
+        despliegue.save(update_fields=['estado', 'freno_omitido'])
         registrar_evento(usuario=request.user, accion='despliegue.reanudar', objeto=despliegue, request=request)
-        messages.success(request, 'Despliegue reanudado.')
+        messages.success(request, 'Despliegue reanudado. No se volverá a frenar automáticamente por errores.')
     return redirect('panel:despliegue_detalle', pk=pk)
 
 

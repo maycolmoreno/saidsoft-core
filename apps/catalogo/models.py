@@ -85,6 +85,11 @@ class Estacion(models.Model):
 
     # Enrolamiento
     token_enrolamiento = models.CharField(max_length=64, unique=True, editable=False)
+    hardware_id = models.CharField(
+        max_length=100, blank=True,
+        help_text='Identificador estable del equipo (MachineGuid de Windows). Se fija en el primer '
+                  'enrolamiento y se exige en los re-enrolamientos para evitar suplantación.',
+    )
     estado_aprobacion = models.CharField(
         max_length=20, choices=EstadoAprobacion.choices, default=EstadoAprobacion.PENDIENTE,
     )

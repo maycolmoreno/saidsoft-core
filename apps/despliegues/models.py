@@ -55,6 +55,10 @@ class Despliegue(models.Model):
         default=settings.DESPLIEGUE_UMBRAL_ERROR_PCT_DEFAULT,
         help_text='% de estaciones en error a partir del cual el despliegue se pausa automáticamente.',
     )
+    freno_omitido = models.BooleanField(
+        default=False,
+        help_text='Si el operador reanudó a pesar del freno automático: no se vuelve a frenar por error.',
+    )
 
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='despliegues_creados',

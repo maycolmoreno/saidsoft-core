@@ -92,6 +92,9 @@ def evaluar_freno_automatico(despliegue: Despliegue) -> bool:
 
     Devuelve True si se pausó.
     """
+    if despliegue.freno_omitido:
+        # El operador ya reanudó a pesar de los errores: no volver a frenar.
+        return False
     total = despliegue.resultados.count()
     if not total:
         return False
