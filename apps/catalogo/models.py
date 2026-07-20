@@ -94,6 +94,14 @@ class Estacion(models.Model):
         max_length=20, choices=EstadoAprobacion.choices, default=EstadoAprobacion.PENDIENTE,
     )
 
+    # Monitoreo: solo las estaciones marcadas (típicamente los servidores de farmacia/matriz)
+    # reportan métricas de recursos, para controlar el volumen. En el sistema viejo esto lo
+    # decidía el tipo de servidor; aquí es un flag explícito.
+    monitorear_recursos = models.BooleanField(
+        default=False,
+        help_text='Si está activo, el agente de esta estación reporta métricas de RAM/CPU/latencia.',
+    )
+
     fecha_creacion = models.DateTimeField(auto_now_add=True)
 
     class Meta:

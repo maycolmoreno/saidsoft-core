@@ -12,13 +12,16 @@ import paho.mqtt.client as mqtt
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from apps.mqtt_worker.services import manejar_enrolamiento, manejar_estado_despliegue, manejar_heartbeat
+from apps.mqtt_worker.services import (
+    manejar_enrolamiento, manejar_estado_despliegue, manejar_heartbeat, manejar_metricas,
+)
 
 logger = logging.getLogger(__name__)
 
 TOPICO_ENROLAMIENTO = '/saidsof/enrolamiento/solicitar/'
 TOPICO_HEARTBEAT = '/saidsof/agente/+/heartbeat/'
 TOPICO_ESTADO_DESPLIEGUE = '/saidsof/agente/+/despliegue_estado/'
+TOPICO_METRICAS = '/saidsof/agente/+/metricas/'
 
 
 def _codigo_desde_topico(topic: str) -> str:
@@ -55,6 +58,7 @@ class Command(BaseCommand):
         client.subscribe(TOPICO_ENROLAMIENTO)
         client.subscribe(TOPICO_HEARTBEAT)
         client.subscribe(TOPICO_ESTADO_DESPLIEGUE)
+        client.subscribe(TOPICO_METRICAS)
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
         self.stdout.write(self.style.WARNING(f'[MQTT] Desconectado ({reason_code}), reintentando...'))
@@ -73,6 +77,8 @@ class Command(BaseCommand):
                 manejar_heartbeat(_codigo_desde_topico(msg.topic), payload)
             elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/despliegue_estado/'):
                 manejar_estado_despliegue(_codigo_desde_topico(msg.topic), payload)
+            elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/metricas/'):
+                manejar_metricas(_codigo_desde_topico(msg.topic), payload)
         except Exception:
             logger.exception('Error procesando mensaje de %s', msg.topic)
 

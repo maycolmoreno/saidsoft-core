@@ -16,6 +16,7 @@
             <a href="{% url 'panel:dashboard' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'dashboard' %}bg-slate-800 text-white font-medium{% endif %}">Dashboard</a>
             <a href="{% url 'panel:estaciones_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'estacion' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Estaciones</a>
             <a href="{% url 'panel:despliegues_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'despliegue' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Despliegues</a>
+            <a href="{% url 'panel:monitoreo_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'monitoreo' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Monitoreo</a>
 
             <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Activos</div>
             <a href="{% url 'panel:activos_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'activos_lista' or request.resolver_match.url_name == 'activo_detalle' or request.resolver_match.url_name == 'activo_crear' %}bg-slate-800 text-white font-medium{% endif %}">Inventario</a>

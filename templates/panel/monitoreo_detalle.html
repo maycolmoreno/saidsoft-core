@@ -1,0 +1,16 @@
+{% extends "panel/base.html" %}
+{% block title %}{{ estacion.codigo }} · Monitoreo · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-1">
+    <h1 class="text-xl font-semibold text-slate-900">{{ estacion.codigo }}</h1>
+    <a href="{% url 'panel:monitoreo_lista' %}" class="text-sm text-slate-500 hover:text-slate-700">← Volver a monitoreo</a>
+</div>
+<p class="text-sm text-slate-500 mb-6">{{ estacion.farmacia.codigo }} · {{ estacion.farmacia.grupo.codigo }} — {{ estacion.so_nombre }} {{ estacion.so_build }}</p>
+
+<div id="metricas-wrap"
+     hx-get="{% url 'panel:monitoreo_detalle_partial' estacion.pk %}"
+     hx-trigger="load, every 10s"
+     hx-swap="innerHTML">
+    <div class="text-sm text-slate-400">Cargando métricas…</div>
+</div>
+{% endblock %}

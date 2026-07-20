@@ -1,0 +1,52 @@
+{% extends "panel/base.html" %}
+{% block title %}Monitoreo · SAIDSOFT{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold text-slate-900 mb-2">Monitoreo de servidores</h1>
+<p class="text-sm text-slate-500 mb-6">Recursos de las estaciones marcadas para monitoreo. Cada tarjeta muestra la última muestra recibida.</p>
+
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+{% for t in tarjetas %}
+    <a href="{% url 'panel:monitoreo_detalle' t.estacion.pk %}" class="block bg-white rounded-lg border border-slate-200 p-4 hover:border-slate-300">
+        <div class="flex items-center justify-between mb-3">
+            <div>
+                <div class="font-medium text-slate-900">{{ t.estacion.codigo }}</div>
+                <div class="text-xs text-slate-500">{{ t.estacion.farmacia.codigo }} · {{ t.estacion.farmacia.grupo.codigo }}</div>
+            </div>
+            <span class="text-xs px-2 py-0.5 rounded-full
+                {% if t.estacion.estado_conexion == 'online' %}bg-green-50 text-green-700{% else %}bg-slate-100 text-slate-500{% endif %}">
+                {{ t.estacion.get_estado_conexion_display }}
+            </span>
+        </div>
+        {% if t.ultima %}
+        <div class="grid grid-cols-3 gap-2 text-center">
+            <div>
+                <div class="text-xs text-slate-400 uppercase">CPU</div>
+                <div class="text-lg font-semibold {% if t.estado_cpu == 'critical' %}text-red-600{% elif t.estado_cpu == 'warning' %}text-amber-600{% else %}text-slate-900{% endif %}">
+                    {{ t.ultima.cpu_carga_pct|default:"—" }}{% if t.ultima.cpu_carga_pct is not None %}%{% endif %}
+                </div>
+            </div>
+            <div>
+                <div class="text-xs text-slate-400 uppercase">RAM</div>
+                <div class="text-lg font-semibold {% if t.estado_ram == 'critical' %}text-red-600{% elif t.estado_ram == 'warning' %}text-amber-600{% else %}text-slate-900{% endif %}">
+                    {{ t.ultima.ram_usada_pct|default:"—" }}{% if t.ultima.ram_usada_pct is not None %}%{% endif %}
+                </div>
+            </div>
+            <div>
+                <div class="text-xs text-slate-400 uppercase">Latencia</div>
+                <div class="text-lg font-semibold text-slate-900">
+                    {{ t.ultima.latencia_ms|default:"—" }}{% if t.ultima.latencia_ms is not None %}ms{% endif %}
+                </div>
+            </div>
+        </div>
+        <div class="text-xs text-slate-400 mt-3">Última muestra: {{ t.ultima.timestamp|date:"d/m H:i:s" }}</div>
+        {% else %}
+        <div class="text-sm text-slate-400 py-4 text-center">Sin métricas recibidas todavía.</div>
+        {% endif %}
+    </a>
+{% empty %}
+    <div class="bg-white rounded-lg border border-slate-200 px-4 py-8 text-center text-slate-400 text-sm md:col-span-2 xl:col-span-3">
+        No hay estaciones marcadas para monitoreo. Actívalo con el flag <code class="bg-slate-100 px-1 rounded">monitorear_recursos</code> en una estación (desde el admin).
+    </div>
+{% endfor %}
+</div>
+{% endblock %}

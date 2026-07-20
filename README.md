@@ -17,7 +17,9 @@ apps/auditoria/          EventoAuditoria (acciones del panel) + registrar_evento
 apps/mqtt_worker/        worker MQTT (reemplaza projectNodeJS/index.js) + simulador de agente
 apps/activos/             inventario de activos CRESIO: Bodega, Colaborador, OrdenCompra,
                           Activo (código CR-TIPO-NNNN), EventoActivo (historial inmutable) (Fase 2b)
-apps/panel/               panel HTMX: dashboard, estaciones, despliegues, activos, auditoría
+apps/monitoreo/           métricas de recursos de servidores (RAM/CPU/swap/latencia),
+                          migrado y unificado del sistema viejo (LogMemoria/LogCPU)
+apps/panel/               panel HTMX: dashboard, estaciones, despliegues, monitoreo, activos, auditoría
 templates/panel/          plantillas del panel (Tailwind + HTMX)
 static_src/input.css      fuente de Tailwind (@source apunta a templates/ y apps/)
 static/css/app.css        CSS compilado (versionado, no requiere Node en el servidor)
@@ -132,6 +134,24 @@ estado vive en `apps/activos/services.py`, reutilizada por panel y admin.
 - El campo `respuesta de enrolamiento` ahora incluye `farmacia` y `grupo` (no solo
   `token`), para que el agente sepa a qué tópicos de despliegue suscribirse sin tener
   que consultar la base de datos directamente.
+
+## Monitoreo de servidores
+
+Migra y unifica el monitoreo del sistema viejo (`log_servidor_memoria` + `log_servidor_cpu`,
+que eran dos tablas/tópicos) en una sola muestra por instante:
+
+- **`MuestraMetrica`** guarda RAM/swap/cache (MB), CPU (%), temperatura (°C) y latencia (ms)
+  ligados a una `Estacion`. Solo las estaciones con `monitorear_recursos=True` reportan
+  (el flag viaja en la respuesta de enrolamiento); así se controla el volumen, igual que
+  en el sistema viejo solo reportaban los servidores matriz.
+- El agente C# mide con **APIs nativas de Windows** (`GlobalMemoryStatusEx`, `GetSystemTimes`)
+  y hace ping al central para la latencia — sin dependencias externas. La temperatura del
+  CPU queda en `null` por ahora (no se expone de forma fiable sin sensores/WMI).
+- El panel (`/monitoreo/`) grafica las últimas ~60 muestras por servidor como **SVG inline**
+  (sin CDN), con auto-refresco HTMX cada 10s y stat tiles que cambian de color por umbral.
+- **Retención**: el comando `purgar_metricas --dias 30` (para cron) borra muestras viejas,
+  reemplazando el `vaciar_logs` del sistema viejo (que borraba TODO cada domingo). En
+  producción, esta tabla va sobre **TimescaleDB** con retención nativa.
 
 ## Seguridad y robustez
 

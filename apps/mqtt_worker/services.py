@@ -41,6 +41,7 @@ def _respuesta_aceptado(estacion) -> dict:
         'estado_aprobacion': estacion.estado_aprobacion,
         'farmacia': estacion.farmacia.codigo,
         'grupo': estacion.farmacia.grupo.codigo,
+        'monitorear_recursos': estacion.monitorear_recursos,
     }
 
 
@@ -152,3 +153,34 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
     despliegue = resultado.despliegue
     evaluar_freno_automatico(despliegue)
     verificar_completado(despliegue)
+
+
+def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
+    """Guarda una muestra de recursos reportada por el agente de un servidor."""
+    close_old_connections()
+    try:
+        estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
+    except Estacion.DoesNotExist:
+        logger.warning('Métricas con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    from apps.monitoreo.models import MuestraMetrica
+
+    def _num(clave):
+        valor = payload.get(clave)
+        return valor if isinstance(valor, (int, float)) else None
+
+    MuestraMetrica.objects.create(
+        estacion=estacion,
+        ram_total=_num('ram_total'),
+        ram_usada=_num('ram_usada'),
+        ram_libre=_num('ram_libre'),
+        cache=_num('cache'),
+        swap_total=_num('swap_total'),
+        swap_usada=_num('swap_usada'),
+        cpu_carga_pct=_num('cpu_carga_pct'),
+        temperatura_c=_num('temperatura_c'),
+        latencia_ms=_num('latencia_ms'),
+    )

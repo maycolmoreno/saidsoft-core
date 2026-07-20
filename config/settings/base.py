@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     'apps.auditoria',
     'apps.mqtt_worker',
     'apps.activos',
+    'apps.monitoreo',
     'apps.panel',
 ]
 

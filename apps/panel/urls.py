@@ -29,6 +29,10 @@ urlpatterns = [
 
     path('auditoria/', views.auditoria_lista, name='auditoria_lista'),
 
+    path('monitoreo/', views.monitoreo_lista, name='monitoreo_lista'),
+    path('monitoreo/<int:pk>/', views.monitoreo_detalle, name='monitoreo_detalle'),
+    path('monitoreo/<int:pk>/datos/', views.monitoreo_detalle_partial, name='monitoreo_detalle_partial'),
+
     # Módulo de Activos
     path('colaboradores/', views.colaboradores_lista, name='colaboradores_lista'),
     path('colaboradores/nuevo/', views.colaborador_crear, name='colaborador_crear'),
