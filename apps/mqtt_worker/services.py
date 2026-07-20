@@ -40,11 +40,13 @@ def manejar_enrolamiento(payload: dict) -> dict:
     codigo = payload.get('codigo', '')
 
     if Estacion.objects.filter(codigo=codigo).exists():
-        estacion = Estacion.objects.get(codigo=codigo)
+        estacion = Estacion.objects.select_related('farmacia__grupo').get(codigo=codigo)
         return {
             'aceptado': True,
             'token': estacion.token_enrolamiento,
             'estado_aprobacion': estacion.estado_aprobacion,
+            'farmacia': estacion.farmacia.codigo,
+            'grupo': estacion.farmacia.grupo.codigo,
         }
 
     farmacia = _farmacia_desde_codigo_estacion(codigo)
@@ -65,6 +67,8 @@ def manejar_enrolamiento(payload: dict) -> dict:
         'aceptado': True,
         'token': estacion.token_enrolamiento,
         'estado_aprobacion': estacion.estado_aprobacion,
+        'farmacia': farmacia.codigo,
+        'grupo': farmacia.grupo.codigo,
     }
 
 
@@ -95,6 +99,9 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
         logger.warning('Reporte de despliegue con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        logger.warning('Reporte de despliegue de estación no aprobada: %s', codigo_estacion)
         return
 
     despliegue_id = payload.get('despliegue_id')
