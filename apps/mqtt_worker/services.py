@@ -5,6 +5,7 @@ desde management/commands/run_mqtt_worker.py, que es quien mantiene la
 conexión MQTT viva.
 """
 import logging
+from datetime import timedelta
 
 from django.db import close_old_connections
 from django.utils import timezone
@@ -14,6 +15,9 @@ from apps.despliegues.models import EventoDespliegue, ResultadoDespliegue
 from apps.despliegues.services import evaluar_freno_automatico, verificar_completado
 
 logger = logging.getLogger(__name__)
+
+# Una caché se considera utilizable solo si dio señales de vida recientemente.
+CACHE_FRESCO_MINUTOS = 5
 
 # Traduce cada paso fino de la línea de tiempo al estado agregado de ResultadoDespliegue
 _PASO_A_ESTADO = {
@@ -34,6 +38,27 @@ def _farmacia_desde_codigo_estacion(codigo_estacion: str) -> Farmacia | None:
     return Farmacia.objects.filter(codigo=codigo_farmacia).first()
 
 
+def _cache_url_base_para(estacion) -> str | None:
+    """URL LAN del caché de la farmacia de `estacion`, si hay uno online y no es ella misma."""
+    fresco = timezone.now() - timedelta(minutes=CACHE_FRESCO_MINUTOS)
+    cache = (
+        Estacion.objects
+        .filter(
+            farmacia=estacion.farmacia_id,
+            es_cache_farmacia=True,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            ultimo_heartbeat__gte=fresco,
+        )
+        .exclude(pk=estacion.pk)
+        .exclude(ip_lan__isnull=True)
+        .exclude(puerto_cache__isnull=True)
+        .first()
+    )
+    if cache is None:
+        return None
+    return f'http://{cache.ip_lan}:{cache.puerto_cache}/'
+
+
 def _respuesta_aceptado(estacion) -> dict:
     return {
         'aceptado': True,
@@ -42,6 +67,8 @@ def _respuesta_aceptado(estacion) -> dict:
         'farmacia': estacion.farmacia.codigo,
         'grupo': estacion.farmacia.grupo.codigo,
         'monitorear_recursos': estacion.monitorear_recursos,
+        'soy_cache': estacion.es_cache_farmacia,
+        'cache_url_base': _cache_url_base_para(estacion),
     }
 
 
@@ -103,6 +130,10 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
     estacion.so_nombre = payload.get('so_nombre', estacion.so_nombre)
     estacion.so_build = payload.get('so_build', estacion.so_build)
     estacion.numero_serie = payload.get('numero_serie', estacion.numero_serie)
+    if payload.get('ip_lan'):
+        estacion.ip_lan = payload['ip_lan']
+    if payload.get('puerto_cache'):
+        estacion.puerto_cache = payload['puerto_cache']
     estacion.estado_conexion = Estacion.EstadoConexion.ONLINE
     estacion.ultimo_heartbeat = timezone.now()
     estacion.save()

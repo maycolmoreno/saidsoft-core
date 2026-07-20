@@ -153,6 +153,32 @@ que eran dos tablas/tópicos) en una sola muestra por instante:
   reemplazando el `vaciar_logs` del sistema viejo (que borraba TODO cada domingo). En
   producción, esta tabla va sobre **TimescaleDB** con retención nativa.
 
+## Distribución en cascada (caché por farmacia)
+
+Reduce el tráfico VPN a escala (1.800 equipos): en vez de que las 3 cajas de cada
+farmacia bajen el paquete del central, una estación designada como **caché**
+(`es_cache_farmacia`, típicamente la -ADM) lo baja una vez y lo sirve por LAN a las otras.
+
+- El agente caché descarga del central, verifica el hash, guarda el paquete por su
+  `sha256` y lo sirve por HTTP (`GET /paquete/{sha256}`) en la LAN de su farmacia.
+- Las cajas normales reciben en la respuesta de enrolamiento el `cache_url_base` de su
+  farmacia (el servidor lo arma con la `ip_lan`/`puerto` que la caché reporta en su
+  heartbeat, solo si está fresca). Al aplicar un despliegue, **intentan el caché primero**;
+  si el caché no tiene el paquete todavía (404), está caído, o el hash no cuadra, **caen
+  al central** — best-effort, nunca rompe el despliegue.
+- El `sha256` en la URL es la clave y la verificación implícita: la caja pide exactamente
+  el hash que espera, y lo vuelve a verificar tras descargar.
+
+Verificado end-to-end: con caché ML001-ADM y caja ML001-A, la caja descargó **desde el
+caché LAN** mientras el caché descargaba del central; y el servidor HTTP del caché
+responde 200 con el paquete presente y 404 cuando no lo tiene (lo que gobierna el
+fallback). El `client_id` MQTT se hizo único por estación (antes dos agentes en la misma
+LAN de pruebas colisionaban; en producción el hostname ya es único).
+
+**Producción**: el caché debe aceptar conexiones de la LAN, lo que requiere una urlacl
+(`netsh http add urlacl url=http://+:8766/ ...`) que configurará el instalador MSI. En
+desarrollo cae a `localhost` automáticamente.
+
 ## Seguridad y robustez
 
 - **Enrolamiento verificado por hardware**: el agente reporta un `hardware_id` estable

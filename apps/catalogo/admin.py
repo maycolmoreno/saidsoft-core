@@ -30,12 +30,13 @@ class FarmaciaAdmin(admin.ModelAdmin):
 class EstacionAdmin(admin.ModelAdmin):
     list_display = (
         'codigo', 'farmacia', 'estado_aprobacion', 'estado_conexion',
-        'version_pos', 'desactualizada_badge', 'ultimo_heartbeat',
+        'version_pos', 'desactualizada_badge', 'es_cache_farmacia', 'monitorear_recursos', 'ultimo_heartbeat',
     )
     search_fields = ('codigo', 'numero_serie')
-    list_filter = ('estado_aprobacion', 'estado_conexion', 'farmacia__grupo')
+    list_filter = ('estado_aprobacion', 'estado_conexion', 'farmacia__grupo', 'es_cache_farmacia', 'monitorear_recursos')
+    list_editable = ('es_cache_farmacia', 'monitorear_recursos')
     autocomplete_fields = ('farmacia',)
-    readonly_fields = ('token_enrolamiento', 'ultimo_heartbeat', 'fecha_creacion')
+    readonly_fields = ('token_enrolamiento', 'ip_lan', 'puerto_cache', 'ultimo_heartbeat', 'fecha_creacion')
 
     @admin.display(description='¿Desactualizada?', boolean=True)
     def desactualizada_badge(self, obj):

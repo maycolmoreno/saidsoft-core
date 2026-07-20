@@ -115,3 +115,7 @@ ARCHIVOS_BASE_URL = env('ARCHIVOS_BASE_URL', default='http://localhost:8000')
 
 # Umbral de error por defecto que detiene automáticamente un despliegue en curso
 DESPLIEGUE_UMBRAL_ERROR_PCT_DEFAULT = env.float('DESPLIEGUE_UMBRAL_ERROR_PCT_DEFAULT', default=10.0)
+
+# Distribución en cascada: si está activo, los agentes intentan descargar del caché de
+# su farmacia antes que del servidor central (reduce el tráfico VPN a escala).
+DESPLIEGUE_USAR_CACHE = env.bool('DESPLIEGUE_USAR_CACHE', default=True)

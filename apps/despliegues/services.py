@@ -37,6 +37,9 @@ def _payload(despliegue: Despliegue) -> dict:
         'ventana_fecha_hora': (
             despliegue.ventana_fecha_hora.isoformat() if despliegue.ventana_fecha_hora else None
         ),
+        # El agente intentará descargar del caché de su farmacia antes que del central
+        # (best-effort: si el caché no tiene el paquete o falla, cae al central).
+        'usar_cache': settings.DESPLIEGUE_USAR_CACHE,
     }
 
 

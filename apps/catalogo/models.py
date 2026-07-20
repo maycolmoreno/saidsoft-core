@@ -102,6 +102,15 @@ class Estacion(models.Model):
         help_text='Si está activo, el agente de esta estación reporta métricas de RAM/CPU/latencia.',
     )
 
+    # Distribución en cascada: la estación marcada como caché descarga el paquete del central
+    # una sola vez y lo sirve por LAN a las demás cajas de su farmacia (reduce el tráfico VPN).
+    es_cache_farmacia = models.BooleanField(
+        default=False,
+        help_text='Si está activo, el agente sirve los paquetes de despliegue por LAN a su farmacia.',
+    )
+    ip_lan = models.GenericIPAddressField(null=True, blank=True, help_text='IP LAN reportada por el agente.')
+    puerto_cache = models.PositiveIntegerField(null=True, blank=True)
+
     fecha_creacion = models.DateTimeField(auto_now_add=True)
 
     class Meta:
