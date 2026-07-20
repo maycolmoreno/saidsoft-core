@@ -1,4 +1,4 @@
-# SAIDSOFT — núcleo (Fases 1, 2 y 2b)
+# SAIDSOFT — núcleo (Fases 1, 2, 2b y 4)
 
 Reemplazo de `projectDJango` (Django 1.8/Python 2.7) + `projectNodeJS` del sistema
 original (código de referencia en `C:\Proyectos\SAIDSOFT`, sin tocar), sobre
@@ -72,7 +72,10 @@ Y recompilar tras tocar templates o `static_src/input.css`:
 `static/css/app.css` sí se versiona (es el artefacto final), así que producción
 no necesita Node.js ni el binario de Tailwind — solo sirve el CSS ya compilado.
 
-## Probar el flujo completo sin el agente C# (Fase 3, aún no construido)
+## Probar el flujo completo sin el agente C#
+
+El agente real ya existe (`C:\Proyectos\saidsoft-agente`, Fase 3-4), pero para
+pruebas rápidas del backend sin él sigue disponible el simulador:
 
 ```bash
 python manage.py simular_agente ML001-A
@@ -82,7 +85,7 @@ python manage.py simular_agente MAM01-B --forzar-error   # prueba el rollback
 El simulador se enrola, se suscribe a los tópicos MQTT de su farmacia/grupo/cadena,
 descarga el `.zip` del despliegue publicado, verifica el hash y reporta cada paso del
 ciclo (`recibido → descargado → hash_verificado → pos_cerrado → aplicado → pos_relanzado → ok`,
-o `error → rollback`) — exactamente lo que hará el agente real más adelante.
+o `error → rollback`) — el mismo protocolo que habla el agente C# real.
 
 Para probar el enrolamiento de una estación nueva (cola de aprobación del panel):
 
@@ -113,6 +116,22 @@ estado vive en `apps/activos/services.py`, reutilizada por panel y admin.
   RRHH/nómina queda prevista para más adelante sin cambiar el modelo.
 - **Stock de consumibles**: se descuenta al entregar (`registrar_consumible_entregado`,
   valida que haya suficiente) y se repone desde "Bodegas y stock" en el panel.
+
+## Despliegue por anillos y aprobación por lotes (Fase 4)
+
+- **Anillos**: un despliegue completado (`estado=completado`) puede **promoverse**
+  con un clic (`/despliegues/<id>/promover/`) — crea un nuevo `Despliegue` con el
+  mismo archivo, versión y hash (sin volver a subir nada), pero con un destino más
+  amplio. `Despliegue.despliegue_origen` guarda la trazabilidad entre anillos, visible
+  en ambos sentidos en la página de detalle. El anillo promovido sigue pasando por la
+  aprobación de cuatro ojos normal — promover no salta ningún control.
+- **Aprobación por lotes**: la cola de estaciones pendientes (`/estaciones/`) permite
+  marcar varias con checkbox y aprobarlas todas de una (`estaciones_aprobar_lote`),
+  para cuando llegan muchos enrolamientos de golpe (ej. instalación inicial en 600
+  farmacias).
+- El campo `respuesta de enrolamiento` ahora incluye `farmacia` y `grupo` (no solo
+  `token`), para que el agente sepa a qué tópicos de despliegue suscribirse sin tener
+  que consultar la base de datos directamente.
 
 ## Notas de diseño
 

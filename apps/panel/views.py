@@ -19,7 +19,7 @@ from apps.catalogo.models import Estacion, Grupo
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
 from apps.despliegues.services import publicar_despliegue
 
-from .forms import DespliegueForm
+from .forms import DespliegueForm, PromoverDespliegueForm
 
 ONLINE_UMBRAL_MINUTOS = 5
 
@@ -116,6 +116,18 @@ def estacion_rechazar(request, pk):
 
 
 @login_required
+def estaciones_aprobar_lote(request):
+    if request.method == 'POST':
+        ids = request.POST.getlist('estacion_ids')
+        estaciones = Estacion.objects.filter(pk__in=ids, estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE)
+        for estacion in estaciones:
+            estacion.estado_aprobacion = Estacion.EstadoAprobacion.APROBADA
+            estacion.save(update_fields=['estado_aprobacion'])
+            registrar_evento(usuario=request.user, accion='estacion.aprobar', objeto=estacion, request=request)
+    return estaciones_pendientes_partial(request)
+
+
+@login_required
 def despliegues_lista(request):
     despliegues = Despliegue.objects.select_related('creado_por', 'aprobado_por').order_by('-fecha_creacion')
     return render(request, 'panel/despliegues_lista.html', {'despliegues': despliegues})
@@ -142,16 +154,54 @@ def despliegue_crear(request):
 @login_required
 def despliegue_detalle(request, pk):
     despliegue = get_object_or_404(
-        Despliegue.objects.select_related('creado_por', 'aprobado_por').prefetch_related('grupos', 'farmacias'),
+        Despliegue.objects
+        .select_related('creado_por', 'aprobado_por', 'despliegue_origen')
+        .prefetch_related('grupos', 'farmacias', 'promovidos'),
         pk=pk,
     )
     puede_aprobar = (
         despliegue.estado == Despliegue.Estado.PENDIENTE_APROBACION
         and despliegue.creado_por_id != request.user.id
     )
+    puede_promover = despliegue.estado == Despliegue.Estado.COMPLETADO
     return render(request, 'panel/despliegue_detalle.html', {
         'despliegue': despliegue,
         'puede_aprobar': puede_aprobar,
+        'puede_promover': puede_promover,
+    })
+
+
+@login_required
+def despliegue_promover(request, pk):
+    origen = get_object_or_404(Despliegue, pk=pk)
+    if origen.estado != Despliegue.Estado.COMPLETADO:
+        messages.error(request, 'Solo se puede promover un despliegue ya completado.')
+        return redirect('panel:despliegue_detalle', pk=pk)
+
+    if request.method == 'POST':
+        form = PromoverDespliegueForm(request.POST)
+        if form.is_valid():
+            nuevo = form.save(commit=False)
+            nuevo.version = origen.version
+            nuevo.archivo = origen.archivo
+            nuevo.sha256 = origen.sha256
+            nuevo.descripcion = f'Anillo siguiente de despliegue #{origen.pk} ({origen.get_destino_tipo_display()})'
+            nuevo.modo_aplicacion = origen.modo_aplicacion
+            nuevo.creado_por = request.user
+            nuevo.estado = Despliegue.Estado.PENDIENTE_APROBACION
+            nuevo.despliegue_origen = origen
+            nuevo.save()
+            form.save_m2m()
+            registrar_evento(usuario=request.user, accion='despliegue.promover', objeto=nuevo, request=request)
+            messages.success(request, f'Anillo siguiente creado para v{nuevo.version}, pendiente de aprobación.')
+            return redirect('panel:despliegue_detalle', pk=nuevo.pk)
+    else:
+        form = PromoverDespliegueForm()
+
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': f'Promover v{origen.version} al siguiente anillo',
+        'subtitulo': f'Mismo paquete y versión que el despliegue #{origen.pk}; solo cambia a quién llega.',
+        'volver_url': reverse('panel:despliegue_detalle', args=[pk]),
     })
 
 

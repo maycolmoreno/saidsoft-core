@@ -13,6 +13,7 @@ urlpatterns = [
 
     path('estaciones/', views.estaciones_lista, name='estaciones_lista'),
     path('estaciones/pendientes/', views.estaciones_pendientes_partial, name='estaciones_pendientes_partial'),
+    path('estaciones/aprobar-lote/', views.estaciones_aprobar_lote, name='estaciones_aprobar_lote'),
     path('estaciones/<int:pk>/aprobar/', views.estacion_aprobar, name='estacion_aprobar'),
     path('estaciones/<int:pk>/rechazar/', views.estacion_rechazar, name='estacion_rechazar'),
 
@@ -24,6 +25,7 @@ urlpatterns = [
     path('despliegues/<int:pk>/publicar/', views.despliegue_publicar, name='despliegue_publicar'),
     path('despliegues/<int:pk>/pausar/', views.despliegue_pausar, name='despliegue_pausar'),
     path('despliegues/<int:pk>/reanudar/', views.despliegue_reanudar, name='despliegue_reanudar'),
+    path('despliegues/<int:pk>/promover/', views.despliegue_promover, name='despliegue_promover'),
 
     path('auditoria/', views.auditoria_lista, name='auditoria_lista'),
 

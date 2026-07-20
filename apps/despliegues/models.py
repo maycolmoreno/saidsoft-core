@@ -67,6 +67,11 @@ class Despliegue(models.Model):
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_publicacion = models.DateTimeField(null=True, blank=True)
 
+    despliegue_origen = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='promovidos',
+        help_text='Si este despliegue es la promoción de un anillo anterior a uno más amplio.',
+    )
+
     class Meta:
         db_table = 'despliegue'
         ordering = ['-fecha_creacion']

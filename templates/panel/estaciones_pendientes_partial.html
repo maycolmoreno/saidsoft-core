@@ -1,12 +1,30 @@
 {% if pendientes %}
 <div class="bg-white rounded-lg border border-amber-200 mb-8">
-    <div class="px-4 py-3 border-b border-amber-200 bg-amber-50 text-amber-800 text-sm font-medium rounded-t-lg">
-        {{ pendientes|length }} estación(es) pendientes de aprobación de enrolamiento
+    <div class="px-4 py-3 border-b border-amber-200 bg-amber-50 text-amber-800 text-sm font-medium rounded-t-lg flex items-center justify-between">
+        <span>{{ pendientes|length }} estación(es) pendientes de aprobación de enrolamiento</span>
+        <button hx-post="{% url 'panel:estaciones_aprobar_lote' %}"
+                hx-include="[name='estacion_ids']:checked"
+                hx-target="#pendientes-wrap" hx-swap="innerHTML"
+                hx-confirm="¿Aprobar todas las estaciones seleccionadas?"
+                class="text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded-md px-3 py-1.5">
+            Aprobar seleccionadas
+        </button>
     </div>
     <table class="w-full text-sm">
+        <thead>
+            <tr class="text-xs text-slate-400">
+                <th class="pl-4 py-2 text-left w-8">
+                    <input type="checkbox" onclick="document.querySelectorAll('.chk-pendiente').forEach(c => c.checked = this.checked)">
+                </th>
+                <th></th><th></th><th></th><th></th><th></th>
+            </tr>
+        </thead>
         <tbody class="divide-y divide-slate-100">
         {% for e in pendientes %}
             <tr id="pendiente-{{ e.pk }}" class="hover:bg-slate-50">
+                <td class="pl-4 py-3">
+                    <input type="checkbox" class="chk-pendiente" name="estacion_ids" value="{{ e.pk }}">
+                </td>
                 <td class="px-4 py-3 font-medium text-slate-900">{{ e.codigo }}</td>
                 <td class="px-4 py-3 text-slate-600">{{ e.farmacia.codigo }} · {{ e.farmacia.grupo.codigo }}</td>
                 <td class="px-4 py-3 text-slate-500 text-xs">{{ e.numero_serie|default:"sin número de serie" }}</td>

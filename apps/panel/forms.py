@@ -26,3 +26,19 @@ class DespliegueForm(forms.ModelForm):
             'estaciones': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
             'umbral_error_pct': forms.NumberInput(attrs={'class': INPUT_CLASS, 'step': '0.5'}),
         }
+
+
+class PromoverDespliegueForm(forms.ModelForm):
+    """Crea el siguiente anillo de un despliegue ya completado: mismo paquete y
+    versión, pero con un destino más amplio."""
+
+    class Meta:
+        model = Despliegue
+        fields = ['destino_tipo', 'grupos', 'farmacias', 'estaciones', 'umbral_error_pct']
+        widgets = {
+            'destino_tipo': forms.Select(attrs={'class': INPUT_CLASS}),
+            'grupos': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+            'farmacias': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+            'estaciones': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+            'umbral_error_pct': forms.NumberInput(attrs={'class': INPUT_CLASS, 'step': '0.5'}),
+        }

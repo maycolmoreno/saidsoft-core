@@ -11,7 +11,25 @@
         {{ despliegue.get_estado_display }}
     </span>
 </div>
-<p class="text-sm text-slate-500 mb-6">{{ despliegue.descripcion|default:"Sin descripción." }}</p>
+<p class="text-sm text-slate-500 mb-1">{{ despliegue.descripcion|default:"Sin descripción." }}</p>
+{% if despliegue.despliegue_origen %}
+<p class="text-xs text-slate-400 mb-6">
+    Anillo siguiente de
+    <a href="{% url 'panel:despliegue_detalle' despliegue.despliegue_origen.pk %}" class="underline hover:text-slate-600">
+        despliegue #{{ despliegue.despliegue_origen.pk }} ({{ despliegue.despliegue_origen.get_destino_tipo_display }})
+    </a>
+</p>
+{% else %}
+<p class="mb-6"></p>
+{% endif %}
+{% if despliegue.promovidos.all %}
+<p class="text-xs text-slate-400 -mt-5 mb-6">
+    Promovido a:
+    {% for p in despliegue.promovidos.all %}
+    <a href="{% url 'panel:despliegue_detalle' p.pk %}" class="underline hover:text-slate-600">#{{ p.pk }} ({{ p.get_destino_tipo_display }})</a>{% if not forloop.last %}, {% endif %}
+    {% endfor %}
+</p>
+{% endif %}
 
 <div class="grid grid-cols-4 gap-4 mb-6 text-sm">
     <div class="bg-white rounded-lg border border-slate-200 p-4">
@@ -72,6 +90,12 @@
             Reanudar
         </button>
     </form>
+    {% endif %}
+
+    {% if puede_promover %}
+    <a href="{% url 'panel:despliegue_promover' despliegue.pk %}" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">
+        Promover al siguiente anillo →
+    </a>
     {% endif %}
 </div>
 
