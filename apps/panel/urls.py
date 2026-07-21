@@ -33,6 +33,11 @@ urlpatterns = [
     path('monitoreo/<int:pk>/', views.monitoreo_detalle, name='monitoreo_detalle'),
     path('monitoreo/<int:pk>/datos/', views.monitoreo_detalle_partial, name='monitoreo_detalle_partial'),
 
+    path('reportes/', views.reportes_index, name='reportes_index'),
+    path('reportes/cumplimiento.csv', views.reporte_cumplimiento_csv, name='reporte_cumplimiento_csv'),
+    path('reportes/despliegue/<int:pk>.csv', views.reporte_despliegue_csv, name='reporte_despliegue_csv'),
+    path('reportes/auditoria.csv', views.reporte_auditoria_csv, name='reporte_auditoria_csv'),
+
     # Módulo de Activos
     path('colaboradores/', views.colaboradores_lista, name='colaboradores_lista'),
     path('colaboradores/nuevo/', views.colaborador_crear, name='colaborador_crear'),

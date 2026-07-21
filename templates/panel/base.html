@@ -26,6 +26,7 @@
 
             <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Sistema</div>
             <a href="{% url 'panel:auditoria_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'auditoria' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Auditoría</a>
+            <a href="{% url 'panel:reportes_index' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'reporte' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Reportes</a>
             <a href="/admin/" class="block px-5 py-2.5 hover:bg-slate-800 text-slate-400">Admin (avanzado)</a>
         </nav>
         <div class="px-5 py-4 border-t border-slate-800 text-xs text-slate-400">

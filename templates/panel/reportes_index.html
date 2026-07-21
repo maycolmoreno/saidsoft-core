@@ -1,0 +1,56 @@
+{% extends "panel/base.html" %}
+{% block title %}Reportes · SAIDSOFT{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold text-slate-900 mb-2">Reportes exportables</h1>
+<p class="text-sm text-slate-500 mb-6">Descarga en CSV (se abre en Excel). Los reportes reflejan el estado al momento de la descarga.</p>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+    {# --- Cumplimiento --- #}
+    <div class="bg-white rounded-lg border border-slate-200 p-5">
+        <h2 class="font-medium text-slate-900 mb-1">Cumplimiento de versión</h2>
+        <p class="text-sm text-slate-500 mb-4">Qué versión corre cada estación vs. la objetivo de su grupo.</p>
+        <form method="get" action="{% url 'panel:reporte_cumplimiento_csv' %}" class="space-y-3">
+            <select name="grupo" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm">
+                <option value="">Todos los grupos</option>
+                {% for g in grupos %}<option value="{{ g.codigo }}">{{ g.codigo }}</option>{% endfor %}
+            </select>
+            <button type="submit" class="w-full bg-slate-900 text-white text-sm font-medium rounded-md py-2 hover:bg-slate-800">
+                Descargar CSV
+            </button>
+        </form>
+    </div>
+
+    {# --- Auditoría --- #}
+    <div class="bg-white rounded-lg border border-slate-200 p-5">
+        <h2 class="font-medium text-slate-900 mb-1">Bitácora de auditoría</h2>
+        <p class="text-sm text-slate-500 mb-4">Acciones sobre el panel en un rango de fechas.</p>
+        <form method="get" action="{% url 'panel:reporte_auditoria_csv' %}" class="space-y-3">
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">Desde</label>
+                <input type="date" name="desde" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">Hasta</label>
+                <input type="date" name="hasta" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm">
+            </div>
+            <button type="submit" class="w-full bg-slate-900 text-white text-sm font-medium rounded-md py-2 hover:bg-slate-800">
+                Descargar CSV
+            </button>
+        </form>
+    </div>
+
+    {# --- Despliegue --- #}
+    <div class="bg-white rounded-lg border border-slate-200 p-5">
+        <h2 class="font-medium text-slate-900 mb-1">Resultado de un despliegue</h2>
+        <p class="text-sm text-slate-500 mb-4">Estado por estación y tiempos de la línea de tiempo.</p>
+        <div class="space-y-3">
+            <select onchange="if(this.value) window.location=this.value" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm">
+                <option value="">Elegir despliegue…</option>
+                {% for d in despliegues %}<option value="{% url 'panel:reporte_despliegue_csv' d.pk %}">v{{ d.version }} · {{ d.get_estado_display }} · {{ d.fecha_creacion|date:"d/m/Y" }}</option>{% endfor %}
+            </select>
+            <p class="text-xs text-slate-400">La descarga inicia al elegir un despliegue.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

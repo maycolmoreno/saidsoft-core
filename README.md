@@ -19,12 +19,15 @@ apps/activos/             inventario de activos CRESIO: Bodega, Colaborador, Ord
                           Activo (código CR-TIPO-NNNN), EventoActivo (historial inmutable) (Fase 2b)
 apps/monitoreo/           métricas de recursos de servidores (RAM/CPU/swap/latencia),
                           migrado y unificado del sistema viejo (LogMemoria/LogCPU)
-apps/panel/               panel HTMX: dashboard, estaciones, despliegues, monitoreo, activos, auditoría
+apps/panel/               panel HTMX: dashboard, estaciones, despliegues, monitoreo,
+                          activos, auditoría, reportes (CSV)
 templates/panel/          plantillas del panel (Tailwind + HTMX)
 static_src/input.css      fuente de Tailwind (@source apunta a templates/ y apps/)
 static/css/app.css        CSS compilado (versionado, no requiere Node en el servidor)
 static/js/htmx.min.js     HTMX vendorizado (sin CDN)
 tools/                    tailwindcss.exe standalone (NO versionado, ver abajo)
+deploy/                   infraestructura de producción (Docker Compose + TimescaleDB +
+                          EMQX con TLS) — ver deploy/README-produccion.md
 ```
 
 El **panel HTMX** (`/`) es la interfaz principal desde la Fase 2. El **Django admin**
@@ -152,6 +155,23 @@ que eran dos tablas/tópicos) en una sola muestra por instante:
 - **Retención**: el comando `purgar_metricas --dias 30` (para cron) borra muestras viejas,
   reemplazando el `vaciar_logs` del sistema viejo (que borraba TODO cada domingo). En
   producción, esta tabla va sobre **TimescaleDB** con retención nativa.
+
+## Reportes exportables (CSV)
+
+En `/reportes/`, tres exportaciones a CSV (con BOM UTF-8 para que Excel muestre bien las
+tildes), en `apps/panel/reportes.py`:
+- **Cumplimiento de versión**: qué versión corre cada estación vs. la objetivo de su grupo
+  (filtrable por grupo).
+- **Resultado de un despliegue**: estado por estación + timestamps de recibido/aplicado/ok.
+- **Bitácora de auditoría**: acciones sobre el panel en un rango de fechas.
+
+## Producción (Docker + TimescaleDB + EMQX)
+
+Todo el stack de producción está en `deploy/` (Dockerfile, docker-compose con web/worker/
+TimescaleDB/EMQX-con-TLS, config, scripts de bootstrap). Ver **`deploy/README-produccion.md`**
+para los pasos. Reemplaza el SQLite y el broker `amqtt` de desarrollo. La config de Django
+para producción (`config/settings/produccion.py`) usa WhiteNoise para estáticos, PostgreSQL
+vía `DATABASE_URL`, y endurecimiento HTTPS/HSTS.
 
 ## Distribución en cascada (caché por farmacia)
 

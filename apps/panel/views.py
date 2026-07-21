@@ -1,8 +1,9 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, F, Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -687,3 +688,61 @@ def monitoreo_detalle_partial(request, pk):
         'estado_cpu': _clasificar(ultima.cpu_carga_pct if ultima else None, 75, 90),
         'estado_ram': _clasificar(ultima.ram_usada_pct if ultima else None, 80, 92),
     })
+
+
+# ---------------------------------------------------------------------------
+# Reportes exportables (CSV)
+# ---------------------------------------------------------------------------
+
+def _csv_response(nombre):
+    resp = HttpResponse(content_type='text/csv; charset=utf-8')
+    resp['Content-Disposition'] = f'attachment; filename="{nombre}"'
+    resp.write('﻿')  # BOM para que Excel reconozca UTF-8 (tildes)
+    return resp
+
+
+@login_required
+def reportes_index(request):
+    return render(request, 'panel/reportes_index.html', {
+        'grupos': Grupo.objects.order_by('codigo'),
+        'despliegues': Despliegue.objects.order_by('-fecha_creacion')[:100],
+    })
+
+
+@login_required
+def reporte_cumplimiento_csv(request):
+    from apps.panel import reportes
+    resp = _csv_response(reportes.nombre_archivo('cumplimiento'))
+    reportes.reporte_cumplimiento(resp, grupo_codigo=request.GET.get('grupo') or None)
+    return resp
+
+
+@login_required
+def reporte_despliegue_csv(request, pk):
+    from apps.panel import reportes
+    despliegue = get_object_or_404(Despliegue, pk=pk)
+    resp = _csv_response(reportes.nombre_archivo(f'despliegue_{despliegue.version}'))
+    reportes.reporte_despliegue(resp, despliegue)
+    return resp
+
+
+@login_required
+def reporte_auditoria_csv(request):
+    from apps.panel import reportes
+
+    def _parse(nombre):
+        valor = request.GET.get(nombre)
+        if not valor:
+            return None
+        try:
+            return timezone.make_aware(datetime.strptime(valor, '%Y-%m-%d'))
+        except ValueError:
+            return None
+
+    desde = _parse('desde')
+    hasta = _parse('hasta')
+    if hasta:
+        hasta = hasta + timedelta(days=1)  # incluir todo el día 'hasta'
+    resp = _csv_response(reportes.nombre_archivo('auditoria'))
+    reportes.reporte_auditoria(resp, desde=desde, hasta=hasta)
+    return resp

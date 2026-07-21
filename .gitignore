@@ -10,3 +10,7 @@ db.sqlite3
 
 # Binario del CLI de Tailwind (~110MB, se descarga aparte, no se versiona)
 /tools/
+
+# Secretos y certificados de producción
+/deploy/.env
+/deploy/certs/*.pem

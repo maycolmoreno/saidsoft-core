@@ -1,0 +1,107 @@
+# Stack de producción de SAIDSOFT: panel web + worker MQTT + TimescaleDB + EMQX.
+# Copiar deploy/.env.prod.example a deploy/.env y completar antes de levantar.
+#   docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+#
+# El servidor central va detrás de un proxy TLS (traefik/nginx/caddy) que termina HTTPS
+# para el panel; aquí el web expone 8000 en la red interna. EMQX sí termina su propio TLS
+# en 8883 (los agentes hablan MQTT sobre TLS directamente contra EMQX).
+
+x-app: &app-build
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+
+services:
+  db:
+    image: timescale/timescaledb:2.17.2-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/init-timescaledb.sql:/docker-entrypoint-initdb.d/10-timescaledb.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  emqx:
+    image: emqx/emqx:5.8.3
+    restart: unless-stopped
+    environment:
+      EMQX_NODE__COOKIE: ${EMQX_COOKIE}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD}
+      # Autenticación built-in (mnesia) activada; los usuarios se siembran con bootstrap-emqx.sh
+      EMQX_AUTHENTICATION__1__MECHANISM: password_based
+      EMQX_AUTHENTICATION__1__BACKEND: built_in_database
+      EMQX_AUTHENTICATION__1__ENABLE: "true"
+      # Listener MQTT sobre TLS (8883) usando los certs montados en ./certs
+      EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/cert.pem
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /opt/emqx/etc/certs/key.pem
+      # Desactiva el listener TCP sin cifrar: los agentes deben hablar solo por TLS.
+      EMQX_LISTENERS__TCP__DEFAULT__ENABLE: "false"
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - ./certs:/opt/emqx/etc/certs:ro          # cert.pem / key.pem para el listener TLS
+    ports:
+      - "8883:8883"    # MQTT sobre TLS (agentes)
+      - "18083:18083"  # dashboard (restringir por firewall/VPN)
+
+  web:
+    <<: *app-build
+    restart: unless-stopped
+    command: ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.produccion
+      RUN_MIGRATIONS: "1"
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SECRET_KEY: ${SECRET_KEY}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS}
+      ARCHIVOS_BASE_URL: ${ARCHIVOS_BASE_URL}
+      MQTT_HOST: emqx
+      MQTT_PORT: "8883"
+      MQTT_USERNAME: ${MQTT_USERNAME_PANEL}
+      MQTT_PASSWORD: ${MQTT_PASSWORD_PANEL}
+      MQTT_USE_TLS: "True"
+    volumes:
+      - media_data:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      emqx:
+        condition: service_started
+    ports:
+      - "8000:8000"   # detrás del proxy TLS
+
+  worker:
+    <<: *app-build
+    restart: unless-stopped
+    command: ["python", "manage.py", "run_mqtt_worker"]
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.produccion
+      RUN_MIGRATIONS: "0"
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SECRET_KEY: ${SECRET_KEY}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+      MQTT_HOST: emqx
+      MQTT_PORT: "8883"
+      MQTT_USERNAME: ${MQTT_USERNAME_WORKER}
+      MQTT_PASSWORD: ${MQTT_PASSWORD_WORKER}
+      MQTT_USE_TLS: "True"
+    volumes:
+      - media_data:/app/media   # el worker lee los paquetes que sirve el web
+    depends_on:
+      db:
+        condition: service_healthy
+      emqx:
+        condition: service_started
+
+volumes:
+  db_data:
+  media_data:
+  emqx_data:
