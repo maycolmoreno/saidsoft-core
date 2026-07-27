@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     'apps.activos',
     'apps.monitoreo',
     'apps.cuentas',
+    'apps.mantenimiento',
     'apps.panel',
 ]
 

@@ -67,4 +67,24 @@ urlpatterns = [
     path('bodegas/<int:pk>/stock/ingresar/', views.bodega_stock_ingresar, name='bodega_stock_ingresar'),
 
     path('movimientos-inventario/', views.movimientos_inventario_lista, name='movimientos_inventario_lista'),
+
+    # Módulo de Mantenimiento
+    path('mantenimientos/', views.mantenimientos_lista, name='mantenimientos_lista'),
+    path('mantenimientos/nuevo/', views.mantenimiento_crear, name='mantenimiento_crear'),
+    path('mantenimientos/<int:pk>/', views.mantenimiento_detalle, name='mantenimiento_detalle'),
+    path('mantenimientos/<int:pk>/iniciar/', views.mantenimiento_iniciar, name='mantenimiento_iniciar'),
+    path(
+        'mantenimientos/<int:pk>/checklist/', views.mantenimiento_checklist_actualizar,
+        name='mantenimiento_checklist_actualizar',
+    ),
+    path('mantenimientos/<int:pk>/cerrar/', views.mantenimiento_cerrar, name='mantenimiento_cerrar'),
+    path('mantenimientos/<int:pk>/cancelar/', views.mantenimiento_cancelar, name='mantenimiento_cancelar'),
+    path(
+        'mantenimientos-programados/', views.mantenimientos_programados_lista,
+        name='mantenimientos_programados_lista',
+    ),
+    path(
+        'mantenimientos-programados/nuevo/', views.mantenimiento_programado_crear,
+        name='mantenimiento_programado_crear',
+    ),
 ]

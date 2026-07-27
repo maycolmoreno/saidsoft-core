@@ -26,6 +26,11 @@ from .estaciones import (
     estacion_aprobar, estacion_info_modal, estacion_info_solicitar, estacion_rechazar,
     estacion_reiniciar, estaciones_aprobar_lote, estaciones_lista, estaciones_pendientes_partial,
 )
+from .mantenimiento import (
+    mantenimiento_cancelar, mantenimiento_cerrar, mantenimiento_checklist_actualizar, mantenimiento_crear,
+    mantenimiento_detalle, mantenimiento_iniciar, mantenimiento_programado_crear, mantenimientos_lista,
+    mantenimientos_programados_lista,
+)
 from .monitoreo import monitoreo_detalle, monitoreo_detalle_partial, monitoreo_lista
 from .reportes import (
     reporte_auditoria_csv, reporte_cumplimiento_csv, reporte_despliegue_csv, reportes_index,
@@ -43,6 +48,9 @@ __all__ = [
     'despliegues_lista',
     'estacion_aprobar', 'estacion_info_modal', 'estacion_info_solicitar', 'estacion_rechazar',
     'estacion_reiniciar', 'estaciones_aprobar_lote', 'estaciones_lista', 'estaciones_pendientes_partial',
+    'mantenimiento_cancelar', 'mantenimiento_cerrar', 'mantenimiento_checklist_actualizar',
+    'mantenimiento_crear', 'mantenimiento_detalle', 'mantenimiento_iniciar', 'mantenimiento_programado_crear',
+    'mantenimientos_lista', 'mantenimientos_programados_lista',
     'monitoreo_detalle', 'monitoreo_detalle_partial', 'monitoreo_lista',
     'movimientos_inventario_lista',
     'orden_compra_crear', 'orden_compra_detalle', 'orden_compra_linea_crear',
