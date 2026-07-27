@@ -2,6 +2,109 @@ from django.conf import settings
 from django.db import models
 
 
+class CategoriaEquipo(models.Model):
+    """Categoría de equipo para fines de mantenimiento (checklist aplicable, frecuencia, etc.)."""
+    codigo = models.CharField(max_length=30, unique=True)
+    nombre = models.CharField(max_length=100)
+
+    class Meta:
+        db_table = 'categoria_equipo'
+        ordering = ['nombre']
+        verbose_name_plural = 'Categorías de equipo'
+
+    def __str__(self):
+        return self.nombre
+
+
+class Marca(models.Model):
+    nombre = models.CharField(max_length=100, unique=True)
+
+    class Meta:
+        db_table = 'marca'
+        ordering = ['nombre']
+        verbose_name_plural = 'Marcas'
+
+    def __str__(self):
+        return self.nombre
+
+
+class Departamento(models.Model):
+    class Tipo(models.TextChoices):
+        ADMINISTRATIVO = 'administrativo', 'Administrativo'
+        OPERATIVO = 'operativo', 'Operativo'
+        TECNICO = 'tecnico', 'Técnico'
+
+    nombre = models.CharField(max_length=100, unique=True)
+    tipo = models.CharField(max_length=20, choices=Tipo.choices, default=Tipo.ADMINISTRATIVO)
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'departamento'
+        ordering = ['nombre']
+
+    def __str__(self):
+        return self.nombre
+
+
+class Cargo(models.Model):
+    nombre = models.CharField(max_length=100)
+    departamento = models.ForeignKey(Departamento, on_delete=models.PROTECT, related_name='cargos')
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'cargo'
+        ordering = ['nombre']
+        unique_together = [('nombre', 'departamento')]
+
+    def __str__(self):
+        return f'{self.nombre} ({self.departamento.nombre})'
+
+
+class Ubicacion(models.Model):
+    """Agencia/local físico: usada por mantenimiento (visita técnica) y como sede de colaboradores."""
+    nombre = models.CharField(max_length=150)
+    agencia = models.CharField(max_length=100, blank=True)
+    latitud = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    longitud = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    direccion = models.CharField(max_length=200, blank=True)
+    ciudad = models.CharField(max_length=100, blank=True)
+    parroquia = models.CharField(max_length=100, blank=True)
+    provincia = models.CharField(max_length=100, blank=True)
+    departamento = models.ForeignKey(
+        Departamento, on_delete=models.SET_NULL, null=True, blank=True, related_name='ubicaciones',
+    )
+    encargado = models.ForeignKey(
+        'Colaborador', on_delete=models.SET_NULL, null=True, blank=True, related_name='ubicaciones_a_cargo',
+    )
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'ubicacion'
+        ordering = ['nombre']
+        verbose_name_plural = 'Ubicaciones'
+
+    def __str__(self):
+        return self.nombre
+
+
+class Empresa(models.Model):
+    """Cliente/empresa atendida. Catálogo simple, sin aislamiento multi-tenant de datos."""
+    nombre = models.CharField(max_length=150)
+    ruc = models.CharField(max_length=13, unique=True)
+    direccion = models.CharField(max_length=200, blank=True)
+    telefono = models.CharField(max_length=15, blank=True)
+    correo = models.EmailField(blank=True)
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'empresa'
+        ordering = ['nombre']
+        verbose_name_plural = 'Empresas'
+
+    def __str__(self):
+        return self.nombre
+
+
 class Bodega(models.Model):
     codigo = models.CharField(max_length=20, unique=True)
     nombre = models.CharField(max_length=100, blank=True)

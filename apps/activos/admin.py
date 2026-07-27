@@ -1,6 +1,51 @@
 from django.contrib import admin
 
-from .models import Activo, Bodega, Colaborador, EventoActivo, OrdenCompra, StockBodega, TipoConsumible
+from .models import (
+    Activo, Bodega, Cargo, CategoriaEquipo, Colaborador, Departamento, Empresa, EventoActivo,
+    Marca, OrdenCompra, StockBodega, TipoConsumible, Ubicacion,
+)
+
+
+@admin.register(CategoriaEquipo)
+class CategoriaEquipoAdmin(admin.ModelAdmin):
+    list_display = ('codigo', 'nombre')
+    search_fields = ('codigo', 'nombre')
+
+
+@admin.register(Marca)
+class MarcaAdmin(admin.ModelAdmin):
+    list_display = ('nombre',)
+    search_fields = ('nombre',)
+
+
+@admin.register(Departamento)
+class DepartamentoAdmin(admin.ModelAdmin):
+    list_display = ('nombre', 'tipo', 'activo')
+    list_filter = ('tipo', 'activo')
+    search_fields = ('nombre',)
+
+
+@admin.register(Cargo)
+class CargoAdmin(admin.ModelAdmin):
+    list_display = ('nombre', 'departamento', 'activo')
+    list_filter = ('departamento', 'activo')
+    search_fields = ('nombre',)
+    autocomplete_fields = ('departamento',)
+
+
+@admin.register(Ubicacion)
+class UbicacionAdmin(admin.ModelAdmin):
+    list_display = ('nombre', 'agencia', 'ciudad', 'departamento', 'encargado', 'activo')
+    list_filter = ('departamento', 'activo', 'ciudad')
+    search_fields = ('nombre', 'agencia', 'ciudad')
+    autocomplete_fields = ('departamento', 'encargado')
+
+
+@admin.register(Empresa)
+class EmpresaAdmin(admin.ModelAdmin):
+    list_display = ('nombre', 'ruc', 'telefono', 'correo', 'activo')
+    search_fields = ('nombre', 'ruc')
+    list_filter = ('activo',)
 
 
 @admin.register(Bodega)

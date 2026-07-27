@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'apps.mqtt_worker',
     'apps.activos',
     'apps.monitoreo',
+    'apps.cuentas',
     'apps.panel',
 ]
 
