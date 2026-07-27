@@ -24,6 +24,7 @@
             <a href="{% url 'panel:bodegas_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'bodega' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Bodegas y stock</a>
             <a href="{% url 'panel:movimientos_inventario_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'movimientos_inventario_lista' %}bg-slate-800 text-white font-medium{% endif %}">Kardex</a>
             <a href="{% url 'panel:colaboradores_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'colaborador' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Colaboradores</a>
+            <a href="{% url 'panel:visita_tecnica_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'visita_tecnica_lista' %}bg-slate-800 text-white font-medium{% endif %}">Visita técnica</a>
 
             <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Sistema</div>
             <a href="{% url 'panel:auditoria_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'auditoria' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Auditoría</a>

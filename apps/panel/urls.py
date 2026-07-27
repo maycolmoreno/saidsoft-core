@@ -41,6 +41,7 @@ urlpatterns = [
     # Módulo de Activos
     path('colaboradores/', views.colaboradores_lista, name='colaboradores_lista'),
     path('colaboradores/nuevo/', views.colaborador_crear, name='colaborador_crear'),
+    path('visita-tecnica/', views.visita_tecnica_lista, name='visita_tecnica_lista'),
 
     path('ordenes-compra/', views.ordenes_compra_lista, name='ordenes_compra_lista'),
     path('ordenes-compra/nueva/', views.orden_compra_crear, name='orden_compra_crear'),

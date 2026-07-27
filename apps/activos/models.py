@@ -127,12 +127,35 @@ class Bodega(models.Model):
 
 
 class Colaborador(models.Model):
-    """Receptor de activos. Carga manual por ahora; integración con RRHH prevista a futuro."""
+    """Receptor de activos y custodio de equipos (fusiona el Custodio de InvTICS).
+
+    Integración con RRHH prevista a futuro: `origen_sync`/`sincronizado_en` y
+    `cargo_directorio`/`departamento_directorio` (texto libre del sistema
+    externo) ya existen para cuando se conecte un sync real, pero hoy nada
+    los llena todavía.
+    """
     nombre = models.CharField(max_length=150)
     cedula = models.CharField(max_length=20, unique=True)
-    cargo = models.CharField(max_length=100, blank=True)
+    correo = models.EmailField(blank=True)
+    telefono = models.CharField(max_length=15, blank=True)
+    cargo = models.ForeignKey(
+        Cargo, on_delete=models.PROTECT, null=True, blank=True, related_name='colaboradores',
+    )
+    ubicacion = models.ForeignKey(
+        Ubicacion, on_delete=models.SET_NULL, null=True, blank=True, related_name='colaboradores',
+        help_text='Agencia/local donde trabaja, usada para agrupar la visita técnica de mantenimiento.',
+    )
     sucursal = models.CharField(max_length=100, blank=True)
     zona = models.CharField(max_length=100, blank=True)
+    fecha_ingreso = models.DateField(null=True, blank=True)
+    origen_sync = models.BooleanField(
+        default=False, help_text='True si este registro vino de una sincronización con RRHH (aún sin implementar).',
+    )
+    sincronizado_en = models.DateTimeField(null=True, blank=True)
+    cargo_directorio = models.CharField(max_length=100, blank=True, help_text='Cargo tal como lo reporta RRHH.')
+    departamento_directorio = models.CharField(
+        max_length=100, blank=True, help_text='Departamento tal como lo reporta RRHH.',
+    )
     activo = models.BooleanField(default=True, help_text='Colaborador vigente en la empresa.')
     fecha_registro = models.DateTimeField(auto_now_add=True)
 

@@ -6,7 +6,8 @@ from django.db import transaction
 
 from apps.activos import services
 from apps.activos.models import (
-    Activo, Bodega, CategoriaEquipo, Colaborador, Marca, OrdenCompra, TipoConsumible,
+    Activo, Bodega, Cargo, CategoriaEquipo, Colaborador, Departamento, Marca, OrdenCompra, TipoConsumible,
+    Ubicacion,
 )
 
 
@@ -55,13 +56,35 @@ class Command(BaseCommand):
             bodega=bodegas['CUENCA'], tipo_consumible=TipoConsumible.objects.get(codigo='TECLADO'), cantidad=10,
         )
 
+        depto_admin, _ = Departamento.objects.update_or_create(
+            nombre='Administración', defaults={'tipo': Departamento.Tipo.ADMINISTRATIVO},
+        )
+        depto_comercial, _ = Departamento.objects.update_or_create(
+            nombre='Comercial', defaults={'tipo': Departamento.Tipo.OPERATIVO},
+        )
+        cargo_analista, _ = Cargo.objects.get_or_create(nombre='Analista', departamento=depto_admin)
+        cargo_vendedor, _ = Cargo.objects.get_or_create(nombre='Vendedor', departamento=depto_comercial)
+
+        ubicacion_cuenca, _ = Ubicacion.objects.update_or_create(
+            nombre='Agencia Cuenca', defaults={'ciudad': 'Cuenca', 'departamento': depto_admin},
+        )
+        ubicacion_machala, _ = Ubicacion.objects.update_or_create(
+            nombre='Agencia Machala', defaults={'ciudad': 'Machala', 'departamento': depto_comercial},
+        )
+
         colaborador1, _ = Colaborador.objects.update_or_create(
             cedula='0102030405',
-            defaults={'nombre': 'María Fernanda Ortiz', 'cargo': 'Analista', 'sucursal': 'Cuenca', 'zona': 'Sierra'},
+            defaults={
+                'nombre': 'María Fernanda Ortiz', 'cargo': cargo_analista, 'ubicacion': ubicacion_cuenca,
+                'sucursal': 'Cuenca', 'zona': 'Sierra',
+            },
         )
         colaborador2, _ = Colaborador.objects.update_or_create(
             cedula='0203040506',
-            defaults={'nombre': 'Luis Andrés Cabrera', 'cargo': 'Vendedor', 'sucursal': 'Machala', 'zona': 'Costa'},
+            defaults={
+                'nombre': 'Luis Andrés Cabrera', 'cargo': cargo_vendedor, 'ubicacion': ubicacion_machala,
+                'sucursal': 'Machala', 'zona': 'Costa',
+            },
         )
 
         oc, _ = OrdenCompra.objects.update_or_create(

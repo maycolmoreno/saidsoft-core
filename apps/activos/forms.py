@@ -11,8 +11,21 @@ INPUT_CLASS = 'w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus
 class ColaboradorForm(forms.ModelForm):
     class Meta:
         model = Colaborador
-        fields = ['nombre', 'cedula', 'cargo', 'sucursal', 'zona']
-        widgets = {f: forms.TextInput(attrs={'class': INPUT_CLASS}) for f in fields}
+        fields = [
+            'nombre', 'cedula', 'correo', 'telefono', 'cargo', 'ubicacion',
+            'sucursal', 'zona', 'fecha_ingreso',
+        ]
+        widgets = {
+            'nombre': forms.TextInput(attrs={'class': INPUT_CLASS}),
+            'cedula': forms.TextInput(attrs={'class': INPUT_CLASS}),
+            'correo': forms.EmailInput(attrs={'class': INPUT_CLASS}),
+            'telefono': forms.TextInput(attrs={'class': INPUT_CLASS}),
+            'cargo': forms.Select(attrs={'class': INPUT_CLASS}),
+            'ubicacion': forms.Select(attrs={'class': INPUT_CLASS}),
+            'sucursal': forms.TextInput(attrs={'class': INPUT_CLASS}),
+            'zona': forms.TextInput(attrs={'class': INPUT_CLASS}),
+            'fecha_ingreso': forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
+        }
 
 
 class OrdenCompraForm(forms.ModelForm):

@@ -10,7 +10,9 @@ from apps.activos.forms import (
     DevolucionForm, EnvioReparacionForm, OrdenCompraForm, OrdenCompraLineaForm,
     RecepcionLoteForm, RecibirOrdenCompraForm, RetornoReparacionForm, StockIngresoForm,
 )
-from apps.activos.models import Activo, Bodega, Colaborador, MovimientoInventario, OrdenCompra, OrdenCompraDetalle
+from apps.activos.models import (
+    Activo, Bodega, Colaborador, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, Ubicacion,
+)
 from apps.activos.services import ConcurrencyError
 from apps.auditoria.models import registrar_evento
 
@@ -36,6 +38,37 @@ def colaborador_crear(request):
         'form': form, 'titulo': 'Nuevo colaborador',
         'subtitulo': 'Carga manual mientras se integra con RRHH/nómina.',
         'volver_url': reverse('panel:colaboradores_lista'),
+    })
+
+
+@login_required
+def visita_tecnica_lista(request):
+    """Agrupa colaboradores y sus activos asignados por ubicación (agencia/local).
+
+    Equivalente a CustodioVisita/EquipoVisita de InvTICS: en el sistema
+    original no eran tablas propias, sino una proyección de solo lectura
+    para que el técnico sepa qué visitar en una ubicación. Aquí es lo mismo:
+    un reporte armado sobre Colaborador/Activo, sin modelo nuevo.
+    """
+    ubicaciones = (
+        Ubicacion.objects.filter(activo=True)
+        .prefetch_related('colaboradores__activos_asignados')
+        .order_by('nombre')
+    )
+    filtro_ubicacion = request.GET.get('ubicacion')
+    if filtro_ubicacion:
+        ubicaciones = ubicaciones.filter(pk=filtro_ubicacion)
+
+    secciones = []
+    for ubicacion in ubicaciones:
+        colaboradores = list(ubicacion.colaboradores.filter(activo=True))
+        total_equipos = sum(c.activos_asignados.count() for c in colaboradores)
+        secciones.append({'ubicacion': ubicacion, 'colaboradores': colaboradores, 'total_equipos': total_equipos})
+
+    return render(request, 'panel/visita_tecnica_lista.html', {
+        'secciones': secciones,
+        'todas_ubicaciones': Ubicacion.objects.filter(activo=True).order_by('nombre'),
+        'filtro_ubicacion': filtro_ubicacion or '',
     })
 
 

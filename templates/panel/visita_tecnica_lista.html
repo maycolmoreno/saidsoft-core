@@ -1,0 +1,56 @@
+{% extends "panel/base.html" %}
+{% block title %}Visita técnica · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold text-slate-900">Visita técnica por ubicación</h1>
+</div>
+
+<form method="get" class="flex items-center gap-3 mb-4">
+    <select name="ubicacion" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+        <option value="">Todas las ubicaciones</option>
+        {% for u in todas_ubicaciones %}
+        <option value="{{ u.pk }}" {% if filtro_ubicacion == u.pk|stringformat:"s" %}selected{% endif %}>{{ u.nombre }}</option>
+        {% endfor %}
+    </select>
+</form>
+
+{% for s in secciones %}
+<div class="bg-white rounded-lg border border-slate-200 overflow-hidden mb-6">
+    <div class="px-4 py-3 bg-slate-50 flex items-center justify-between">
+        <div>
+            <span class="font-medium text-slate-900">{{ s.ubicacion.nombre }}</span>
+            <span class="text-xs text-slate-500 ml-2">{{ s.ubicacion.ciudad|default:"" }}</span>
+        </div>
+        <span class="text-xs text-slate-500">{{ s.colaboradores|length }} colaborador(es) · {{ s.total_equipos }} equipo(s)</span>
+    </div>
+    <table class="w-full text-sm">
+        <thead class="text-slate-500 text-xs uppercase tracking-wide">
+            <tr>
+                <th class="text-left px-4 py-2">Colaborador</th>
+                <th class="text-left px-4 py-2">Cargo</th>
+                <th class="text-left px-4 py-2">Equipos asignados</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+        {% for c in s.colaboradores %}
+            <tr>
+                <td class="px-4 py-2 text-slate-900">{{ c.nombre }}</td>
+                <td class="px-4 py-2 text-slate-600">{{ c.cargo|default:"—" }}</td>
+                <td class="px-4 py-2 text-slate-600">
+                    {% for a in c.activos_asignados.all %}
+                        <a href="{% url 'panel:activo_detalle' a.pk %}" class="font-mono text-xs hover:underline">{{ a.codigo }}</a>{% if not forloop.last %}, {% endif %}
+                    {% empty %}—{% endfor %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="3" class="px-4 py-4 text-center text-slate-400">Sin colaboradores activos en esta ubicación.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% empty %}
+<div class="bg-white rounded-lg border border-slate-200 px-4 py-8 text-center text-slate-400">
+    Sin ubicaciones registradas. Créalas desde el admin (Activos → Ubicaciones).
+</div>
+{% endfor %}
+{% endblock %}

@@ -58,9 +58,10 @@ class BodegaAdmin(admin.ModelAdmin):
 
 @admin.register(Colaborador)
 class ColaboradorAdmin(admin.ModelAdmin):
-    list_display = ('nombre', 'cedula', 'cargo', 'sucursal', 'zona', 'activo')
-    search_fields = ('nombre', 'cedula')
-    list_filter = ('activo', 'sucursal')
+    list_display = ('nombre', 'cedula', 'cargo', 'ubicacion', 'sucursal', 'zona', 'activo')
+    search_fields = ('nombre', 'cedula', 'correo')
+    list_filter = ('activo', 'sucursal', 'ubicacion')
+    autocomplete_fields = ('cargo', 'ubicacion')
 
 
 @admin.register(TipoConsumible)

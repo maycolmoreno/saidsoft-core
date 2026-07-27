@@ -13,6 +13,7 @@ from .activos import (
     bodega_stock_ingresar, bodegas_lista, colaborador_crear, colaboradores_lista,
     movimientos_inventario_lista, orden_compra_crear, orden_compra_detalle,
     orden_compra_linea_crear, orden_compra_linea_recibir, orden_compra_recibir, ordenes_compra_lista,
+    visita_tecnica_lista,
 )
 from .auditoria import auditoria_lista
 from .dashboard import dashboard
@@ -47,4 +48,5 @@ __all__ = [
     'orden_compra_crear', 'orden_compra_detalle', 'orden_compra_linea_crear',
     'orden_compra_linea_recibir', 'orden_compra_recibir', 'ordenes_compra_lista',
     'reporte_auditoria_csv', 'reporte_cumplimiento_csv', 'reporte_despliegue_csv', 'reportes_index',
+    'visita_tecnica_lista',
 ]
