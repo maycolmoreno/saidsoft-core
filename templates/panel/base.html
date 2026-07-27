@@ -62,6 +62,9 @@
         {% block content %}{% endblock %}
     </main>
 </div>
+<dialog id="modal-info" class="rounded-lg shadow-xl backdrop:bg-slate-900/40 w-full max-w-lg p-0">
+    <div id="modal-info-content"></div>
+</dialog>
 {% else %}
     {% block content_anon %}{% endblock %}
 {% endif %}

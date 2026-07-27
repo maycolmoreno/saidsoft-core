@@ -91,9 +91,15 @@ def manejar_enrolamiento(payload: dict) -> dict:
             return {'aceptado': False, 'motivo': 'hardware no coincide, requiere reaprobación manual en el panel'}
         # Trust-on-first-use: si nunca se guardó un hardware_id (estación creada antes de
         # este mecanismo), se fija el primero que llegue.
+        campos = []
         if not estacion.hardware_id and hardware_id:
             estacion.hardware_id = hardware_id
-            estacion.save(update_fields=['hardware_id'])
+            campos.append('hardware_id')
+        if payload.get('hostname') and payload['hostname'] != estacion.hostname:
+            estacion.hostname = payload['hostname']
+            campos.append('hostname')
+        if campos:
+            estacion.save(update_fields=campos)
         return _respuesta_aceptado(estacion)
 
     farmacia = _farmacia_desde_codigo_estacion(codigo)
@@ -105,6 +111,7 @@ def manejar_enrolamiento(payload: dict) -> dict:
         codigo=codigo,
         farmacia=farmacia,
         hardware_id=hardware_id,
+        hostname=payload.get('hostname', ''),
         numero_serie=payload.get('numero_serie', ''),
         so_nombre=payload.get('so_nombre', ''),
         so_build=payload.get('so_build', ''),
@@ -129,6 +136,7 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
     estacion.version_pos = payload.get('version_pos', estacion.version_pos)
     estacion.so_nombre = payload.get('so_nombre', estacion.so_nombre)
     estacion.so_build = payload.get('so_build', estacion.so_build)
+    estacion.hostname = payload.get('hostname', estacion.hostname)
     estacion.numero_serie = payload.get('numero_serie', estacion.numero_serie)
     if payload.get('ip_lan'):
         estacion.ip_lan = payload['ip_lan']
@@ -184,6 +192,32 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
     despliegue = resultado.despliegue
     evaluar_freno_automatico(despliegue)
     verificar_completado(despliegue)
+
+
+def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:
+    """Guarda la respuesta a una consulta puntual de hardware (comando "consultar_info")."""
+    close_old_connections()
+    try:
+        estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
+    except Estacion.DoesNotExist:
+        logger.warning('Info de equipo con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    def _entero(clave):
+        valor = payload.get(clave)
+        return int(valor) if isinstance(valor, (int, float)) else None
+
+    estacion.hostname = payload.get('hostname', estacion.hostname)
+    estacion.numero_serie = payload.get('numero_serie', estacion.numero_serie)
+    estacion.so_nombre = payload.get('so_nombre', estacion.so_nombre)
+    estacion.so_build = payload.get('so_build', estacion.so_build)
+    estacion.procesador = payload.get('procesador', estacion.procesador)
+    estacion.ram_total_mb = _entero('ram_total_mb') or estacion.ram_total_mb
+    estacion.almacenamiento_total_gb = _entero('almacenamiento_total_gb') or estacion.almacenamiento_total_gb
+    estacion.info_equipo_fecha = timezone.now()
+    estacion.save()
 
 
 def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:

@@ -30,17 +30,29 @@
             <tr>
                 <th class="text-left px-4 py-3">Código</th>
                 <th class="text-left px-4 py-3">Farmacia / Grupo</th>
+                <th class="text-left px-4 py-3">Equipo</th>
                 <th class="text-left px-4 py-3">Versión POS</th>
                 <th class="text-left px-4 py-3">SO</th>
                 <th class="text-left px-4 py-3">Conexión</th>
                 <th class="text-left px-4 py-3">Último heartbeat</th>
+                <th class="text-right px-4 py-3"></th>
             </tr>
         </thead>
         <tbody class="divide-y divide-slate-100">
         {% for e in estaciones %}
             <tr class="hover:bg-slate-50">
-                <td class="px-4 py-3 font-medium text-slate-900">{{ e.codigo }}</td>
+                <td class="px-4 py-3 font-medium">
+                    <button type="button" class="text-slate-900 hover:text-blue-600 hover:underline"
+                            hx-get="{% url 'panel:estacion_info_modal' e.pk %}" hx-target="#modal-info-content" hx-swap="innerHTML"
+                            onclick="document.getElementById('modal-info').showModal()">
+                        {{ e.codigo }}
+                    </button>
+                </td>
                 <td class="px-4 py-3 text-slate-600">{{ e.farmacia.codigo }} · {{ e.farmacia.grupo.codigo }}</td>
+                <td class="px-4 py-3 text-slate-500 text-xs">
+                    {{ e.hostname|default:"—" }}<br>
+                    <span class="text-slate-400">{{ e.ip_lan|default:"" }}</span>
+                </td>
                 <td class="px-4 py-3">
                     <span class="{% if e.desactualizada %}text-amber-700 font-medium{% else %}text-slate-600{% endif %}">
                         {{ e.version_pos|default:"—" }}
@@ -57,9 +69,20 @@
                     </span>
                 </td>
                 <td class="px-4 py-3 text-slate-500 text-xs">{{ e.ultimo_heartbeat|default:"nunca" }}</td>
+                <td class="px-4 py-3 text-right">
+                    {% if e.estado_aprobacion == 'aprobada' and e.estado_conexion == 'online' %}
+                    <form method="post" action="{% url 'panel:estacion_reiniciar' e.pk %}"
+                          onsubmit="return confirm('¿Reiniciar {{ e.codigo }} ahora? Esto interrumpe cualquier venta en curso en esa caja.');">
+                        {% csrf_token %}
+                        <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-700 border border-red-200 rounded-md px-3 py-1.5">
+                            Reiniciar
+                        </button>
+                    </form>
+                    {% endif %}
+                </td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">Sin estaciones para este filtro.</td></tr>
+            <tr><td colspan="8" class="px-4 py-6 text-center text-slate-400">Sin estaciones para este filtro.</td></tr>
         {% endfor %}
         </tbody>
     </table>

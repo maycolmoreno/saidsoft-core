@@ -22,6 +22,8 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./db/init-timescaledb.sql:/docker-entrypoint-initdb.d/10-timescaledb.sql:ro
+    ports:
+      - "127.0.0.1:5433:5432"   # acceso local con pgAdmin (5432 del host lo usa otro Postgres)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -48,8 +50,8 @@ services:
       - emqx_data:/opt/emqx/data
       - ./certs:/opt/emqx/etc/certs:ro          # cert.pem / key.pem para el listener TLS
     ports:
-      - "8883:8883"    # MQTT sobre TLS (agentes)
-      - "18083:18083"  # dashboard (restringir por firewall/VPN)
+      - "8081:8883"    # MQTT sobre TLS (agentes) — remapeado a 8081 (rango 8080-8085 abierto en firewall)
+      - "8082:18083"   # dashboard (restringir por firewall/VPN)
 
   web:
     <<: *app-build
@@ -63,11 +65,14 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS}
       ARCHIVOS_BASE_URL: ${ARCHIVOS_BASE_URL}
+      SECURE_SSL_REDIRECT: ${SECURE_SSL_REDIRECT:-True}
+      COOKIES_SOLO_HTTPS: ${COOKIES_SOLO_HTTPS:-True}
       MQTT_HOST: emqx
       MQTT_PORT: "8883"
       MQTT_USERNAME: ${MQTT_USERNAME_PANEL}
       MQTT_PASSWORD: ${MQTT_PASSWORD_PANEL}
       MQTT_USE_TLS: "True"
+      MQTT_CA_CERT: /app/deploy/certs/cert.pem
     volumes:
       - media_data:/app/media
     depends_on:
@@ -76,7 +81,7 @@ services:
       emqx:
         condition: service_started
     ports:
-      - "8000:8000"   # detrás del proxy TLS
+      - "8080:8000"   # remapeado a 8080 (rango 8080-8085 abierto en firewall); detrás de proxy TLS en prod real
 
   worker:
     <<: *app-build
@@ -93,6 +98,7 @@ services:
       MQTT_USERNAME: ${MQTT_USERNAME_WORKER}
       MQTT_PASSWORD: ${MQTT_PASSWORD_WORKER}
       MQTT_USE_TLS: "True"
+      MQTT_CA_CERT: /app/deploy/certs/cert.pem
     volumes:
       - media_data:/app/media   # el worker lee los paquetes que sirve el web
     depends_on:

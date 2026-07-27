@@ -7,14 +7,29 @@ set -e
 . "$(dirname "$0")/.env"
 
 EMQX_API="${EMQX_API:-http://localhost:18083/api/v5}"
-AUTH="admin:${EMQX_DASHBOARD_PASSWORD}"
+
+# La API de EMQX 5.x no acepta Basic Auth con el usuario del dashboard en estos
+# endpoints; hay que loguearse primero y usar el token Bearer.
+TOKEN=$(curl -s -X POST "$EMQX_API/login" -H "Content-Type: application/json" \
+    -d "{\"username\":\"admin\",\"password\":\"${EMQX_DASHBOARD_PASSWORD}\"}" \
+    | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+if [ -z "$TOKEN" ]; then
+    echo "No se pudo obtener token del dashboard de EMQX (revisa EMQX_DASHBOARD_PASSWORD)." >&2
+    exit 1
+fi
 
 crear_usuario() {
     user="$1"; pass="$2"
     echo "Creando usuario MQTT: $user"
-    curl -s -u "$AUTH" -X POST "$EMQX_API/authentication/password_based:built_in_database/users" \
-        -H "Content-Type: application/json" \
-        -d "{\"user_id\":\"$user\",\"password\":\"$pass\"}" >/dev/null || true
+    resp=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        "$EMQX_API/authentication/password_based:built_in_database/users" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -d "{\"user_id\":\"$user\",\"password\":\"$pass\"}")
+    case "$resp" in
+        200|201) ;;
+        409) echo "  (ya existía)" ;;
+        *) echo "  ERROR (HTTP $resp) creando $user" >&2 ;;
+    esac
 }
 
 crear_usuario "$MQTT_USERNAME_PANEL"  "$MQTT_PASSWORD_PANEL"

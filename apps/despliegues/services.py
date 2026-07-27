@@ -63,6 +63,11 @@ def publicar_despliegue(despliegue: Despliegue) -> int:
     auth = None
     if mqtt_conf['USERNAME']:
         auth = {'username': mqtt_conf['USERNAME'], 'password': mqtt_conf['PASSWORD']}
+    tls = None
+    if mqtt_conf['USE_TLS']:
+        # EMQX en producción solo expone el listener TLS (8883); sin esto, publish.single
+        # se conecta en plano y el broker cierra la conexión.
+        tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
 
     for topico in topicos:
         try:
@@ -72,6 +77,7 @@ def publicar_despliegue(despliegue: Despliegue) -> int:
                 hostname=mqtt_conf['HOST'],
                 port=mqtt_conf['PORT'],
                 auth=auth,
+                tls=tls,
                 client_id=mqtt_conf['CLIENT_ID_PANEL'],
                 retain=True,  # equipos apagados lo reciben al encender
             )

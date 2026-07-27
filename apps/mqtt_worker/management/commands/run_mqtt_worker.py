@@ -14,7 +14,7 @@ from django.core.management.base import BaseCommand
 
 from apps.mqtt_worker.services import (
     manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_script, manejar_heartbeat,
-    manejar_metricas,
+    manejar_info_equipo, manejar_metricas,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ TOPICO_ENROLAMIENTO = '/saidsof/enrolamiento/solicitar/'
 TOPICO_HEARTBEAT = '/saidsof/agente/+/heartbeat/'
 TOPICO_ESTADO_DESPLIEGUE = '/saidsof/agente/+/despliegue_estado/'
 TOPICO_METRICAS = '/saidsof/agente/+/metricas/'
+TOPICO_INFO_EQUIPO = '/saidsof/agente/+/info_equipo/'
 TOPICO_ESTADO_SCRIPT = '/saidsof/agente/+/script_estado/'
 
 
@@ -42,7 +43,7 @@ class Command(BaseCommand):
         if conf['USERNAME']:
             client.username_pw_set(conf['USERNAME'], conf['PASSWORD'])
         if conf['USE_TLS']:
-            client.tls_set()
+            client.tls_set(ca_certs=conf['CA_CERT'] or None)
 
         client.on_connect = self._on_connect
         client.on_message = self._on_message
@@ -61,6 +62,7 @@ class Command(BaseCommand):
         client.subscribe(TOPICO_HEARTBEAT)
         client.subscribe(TOPICO_ESTADO_DESPLIEGUE)
         client.subscribe(TOPICO_METRICAS)
+        client.subscribe(TOPICO_INFO_EQUIPO)
         client.subscribe(TOPICO_ESTADO_SCRIPT)
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
@@ -82,6 +84,8 @@ class Command(BaseCommand):
                 manejar_estado_despliegue(_codigo_desde_topico(msg.topic), payload)
             elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/metricas/'):
                 manejar_metricas(_codigo_desde_topico(msg.topic), payload)
+            elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/info_equipo/'):
+                manejar_info_equipo(_codigo_desde_topico(msg.topic), payload)
             elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/script_estado/'):
                 manejar_estado_script(_codigo_desde_topico(msg.topic), payload)
         except Exception:

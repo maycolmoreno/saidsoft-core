@@ -14,8 +14,10 @@ STORAGES = {
 }
 
 SECURE_SSL_REDIRECT = env.bool('SECURE_SSL_REDIRECT', default=True)  # noqa: F405
-SESSION_COOKIE_SECURE = True
-CSRF_COOKIE_SECURE = True
+# False solo mientras el panel se sirva por HTTP sin proxy TLS delante (piloto);
+# con HTTPS real deben volver a True o el navegador no enviaría la sesión.
+SESSION_COOKIE_SECURE = env.bool('COOKIES_SOLO_HTTPS', default=True)  # noqa: F405
+CSRF_COOKIE_SECURE = env.bool('COOKIES_SOLO_HTTPS', default=True)  # noqa: F405
 SECURE_HSTS_SECONDS = 60 * 60 * 24 * 7
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True

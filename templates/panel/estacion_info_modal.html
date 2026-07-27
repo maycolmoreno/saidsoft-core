@@ -1,0 +1,43 @@
+<div class="p-5" hx-trigger="every 2s [document.getElementById('modal-info').open]"
+     hx-get="{% url 'panel:estacion_info_modal' estacion.pk %}"
+     hx-target="#modal-info-content" hx-swap="innerHTML">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-slate-900">{{ estacion.codigo }}</h2>
+        <button type="button" onclick="document.getElementById('modal-info').close()"
+                class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
+    </div>
+
+    {% if solicitado %}
+    <div class="mb-4 text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-md px-3 py-2">
+        Actualización solicitada — esta ventana se refresca sola cuando el equipo responda (unos segundos si está en línea).
+    </div>
+    {% endif %}
+
+    <dl class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+        <div><dt class="text-slate-400 text-xs">Hostname</dt><dd class="text-slate-900">{{ estacion.hostname|default:"—" }}</dd></div>
+        <div><dt class="text-slate-400 text-xs">Número de serie</dt><dd class="text-slate-900">{{ estacion.numero_serie|default:"—" }}</dd></div>
+        <div><dt class="text-slate-400 text-xs">Sistema operativo</dt><dd class="text-slate-900">{{ estacion.so_nombre|default:"—" }}</dd></div>
+        <div><dt class="text-slate-400 text-xs">Versión de SO</dt><dd class="text-slate-900">{{ estacion.so_build|default:"—" }}</dd></div>
+        <div><dt class="text-slate-400 text-xs">Procesador</dt><dd class="text-slate-900">{{ estacion.procesador|default:"—" }}</dd></div>
+        <div><dt class="text-slate-400 text-xs">RAM</dt>
+            <dd class="text-slate-900">{% if estacion.ram_total_mb %}{{ estacion.ram_total_mb }} MB{% else %}—{% endif %}</dd></div>
+        <div><dt class="text-slate-400 text-xs">Almacenamiento</dt>
+            <dd class="text-slate-900">{% if estacion.almacenamiento_total_gb %}{{ estacion.almacenamiento_total_gb }} GB{% else %}—{% endif %}</dd></div>
+        <div><dt class="text-slate-400 text-xs">Última actualización</dt><dd class="text-slate-900">{{ estacion.info_equipo_fecha|default:"nunca" }}</dd></div>
+    </dl>
+
+    <div class="mt-5 flex justify-end gap-2">
+        <button type="button" onclick="document.getElementById('modal-info').close()"
+                class="text-xs font-medium text-slate-600 border border-slate-300 rounded-md px-3 py-1.5">
+            Cerrar
+        </button>
+        {% if estacion.estado_conexion == 'online' %}
+        <button hx-post="{% url 'panel:estacion_info_solicitar' estacion.pk %}" hx-target="#modal-info-content" hx-swap="innerHTML"
+                class="text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md px-3 py-1.5">
+            Actualizar ahora
+        </button>
+        {% else %}
+        <span class="text-xs text-slate-400 self-center">Estación fuera de línea — no se puede consultar.</span>
+        {% endif %}
+    </div>
+</div>

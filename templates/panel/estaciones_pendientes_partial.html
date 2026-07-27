@@ -16,7 +16,7 @@
                 <th class="pl-4 py-2 text-left w-8">
                     <input type="checkbox" onclick="document.querySelectorAll('.chk-pendiente').forEach(c => c.checked = this.checked)">
                 </th>
-                <th></th><th></th><th></th><th></th><th></th>
+                <th></th><th></th><th></th><th></th><th></th><th></th>
             </tr>
         </thead>
         <tbody class="divide-y divide-slate-100">
@@ -27,6 +27,7 @@
                 </td>
                 <td class="px-4 py-3 font-medium text-slate-900">{{ e.codigo }}</td>
                 <td class="px-4 py-3 text-slate-600">{{ e.farmacia.codigo }} · {{ e.farmacia.grupo.codigo }}</td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.hostname|default:"sin hostname" }}</td>
                 <td class="px-4 py-3 text-slate-500 text-xs">{{ e.numero_serie|default:"sin número de serie" }}</td>
                 <td class="px-4 py-3 text-slate-500 text-xs">{{ e.so_nombre }} {{ e.so_build }}</td>
                 <td class="px-4 py-3 text-right space-x-2">

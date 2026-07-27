@@ -71,6 +71,11 @@ class Estacion(models.Model):
     farmacia = models.ForeignKey(Farmacia, on_delete=models.PROTECT, related_name='estaciones')
 
     # Identidad de hardware, reportada por el agente al enrolarse (vínculo con Módulo de Activos, Fase 4)
+    hostname = models.CharField(
+        max_length=100, blank=True,
+        help_text='Nombre de equipo Windows (Environment.MachineName), reportado por el agente. '
+                  'Puede diferir del código de estación si este se asignó manualmente.',
+    )
     numero_serie = models.CharField(max_length=100, blank=True)
 
     # Estado reportado por el agente vía heartbeat MQTT
@@ -78,6 +83,16 @@ class Estacion(models.Model):
     so_build = models.CharField(max_length=30, blank=True, help_text='Ej. 19045 (22H2)')
     version_agente = models.CharField(max_length=30, blank=True)
     version_pos = models.CharField(max_length=30, blank=True)
+
+    # Características de hardware, consultadas bajo demanda desde el panel (no viajan en
+    # cada heartbeat: son prácticamente estáticas, no vale la pena mandarlas cada minuto).
+    procesador = models.CharField(max_length=150, blank=True)
+    ram_total_mb = models.PositiveIntegerField(null=True, blank=True)
+    almacenamiento_total_gb = models.PositiveIntegerField(null=True, blank=True)
+    info_equipo_fecha = models.DateTimeField(
+        null=True, blank=True, help_text='Cuándo se actualizó por última vez la info de hardware.',
+    )
+
     estado_conexion = models.CharField(
         max_length=20, choices=EstadoConexion.choices, default=EstadoConexion.NUNCA_CONECTADA,
     )

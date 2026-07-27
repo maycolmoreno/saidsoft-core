@@ -111,6 +111,8 @@ MQTT_CONFIG = {
     'USERNAME': env('MQTT_USERNAME', default=''),
     'PASSWORD': env('MQTT_PASSWORD', default=''),
     'USE_TLS': env.bool('MQTT_USE_TLS', default=False),
+    # CA para validar el cert de EMQX (self-signed en el piloto); vacío = CAs del sistema.
+    'CA_CERT': env('MQTT_CA_CERT', default=''),
     'CLIENT_ID_PANEL': env('MQTT_CLIENT_ID_PANEL', default='saidsoft-panel'),
     'CLIENT_ID_WORKER': env('MQTT_CLIENT_ID_WORKER', default='saidsoft-worker'),
 }

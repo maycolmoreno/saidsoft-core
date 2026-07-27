@@ -30,9 +30,10 @@ class FarmaciaAdmin(admin.ModelAdmin):
 class EstacionAdmin(admin.ModelAdmin):
     list_display = (
         'codigo', 'farmacia', 'estado_aprobacion', 'estado_conexion',
-        'version_pos', 'desactualizada_badge', 'es_cache_farmacia', 'monitorear_recursos', 'ultimo_heartbeat',
+        'version_pos', 'desactualizada_badge', 'hostname', 'ip_lan',
+        'es_cache_farmacia', 'monitorear_recursos', 'ultimo_heartbeat',
     )
-    search_fields = ('codigo', 'numero_serie')
+    search_fields = ('codigo', 'numero_serie', 'hostname')
     list_filter = ('estado_aprobacion', 'estado_conexion', 'farmacia__grupo', 'es_cache_farmacia', 'monitorear_recursos')
     list_editable = ('es_cache_farmacia', 'monitorear_recursos')
     autocomplete_fields = ('farmacia',)
