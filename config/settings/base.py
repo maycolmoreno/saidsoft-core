@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'apps.monitoreo',
     'apps.cuentas',
     'apps.mantenimiento',
+    'apps.scripts',
     'apps.panel',
 ]
 
@@ -113,6 +114,11 @@ MQTT_CONFIG = {
     'CLIENT_ID_PANEL': env('MQTT_CLIENT_ID_PANEL', default='saidsoft-panel'),
     'CLIENT_ID_WORKER': env('MQTT_CLIENT_ID_WORKER', default='saidsoft-worker'),
 }
+
+# Secreto compartido con el agente para firmar (HMAC-SHA256) el canal de comandos
+# MQTT (/saidsof/agente/{codigo}/comando/) — sin esto, cualquiera con acceso de
+# publish al broker podría inyectar comandos (incluyendo ejecutar_script).
+COMANDO_HMAC_SECRET = env('COMANDO_HMAC_SECRET')
 
 # URL base desde la que los agentes descargan los archivos de despliegue
 # (equivalente a GET_DOMAIN_FILE del sistema anterior)

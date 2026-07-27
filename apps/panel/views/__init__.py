@@ -37,6 +37,10 @@ from .monitoreo import monitoreo_detalle, monitoreo_detalle_partial, monitoreo_l
 from .reportes import (
     reporte_auditoria_csv, reporte_cumplimiento_csv, reporte_despliegue_csv, reportes_index,
 )
+from .scripts import (
+    ejecucion_detalle, ejecucion_progreso_partial, ejecuciones_lista, script_crear, script_detalle,
+    script_ejecutar, script_ejecutar_adhoc, scripts_lista,
+)
 
 __all__ = [
     'activo_asignar', 'activo_baja', 'activo_consumible_entregar', 'activo_crear', 'activo_detalle',
@@ -61,5 +65,7 @@ __all__ = [
     'orden_compra_crear', 'orden_compra_detalle', 'orden_compra_linea_crear',
     'orden_compra_linea_recibir', 'orden_compra_recibir', 'ordenes_compra_lista',
     'reporte_auditoria_csv', 'reporte_cumplimiento_csv', 'reporte_despliegue_csv', 'reportes_index',
+    'ejecucion_detalle', 'ejecucion_progreso_partial', 'ejecuciones_lista', 'script_crear',
+    'script_detalle', 'script_ejecutar', 'script_ejecutar_adhoc', 'scripts_lista',
     'visita_tecnica_lista',
 ]

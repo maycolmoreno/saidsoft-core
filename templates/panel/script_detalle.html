@@ -1,0 +1,40 @@
+{% extends "panel/base.html" %}
+{% block title %}{{ script.nombre }} · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-2">
+    <h1 class="text-xl font-semibold text-slate-900">{{ script.nombre }}</h1>
+    <a href="{% url 'panel:script_ejecutar' script.pk %}" class="bg-green-600 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-green-700">
+        Ejecutar en...
+    </a>
+</div>
+<p class="text-sm text-slate-500 mb-6">{{ script.get_tipo_display }} · {{ script.categoria|default:"sin categoría" }}{% if script.es_adhoc %} · <span class="text-amber-600">ad-hoc</span>{% endif %}</p>
+
+<h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-2">Contenido</h2>
+<pre class="bg-slate-900 text-slate-100 text-xs rounded-lg p-4 overflow-x-auto mb-8">{{ script.contenido }}</pre>
+
+<h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Ejecuciones recientes</h2>
+<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <tr>
+                <th class="text-left px-4 py-3">#</th>
+                <th class="text-left px-4 py-3">Destino</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Fecha</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+        {% for e in ejecuciones %}
+            <tr class="hover:bg-slate-50 cursor-pointer" onclick="window.location='{% url 'panel:ejecucion_detalle' e.pk %}'">
+                <td class="px-4 py-3 font-mono text-slate-900">#{{ e.pk }}</td>
+                <td class="px-4 py-3 text-slate-600">{{ e.get_destino_tipo_display }}</td>
+                <td class="px-4 py-3 text-xs">{{ e.get_estado_display }}</td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.fecha_creacion|date:"d/m/Y H:i" }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="4" class="px-4 py-6 text-center text-slate-400">Sin ejecuciones todavía.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

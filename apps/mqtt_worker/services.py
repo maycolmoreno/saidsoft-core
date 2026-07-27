@@ -186,6 +186,48 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
     verificar_completado(despliegue)
 
 
+def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:
+    """Guarda el progreso/resultado de una ejecución de script (comando "ejecutar_script")."""
+    close_old_connections()
+    try:
+        estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
+    except Estacion.DoesNotExist:
+        logger.warning('Estado de script con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    from apps.scripts.models import ResultadoEjecucionScript
+    from apps.scripts.services import recalcular_estado_ejecucion
+
+    resultado_id = payload.get('resultado_id')
+    estado = payload.get('estado')
+    if estado not in ResultadoEjecucionScript.Estado.values:
+        logger.warning('Estado de script desconocido "%s" reportado por %s', estado, codigo_estacion)
+        return
+
+    try:
+        resultado = ResultadoEjecucionScript.objects.get(pk=resultado_id, estacion=estacion)
+    except ResultadoEjecucionScript.DoesNotExist:
+        logger.warning('ResultadoEjecucionScript %s no encontrado para %s', resultado_id, codigo_estacion)
+        return
+
+    resultado.estado = estado
+    if estado == ResultadoEjecucionScript.Estado.EJECUTANDO and not resultado.fecha_inicio:
+        resultado.fecha_inicio = timezone.now()
+    if estado in (
+        ResultadoEjecucionScript.Estado.COMPLETADO, ResultadoEjecucionScript.Estado.ERROR,
+        ResultadoEjecucionScript.Estado.TIMEOUT,
+    ):
+        resultado.fecha_fin = timezone.now()
+        resultado.exit_code = payload.get('exit_code')
+        resultado.stdout = payload.get('stdout', '') or resultado.stdout
+        resultado.stderr = payload.get('stderr', '') or resultado.stderr
+    resultado.save()
+
+    recalcular_estado_ejecucion(resultado.ejecucion)
+
+
 def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
     """Guarda una muestra de recursos reportada por el agente de un servidor."""
     close_old_connections()

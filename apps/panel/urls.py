@@ -109,4 +109,14 @@ urlpatterns = [
 
     path('notificaciones/', views.notificaciones_lista, name='notificaciones_lista'),
     path('notificaciones/<int:pk>/marcar-leida/', views.notificacion_marcar_leida, name='notificacion_marcar_leida'),
+
+    # Módulo de Scripts (RMM)
+    path('scripts/', views.scripts_lista, name='scripts_lista'),
+    path('scripts/nuevo/', views.script_crear, name='script_crear'),
+    path('scripts/ejecutar-adhoc/', views.script_ejecutar_adhoc, name='script_ejecutar_adhoc'),
+    path('scripts/<int:pk>/', views.script_detalle, name='script_detalle'),
+    path('scripts/<int:pk>/ejecutar/', views.script_ejecutar, name='script_ejecutar'),
+    path('ejecuciones/', views.ejecuciones_lista, name='ejecuciones_lista'),
+    path('ejecuciones/<int:pk>/', views.ejecucion_detalle, name='ejecucion_detalle'),
+    path('ejecuciones/<int:pk>/progreso/', views.ejecucion_progreso_partial, name='ejecucion_progreso_partial'),
 ]

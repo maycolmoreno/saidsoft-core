@@ -18,6 +18,10 @@
             <a href="{% url 'panel:despliegues_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'despliegue' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Despliegues</a>
             <a href="{% url 'panel:monitoreo_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'monitoreo' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Monitoreo</a>
 
+            <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Scripts (RMM)</div>
+            <a href="{% url 'panel:scripts_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'scripts_lista' or request.resolver_match.url_name == 'script_detalle' or request.resolver_match.url_name == 'script_crear' %}bg-slate-800 text-white font-medium{% endif %}">Biblioteca</a>
+            <a href="{% url 'panel:ejecuciones_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'ejecucion' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Ejecuciones</a>
+
             <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Activos</div>
             <a href="{% url 'panel:activos_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'activos_lista' or request.resolver_match.url_name == 'activo_detalle' or request.resolver_match.url_name == 'activo_crear' %}bg-slate-800 text-white font-medium{% endif %}">Inventario</a>
             <a href="{% url 'panel:ordenes_compra_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'orden_compra' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Órdenes de compra</a>

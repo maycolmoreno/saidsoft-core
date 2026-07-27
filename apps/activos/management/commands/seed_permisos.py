@@ -24,6 +24,12 @@ ROLES = {
         ('auditoria', 'eventoauditoria', ['view']),
         ('despliegues', 'despliegue', ['view']),
     ],
+    # Ejecutar scripts es una superficie de riesgo distinta a los demás roles operativos
+    # (código arbitrario en la flota): grupo propio, no se agrega a Técnico/Bodeguero por defecto.
+    'Operador RMM': [
+        ('scripts', 'script', ['view', 'add', 'change']),
+        ('scripts', 'ejecucionscript', ['view', 'add']),
+    ],
 }
 
 

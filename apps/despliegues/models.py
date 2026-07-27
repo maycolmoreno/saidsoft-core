@@ -98,19 +98,11 @@ class Despliegue(models.Model):
 
     def resolver_estaciones_destino(self):
         """Devuelve el queryset de Estacion que corresponde al destino configurado."""
-        if self.destino_tipo == self.DestinoTipo.CADENA:
-            return Estacion.objects.filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
-        if self.destino_tipo == self.DestinoTipo.GRUPOS:
-            return Estacion.objects.filter(
-                farmacia__grupo__in=self.grupos.all(),
-                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
-            )
-        if self.destino_tipo == self.DestinoTipo.FARMACIAS:
-            return Estacion.objects.filter(
-                farmacia__in=self.farmacias.all(),
-                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
-            )
-        return self.estaciones.filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        from apps.catalogo.services import resolver_estaciones
+        return resolver_estaciones(
+            self.destino_tipo, grupos=self.grupos.all(), farmacias=self.farmacias.all(),
+            estaciones=self.estaciones.all(),
+        )
 
 
 class ResultadoDespliegue(models.Model):
