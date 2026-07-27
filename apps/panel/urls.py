@@ -46,6 +46,11 @@ urlpatterns = [
     path('ordenes-compra/nueva/', views.orden_compra_crear, name='orden_compra_crear'),
     path('ordenes-compra/<int:pk>/', views.orden_compra_detalle, name='orden_compra_detalle'),
     path('ordenes-compra/<int:pk>/recibir/', views.orden_compra_recibir, name='orden_compra_recibir'),
+    path('ordenes-compra/<int:pk>/lineas/nueva/', views.orden_compra_linea_crear, name='orden_compra_linea_crear'),
+    path(
+        'ordenes-compra/lineas/<int:pk>/recibir/', views.orden_compra_linea_recibir,
+        name='orden_compra_linea_recibir',
+    ),
 
     path('activos/', views.activos_lista, name='activos_lista'),
     path('activos/nuevo/', views.activo_crear, name='activo_crear'),
@@ -59,4 +64,6 @@ urlpatterns = [
 
     path('bodegas/', views.bodegas_lista, name='bodegas_lista'),
     path('bodegas/<int:pk>/stock/ingresar/', views.bodega_stock_ingresar, name='bodega_stock_ingresar'),
+
+    path('movimientos-inventario/', views.movimientos_inventario_lista, name='movimientos_inventario_lista'),
 ]

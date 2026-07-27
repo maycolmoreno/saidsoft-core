@@ -4,7 +4,15 @@ Sigue el mismo patrón que apps/despliegues/services.py: la lógica de negocio
 vive aquí, separada de las vistas, para que tanto el panel como el admin la
 reutilicen igual.
 """
-from apps.activos.models import Activo, EventoActivo, StockBodega
+from django.db.models import F
+
+from apps.activos.models import (
+    Activo, EventoActivo, MovimientoInventario, OrdenCompraDetalle, RecepcionLote, StockBodega,
+)
+
+
+class ConcurrencyError(Exception):
+    """Otra recepción/actualización tocó la misma línea entre lectura y guardado; reintenta."""
 
 
 def generar_codigo_activo(tipo: str) -> str:
@@ -170,7 +178,109 @@ def registrar_ingreso_stock(*, bodega, tipo_consumible, cantidad):
 
 
 def recibir_orden_compra(*, orden_compra, novedad_recepcion, usuario):
+    """Recepción simple de toda la OC de una vez, sin detalle por línea.
+
+    Sigue disponible para el flujo histórico (ingreso de activos directo desde
+    una OC sin registrar líneas); las OC que sí usan `OrdenCompraDetalle` se
+    reciben con `registrar_recepcion_lote`, línea por línea y hasta en varios
+    lotes.
+    """
     orden_compra.novedad_recepcion = novedad_recepcion
     orden_compra.estado = orden_compra.Estado.RECIBIDA
     orden_compra.recibido_por = usuario
     orden_compra.save(update_fields=['novedad_recepcion', 'estado', 'recibido_por'])
+
+
+def registrar_linea_orden_compra(*, orden_compra, tipo_item, cantidad_solicitada,
+                                  descripcion='', modelo='', categoria=None, marca=None,
+                                  tipo_consumible=None, precio_unitario=None, unidad_medida=''):
+    return OrdenCompraDetalle.objects.create(
+        orden_compra=orden_compra, tipo_item=tipo_item, descripcion=descripcion, modelo=modelo,
+        categoria=categoria, marca=marca, tipo_consumible=tipo_consumible,
+        cantidad_solicitada=cantidad_solicitada, precio_unitario=precio_unitario, unidad_medida=unidad_medida,
+    )
+
+
+def _recalcular_estado_orden_compra(orden_compra):
+    estados = list(orden_compra.detalles.values_list('estado', flat=True))
+    if estados and all(e == OrdenCompraDetalle.Estado.COMPLETO for e in estados):
+        nuevo_estado = orden_compra.Estado.RECIBIDA
+    elif any(e in (OrdenCompraDetalle.Estado.PARCIAL, OrdenCompraDetalle.Estado.COMPLETO) for e in estados):
+        nuevo_estado = orden_compra.Estado.RECEPCION_PARCIAL
+    else:
+        return
+    if orden_compra.estado != nuevo_estado:
+        orden_compra.estado = nuevo_estado
+        orden_compra.save(update_fields=['estado'])
+
+
+def registrar_recepcion_lote(*, detalle, cantidad, bodega, usuario, custodio_receptor=None, numero_lote=''):
+    """Recibe `cantidad` unidades de una línea de OC; puede llamarse varias veces (recepción parcial).
+
+    Usa compare-and-swap manual sobre `detalle.version` en vez de una
+    dependencia como django-concurrency: si otra recepción tocó la misma
+    línea entre la lectura y este guardado, `ConcurrencyError` avisa al
+    llamador para que refresque el objeto y reintente.
+    """
+    if cantidad <= 0:
+        raise ValueError('La cantidad recibida debe ser mayor a cero.')
+    nueva_cantidad_recibida = detalle.cantidad_recibida + cantidad
+    if nueva_cantidad_recibida > detalle.cantidad_solicitada:
+        raise ValueError(
+            f'La recepción ({nueva_cantidad_recibida}) excede lo solicitado ({detalle.cantidad_solicitada}).',
+        )
+    nuevo_estado = (
+        OrdenCompraDetalle.Estado.COMPLETO
+        if nueva_cantidad_recibida == detalle.cantidad_solicitada
+        else OrdenCompraDetalle.Estado.PARCIAL
+    )
+
+    filas = OrdenCompraDetalle.objects.filter(pk=detalle.pk, version=detalle.version).update(
+        cantidad_recibida=nueva_cantidad_recibida, estado=nuevo_estado, version=F('version') + 1,
+    )
+    if filas == 0:
+        raise ConcurrencyError(
+            'La línea fue modificada por otra recepción; recarga la orden de compra e intenta de nuevo.',
+        )
+    detalle.refresh_from_db()
+
+    recepcion = RecepcionLote.objects.create(
+        orden_compra=detalle.orden_compra, orden_compra_detalle=detalle, numero_lote=numero_lote,
+        tipo_item=detalle.tipo_item, cantidad_recibida=cantidad, bodega_destino=bodega,
+        custodio_receptor=custodio_receptor, recepcionado_por=usuario,
+    )
+
+    if detalle.tipo_item == OrdenCompraDetalle.TipoItem.CONSUMIBLE and detalle.tipo_consumible:
+        registrar_ingreso_stock(bodega=bodega, tipo_consumible=detalle.tipo_consumible, cantidad=cantidad)
+        MovimientoInventario.objects.create(
+            tipo_movimiento=MovimientoInventario.TipoMovimiento.INGRESO_CONSUMIBLE,
+            tipo_consumible=detalle.tipo_consumible, cantidad=cantidad, bodega_destino=bodega,
+            orden_compra=detalle.orden_compra, recepcion_lote=recepcion, realizado_por=usuario,
+            motivo=f'Recepción OC {detalle.orden_compra.numero_oc}, lote {numero_lote or recepcion.uuid}',
+        )
+
+    _recalcular_estado_orden_compra(detalle.orden_compra)
+    return recepcion
+
+
+def registrar_traslado_bodega(*, tipo_consumible, bodega_origen, bodega_destino, cantidad, usuario, motivo=''):
+    if bodega_origen == bodega_destino:
+        raise ValueError('La bodega de origen y destino no pueden ser la misma.')
+    if cantidad <= 0:
+        raise ValueError('La cantidad a trasladar debe ser mayor a cero.')
+
+    origen, _ = StockBodega.objects.get_or_create(bodega=bodega_origen, tipo_consumible=tipo_consumible)
+    if origen.cantidad < cantidad:
+        raise ValueError(
+            f'Stock insuficiente de {tipo_consumible.nombre} en {bodega_origen.codigo} '
+            f'({origen.cantidad} disponibles).',
+        )
+    origen.cantidad -= cantidad
+    origen.save(update_fields=['cantidad'])
+    registrar_ingreso_stock(bodega=bodega_destino, tipo_consumible=tipo_consumible, cantidad=cantidad)
+
+    return MovimientoInventario.objects.create(
+        tipo_movimiento=MovimientoInventario.TipoMovimiento.TRASLADO, tipo_consumible=tipo_consumible,
+        cantidad=cantidad, bodega_origen=bodega_origen, bodega_destino=bodega_destino,
+        realizado_por=usuario, motivo=motivo,
+    )

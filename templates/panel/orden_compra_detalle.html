@@ -3,7 +3,11 @@
 {% block content %}
 <div class="flex items-center justify-between mb-2">
     <h1 class="text-xl font-semibold text-slate-900">OC {{ oc.numero_oc }}</h1>
-    <span class="text-xs px-2.5 py-1 rounded-full {% if oc.estado == 'recibida' %}bg-green-50 text-green-700{% else %}bg-amber-50 text-amber-700{% endif %}">
+    <span class="text-xs px-2.5 py-1 rounded-full
+        {% if oc.estado == 'recibida' %}bg-green-50 text-green-700
+        {% elif oc.estado == 'recepcion_parcial' %}bg-amber-50 text-amber-700
+        {% elif oc.estado == 'cancelada' %}bg-red-50 text-red-700
+        {% else %}bg-slate-100 text-slate-600{% endif %}">
         {{ oc.get_estado_display }}
     </span>
 </div>
@@ -30,14 +34,59 @@
 {% endif %}
 
 <div class="flex items-center gap-3 mb-8">
-    {% if oc.estado == 'pendiente' %}
+    {% if oc.estado == 'emitida' or oc.estado == 'recepcion_parcial' %}
     <a href="{% url 'panel:orden_compra_recibir' oc.pk %}" class="bg-green-600 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-green-700">
-        Marcar como recibida
+        Marcar OC completa como recibida
+    </a>
+    <a href="{% url 'panel:orden_compra_linea_crear' oc.pk %}" class="border border-slate-300 text-slate-700 text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-50">
+        + Agregar línea
     </a>
     {% endif %}
     <a href="{% url 'panel:activo_crear' %}?oc={{ oc.pk }}" class="border border-slate-300 text-slate-700 text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-50">
         + Registrar ingreso de activo desde esta OC
     </a>
+</div>
+
+<h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Líneas de la orden</h2>
+<div class="bg-white rounded-lg border border-slate-200 overflow-hidden mb-8">
+    <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <tr>
+                <th class="text-left px-4 py-3">Ítem</th>
+                <th class="text-left px-4 py-3">Tipo</th>
+                <th class="text-left px-4 py-3">Solicitado / Recibido</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Recepciones</th>
+                <th class="text-right px-4 py-3"></th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+        {% for d in oc.detalles.all %}
+            <tr>
+                <td class="px-4 py-3 text-slate-900">
+                    {{ d.descripcion|default:d.modelo }}
+                    {% if d.marca %} · {{ d.marca }}{% endif %}
+                    {% if d.tipo_consumible %} · {{ d.tipo_consumible }}{% endif %}
+                </td>
+                <td class="px-4 py-3 text-slate-600">{{ d.get_tipo_item_display }}</td>
+                <td class="px-4 py-3 text-slate-600">{{ d.cantidad_recibida }} / {{ d.cantidad_solicitada }}</td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{{ d.get_estado_display }}</td>
+                <td class="px-4 py-3 text-slate-500 text-xs">
+                    {% for r in d.recepciones.all %}
+                        <div>{{ r.cantidad_recibida }} en {{ r.bodega_destino.codigo }} ({{ r.fecha_recepcion|date:"d/m/Y" }})</div>
+                    {% empty %}—{% endfor %}
+                </td>
+                <td class="px-4 py-3 text-right">
+                    {% if d.estado != 'completo' and d.estado != 'cancelado' %}
+                    <a href="{% url 'panel:orden_compra_linea_recibir' d.pk %}" class="text-slate-700 text-xs font-medium hover:underline">Recibir</a>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">Sin líneas registradas todavía.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
 </div>
 
 <h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Activos vinculados</h2>

@@ -1,15 +1,17 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from apps.activos import services as activos_services
 from apps.activos.forms import (
     ActivoIngresoForm, AsignacionForm, BajaForm, ColaboradorForm, ConsumibleEntregadoForm,
-    DevolucionForm, EnvioReparacionForm, OrdenCompraForm, RecibirOrdenCompraForm,
-    RetornoReparacionForm, StockIngresoForm,
+    DevolucionForm, EnvioReparacionForm, OrdenCompraForm, OrdenCompraLineaForm,
+    RecepcionLoteForm, RecibirOrdenCompraForm, RetornoReparacionForm, StockIngresoForm,
 )
-from apps.activos.models import Activo, Bodega, Colaborador, OrdenCompra
+from apps.activos.models import Activo, Bodega, Colaborador, MovimientoInventario, OrdenCompra, OrdenCompraDetalle
+from apps.activos.services import ConcurrencyError
 from apps.auditoria.models import registrar_evento
 
 
@@ -62,8 +64,97 @@ def orden_compra_crear(request):
 
 @login_required
 def orden_compra_detalle(request, pk):
-    oc = get_object_or_404(OrdenCompra.objects.prefetch_related('bodegas_destino', 'activos'), pk=pk)
+    oc = get_object_or_404(
+        OrdenCompra.objects.prefetch_related(
+            'bodegas_destino', 'activos',
+            'detalles__categoria', 'detalles__marca', 'detalles__tipo_consumible',
+            'detalles__recepciones',
+        ),
+        pk=pk,
+    )
     return render(request, 'panel/orden_compra_detalle.html', {'oc': oc})
+
+
+@login_required
+def orden_compra_linea_crear(request, pk):
+    oc = get_object_or_404(OrdenCompra, pk=pk)
+    if request.method == 'POST':
+        form = OrdenCompraLineaForm(request.POST)
+        if form.is_valid():
+            d = form.cleaned_data
+            detalle = activos_services.registrar_linea_orden_compra(
+                orden_compra=oc, tipo_item=d['tipo_item'], cantidad_solicitada=d['cantidad_solicitada'],
+                descripcion=d['descripcion'], modelo=d['modelo'], categoria=d['categoria'], marca=d['marca'],
+                tipo_consumible=d['tipo_consumible'], precio_unitario=d['precio_unitario'],
+                unidad_medida=d['unidad_medida'],
+            )
+            registrar_evento(usuario=request.user, accion='orden_compra.linea_crear', objeto=oc, request=request)
+            messages.success(request, f'Línea agregada a la OC {oc.numero_oc}.')
+            return redirect('panel:orden_compra_detalle', pk=pk)
+    else:
+        form = OrdenCompraLineaForm()
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': f'Nueva línea para OC {oc.numero_oc}',
+        'volver_url': reverse('panel:orden_compra_detalle', args=[pk]),
+    })
+
+
+@login_required
+def orden_compra_linea_recibir(request, pk):
+    detalle = get_object_or_404(OrdenCompraDetalle.objects.select_related('orden_compra'), pk=pk)
+    if detalle.estado == OrdenCompraDetalle.Estado.COMPLETO:
+        messages.error(request, 'Esta línea ya fue recibida por completo.')
+        return redirect('panel:orden_compra_detalle', pk=detalle.orden_compra_id)
+    if request.method == 'POST':
+        form = RecepcionLoteForm(request.POST)
+        if form.is_valid():
+            try:
+                activos_services.registrar_recepcion_lote(
+                    detalle=detalle, cantidad=form.cleaned_data['cantidad'], bodega=form.cleaned_data['bodega'],
+                    custodio_receptor=form.cleaned_data['custodio_receptor'],
+                    numero_lote=form.cleaned_data['numero_lote'], usuario=request.user,
+                )
+            except (ValueError, ConcurrencyError) as exc:
+                form.add_error(None, str(exc))
+            else:
+                registrar_evento(
+                    usuario=request.user, accion='orden_compra.linea_recibir', objeto=detalle.orden_compra,
+                    request=request,
+                )
+                messages.success(request, 'Recepción registrada.')
+                return redirect('panel:orden_compra_detalle', pk=detalle.orden_compra_id)
+    else:
+        form = RecepcionLoteForm(initial={
+            'cantidad': detalle.cantidad_solicitada - detalle.cantidad_recibida,
+        })
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': f'Recibir línea de OC {detalle.orden_compra.numero_oc}',
+        'subtitulo': f'{detalle} — pendiente: {detalle.cantidad_solicitada - detalle.cantidad_recibida}',
+        'volver_url': reverse('panel:orden_compra_detalle', args=[detalle.orden_compra_id]),
+    })
+
+
+@login_required
+def movimientos_inventario_lista(request):
+    movimientos = MovimientoInventario.objects.select_related(
+        'tipo_consumible', 'bodega_origen', 'bodega_destino', 'realizado_por', 'orden_compra',
+    ).order_by('-fecha_efectiva')
+
+    bodega = request.GET.get('bodega')
+    tipo = request.GET.get('tipo')
+    if bodega:
+        movimientos = movimientos.filter(
+            Q(bodega_origen__codigo=bodega) | Q(bodega_destino__codigo=bodega),
+        )
+    if tipo:
+        movimientos = movimientos.filter(tipo_movimiento=tipo)
+
+    return render(request, 'panel/movimientos_inventario_lista.html', {
+        'movimientos': movimientos[:500],
+        'bodegas': Bodega.objects.order_by('codigo'),
+        'tipos': MovimientoInventario.TipoMovimiento.choices,
+        'filtro_bodega': bodega or '', 'filtro_tipo': tipo or '',
+    })
 
 
 @login_required

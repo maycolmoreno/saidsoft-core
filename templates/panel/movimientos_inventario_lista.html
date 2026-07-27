@@ -1,0 +1,53 @@
+{% extends "panel/base.html" %}
+{% block title %}Kardex de inventario · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold text-slate-900">Kardex de inventario</h1>
+</div>
+
+<form method="get" class="flex items-center gap-3 mb-4">
+    <select name="tipo" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+        <option value="">Todos los movimientos</option>
+        {% for valor, etiqueta in tipos %}
+        <option value="{{ valor }}" {% if valor == filtro_tipo %}selected{% endif %}>{{ etiqueta }}</option>
+        {% endfor %}
+    </select>
+    <select name="bodega" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+        <option value="">Todas las bodegas</option>
+        {% for b in bodegas %}
+        <option value="{{ b.codigo }}" {% if b.codigo == filtro_bodega %}selected{% endif %}>{{ b.codigo }}</option>
+        {% endfor %}
+    </select>
+</form>
+
+<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+    <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <tr>
+                <th class="text-left px-4 py-3">Fecha</th>
+                <th class="text-left px-4 py-3">Movimiento</th>
+                <th class="text-left px-4 py-3">Consumible</th>
+                <th class="text-left px-4 py-3">Cantidad</th>
+                <th class="text-left px-4 py-3">Origen → Destino</th>
+                <th class="text-left px-4 py-3">Realizado por</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+        {% for m in movimientos %}
+            <tr>
+                <td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">{{ m.fecha_efectiva|date:"d/m/Y H:i" }}</td>
+                <td class="px-4 py-3 text-slate-900">{{ m.get_tipo_movimiento_display }}</td>
+                <td class="px-4 py-3 text-slate-600">{{ m.tipo_consumible|default:"—" }}</td>
+                <td class="px-4 py-3 text-slate-600">{{ m.cantidad }}</td>
+                <td class="px-4 py-3 text-slate-500 text-xs">
+                    {{ m.bodega_origen.codigo|default:"—" }} → {{ m.bodega_destino.codigo|default:"—" }}
+                </td>
+                <td class="px-4 py-3 text-slate-500 text-xs">{{ m.realizado_por.username|default:"sistema" }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Sin movimientos para este filtro.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

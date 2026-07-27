@@ -1,8 +1,8 @@
 from django import forms
 
 from .models import (
-    Activo, CategoriaEquipo, Colaborador, CondicionAlRecibir, Marca, MotivoBaja, MotivoReparacion,
-    OrdenCompra, TipoConsumible,
+    Activo, Bodega, CategoriaEquipo, Colaborador, CondicionAlRecibir, Marca, MotivoBaja,
+    MotivoReparacion, OrdenCompra, OrdenCompraDetalle, TipoConsumible,
 )
 
 INPUT_CLASS = 'w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900'
@@ -32,6 +32,38 @@ class RecibirOrdenCompraForm(forms.Form):
         required=False, label='Novedad en la recepción (déjalo vacío si no hubo diferencias)',
         widget=forms.Textarea(attrs={'class': INPUT_CLASS, 'rows': 3}),
     )
+
+
+class OrdenCompraLineaForm(forms.ModelForm):
+    class Meta:
+        model = OrdenCompraDetalle
+        fields = [
+            'tipo_item', 'descripcion', 'modelo', 'categoria', 'marca', 'tipo_consumible',
+            'cantidad_solicitada', 'precio_unitario', 'unidad_medida',
+        ]
+        widgets = {
+            'tipo_item': forms.Select(attrs={'class': INPUT_CLASS}),
+            'descripcion': forms.TextInput(attrs={'class': INPUT_CLASS}),
+            'modelo': forms.TextInput(attrs={'class': INPUT_CLASS}),
+            'categoria': forms.Select(attrs={'class': INPUT_CLASS}),
+            'marca': forms.Select(attrs={'class': INPUT_CLASS}),
+            'tipo_consumible': forms.Select(attrs={'class': INPUT_CLASS}),
+            'cantidad_solicitada': forms.NumberInput(attrs={'class': INPUT_CLASS}),
+            'precio_unitario': forms.NumberInput(attrs={'class': INPUT_CLASS, 'step': '0.01'}),
+            'unidad_medida': forms.TextInput(attrs={'class': INPUT_CLASS}),
+        }
+
+
+class RecepcionLoteForm(forms.Form):
+    cantidad = forms.IntegerField(min_value=1, widget=forms.NumberInput(attrs={'class': INPUT_CLASS}))
+    bodega = forms.ModelChoiceField(
+        queryset=Bodega.objects.filter(activa=True), widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
+    custodio_receptor = forms.ModelChoiceField(
+        queryset=Colaborador.objects.filter(activo=True), required=False,
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
+    numero_lote = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
 
 
 class ActivoIngresoForm(forms.Form):

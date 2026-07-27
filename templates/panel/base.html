@@ -22,6 +22,7 @@
             <a href="{% url 'panel:activos_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'activos_lista' or request.resolver_match.url_name == 'activo_detalle' or request.resolver_match.url_name == 'activo_crear' %}bg-slate-800 text-white font-medium{% endif %}">Inventario</a>
             <a href="{% url 'panel:ordenes_compra_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'orden_compra' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Órdenes de compra</a>
             <a href="{% url 'panel:bodegas_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'bodega' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Bodegas y stock</a>
+            <a href="{% url 'panel:movimientos_inventario_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'movimientos_inventario_lista' %}bg-slate-800 text-white font-medium{% endif %}">Kardex</a>
             <a href="{% url 'panel:colaboradores_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'colaborador' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Colaboradores</a>
 
             <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Sistema</div>

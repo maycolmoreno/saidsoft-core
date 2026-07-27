@@ -1,3 +1,5 @@
+import uuid
+
 from django.conf import settings
 from django.db import models
 
@@ -170,20 +172,26 @@ class StockBodega(models.Model):
 
 class OrdenCompra(models.Model):
     class Estado(models.TextChoices):
-        PENDIENTE = 'pendiente', 'Pendiente de recepción'
+        BORRADOR = 'borrador', 'Borrador'
+        EMITIDA = 'emitida', 'Emitida'
+        RECEPCION_PARCIAL = 'recepcion_parcial', 'Recepción parcial'
         RECIBIDA = 'recibida', 'Recibida'
+        CANCELADA = 'cancelada', 'Cancelada'
 
     numero_oc = models.CharField(max_length=30, unique=True, verbose_name='N° Orden de Compra')
     proveedor = models.CharField(max_length=150)
     fecha_emision = models.DateField()
     bodegas_destino = models.ManyToManyField(Bodega, related_name='ordenes_compra', blank=True)
     novedad_recepcion = models.TextField(blank=True, help_text='Faltantes, daños o diferencias frente a la OC.')
-    estado = models.CharField(max_length=15, choices=Estado.choices, default=Estado.PENDIENTE)
+    estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.EMITIDA)
     recibido_por = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
         related_name='ordenes_recibidas',
     )
     fecha_creacion = models.DateTimeField(auto_now_add=True)
+    version = models.PositiveIntegerField(
+        default=0, help_text='Control de concurrencia optimista (equivalente a @Version en InvTICS).',
+    )
 
     class Meta:
         db_table = 'orden_compra'
@@ -193,6 +201,133 @@ class OrdenCompra(models.Model):
 
     def __str__(self):
         return f'OC {self.numero_oc} - {self.proveedor}'
+
+
+class OrdenCompraDetalle(models.Model):
+    """Línea de una orden de compra: un ítem (activo o consumible) con su cantidad solicitada."""
+
+    class TipoItem(models.TextChoices):
+        ACTIVO = 'activo', 'Activo'
+        CONSUMIBLE = 'consumible', 'Consumible'
+
+    class Estado(models.TextChoices):
+        PENDIENTE = 'pendiente', 'Pendiente'
+        PARCIAL = 'parcial', 'Recepción parcial'
+        COMPLETO = 'completo', 'Completo'
+        CANCELADO = 'cancelado', 'Cancelado'
+
+    orden_compra = models.ForeignKey(OrdenCompra, on_delete=models.CASCADE, related_name='detalles')
+    tipo_item = models.CharField(max_length=10, choices=TipoItem.choices)
+    descripcion = models.CharField(max_length=200, blank=True)
+    modelo = models.CharField(max_length=100, blank=True)
+    categoria = models.ForeignKey(
+        CategoriaEquipo, on_delete=models.PROTECT, null=True, blank=True, related_name='lineas_orden_compra',
+    )
+    marca = models.ForeignKey(
+        Marca, on_delete=models.PROTECT, null=True, blank=True, related_name='lineas_orden_compra',
+    )
+    tipo_consumible = models.ForeignKey(
+        TipoConsumible, on_delete=models.PROTECT, null=True, blank=True, related_name='lineas_orden_compra',
+    )
+    cantidad_solicitada = models.PositiveIntegerField()
+    cantidad_recibida = models.PositiveIntegerField(default=0)
+    precio_unitario = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    unidad_medida = models.CharField(max_length=30, blank=True)
+    estado = models.CharField(max_length=15, choices=Estado.choices, default=Estado.PENDIENTE)
+    version = models.PositiveIntegerField(
+        default=0, help_text='Control de concurrencia optimista para recepciones simultáneas de la misma línea.',
+    )
+
+    class Meta:
+        db_table = 'orden_compra_detalle'
+        ordering = ['orden_compra', 'id']
+        verbose_name = 'Línea de orden de compra'
+        verbose_name_plural = 'Líneas de orden de compra'
+
+    def __str__(self):
+        item = self.tipo_consumible.nombre if self.tipo_consumible else (self.descripcion or self.modelo)
+        return f'{self.orden_compra.numero_oc} - {item} ({self.cantidad_recibida}/{self.cantidad_solicitada})'
+
+
+class RecepcionLote(models.Model):
+    """Recepción física de un lote contra una línea de OC (una línea puede recibirse en varios lotes)."""
+
+    class Estado(models.TextChoices):
+        REGISTRADO = 'registrado', 'Registrado'
+        APLICADO = 'aplicado', 'Aplicado'
+        ANULADO = 'anulado', 'Anulado'
+
+    orden_compra = models.ForeignKey(OrdenCompra, on_delete=models.PROTECT, related_name='recepciones')
+    orden_compra_detalle = models.ForeignKey(
+        OrdenCompraDetalle, on_delete=models.PROTECT, related_name='recepciones',
+    )
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    numero_lote = models.CharField(max_length=50, blank=True)
+    tipo_item = models.CharField(max_length=10, choices=OrdenCompraDetalle.TipoItem.choices)
+    cantidad_recibida = models.PositiveIntegerField()
+    bodega_destino = models.ForeignKey(Bodega, on_delete=models.PROTECT, related_name='recepciones')
+    custodio_receptor = models.ForeignKey(
+        Colaborador, on_delete=models.SET_NULL, null=True, blank=True, related_name='recepciones',
+    )
+    estado = models.CharField(max_length=15, choices=Estado.choices, default=Estado.APLICADO)
+    recepcionado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='recepciones',
+    )
+    fecha_recepcion = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'recepcion_lote'
+        ordering = ['-fecha_recepcion']
+        verbose_name = 'Recepción de lote'
+        verbose_name_plural = 'Recepciones de lote'
+
+    def __str__(self):
+        return f'Lote {self.numero_lote or self.uuid} - {self.orden_compra.numero_oc}'
+
+
+class MovimientoInventario(models.Model):
+    """Kardex de stock de consumibles: ingresos por compra, traslados entre bodegas y ajustes.
+
+    No incluye movimientos de un Activo individual: esos ya quedan registrados
+    en EventoActivo (ingreso/asignación/devolución/baja) y no se duplican aquí.
+    """
+
+    class TipoMovimiento(models.TextChoices):
+        INGRESO_CONSUMIBLE = 'ingreso_consumible', 'Ingreso de consumible (compra)'
+        TRASLADO = 'traslado', 'Traslado entre bodegas'
+        AJUSTE = 'ajuste', 'Ajuste de inventario'
+
+    tipo_movimiento = models.CharField(max_length=20, choices=TipoMovimiento.choices)
+    tipo_consumible = models.ForeignKey(
+        TipoConsumible, on_delete=models.PROTECT, null=True, blank=True, related_name='movimientos',
+    )
+    cantidad = models.IntegerField(help_text='Positivo en ingresos/traslados de entrada; negativo en ajustes a la baja.')
+    bodega_origen = models.ForeignKey(
+        Bodega, on_delete=models.PROTECT, null=True, blank=True, related_name='movimientos_salida',
+    )
+    bodega_destino = models.ForeignKey(
+        Bodega, on_delete=models.PROTECT, null=True, blank=True, related_name='movimientos_entrada',
+    )
+    orden_compra = models.ForeignKey(
+        OrdenCompra, on_delete=models.SET_NULL, null=True, blank=True, related_name='movimientos',
+    )
+    recepcion_lote = models.ForeignKey(
+        RecepcionLote, on_delete=models.SET_NULL, null=True, blank=True, related_name='movimientos',
+    )
+    motivo = models.CharField(max_length=200, blank=True)
+    realizado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='movimientos_inventario',
+    )
+    fecha_efectiva = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'movimiento_inventario'
+        ordering = ['-fecha_efectiva']
+        verbose_name = 'Movimiento de inventario'
+        verbose_name_plural = 'Movimientos de inventario'
+
+    def __str__(self):
+        return f'{self.get_tipo_movimiento_display()} - {self.tipo_consumible} ({self.cantidad})'
 
 
 class MotivoBaja(models.TextChoices):

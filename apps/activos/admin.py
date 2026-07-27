@@ -2,7 +2,8 @@ from django.contrib import admin
 
 from .models import (
     Activo, Bodega, Cargo, CategoriaEquipo, Colaborador, Departamento, Empresa, EventoActivo,
-    Marca, OrdenCompra, StockBodega, TipoConsumible, Ubicacion,
+    Marca, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, RecepcionLote, StockBodega,
+    TipoConsumible, Ubicacion,
 )
 
 
@@ -75,16 +76,58 @@ class StockBodegaAdmin(admin.ModelAdmin):
     autocomplete_fields = ('bodega', 'tipo_consumible')
 
 
+class OrdenCompraDetalleInline(admin.TabularInline):
+    model = OrdenCompraDetalle
+    extra = 0
+    readonly_fields = ('cantidad_recibida', 'estado', 'version')
+    autocomplete_fields = ('categoria', 'marca', 'tipo_consumible')
+
+
 @admin.register(OrdenCompra)
 class OrdenCompraAdmin(admin.ModelAdmin):
     list_display = ('numero_oc', 'proveedor', 'fecha_emision', 'estado', 'recibido_por', 'total_activos')
     list_filter = ('estado',)
     search_fields = ('numero_oc', 'proveedor')
     autocomplete_fields = ('bodegas_destino',)
+    readonly_fields = ('version',)
+    inlines = [OrdenCompraDetalleInline]
 
     @admin.display(description='Activos')
     def total_activos(self, obj):
         return obj.activos.count()
+
+
+@admin.register(OrdenCompraDetalle)
+class OrdenCompraDetalleAdmin(admin.ModelAdmin):
+    list_display = ('orden_compra', 'tipo_item', 'descripcion', 'cantidad_solicitada', 'cantidad_recibida', 'estado')
+    list_filter = ('tipo_item', 'estado')
+    search_fields = ('orden_compra__numero_oc', 'descripcion', 'modelo')
+    autocomplete_fields = ('orden_compra', 'categoria', 'marca', 'tipo_consumible')
+    readonly_fields = ('cantidad_recibida', 'estado', 'version')
+
+
+@admin.register(RecepcionLote)
+class RecepcionLoteAdmin(admin.ModelAdmin):
+    list_display = (
+        'uuid', 'orden_compra', 'orden_compra_detalle', 'numero_lote', 'cantidad_recibida',
+        'bodega_destino', 'estado', 'fecha_recepcion',
+    )
+    list_filter = ('estado', 'tipo_item', 'bodega_destino')
+    search_fields = ('numero_lote', 'orden_compra__numero_oc')
+    autocomplete_fields = ('orden_compra', 'orden_compra_detalle', 'bodega_destino', 'custodio_receptor')
+    readonly_fields = ('uuid', 'fecha_recepcion')
+
+
+@admin.register(MovimientoInventario)
+class MovimientoInventarioAdmin(admin.ModelAdmin):
+    list_display = (
+        'tipo_movimiento', 'tipo_consumible', 'cantidad', 'bodega_origen', 'bodega_destino',
+        'realizado_por', 'fecha_efectiva',
+    )
+    list_filter = ('tipo_movimiento', 'bodega_origen', 'bodega_destino')
+    search_fields = ('tipo_consumible__nombre', 'motivo')
+    autocomplete_fields = ('tipo_consumible', 'bodega_origen', 'bodega_destino', 'orden_compra', 'recepcion_lote')
+    readonly_fields = ('fecha_efectiva',)
 
 
 class EventoActivoInline(admin.TabularInline):
