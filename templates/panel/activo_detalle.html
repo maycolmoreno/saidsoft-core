@@ -37,6 +37,36 @@
     </div>
 </div>
 
+{% if activo.baja_recomendada %}
+<div class="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 mb-6">
+    Un mantenimiento recomendó dar de baja este activo. Revisa el historial y decide con la acción "Dar de baja".
+</div>
+{% endif %}
+
+<h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Especificaciones de equipo</h2>
+<div class="grid grid-cols-4 gap-4 mb-6 text-sm">
+    <div class="bg-white rounded-lg border border-slate-200 p-4">
+        <div class="text-slate-400 text-xs uppercase mb-1">Categoría</div>
+        <div class="text-slate-900">{{ activo.categoria|default:"—" }}</div>
+    </div>
+    <div class="bg-white rounded-lg border border-slate-200 p-4">
+        <div class="text-slate-400 text-xs uppercase mb-1">Procesador</div>
+        <div class="text-slate-900">{{ activo.procesador|default:"—" }}</div>
+    </div>
+    <div class="bg-white rounded-lg border border-slate-200 p-4">
+        <div class="text-slate-400 text-xs uppercase mb-1">RAM / Almacenamiento</div>
+        <div class="text-slate-900">
+            {{ activo.ram_gb|default:"—" }} GB / {{ activo.almacenamiento_gb|default:"—" }} GB
+        </div>
+    </div>
+    <div class="bg-white rounded-lg border border-slate-200 p-4">
+        <div class="text-slate-400 text-xs uppercase mb-1">Código SAP / Condición al recibir</div>
+        <div class="text-slate-900">
+            {{ activo.codigo_sap|default:"—" }} · {{ activo.get_condicion_al_recibir_display|default:"—" }}
+        </div>
+    </div>
+</div>
+
 <div class="flex flex-wrap items-center gap-3 mb-8">
     {% if activo.estado == 'en_bodega' %}
         <a href="{% url 'panel:activo_asignar' activo.pk %}" class="bg-green-600 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-green-700">Asignar a colaborador</a>

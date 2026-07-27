@@ -1,6 +1,9 @@
 from django import forms
 
-from .models import Activo, Colaborador, MotivoBaja, MotivoReparacion, OrdenCompra, TipoConsumible
+from .models import (
+    Activo, CategoriaEquipo, Colaborador, CondicionAlRecibir, Marca, MotivoBaja, MotivoReparacion,
+    OrdenCompra, TipoConsumible,
+)
 
 INPUT_CLASS = 'w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900'
 
@@ -33,9 +36,30 @@ class RecibirOrdenCompraForm(forms.Form):
 
 class ActivoIngresoForm(forms.Form):
     tipo = forms.ChoiceField(choices=Activo.Tipo.choices, widget=forms.Select(attrs={'class': INPUT_CLASS}))
-    marca = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
+    marca = forms.ModelChoiceField(
+        queryset=Marca.objects.all(), required=False, widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
+    categoria = forms.ModelChoiceField(
+        queryset=CategoriaEquipo.objects.all(), required=False,
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
     modelo = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
     numero_serie = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
+    procesador = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
+    ram_gb = forms.IntegerField(
+        required=False, min_value=1, label='RAM (GB)', widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),
+    )
+    almacenamiento_gb = forms.IntegerField(
+        required=False, min_value=1, label='Almacenamiento (GB)',
+        widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),
+    )
+    codigo_sap = forms.CharField(
+        required=False, label='Código SAP', widget=forms.TextInput(attrs={'class': INPUT_CLASS}),
+    )
+    condicion_al_recibir = forms.ChoiceField(
+        choices=[('', '—')] + list(CondicionAlRecibir.choices), required=False,
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
     fecha_compra = forms.DateField(
         required=False, widget=forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
     )

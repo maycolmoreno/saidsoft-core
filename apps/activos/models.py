@@ -207,6 +207,12 @@ class MotivoReparacion(models.TextChoices):
     DANO_FISICO = 'dano_fisico', 'Daño físico'
 
 
+class CondicionAlRecibir(models.TextChoices):
+    NUEVO = 'nuevo', 'Nuevo'
+    USADO = 'usado', 'Usado'
+    REACONDICIONADO = 'reacondicionado', 'Reacondicionado'
+
+
 class Activo(models.Model):
     """Un activo de información nunca se elimina: su historial es de auditoría permanente."""
 
@@ -236,9 +242,23 @@ class Activo(models.Model):
 
     codigo = models.CharField(max_length=20, unique=True, editable=False)
     tipo = models.CharField(max_length=3, choices=Tipo.choices)
-    marca = models.CharField(max_length=100, blank=True)
+    marca = models.ForeignKey(
+        Marca, on_delete=models.PROTECT, null=True, blank=True, related_name='activos',
+    )
+    categoria = models.ForeignKey(
+        CategoriaEquipo, on_delete=models.PROTECT, null=True, blank=True, related_name='activos',
+    )
     modelo = models.CharField(max_length=100, blank=True)
     numero_serie = models.CharField(max_length=100, blank=True)
+    procesador = models.CharField(max_length=100, blank=True)
+    ram_gb = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name='RAM (GB)')
+    almacenamiento_gb = models.PositiveIntegerField(null=True, blank=True, verbose_name='Almacenamiento (GB)')
+    codigo_sap = models.CharField(max_length=30, blank=True, verbose_name='Código SAP')
+    condicion_al_recibir = models.CharField(max_length=20, choices=CondicionAlRecibir.choices, blank=True)
+    baja_recomendada = models.BooleanField(
+        default=False,
+        help_text='Un mantenimiento marcó este activo para posible baja; un humano debe decidir con registrar_baja.',
+    )
     fecha_compra = models.DateField(null=True, blank=True)
     vencimiento_garantia = models.DateField(null=True, blank=True)
     orden_compra = models.ForeignKey(
@@ -279,6 +299,7 @@ class EventoActivo(models.Model):
         ENVIO_REPARACION = 'envio_reparacion', 'Enviado a reparación'
         RETORNO_REPARACION = 'retorno_reparacion', 'Retorno de reparación'
         BAJA = 'baja', 'Dado de baja'
+        BAJA_RECOMENDADA = 'baja_recomendada', 'Baja recomendada (mantenimiento)'
         TRANSITO = 'transito', 'En tránsito entre bodegas'
 
     activo = models.ForeignKey(Activo, on_delete=models.CASCADE, related_name='eventos')

@@ -91,7 +91,9 @@ def orden_compra_recibir(request, pk):
 
 @login_required
 def activos_lista(request):
-    activos = Activo.objects.select_related('bodega_actual', 'colaborador_actual').order_by('codigo')
+    activos = Activo.objects.select_related(
+        'bodega_actual', 'colaborador_actual', 'marca', 'categoria',
+    ).order_by('codigo')
 
     tipo = request.GET.get('tipo')
     estado = request.GET.get('estado')
@@ -119,7 +121,10 @@ def activo_crear(request):
         if form.is_valid():
             d = form.cleaned_data
             activo = activos_services.registrar_ingreso(
-                tipo=d['tipo'], marca=d['marca'], modelo=d['modelo'], numero_serie=d['numero_serie'],
+                tipo=d['tipo'], marca=d['marca'], categoria=d['categoria'],
+                modelo=d['modelo'], numero_serie=d['numero_serie'],
+                procesador=d['procesador'], ram_gb=d['ram_gb'], almacenamiento_gb=d['almacenamiento_gb'],
+                codigo_sap=d['codigo_sap'], condicion_al_recibir=d['condicion_al_recibir'],
                 fecha_compra=d['fecha_compra'], vencimiento_garantia=d['vencimiento_garantia'],
                 orden_compra=d['orden_compra'], bodega=d['bodega'], usuario=request.user,
             )
@@ -142,7 +147,9 @@ def activo_crear(request):
 @login_required
 def activo_detalle(request, pk):
     activo = get_object_or_404(
-        Activo.objects.select_related('bodega_actual', 'colaborador_actual', 'orden_compra'), pk=pk,
+        Activo.objects.select_related(
+            'bodega_actual', 'colaborador_actual', 'orden_compra', 'marca', 'categoria',
+        ), pk=pk,
     )
     eventos = activo.eventos.select_related('usuario').order_by('-timestamp')
     return render(request, 'panel/activo_detalle.html', {'activo': activo, 'eventos': eventos})

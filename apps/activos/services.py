@@ -21,9 +21,13 @@ def generar_codigo_activo(tipo: str) -> str:
 
 
 def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
-                       vencimiento_garantia, orden_compra, bodega, usuario):
+                       vencimiento_garantia, orden_compra, bodega, usuario,
+                       categoria=None, procesador='', ram_gb=None, almacenamiento_gb=None,
+                       codigo_sap='', condicion_al_recibir=''):
     activo = Activo(
-        tipo=tipo, marca=marca, modelo=modelo, numero_serie=numero_serie,
+        tipo=tipo, marca=marca, categoria=categoria, modelo=modelo, numero_serie=numero_serie,
+        procesador=procesador, ram_gb=ram_gb, almacenamiento_gb=almacenamiento_gb,
+        codigo_sap=codigo_sap, condicion_al_recibir=condicion_al_recibir,
         fecha_compra=fecha_compra, vencimiento_garantia=vencimiento_garantia,
         orden_compra=orden_compra, bodega_actual=bodega,
         estado=Activo.Estado.EN_BODEGA, estado_fisico_actual=Activo.EstadoFisico.NUEVO,
@@ -36,9 +40,28 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
             'orden_compra': orden_compra.numero_oc if orden_compra else None,
             'proveedor': orden_compra.proveedor if orden_compra else None,
             'bodega': bodega.codigo,
+            'marca': marca.nombre if marca else None,
+            'categoria': categoria.nombre if categoria else None,
         },
     )
     return activo
+
+
+def registrar_baja_recomendada(*, activo, motivo, usuario):
+    """Un mantenimiento recomienda dar de baja el activo; no cambia su estado.
+
+    Es una señal para que un humano decida — el estado real solo cambia con
+    `registrar_baja`, que exige un motivo formal (MotivoBaja) y libera al
+    colaborador asignado.
+    """
+    if activo.baja_recomendada:
+        return
+    activo.baja_recomendada = True
+    activo.save(update_fields=['baja_recomendada'])
+    EventoActivo.objects.create(
+        activo=activo, tipo_evento=EventoActivo.TipoEvento.BAJA_RECOMENDADA, usuario=usuario,
+        detalle={'motivo': motivo},
+    )
 
 
 def registrar_asignacion(*, activo, colaborador, estado_fisico_entrega, usuario):

@@ -5,7 +5,9 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from apps.activos import services
-from apps.activos.models import Activo, Bodega, Colaborador, OrdenCompra, TipoConsumible
+from apps.activos.models import (
+    Activo, Bodega, CategoriaEquipo, Colaborador, Marca, OrdenCompra, TipoConsumible,
+)
 
 
 class Command(BaseCommand):
@@ -32,6 +34,19 @@ class Command(BaseCommand):
             ('CABLE-HDMI', 'Cable HDMI'), ('TONER-HP26A', 'Tóner HP 26A'),
         ]:
             TipoConsumible.objects.update_or_create(codigo=codigo, defaults={'nombre': nombre})
+
+        marcas = {}
+        for nombre in ['Dell', 'HP', 'Epson']:
+            marcas[nombre], _ = Marca.objects.get_or_create(nombre=nombre)
+
+        categorias = {}
+        for codigo, nombre in [
+            ('LAPTOP-CORP', 'Laptop corporativa'), ('DESKTOP-CORP', 'Desktop corporativo'),
+            ('IMPRESORA', 'Impresora'),
+        ]:
+            categorias[codigo], _ = CategoriaEquipo.objects.update_or_create(
+                codigo=codigo, defaults={'nombre': nombre},
+            )
 
         services.registrar_ingreso_stock(
             bodega=bodegas['CUENCA'], tipo_consumible=TipoConsumible.objects.get(codigo='MOUSE'), cantidad=15,
@@ -60,7 +75,10 @@ class Command(BaseCommand):
 
         if not Activo.objects.filter(orden_compra=oc).exists():
             laptop = services.registrar_ingreso(
-                tipo=Activo.Tipo.LAPTOP, marca='Dell', modelo='Latitude 5440', numero_serie='SN-LAP-0001',
+                tipo=Activo.Tipo.LAPTOP, marca=marcas['Dell'], categoria=categorias['LAPTOP-CORP'],
+                modelo='Latitude 5440', numero_serie='SN-LAP-0001',
+                procesador='Intel Core i5-1335U', ram_gb=16, almacenamiento_gb=512,
+                condicion_al_recibir='nuevo',
                 fecha_compra=datetime.date(2026, 6, 20), vencimiento_garantia=datetime.date(2029, 6, 20),
                 orden_compra=oc, bodega=bodegas['CUENCA'], usuario=admin,
             )
@@ -74,7 +92,10 @@ class Command(BaseCommand):
             )
 
             desktop = services.registrar_ingreso(
-                tipo=Activo.Tipo.DESKTOP, marca='HP', modelo='ProDesk 400', numero_serie='SN-DSK-0001',
+                tipo=Activo.Tipo.DESKTOP, marca=marcas['HP'], categoria=categorias['DESKTOP-CORP'],
+                modelo='ProDesk 400', numero_serie='SN-DSK-0001',
+                procesador='Intel Core i5-13500', ram_gb=8, almacenamiento_gb=256,
+                condicion_al_recibir='nuevo',
                 fecha_compra=datetime.date(2026, 6, 20), vencimiento_garantia=datetime.date(2028, 6, 20),
                 orden_compra=oc, bodega=bodegas['MACHALA'], usuario=admin,
             )
@@ -84,7 +105,8 @@ class Command(BaseCommand):
             )
 
             services.registrar_ingreso(
-                tipo=Activo.Tipo.IMPRESORA, marca='Epson', modelo='L3250', numero_serie='SN-IMP-0001',
+                tipo=Activo.Tipo.IMPRESORA, marca=marcas['Epson'], categoria=categorias['IMPRESORA'],
+                modelo='L3250', numero_serie='SN-IMP-0001', condicion_al_recibir='nuevo',
                 fecha_compra=datetime.date(2026, 6, 20), vencimiento_garantia=datetime.date(2027, 6, 20),
                 orden_compra=oc, bodega=bodegas['LOJA'], usuario=admin,
             )

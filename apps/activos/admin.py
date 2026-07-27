@@ -100,12 +100,12 @@ class EventoActivoInline(admin.TabularInline):
 @admin.register(Activo)
 class ActivoAdmin(admin.ModelAdmin):
     list_display = (
-        'codigo', 'tipo', 'marca', 'modelo', 'estado', 'estado_fisico_actual',
-        'bodega_actual', 'colaborador_actual',
+        'codigo', 'tipo', 'marca', 'categoria', 'modelo', 'estado', 'estado_fisico_actual',
+        'bodega_actual', 'colaborador_actual', 'baja_recomendada',
     )
-    list_filter = ('tipo', 'estado', 'bodega_actual')
-    search_fields = ('codigo', 'numero_serie', 'marca', 'modelo')
-    autocomplete_fields = ('orden_compra', 'bodega_actual', 'colaborador_actual')
+    list_filter = ('tipo', 'estado', 'bodega_actual', 'baja_recomendada')
+    search_fields = ('codigo', 'numero_serie', 'marca__nombre', 'modelo', 'codigo_sap')
+    autocomplete_fields = ('orden_compra', 'bodega_actual', 'colaborador_actual', 'marca', 'categoria')
     readonly_fields = ('codigo', 'fecha_creacion')
     inlines = [EventoActivoInline]
 
