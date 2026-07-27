@@ -1,0 +1,28 @@
+{% extends "panel/base.html" %}
+{% block title %}Notificaciones · SAIDSOFT{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold text-slate-900 mb-6">Notificaciones</h1>
+
+<div class="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100">
+    {% for n in notificaciones %}
+    <div class="px-4 py-3 flex items-start justify-between gap-4 {% if not n.leida %}bg-blue-50/40{% endif %}">
+        <div>
+            {% if n.url %}
+            <a href="{{ n.url }}" class="text-sm font-medium text-slate-900 hover:underline">{{ n.mensaje }}</a>
+            {% else %}
+            <span class="text-sm font-medium text-slate-900">{{ n.mensaje }}</span>
+            {% endif %}
+            <div class="text-xs text-slate-400 mt-0.5">{{ n.creado_en|date:"d/m/Y H:i" }}</div>
+        </div>
+        {% if not n.leida %}
+        <form method="post" action="{% url 'panel:notificacion_marcar_leida' n.pk %}">
+            {% csrf_token %}
+            <button type="submit" class="text-xs text-slate-500 hover:underline">Marcar leída</button>
+        </form>
+        {% endif %}
+    </div>
+    {% empty %}
+    <div class="px-4 py-8 text-center text-slate-400 text-sm">Sin notificaciones.</div>
+    {% endfor %}
+</div>
+{% endblock %}

@@ -10,7 +10,8 @@ from django.utils import timezone
 from apps.activos import services as activos_services
 
 from .models import (
-    ActividadRealizada, EventoMantenimiento, Mantenimiento, MantenimientoEquipo, ResultadoTecnico,
+    ActividadPlanificada, ActividadRealizada, EventoMantenimiento, FirmaMantenimiento, ImagenMantenimiento,
+    Mantenimiento, MantenimientoEquipo, Notificacion, PrioridadActividad, ResultadoTecnico,
     TipoOrigenMantenimiento,
 )
 
@@ -116,3 +117,56 @@ def generar_proximo_mantenimiento_programado(*, programado, usuario=None):
     programado.fecha_proximo = hoy + timedelta(days=programado.frecuencia_dias)
     programado.save(update_fields=['fecha_ultimo', 'fecha_proximo'])
     return mantenimiento
+
+
+def firmar_mantenimiento(*, mantenimiento, tipo_firma, firma_base64, usuario, ip_origen=None):
+    firma = FirmaMantenimiento.objects.create(
+        mantenimiento=mantenimiento, tipo_firma=tipo_firma, firma_base64=firma_base64,
+        ip_origen=ip_origen, firmado_por=usuario,
+    )
+    EventoMantenimiento.objects.create(
+        mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.FIRMADO, usuario=usuario,
+        detalle={'tipo_firma': tipo_firma},
+    )
+    return firma
+
+
+def adjuntar_imagen_mantenimiento(*, mantenimiento, archivo, usuario):
+    imagen = ImagenMantenimiento.objects.create(
+        mantenimiento=mantenimiento, imagen=archivo, nombre_archivo=archivo.name, tamanio_bytes=archivo.size,
+    )
+    EventoMantenimiento.objects.create(
+        mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.IMAGEN_ADJUNTADA, usuario=usuario,
+        detalle={'nombre_archivo': imagen.nombre_archivo},
+    )
+    return imagen
+
+
+def crear_actividad_planificada(*, tecnico, creado_por, titulo, descripcion, tipo_actividad, fecha_inicio, fecha_fin,
+                                 prioridad=None, mantenimiento=None, mantenimiento_programado=None, equipo=None,
+                                 ubicacion=None, tiempo_estimado_minutos=None):
+    return ActividadPlanificada.objects.create(
+        tecnico=tecnico, creado_por=creado_por, titulo=titulo, descripcion=descripcion,
+        tipo_actividad=tipo_actividad, prioridad=prioridad or PrioridadActividad.NORMAL,
+        fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, mantenimiento=mantenimiento,
+        mantenimiento_programado=mantenimiento_programado, equipo=equipo, ubicacion=ubicacion,
+        tiempo_estimado_minutos=tiempo_estimado_minutos,
+    )
+
+
+def completar_actividad_planificada(*, actividad, tiempo_real_minutos=None):
+    if actividad.estado == ActividadPlanificada.Estado.COMPLETADA:
+        raise ValueError('La actividad ya está completada.')
+    actividad.estado = ActividadPlanificada.Estado.COMPLETADA
+    actividad.fecha_completada = timezone.now()
+    actividad.tiempo_real_minutos = tiempo_real_minutos
+    actividad.save(update_fields=['estado', 'fecha_completada', 'tiempo_real_minutos'])
+    return actividad
+
+
+def notificar(*, usuario, mensaje, url='', mantenimiento=None, actividad_planificada=None):
+    """Bandeja de notificaciones in-app; no genera EventoMantenimiento (no es un hecho de negocio a auditar)."""
+    return Notificacion.objects.create(
+        usuario=usuario, mensaje=mensaje, url=url, mantenimiento=mantenimiento,
+        actividad_planificada=actividad_planificada,
+    )

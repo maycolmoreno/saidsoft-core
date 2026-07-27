@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.db import models
 
-from apps.activos.models import Activo, CategoriaEquipo, Colaborador, Empresa
+from apps.activos.models import Activo, CategoriaEquipo, Colaborador, Empresa, Ubicacion
 
 
 class TipoOrigenMantenimiento(models.TextChoices):
@@ -160,6 +160,8 @@ class EventoMantenimiento(models.Model):
         PROGRAMADO = 'programado', 'Programado'
         INICIADO = 'iniciado', 'Iniciado'
         CHECKLIST_ACTUALIZADO = 'checklist_actualizado', 'Checklist actualizado'
+        FIRMADO = 'firmado', 'Firmado'
+        IMAGEN_ADJUNTADA = 'imagen_adjuntada', 'Imagen adjuntada'
         CERRADO = 'cerrado', 'Cerrado'
         CANCELADO = 'cancelado', 'Cancelado'
 
@@ -178,3 +180,136 @@ class EventoMantenimiento(models.Model):
 
     def delete(self, *args, **kwargs):
         raise NotImplementedError('EventoMantenimiento es inmutable: no se puede eliminar.')
+
+
+class TipoFirma(models.TextChoices):
+    """Portado tal cual de TipoFirma.java (InvTICS)."""
+    CUSTODIO = 'custodio', 'Custodio'
+    TECNICO = 'tecnico', 'Técnico'
+
+
+class PrioridadActividad(models.TextChoices):
+    """Portado tal cual de PrioridadMantenimiento.java (InvTICS)."""
+    NORMAL = 'normal', 'Normal'
+    ALTA = 'alta', 'Alta'
+    URGENTE = 'urgente', 'Urgente'
+
+
+class FirmaMantenimiento(models.Model):
+    """Firma digital (base64) de custodio o técnico al cerrar un mantenimiento."""
+    mantenimiento = models.ForeignKey(Mantenimiento, on_delete=models.CASCADE, related_name='firmas')
+    tipo_firma = models.CharField(max_length=10, choices=TipoFirma.choices)
+    firma_base64 = models.TextField()
+    firmado_en = models.DateTimeField(auto_now_add=True)
+    ip_origen = models.GenericIPAddressField(null=True, blank=True)
+    firmado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='firmas_mantenimiento',
+    )
+
+    class Meta:
+        db_table = 'firma_mantenimiento'
+        ordering = ['-firmado_en']
+        verbose_name = 'Firma de mantenimiento'
+        verbose_name_plural = 'Firmas de mantenimiento'
+
+    def __str__(self):
+        return f'Firma {self.get_tipo_firma_display()} - Mantenimiento #{self.mantenimiento_id}'
+
+
+class ImagenMantenimiento(models.Model):
+    """Evidencia fotográfica de un mantenimiento. Archivo real (FileField), no solo una ruta."""
+    mantenimiento = models.ForeignKey(Mantenimiento, on_delete=models.CASCADE, related_name='imagenes')
+    imagen = models.FileField(upload_to='mantenimiento/imagenes/%Y/%m/')
+    nombre_archivo = models.CharField(max_length=255, blank=True)
+    tamanio_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    subido_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'imagen_mantenimiento'
+        ordering = ['-subido_en']
+        verbose_name = 'Imagen de mantenimiento'
+        verbose_name_plural = 'Imágenes de mantenimiento'
+
+    def __str__(self):
+        return self.nombre_archivo or self.imagen.name
+
+
+class ActividadPlanificada(models.Model):
+    """Agenda general del técnico (no el checklist de un mantenimiento puntual).
+
+    Puede enlazar opcionalmente a un Mantenimiento, un MantenimientoProgramado,
+    un Activo o una Ubicacion (para mantenimientos generales sin equipo
+    específico) — igual que ActividadPlanificadaJpa en InvTICS.
+    """
+
+    class Estado(models.TextChoices):
+        PENDIENTE = 'pendiente', 'Pendiente'
+        EN_PROGRESO = 'en_progreso', 'En progreso'
+        COMPLETADA = 'completada', 'Completada'
+        CANCELADA = 'cancelada', 'Cancelada'
+
+    tecnico = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='actividades_planificadas',
+    )
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='actividades_planificadas_creadas',
+    )
+    titulo = models.CharField(max_length=200)
+    descripcion = models.TextField(blank=True)
+    tipo_actividad = models.CharField(max_length=50)
+    prioridad = models.CharField(max_length=10, choices=PrioridadActividad.choices, default=PrioridadActividad.NORMAL)
+    estado = models.CharField(max_length=15, choices=Estado.choices, default=Estado.PENDIENTE)
+    fecha_inicio = models.DateField()
+    fecha_fin = models.DateField()
+    fecha_completada = models.DateTimeField(null=True, blank=True)
+    tiempo_estimado_minutos = models.PositiveIntegerField(null=True, blank=True)
+    tiempo_real_minutos = models.PositiveIntegerField(null=True, blank=True)
+    mantenimiento = models.ForeignKey(
+        Mantenimiento, on_delete=models.SET_NULL, null=True, blank=True, related_name='actividades_planificadas',
+    )
+    mantenimiento_programado = models.ForeignKey(
+        MantenimientoProgramado, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='actividades_planificadas',
+    )
+    equipo = models.ForeignKey(
+        Activo, on_delete=models.SET_NULL, null=True, blank=True, related_name='actividades_planificadas',
+    )
+    ubicacion = models.ForeignKey(
+        Ubicacion, on_delete=models.SET_NULL, null=True, blank=True, related_name='actividades_planificadas',
+        help_text='Ubicación objetivo cuando la actividad es general, sin equipo específico.',
+    )
+    observaciones = models.TextField(blank=True)
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'actividad_planificada'
+        ordering = ['fecha_inicio']
+        verbose_name = 'Actividad planificada'
+        verbose_name_plural = 'Actividades planificadas'
+
+    def __str__(self):
+        return f'{self.titulo} ({self.tecnico})'
+
+
+class Notificacion(models.Model):
+    """Bandeja de notificaciones in-app. `leida` se muta directo, sin Evento propio."""
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='notificaciones',
+    )
+    mensaje = models.CharField(max_length=255)
+    url = models.CharField(max_length=500, blank=True)
+    leida = models.BooleanField(default=False)
+    mantenimiento = models.ForeignKey(
+        Mantenimiento, on_delete=models.SET_NULL, null=True, blank=True, related_name='notificaciones',
+    )
+    actividad_planificada = models.ForeignKey(
+        ActividadPlanificada, on_delete=models.SET_NULL, null=True, blank=True, related_name='notificaciones',
+    )
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'notificacion'
+        ordering = ['-creado_en']
+
+    def __str__(self):
+        return self.mensaje

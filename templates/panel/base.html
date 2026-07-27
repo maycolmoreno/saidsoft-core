@@ -29,6 +29,8 @@
             <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Mantenimiento</div>
             <a href="{% url 'panel:mantenimientos_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'mantenimientos_lista' or request.resolver_match.url_name == 'mantenimiento_detalle' or request.resolver_match.url_name == 'mantenimiento_crear' %}bg-slate-800 text-white font-medium{% endif %}">Mantenimientos</a>
             <a href="{% url 'panel:mantenimientos_programados_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'programado' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Programados</a>
+            <a href="{% url 'panel:actividades_planificadas_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'actividad_planificada' in request.resolver_match.url_name or request.resolver_match.url_name == 'actividades_planificadas_lista' %}bg-slate-800 text-white font-medium{% endif %}">Actividades técnicas</a>
+            <a href="{% url 'panel:notificaciones_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'notificacion' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Notificaciones</a>
 
             <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Sistema</div>
             <a href="{% url 'panel:auditoria_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'auditoria' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Auditoría</a>

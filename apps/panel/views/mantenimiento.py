@@ -6,9 +6,12 @@ from django.urls import reverse
 from apps.auditoria.models import registrar_evento
 from apps.mantenimiento import services as mantenimiento_services
 from apps.mantenimiento.forms import (
-    CancelarMantenimientoForm, CerrarMantenimientoForm, MantenimientoManualForm, MantenimientoProgramadoForm,
+    ActividadPlanificadaForm, CancelarMantenimientoForm, CerrarMantenimientoForm, CompletarActividadForm,
+    FirmaMantenimientoForm, ImagenMantenimientoForm, MantenimientoManualForm, MantenimientoProgramadoForm,
 )
-from apps.mantenimiento.models import ActividadChecklist, Mantenimiento, MantenimientoProgramado
+from apps.mantenimiento.models import (
+    ActividadChecklist, ActividadPlanificada, Mantenimiento, MantenimientoProgramado, Notificacion,
+)
 
 
 @login_required
@@ -179,3 +182,158 @@ def mantenimiento_programado_crear(request):
         'form': form, 'titulo': 'Nuevo mantenimiento programado',
         'volver_url': reverse('panel:mantenimientos_programados_lista'),
     })
+
+
+@login_required
+def mantenimiento_firmar(request, pk):
+    mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
+    if request.method == 'POST':
+        form = FirmaMantenimientoForm(request.POST)
+        if form.is_valid():
+            mantenimiento_services.firmar_mantenimiento(
+                mantenimiento=mantenimiento, tipo_firma=form.cleaned_data['tipo_firma'],
+                firma_base64=form.cleaned_data['firma_base64'], usuario=request.user,
+                ip_origen=request.META.get('REMOTE_ADDR'),
+            )
+            registrar_evento(
+                usuario=request.user, accion='mantenimiento.firmar', objeto=mantenimiento, request=request,
+            )
+            messages.success(request, 'Firma registrada.')
+            return redirect('panel:mantenimiento_detalle', pk=pk)
+    else:
+        form = FirmaMantenimientoForm()
+    return render(request, 'panel/mantenimiento_firmar.html', {
+        'form': form, 'mantenimiento': mantenimiento,
+        'volver_url': reverse('panel:mantenimiento_detalle', args=[pk]),
+    })
+
+
+@login_required
+def mantenimiento_imagen_adjuntar(request, pk):
+    mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
+    if request.method == 'POST':
+        form = ImagenMantenimientoForm(request.POST, request.FILES)
+        if form.is_valid():
+            mantenimiento_services.adjuntar_imagen_mantenimiento(
+                mantenimiento=mantenimiento, archivo=form.cleaned_data['archivo'], usuario=request.user,
+            )
+            registrar_evento(
+                usuario=request.user, accion='mantenimiento.imagen_adjuntar', objeto=mantenimiento, request=request,
+            )
+            messages.success(request, 'Imagen adjuntada.')
+            return redirect('panel:mantenimiento_detalle', pk=pk)
+    else:
+        form = ImagenMantenimientoForm()
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': f'Adjuntar imagen a mantenimiento #{mantenimiento.pk}',
+        'volver_url': reverse('panel:mantenimiento_detalle', args=[pk]),
+    })
+
+
+@login_required
+def mantenimiento_orden_trabajo(request, pk):
+    """Orden de trabajo imprimible (Ctrl+P del navegador), sin generar PDF servidor.
+
+    Sigue la convención de apps/panel/reportes.py: evitar dependencias de
+    generación de PDF; si se necesita un PDF real y almacenado con validez
+    legal, es una decisión de infraestructura aparte (fase 7).
+    """
+    mantenimiento = get_object_or_404(
+        Mantenimiento.objects.select_related('cliente', 'tecnico', 'empresa'), pk=pk,
+    )
+    equipos = mantenimiento.equipos.select_related('equipo')
+    checklist_items = ActividadChecklist.objects.filter(activo=True).order_by('orden', 'nombre')
+    realizadas = {ar.actividad_id: ar.realizada for ar in mantenimiento.actividades_realizadas.all()}
+    checklist = [{'item': item, 'realizada': realizadas.get(item.pk, False)} for item in checklist_items]
+    firmas = mantenimiento.firmas.select_related('firmado_por').order_by('tipo_firma')
+    imagenes = mantenimiento.imagenes.all()
+
+    return render(request, 'panel/mantenimiento_orden_trabajo.html', {
+        'mantenimiento': mantenimiento, 'equipos': equipos, 'checklist': checklist,
+        'firmas': firmas, 'imagenes': imagenes,
+    })
+
+
+@login_required
+def actividades_planificadas_lista(request):
+    actividades = ActividadPlanificada.objects.filter(activo=True).select_related(
+        'tecnico', 'equipo', 'ubicacion',
+    ).order_by('fecha_inicio')
+
+    tecnico = request.GET.get('tecnico')
+    estado = request.GET.get('estado')
+    if tecnico:
+        actividades = actividades.filter(tecnico__username=tecnico)
+    if estado:
+        actividades = actividades.filter(estado=estado)
+
+    return render(request, 'panel/actividades_planificadas_lista.html', {
+        'actividades': actividades,
+        'estados': ActividadPlanificada.Estado.choices,
+        'filtro_tecnico': tecnico or '', 'filtro_estado': estado or '',
+    })
+
+
+@login_required
+def actividad_planificada_crear(request):
+    if request.method == 'POST':
+        form = ActividadPlanificadaForm(request.POST)
+        if form.is_valid():
+            d = form.cleaned_data
+            actividad = mantenimiento_services.crear_actividad_planificada(
+                tecnico=d['tecnico'], creado_por=request.user, titulo=d['titulo'], descripcion=d['descripcion'],
+                tipo_actividad=d['tipo_actividad'], prioridad=d['prioridad'], fecha_inicio=d['fecha_inicio'],
+                fecha_fin=d['fecha_fin'], tiempo_estimado_minutos=d['tiempo_estimado_minutos'],
+                equipo=d['equipo'], ubicacion=d['ubicacion'],
+            )
+            registrar_evento(
+                usuario=request.user, accion='actividad_planificada.crear', objeto=actividad, request=request,
+            )
+            messages.success(request, f'Actividad "{actividad.titulo}" creada.')
+            return redirect('panel:actividades_planificadas_lista')
+    else:
+        form = ActividadPlanificadaForm()
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': 'Nueva actividad planificada',
+        'volver_url': reverse('panel:actividades_planificadas_lista'),
+    })
+
+
+@login_required
+def actividad_planificada_completar(request, pk):
+    actividad = get_object_or_404(ActividadPlanificada, pk=pk)
+    if request.method == 'POST':
+        form = CompletarActividadForm(request.POST)
+        if form.is_valid():
+            try:
+                mantenimiento_services.completar_actividad_planificada(
+                    actividad=actividad, tiempo_real_minutos=form.cleaned_data['tiempo_real_minutos'],
+                )
+            except ValueError as exc:
+                form.add_error(None, str(exc))
+            else:
+                registrar_evento(
+                    usuario=request.user, accion='actividad_planificada.completar', objeto=actividad, request=request,
+                )
+                messages.success(request, f'Actividad "{actividad.titulo}" completada.')
+                return redirect('panel:actividades_planificadas_lista')
+    else:
+        form = CompletarActividadForm()
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': f'Completar actividad: {actividad.titulo}',
+        'volver_url': reverse('panel:actividades_planificadas_lista'),
+    })
+
+
+@login_required
+def notificaciones_lista(request):
+    notificaciones = Notificacion.objects.filter(usuario=request.user).order_by('-creado_en')[:100]
+    return render(request, 'panel/notificaciones_lista.html', {'notificaciones': notificaciones})
+
+
+@login_required
+def notificacion_marcar_leida(request, pk):
+    notificacion = get_object_or_404(Notificacion, pk=pk, usuario=request.user)
+    notificacion.leida = True
+    notificacion.save(update_fields=['leida'])
+    return redirect('panel:notificaciones_lista')

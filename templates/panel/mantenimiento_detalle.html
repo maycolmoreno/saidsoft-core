@@ -65,6 +65,7 @@
     {% if mantenimiento.estado_interno == 'pendiente' or mantenimiento.estado_interno == 'en_proceso' %}
     <a href="{% url 'panel:mantenimiento_cancelar' mantenimiento.pk %}" class="border border-red-300 text-red-700 text-sm font-medium rounded-md px-4 py-2 hover:bg-red-50">Cancelar</a>
     {% endif %}
+    <a href="{% url 'panel:mantenimiento_orden_trabajo' mantenimiento.pk %}" class="border border-slate-300 text-slate-700 text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-50">Ver orden de trabajo</a>
 </div>
 
 <h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Checklist</h2>
@@ -83,6 +84,37 @@
     <button type="submit" class="mt-3 bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">Guardar checklist</button>
     {% endif %}
 </form>
+
+<div class="flex items-center justify-between mb-3">
+    <h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide">Firmas</h2>
+    {% if mantenimiento.estado_interno == 'en_proceso' %}
+    <a href="{% url 'panel:mantenimiento_firmar' mantenimiento.pk %}" class="text-xs text-slate-600 hover:underline">+ Capturar firma</a>
+    {% endif %}
+</div>
+<div class="flex flex-wrap gap-4 mb-8">
+    {% for f in mantenimiento.firmas.all %}
+    <div class="bg-white rounded-lg border border-slate-200 p-3 text-center">
+        <img src="{{ f.firma_base64 }}" alt="Firma {{ f.get_tipo_firma_display }}" class="border border-slate-100 rounded mb-1" style="max-height: 80px;">
+        <div class="text-xs text-slate-500">{{ f.get_tipo_firma_display }} — {{ f.firmado_en|date:"d/m/Y H:i" }}</div>
+    </div>
+    {% empty %}
+    <p class="text-slate-400 text-sm">Sin firmas registradas.</p>
+    {% endfor %}
+</div>
+
+<div class="flex items-center justify-between mb-3">
+    <h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide">Evidencia fotográfica</h2>
+    <a href="{% url 'panel:mantenimiento_imagen_adjuntar' mantenimiento.pk %}" class="text-xs text-slate-600 hover:underline">+ Adjuntar imagen</a>
+</div>
+<div class="flex flex-wrap gap-3 mb-8">
+    {% for img in mantenimiento.imagenes.all %}
+    <a href="{{ img.imagen.url }}" target="_blank">
+        <img src="{{ img.imagen.url }}" alt="{{ img.nombre_archivo }}" class="h-24 rounded border border-slate-200">
+    </a>
+    {% empty %}
+    <p class="text-slate-400 text-sm">Sin imágenes adjuntas.</p>
+    {% endfor %}
+</div>
 
 <h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Historial</h2>
 <div class="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100">

@@ -79,6 +79,15 @@ urlpatterns = [
     ),
     path('mantenimientos/<int:pk>/cerrar/', views.mantenimiento_cerrar, name='mantenimiento_cerrar'),
     path('mantenimientos/<int:pk>/cancelar/', views.mantenimiento_cancelar, name='mantenimiento_cancelar'),
+    path('mantenimientos/<int:pk>/firmar/', views.mantenimiento_firmar, name='mantenimiento_firmar'),
+    path(
+        'mantenimientos/<int:pk>/imagenes/nueva/', views.mantenimiento_imagen_adjuntar,
+        name='mantenimiento_imagen_adjuntar',
+    ),
+    path(
+        'mantenimientos/<int:pk>/orden-trabajo/', views.mantenimiento_orden_trabajo,
+        name='mantenimiento_orden_trabajo',
+    ),
     path(
         'mantenimientos-programados/', views.mantenimientos_programados_lista,
         name='mantenimientos_programados_lista',
@@ -87,4 +96,17 @@ urlpatterns = [
         'mantenimientos-programados/nuevo/', views.mantenimiento_programado_crear,
         name='mantenimiento_programado_crear',
     ),
+
+    path('actividades-planificadas/', views.actividades_planificadas_lista, name='actividades_planificadas_lista'),
+    path(
+        'actividades-planificadas/nueva/', views.actividad_planificada_crear,
+        name='actividad_planificada_crear',
+    ),
+    path(
+        'actividades-planificadas/<int:pk>/completar/', views.actividad_planificada_completar,
+        name='actividad_planificada_completar',
+    ),
+
+    path('notificaciones/', views.notificaciones_lista, name='notificaciones_lista'),
+    path('notificaciones/<int:pk>/marcar-leida/', views.notificacion_marcar_leida, name='notificacion_marcar_leida'),
 ]
