@@ -313,3 +313,50 @@ class Notificacion(models.Model):
 
     def __str__(self):
         return self.mensaje
+
+
+class ConsentimientoMonitoreo(models.Model):
+    """Consentimiento legal del técnico para ser rastreado por GPS durante su jornada.
+
+    Historial append-only (a diferencia de UbicacionTecnico, que es
+    telemetría de alta frecuencia): el consentimiento legal se debe poder
+    demostrar en el tiempo, así que cada aceptación queda registrada, nunca
+    se sobreescribe.
+    """
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='consentimientos_monitoreo',
+    )
+    aceptado = models.BooleanField(default=True)
+    version_terminos = models.CharField(max_length=20)
+    ip = models.GenericIPAddressField(null=True, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'consentimiento_monitoreo'
+        ordering = ['-timestamp']
+        verbose_name = 'Consentimiento de monitoreo'
+        verbose_name_plural = 'Consentimientos de monitoreo'
+
+    def __str__(self):
+        return f'{self.usuario} - v{self.version_terminos} @ {self.timestamp:%Y-%m-%d}'
+
+
+class UbicacionTecnico(models.Model):
+    """Posición GPS de un técnico en campo. Solo-append: telemetría de alta frecuencia, sin Evento propio."""
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='ubicaciones_tecnico',
+    )
+    latitud = models.DecimalField(max_digits=10, decimal_places=7)
+    longitud = models.DecimalField(max_digits=10, decimal_places=7)
+    precision_metros = models.FloatField(null=True, blank=True)
+    timestamp_captura = models.DateTimeField()
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ubicacion_tecnico'
+        ordering = ['-timestamp_captura']
+        verbose_name = 'Ubicación de técnico'
+        verbose_name_plural = 'Ubicaciones de técnico'
+
+    def __str__(self):
+        return f'{self.usuario} @ {self.timestamp_captura:%Y-%m-%d %H:%M}'

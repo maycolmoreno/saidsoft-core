@@ -3,7 +3,7 @@ from django.contrib import admin
 from .models import (
     Activo, Bodega, Cargo, CategoriaEquipo, Colaborador, Departamento, Empresa, EventoActivo,
     Marca, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, RecepcionLote, StockBodega,
-    TipoConsumible, Ubicacion,
+    SyncCambio, SyncEjecucion, TipoConsumible, Ubicacion,
 )
 
 
@@ -154,4 +154,31 @@ class ActivoAdmin(admin.ModelAdmin):
     inlines = [EventoActivoInline]
 
     def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class SyncCambioInline(admin.TabularInline):
+    model = SyncCambio
+    extra = 0
+    readonly_fields = ('tipo', 'cedula', 'colaborador', 'detalle')
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SyncEjecucion)
+class SyncEjecucionAdmin(admin.ModelAdmin):
+    list_display = (
+        'origen', 'ejecutado_por', 'creados', 'actualizados', 'inactivados', 'reactivados',
+        'advertencias', 'ejecutado_en',
+    )
+    list_filter = ('origen',)
+    readonly_fields = (
+        'origen', 'ejecutado_por', 'creados', 'actualizados', 'inactivados', 'reactivados',
+        'sin_cambios', 'advertencias', 'ejecutado_en',
+    )
+    inlines = [SyncCambioInline]
+
+    def has_add_permission(self, request):
         return False

@@ -25,6 +25,9 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    # terceros
+    'rest_framework',
+    'rest_framework.authtoken',
     # apps propias
     'apps.catalogo',
     'apps.despliegues',
@@ -121,3 +124,14 @@ DESPLIEGUE_UMBRAL_ERROR_PCT_DEFAULT = env.float('DESPLIEGUE_UMBRAL_ERROR_PCT_DEF
 # Distribución en cascada: si está activo, los agentes intentan descargar del caché de
 # su farmacia antes que del servidor central (reduce el tráfico VPN a escala).
 DESPLIEGUE_USAR_CACHE = env.bool('DESPLIEGUE_USAR_CACHE', default=True)
+
+# API móvil (apps Flutter): Token Authentication de DRF, sin dependencias externas.
+# El técnico obtiene su token una vez en /api/v1/auth/token/ y lo reusa en cada request.
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.TokenAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}

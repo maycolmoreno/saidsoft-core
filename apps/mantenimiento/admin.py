@@ -1,8 +1,9 @@
 from django.contrib import admin
 
 from .models import (
-    ActividadChecklist, ActividadPlanificada, ActividadRealizada, EventoMantenimiento, FirmaMantenimiento,
-    ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado, Notificacion,
+    ActividadChecklist, ActividadPlanificada, ActividadRealizada, ConsentimientoMonitoreo, EventoMantenimiento,
+    FirmaMantenimiento, ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado,
+    Notificacion, UbicacionTecnico,
 )
 
 
@@ -92,3 +93,24 @@ class NotificacionAdmin(admin.ModelAdmin):
     list_filter = ('leida',)
     search_fields = ('mensaje', 'usuario__username')
     autocomplete_fields = ('usuario', 'mantenimiento', 'actividad_planificada')
+
+
+@admin.register(ConsentimientoMonitoreo)
+class ConsentimientoMonitoreoAdmin(admin.ModelAdmin):
+    list_display = ('usuario', 'aceptado', 'version_terminos', 'ip', 'timestamp')
+    list_filter = ('aceptado', 'version_terminos')
+    search_fields = ('usuario__username',)
+    readonly_fields = ('usuario', 'aceptado', 'version_terminos', 'ip', 'timestamp')
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(UbicacionTecnico)
+class UbicacionTecnicoAdmin(admin.ModelAdmin):
+    list_display = ('usuario', 'latitud', 'longitud', 'precision_metros', 'timestamp_captura')
+    list_filter = ('usuario',)
+    readonly_fields = ('usuario', 'latitud', 'longitud', 'precision_metros', 'timestamp_captura', 'creado_en')
+
+    def has_add_permission(self, request):
+        return False

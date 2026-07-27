@@ -1,0 +1,140 @@
+"""API móvil (apps Flutter). Cada acción delega en apps.mantenimiento.services
+— la misma lógica que usa el panel HTMX — para no duplicar reglas de negocio."""
+from rest_framework import generics, permissions, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
+
+from . import services
+from .models import ActividadChecklist, ConsentimientoMonitoreo, Mantenimiento, UbicacionTecnico
+from .serializers import (
+    CerrarMantenimientoSerializer, ChecklistActualizarSerializer, ChecklistItemSerializer,
+    ConsentimientoMonitoreoSerializer, FirmaMantenimientoSerializer, FirmarMantenimientoSerializer,
+    ImagenAdjuntarSerializer, ImagenMantenimientoSerializer, MantenimientoDetalleSerializer,
+    MantenimientoListSerializer, UbicacionTecnicoSerializer,
+)
+
+
+class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
+    """Mantenimientos asignados al técnico autenticado (nunca los de otro técnico)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Mantenimiento.objects.filter(tecnico=self.request.user).select_related(
+            'cliente', 'tecnico',
+        ).prefetch_related('equipos__equipo', 'firmas', 'imagenes', 'eventos__usuario')
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return MantenimientoListSerializer
+        return MantenimientoDetalleSerializer
+
+    @action(detail=True, methods=['get'])
+    def checklist(self, request, pk=None):
+        mantenimiento = self.get_object()
+        items = ActividadChecklist.objects.filter(activo=True).order_by('orden', 'nombre')
+        realizadas = {ar.actividad_id: ar.realizada for ar in mantenimiento.actividades_realizadas.all()}
+        data = [{'item': item, 'realizada': realizadas.get(item.pk, False)} for item in items]
+        return Response(ChecklistItemSerializer(data, many=True).data)
+
+    @action(detail=True, methods=['post'])
+    def iniciar(self, request, pk=None):
+        mantenimiento = self.get_object()
+        try:
+            services.iniciar_mantenimiento(mantenimiento=mantenimiento, usuario=request.user)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(MantenimientoDetalleSerializer(mantenimiento).data)
+
+    @action(detail=True, methods=['post'], url_path='checklist/actualizar')
+    def actualizar_checklist(self, request, pk=None):
+        mantenimiento = self.get_object()
+        serializer = ChecklistActualizarSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        services.registrar_actividad_checklist(
+            mantenimiento=mantenimiento, actividad=serializer.validated_data['actividad_id'],
+            realizada=serializer.validated_data['realizada'], usuario=request.user,
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'])
+    def cerrar(self, request, pk=None):
+        mantenimiento = self.get_object()
+        serializer = CerrarMantenimientoSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            services.cerrar_mantenimiento(
+                mantenimiento=mantenimiento, resultado_tecnico=serializer.validated_data['resultado_tecnico'],
+                usuario=request.user,
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(MantenimientoDetalleSerializer(mantenimiento).data)
+
+    @action(detail=True, methods=['post'])
+    def firmar(self, request, pk=None):
+        mantenimiento = self.get_object()
+        serializer = FirmarMantenimientoSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        firma = services.firmar_mantenimiento(
+            mantenimiento=mantenimiento, tipo_firma=serializer.validated_data['tipo_firma'],
+            firma_base64=serializer.validated_data['firma_base64'], usuario=request.user,
+            ip_origen=request.META.get('REMOTE_ADDR'),
+        )
+        return Response(FirmaMantenimientoSerializer(firma).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='imagenes')
+    def adjuntar_imagen(self, request, pk=None):
+        mantenimiento = self.get_object()
+        serializer = ImagenAdjuntarSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        imagen = services.adjuntar_imagen_mantenimiento(
+            mantenimiento=mantenimiento, archivo=serializer.validated_data['archivo'], usuario=request.user,
+        )
+        return Response(ImagenMantenimientoSerializer(imagen).data, status=status.HTTP_201_CREATED)
+
+
+class ConsentimientoMonitoreoView(generics.GenericAPIView):
+    """GET: último consentimiento del usuario autenticado. POST: registra uno nuevo."""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ConsentimientoMonitoreoSerializer
+
+    def get(self, request):
+        ultimo = ConsentimientoMonitoreo.objects.filter(usuario=request.user).order_by('-timestamp').first()
+        if ultimo is None:
+            return Response({'aceptado': False})
+        return Response(ConsentimientoMonitoreoSerializer(ultimo).data)
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        consentimiento = ConsentimientoMonitoreo.objects.create(
+            usuario=request.user, ip=request.META.get('REMOTE_ADDR'), **serializer.validated_data,
+        )
+        return Response(ConsentimientoMonitoreoSerializer(consentimiento).data, status=status.HTTP_201_CREATED)
+
+
+class UbicacionTecnicoView(generics.ListCreateAPIView):
+    """Registra/consulta posiciones GPS del técnico autenticado.
+
+    Exige un ConsentimientoMonitoreo vigente (aceptado=True) antes de aceptar
+    una posición — igual que el flujo de consentimiento legal en InvTICS.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = UbicacionTecnicoSerializer
+
+    def get_queryset(self):
+        return UbicacionTecnico.objects.filter(usuario=self.request.user).order_by('-timestamp_captura')[:100]
+
+    def create(self, request, *args, **kwargs):
+        tiene_consentimiento = ConsentimientoMonitoreo.objects.filter(
+            usuario=request.user, aceptado=True,
+        ).exists()
+        if not tiene_consentimiento:
+            return Response(
+                {'detail': 'Falta registrar el consentimiento de monitoreo antes de enviar ubicación.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(usuario=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
