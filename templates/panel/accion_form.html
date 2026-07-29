@@ -1,27 +1,25 @@
 {% extends "panel/base.html" %}
 {% block title %}{{ titulo }} · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold text-slate-900 mb-1">{{ titulo }}</h1>
-{% if subtitulo %}<p class="text-sm text-slate-500 mb-6">{{ subtitulo }}</p>{% endif %}
+<h1 class="text-xl font-semibold mb-1">{{ titulo }}</h1>
+{% if subtitulo %}<p class="text-sm text-[var(--text-faint)] mb-6">{{ subtitulo }}</p>{% endif %}
 
-<form method="post" class="bg-white rounded-lg border border-slate-200 p-6 max-w-lg space-y-5">
+<form method="post" class="card p-6 max-w-lg space-y-5">
     {% csrf_token %}
     {% for error in form.non_field_errors %}
-        <p class="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">{{ error }}</p>
+        <p class="text-sm alert sev-critical px-3 py-2">{{ error }}</p>
     {% endfor %}
     {% for field in form %}
     <div>
-        <label class="block text-sm font-medium text-slate-700 mb-1">{{ field.label }}</label>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ field.label }}</label>
         {{ field }}
-        {% if field.help_text %}<p class="text-xs text-slate-400 mt-1">{{ field.help_text }}</p>{% endif %}
-        {% for error in field.errors %}<p class="text-xs text-red-600 mt-1">{{ error }}</p>{% endfor %}
+        {% if field.help_text %}<p class="text-xs text-[var(--text-faint)] mt-1">{{ field.help_text }}</p>{% endif %}
+        {% for error in field.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
     </div>
     {% endfor %}
     <div class="flex items-center gap-3 pt-2">
-        <button type="submit" class="bg-slate-900 text-white text-sm font-medium rounded-md px-5 py-2.5 hover:bg-slate-800">
-            Confirmar
-        </button>
-        <a href="{{ volver_url }}" class="text-sm text-slate-500 hover:text-slate-700">Cancelar</a>
+        <button type="submit" class="btn primary" style="padding:10px 20px;">Confirmar</button>
+        <a href="{{ volver_url }}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
     </div>
 </form>
 {% endblock %}

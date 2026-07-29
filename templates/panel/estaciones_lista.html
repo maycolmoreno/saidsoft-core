@@ -1,33 +1,33 @@
 {% extends "panel/base.html" %}
 {% block title %}Estaciones · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold text-slate-900 mb-6">Estaciones</h1>
+<h1 class="text-xl font-semibold mb-6">Estaciones</h1>
 
 <div id="pendientes-wrap" hx-get="{% url 'panel:estaciones_pendientes_partial' %}" hx-trigger="load, every 15s" hx-swap="innerHTML"></div>
 
 <form method="get" class="flex items-center gap-3 mb-4">
-    <select name="grupo" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+    <select name="grupo" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Todos los grupos</option>
         {% for g in grupos %}
         <option value="{{ g.codigo }}" {% if g.codigo == filtro_grupo %}selected{% endif %}>{{ g.codigo }}</option>
         {% endfor %}
     </select>
-    <select name="estado_conexion" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+    <select name="estado_conexion" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Cualquier estado</option>
         <option value="online" {% if filtro_estado == 'online' %}selected{% endif %}>En línea</option>
         <option value="offline" {% if filtro_estado == 'offline' %}selected{% endif %}>Fuera de línea</option>
         <option value="nunca_conectada" {% if filtro_estado == 'nunca_conectada' %}selected{% endif %}>Nunca conectada</option>
     </select>
-    <label class="flex items-center gap-1.5 text-sm text-slate-600">
+    <label class="flex items-center gap-1.5 text-sm text-[var(--text-dim)]">
         <input type="checkbox" name="desactualizadas" value="1" onchange="this.form.submit()" {% if filtro_desactualizadas %}checked{% endif %}>
         Solo desactualizadas
     </label>
 </form>
 
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+<div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Código</th>
                 <th class="text-left px-4 py-3">Farmacia / Grupo</th>
                 <th class="text-left px-4 py-3">Equipo</th>
@@ -38,43 +38,40 @@
                 <th class="text-right px-4 py-3"></th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for e in estaciones %}
-            <tr class="hover:bg-slate-50">
+            <tr class="hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
                 <td class="px-4 py-3 font-medium">
-                    <button type="button" class="text-slate-900 hover:text-blue-600 hover:underline"
+                    <button type="button" class="hover:text-[var(--info)] hover:underline"
                             hx-get="{% url 'panel:estacion_info_modal' e.pk %}" hx-target="#modal-info-content" hx-swap="innerHTML"
                             onclick="document.getElementById('modal-info').showModal()">
                         {{ e.codigo }}
                     </button>
                 </td>
-                <td class="px-4 py-3 text-slate-600">{{ e.farmacia.codigo }} · {{ e.farmacia.grupo.codigo }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ e.farmacia.codigo }} · {{ e.farmacia.grupo.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
                     {{ e.hostname|default:"—" }}<br>
-                    <span class="text-slate-400">{{ e.ip_lan|default:"" }}</span>
+                    <span>{{ e.ip_lan|default:"" }}</span>
                 </td>
                 <td class="px-4 py-3">
-                    <span class="{% if e.desactualizada %}text-amber-700 font-medium{% else %}text-slate-600{% endif %}">
+                    <span style="{% if e.desactualizada %}color:var(--warning); font-weight:500;{% else %}color:var(--text-dim);{% endif %}">
                         {{ e.version_pos|default:"—" }}
                     </span>
-                    {% if e.desactualizada %}<span class="text-xs text-amber-600 ml-1">desactualizada</span>{% endif %}
+                    {% if e.desactualizada %}<span class="text-xs ml-1" style="color:var(--warning);">desactualizada</span>{% endif %}
                 </td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.so_nombre }} {{ e.so_build }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.so_nombre }} {{ e.so_build }}</td>
                 <td class="px-4 py-3">
-                    <span class="text-xs px-2 py-0.5 rounded-full
-                        {% if e.estado_conexion == 'online' %}bg-green-50 text-green-700
-                        {% elif e.estado_conexion == 'offline' %}bg-slate-100 text-slate-600
-                        {% else %}bg-slate-50 text-slate-400{% endif %}">
+                    <span class="pill {% if e.estado_conexion == 'online' %}good{% elif e.estado_conexion == 'offline' %}neutral{% else %}neutral{% endif %}">
                         {{ e.get_estado_conexion_display }}
                     </span>
                 </td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.ultimo_heartbeat|default:"nunca" }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.ultimo_heartbeat|default:"nunca" }}</td>
                 <td class="px-4 py-3 text-right">
                     {% if e.estado_aprobacion == 'aprobada' and e.estado_conexion == 'online' %}
                     <form method="post" action="{% url 'panel:estacion_reiniciar' e.pk %}"
                           onsubmit="return confirm('¿Reiniciar {{ e.codigo }} ahora? Esto interrumpe cualquier venta en curso en esa caja.');">
                         {% csrf_token %}
-                        <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-700 border border-red-200 rounded-md px-3 py-1.5">
+                        <button type="submit" class="btn danger" style="font-size:11px; padding:5px 10px;">
                             Reiniciar
                         </button>
                     </form>
@@ -82,7 +79,7 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="8" class="px-4 py-6 text-center text-slate-400">Sin estaciones para este filtro.</td></tr>
+            <tr><td colspan="8" class="px-4 py-6 text-center text-[var(--text-faint)]">Sin estaciones para este filtro.</td></tr>
         {% endfor %}
         </tbody>
     </table>

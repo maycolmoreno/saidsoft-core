@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'apps.cuentas',
     'apps.mantenimiento',
     'apps.scripts',
+    'apps.cumplimiento',
     'apps.panel',
 ]
 
@@ -132,6 +133,24 @@ DESPLIEGUE_UMBRAL_ERROR_PCT_DEFAULT = env.float('DESPLIEGUE_UMBRAL_ERROR_PCT_DEF
 # Distribución en cascada: si está activo, los agentes intentan descargar del caché de
 # su farmacia antes que del servidor central (reduce el tráfico VPN a escala).
 DESPLIEGUE_USAR_CACHE = env.bool('DESPLIEGUE_USAR_CACHE', default=True)
+
+# Acceso remoto interactivo a estaciones vía un MeshCentral autoalojado (bolt-on,
+# no reemplaza el canal MQTT/HMAC de comandos ni el de despliegues). La correlación
+# Estacion <-> nodo de MeshCentral es manual (ver apps/catalogo/models.py, campo
+# meshcentral_node_id); no hay sincronización automática contra su API todavía.
+# Todas las claves tienen default porque, a diferencia de COMANDO_HMAC_SECRET, dev/tests
+# no deben romperse antes de tener una instancia de MeshCentral levantada.
+MESHCENTRAL_CONFIG = {
+    'SERVER_URL': env('MESHCENTRAL_SERVER_URL', default='https://localhost:443'),  # sin slash final
+    'MESH_ID': env('MESHCENTRAL_MESH_ID', default=''),  # ID del device group (ver README)
+    'AGENT_ARCH_ID': env.int('MESHCENTRAL_AGENT_ARCH_ID', default=4),  # 4 = agente Windows x64
+    'INSTALL_FLAGS': env.int('MESHCENTRAL_INSTALL_FLAGS', default=2),  # 2 = solo servicio, sin UI
+    # Valores de "viewmode" para saltar directo a escritorio/terminal en el link del
+    # dispositivo — confirmar contra la instancia real (ver README); si no aplican, el
+    # link cae de todos modos a la página general del dispositivo.
+    'VIEWMODE_ESCRITORIO': env('MESHCENTRAL_VIEWMODE_ESCRITORIO', default='11'),
+    'VIEWMODE_TERMINAL': env('MESHCENTRAL_VIEWMODE_TERMINAL', default='12'),
+}
 
 # API móvil (apps Flutter): Token Authentication de DRF, sin dependencias externas.
 # El técnico obtiene su token una vez en /api/v1/auth/token/ y lo reusa en cada request.

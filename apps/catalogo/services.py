@@ -104,3 +104,48 @@ def resolver_estaciones(destino_tipo, *, grupos=None, farmacias=None, estaciones
     return (estaciones if estaciones is not None else Estacion.objects.none()).filter(
         estado_aprobacion=aprobada,
     )
+
+
+# --- Acceso remoto interactivo (MeshCentral) ---
+# A diferencia de enviar_comando/enviar_script (arriba), esto NO viaja por el
+# broker MQTT propio: es un canal completamente aparte (navegador -> servidor
+# MeshCentral -> MeshAgent). Estas funciones solo construyen strings (un
+# comando PowerShell y URLs); no hacen ninguna llamada de red.
+
+def generar_comando_instalacion_meshcentral(estacion) -> str:
+    """One-liner de PowerShell para instalar el agente de MeshCentral en `estacion`.
+
+    Pensado para pegarse tal cual en el ejecutor ad-hoc de Scripts RMM
+    (apps/scripts). Descarga el instalador silencioso (installflags=2 =
+    solo servicio, sin UI) del device group configurado en MESHCENTRAL_CONFIG.
+    """
+    conf = settings.MESHCENTRAL_CONFIG
+    url_instalador = (
+        f"{conf['SERVER_URL']}/meshagents?id={conf['AGENT_ARCH_ID']}"
+        f"&meshid={conf['MESH_ID']}&installflags={conf['INSTALL_FLAGS']}"
+    )
+    return (
+        '$ruta = Join-Path $env:TEMP "meshagent.exe"; '
+        f'Invoke-WebRequest -Uri "{url_instalador}" -OutFile $ruta -UseBasicParsing; '
+        'Start-Process -FilePath $ruta -Wait; '
+        'Remove-Item $ruta -Force -ErrorAction SilentlyContinue'
+    )
+
+
+def _url_dispositivo_meshcentral(estacion, viewmode: str) -> str | None:
+    if not estacion.meshcentral_node_id:
+        return None
+    conf = settings.MESHCENTRAL_CONFIG
+    return f"{conf['SERVER_URL']}/index.html?node={estacion.meshcentral_node_id}&viewmode={viewmode}"
+
+
+def url_escritorio_remoto_meshcentral(estacion) -> str | None:
+    """URL de MeshCentral para ver el escritorio remoto de `estacion`, o None si
+    todavía no tiene un node_id vinculado."""
+    return _url_dispositivo_meshcentral(estacion, settings.MESHCENTRAL_CONFIG['VIEWMODE_ESCRITORIO'])
+
+
+def url_terminal_remoto_meshcentral(estacion) -> str | None:
+    """URL de MeshCentral para abrir una terminal remota en `estacion`, o None si
+    todavía no tiene un node_id vinculado."""
+    return _url_dispositivo_meshcentral(estacion, settings.MESHCENTRAL_CONFIG['VIEWMODE_TERMINAL'])

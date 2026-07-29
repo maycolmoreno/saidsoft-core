@@ -2,16 +2,14 @@
 {% block title %}Colaboradores · SAIDSOFT{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold text-slate-900">Colaboradores</h1>
-    <a href="{% url 'panel:colaborador_crear' %}" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">
-        + Nuevo colaborador
-    </a>
+    <h1 class="text-xl font-semibold">Colaboradores</h1>
+    <a href="{% url 'panel:colaborador_crear' %}" class="btn primary">+ Nuevo colaborador</a>
 </div>
 
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+<div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Nombre</th>
                 <th class="text-left px-4 py-3">Cédula</th>
                 <th class="text-left px-4 py-3">Cargo</th>
@@ -20,18 +18,18 @@
                 <th class="text-left px-4 py-3">Activos asignados</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for c in colaboradores %}
-            <tr class="hover:bg-slate-50">
-                <td class="px-4 py-3 font-medium text-slate-900">{{ c.nombre }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ c.cedula }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ c.cargo|default:"—" }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ c.sucursal|default:"—" }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ c.zona|default:"—" }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ c.activos_asignados.count }}</td>
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">{{ c.nombre }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ c.cedula }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ c.cargo|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ c.sucursal|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ c.zona|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ c.activos_asignados.count }}</td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Sin colaboradores registrados todavía.</td></tr>
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin colaboradores registrados todavía.</td></tr>
         {% endfor %}
         </tbody>
     </table>

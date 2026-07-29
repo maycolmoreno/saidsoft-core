@@ -1,45 +1,45 @@
 {% if pendientes %}
-<div class="bg-white rounded-lg border border-amber-200 mb-8">
-    <div class="px-4 py-3 border-b border-amber-200 bg-amber-50 text-amber-800 text-sm font-medium rounded-t-lg flex items-center justify-between">
+<div class="card mb-8" style="border-color:var(--warning-dim); overflow:hidden;">
+    <div class="px-4 py-3 flex items-center justify-between text-sm font-medium" style="background:var(--warning-dim); color:var(--warning); border-bottom:1px solid var(--warning-dim);">
         <span>{{ pendientes|length }} estación(es) pendientes de aprobación de enrolamiento</span>
         <button hx-post="{% url 'panel:estaciones_aprobar_lote' %}"
                 hx-include="[name='estacion_ids']:checked"
                 hx-target="#pendientes-wrap" hx-swap="innerHTML"
                 hx-confirm="¿Aprobar todas las estaciones seleccionadas?"
-                class="text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded-md px-3 py-1.5">
+                class="btn primary" style="background:var(--good); font-size:12px; padding:6px 12px;">
             Aprobar seleccionadas
         </button>
     </div>
     <table class="w-full text-sm">
         <thead>
-            <tr class="text-xs text-slate-400">
+            <tr class="text-xs text-[var(--text-faint)]">
                 <th class="pl-4 py-2 text-left w-8">
                     <input type="checkbox" onclick="document.querySelectorAll('.chk-pendiente').forEach(c => c.checked = this.checked)">
                 </th>
                 <th></th><th></th><th></th><th></th><th></th><th></th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for e in pendientes %}
-            <tr id="pendiente-{{ e.pk }}" class="hover:bg-slate-50">
+            <tr id="pendiente-{{ e.pk }}" style="border-top:1px solid var(--border-soft);">
                 <td class="pl-4 py-3">
                     <input type="checkbox" class="chk-pendiente" name="estacion_ids" value="{{ e.pk }}">
                 </td>
-                <td class="px-4 py-3 font-medium text-slate-900">{{ e.codigo }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ e.farmacia.codigo }} · {{ e.farmacia.grupo.codigo }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.hostname|default:"sin hostname" }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.numero_serie|default:"sin número de serie" }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.so_nombre }} {{ e.so_build }}</td>
+                <td class="px-4 py-3 font-medium">{{ e.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ e.farmacia.codigo }} · {{ e.farmacia.grupo.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.hostname|default:"sin hostname" }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.numero_serie|default:"sin número de serie" }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.so_nombre }} {{ e.so_build }}</td>
                 <td class="px-4 py-3 text-right space-x-2">
                     <button hx-post="{% url 'panel:estacion_aprobar' e.pk %}"
                             hx-target="#pendientes-wrap" hx-swap="innerHTML"
-                            class="text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded-md px-3 py-1.5">
+                            class="btn primary" style="background:var(--good); font-size:12px; padding:6px 12px;">
                         Aprobar
                     </button>
                     <button hx-post="{% url 'panel:estacion_rechazar' e.pk %}"
                             hx-target="#pendientes-wrap" hx-swap="innerHTML"
                             hx-confirm="¿Rechazar el enrolamiento de {{ e.codigo }}?"
-                            class="text-xs font-medium text-slate-600 hover:text-red-600 border border-slate-300 rounded-md px-3 py-1.5">
+                            class="btn secondary">
                         Rechazar
                     </button>
                 </td>

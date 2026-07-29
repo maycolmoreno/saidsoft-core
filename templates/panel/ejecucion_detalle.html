@@ -2,9 +2,9 @@
 {% block title %}Ejecución #{{ ejecucion.pk }} · SAIDSOFT{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-2">
-    <h1 class="text-xl font-semibold text-slate-900">Ejecución #{{ ejecucion.pk }} — {{ ejecucion.script.nombre }}</h1>
+    <h1 class="text-xl font-semibold">Ejecución #{{ ejecucion.pk }} — {{ ejecucion.script.nombre }}</h1>
 </div>
-<p class="text-sm text-slate-500 mb-6">{{ ejecucion.get_destino_tipo_display }} · timeout {{ ejecucion.timeout_segundos }}s · {{ ejecucion.fecha_creacion|date:"d/m/Y H:i" }}</p>
+<p class="text-sm text-[var(--text-faint)] mb-6">{{ ejecucion.get_destino_tipo_display }} · timeout {{ ejecucion.timeout_segundos }}s · {{ ejecucion.fecha_creacion|date:"d/m/Y H:i" }}</p>
 
 <div id="progreso-wrap"
      hx-get="{% url 'panel:ejecucion_progreso_partial' ejecucion.pk %}"

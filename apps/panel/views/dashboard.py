@@ -45,8 +45,15 @@ def dashboard(request):
     )
     total_pendientes = Estacion.objects.filter(estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE).count()
 
+    # Agregados en Python sobre `grupos` (ya evaluado arriba) para la franja de KPI
+    # del dashboard — no son consultas nuevas, solo sumar lo que ya se trajo.
+    total_estaciones = sum(g.total_estaciones for g in grupos)
+    total_online = sum(g.online for g in grupos)
+
     return render(request, 'panel/dashboard.html', {
         'grupos': grupos,
         'despliegues_activos': despliegues_activos,
         'total_pendientes': total_pendientes,
+        'total_estaciones': total_estaciones,
+        'total_online': total_online,
     })

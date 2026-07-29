@@ -6,54 +6,162 @@
     <title>{% block title %}SAIDSOFT{% endblock %}</title>
     <link rel="stylesheet" href="{% static 'css/app.css' %}">
     <script src="{% static 'js/htmx.min.js' %}" defer></script>
+    {% block extra_head %}{% endblock %}
 </head>
-<body class="bg-slate-50 text-slate-900 min-h-screen">
+<body class="app-body">
+<script>
+    /* Resuelve el tema antes de pintar (localStorage explícito o, si no hay, el
+       del sistema operativo) para que no haya parpadeo del tema por defecto. */
+    (function(){
+        var saved = localStorage.getItem('saidsoft-theme');
+        var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        document.documentElement.setAttribute('data-theme', theme);
+    })();
+</script>
 {% if user.is_authenticated %}
-<div class="flex min-h-screen">
-    <aside class="w-60 shrink-0 bg-slate-900 text-slate-200 flex flex-col">
-        <div class="px-5 py-4 text-lg font-semibold text-white border-b border-slate-800">SAIDSOFT</div>
-        <nav class="flex-1 py-3 text-sm">
-            <a href="{% url 'panel:dashboard' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'dashboard' %}bg-slate-800 text-white font-medium{% endif %}">Dashboard</a>
-            <a href="{% url 'panel:estaciones_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'estacion' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Estaciones</a>
-            <a href="{% url 'panel:despliegues_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'despliegue' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Despliegues</a>
-            <a href="{% url 'panel:monitoreo_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'monitoreo' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Monitoreo</a>
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="brand-mark">
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17 L4 9 L12 4 L20 9 L20 17 L12 22 Z"/><path d="M4 9 L12 14 L20 9"/><path d="M12 14 L12 22"/></svg>
+            </div>
+            <div>
+                <div class="brand-name">SAIDSOFT</div>
+                <div class="brand-sub">Centro de Operaciones</div>
+            </div>
+        </div>
 
-            <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Scripts (RMM)</div>
-            <a href="{% url 'panel:scripts_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'scripts_lista' or request.resolver_match.url_name == 'script_detalle' or request.resolver_match.url_name == 'script_crear' %}bg-slate-800 text-white font-medium{% endif %}">Biblioteca</a>
-            <a href="{% url 'panel:ejecuciones_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'ejecucion' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Ejecuciones</a>
+        <div class="nav-label">Operación</div>
+        <a href="{% url 'panel:dashboard' %}" class="nav-item {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+            <span class="lbl">Dashboard</span>
+        </a>
+        <a href="{% url 'panel:estaciones_lista' %}" class="nav-item {% if 'estacion' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><circle cx="7" cy="7" r=".6" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r=".6" fill="currentColor" stroke="none"/></svg>
+            <span class="lbl">Estaciones</span>
+        </a>
+        <a href="{% url 'panel:despliegues_lista' %}" class="nav-item {% if 'despliegue' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
+            <span class="lbl">Despliegues</span>
+        </a>
+        <a href="{% url 'panel:monitoreo_lista' %}" class="nav-item {% if 'monitoreo' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2 7 4-14 2 7h8"/></svg>
+            <span class="lbl">Monitoreo</span>
+        </a>
 
-            <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Activos</div>
-            <a href="{% url 'panel:activos_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'activos_lista' or request.resolver_match.url_name == 'activo_detalle' or request.resolver_match.url_name == 'activo_crear' %}bg-slate-800 text-white font-medium{% endif %}">Inventario</a>
-            <a href="{% url 'panel:ordenes_compra_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'orden_compra' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Órdenes de compra</a>
-            <a href="{% url 'panel:bodegas_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'bodega' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Bodegas y stock</a>
-            <a href="{% url 'panel:movimientos_inventario_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'movimientos_inventario_lista' %}bg-slate-800 text-white font-medium{% endif %}">Kardex</a>
-            <a href="{% url 'panel:colaboradores_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'colaborador' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Colaboradores</a>
-            <a href="{% url 'panel:visita_tecnica_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'visita_tecnica_lista' %}bg-slate-800 text-white font-medium{% endif %}">Visita técnica</a>
+        <div class="nav-label">Scripts (RMM)</div>
+        <a href="{% url 'panel:scripts_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'scripts_lista' or request.resolver_match.url_name == 'script_detalle' or request.resolver_match.url_name == 'script_crear' %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg>
+            <span class="lbl">Biblioteca</span>
+        </a>
+        <a href="{% url 'panel:ejecuciones_lista' %}" class="nav-item {% if 'ejecucion' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6 L18 12 L9 18 Z"/><path d="M4 6v12"/></svg>
+            <span class="lbl">Ejecuciones</span>
+        </a>
 
-            <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Mantenimiento</div>
-            <a href="{% url 'panel:mantenimientos_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if request.resolver_match.url_name == 'mantenimientos_lista' or request.resolver_match.url_name == 'mantenimiento_detalle' or request.resolver_match.url_name == 'mantenimiento_crear' %}bg-slate-800 text-white font-medium{% endif %}">Mantenimientos</a>
-            <a href="{% url 'panel:mantenimientos_programados_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'programado' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Programados</a>
-            <a href="{% url 'panel:actividades_planificadas_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'actividad_planificada' in request.resolver_match.url_name or request.resolver_match.url_name == 'actividades_planificadas_lista' %}bg-slate-800 text-white font-medium{% endif %}">Actividades técnicas</a>
-            <a href="{% url 'panel:notificaciones_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'notificacion' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Notificaciones</a>
+        <div class="nav-label">Activos</div>
+        <a href="{% url 'panel:activos_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'activos_lista' or request.resolver_match.url_name == 'activo_detalle' or request.resolver_match.url_name == 'activo_crear' %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></svg>
+            <span class="lbl">Inventario</span>
+        </a>
+        <a href="{% url 'panel:ordenes_compra_lista' %}" class="nav-item {% if 'orden_compra' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l1 5H5Z"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M9 12h6"/></svg>
+            <span class="lbl">Órdenes de compra</span>
+        </a>
+        <a href="{% url 'panel:bodegas_lista' %}" class="nav-item {% if 'bodega' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10 12 4l9 6"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>
+            <span class="lbl">Bodegas y stock</span>
+        </a>
+        <a href="{% url 'panel:movimientos_inventario_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'movimientos_inventario_lista' %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3l4 4-4 4"/><path d="M21 7H8"/><path d="M7 21l-4-4 4-4"/><path d="M3 17h13"/></svg>
+            <span class="lbl">Kardex</span>
+        </a>
+        <a href="{% url 'panel:colaboradores_lista' %}" class="nav-item {% if 'colaborador' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c1.2-3.4 3.6-5 6.5-5s5.3 1.6 6.5 5"/><circle cx="18" cy="8" r="2.6"/><path d="M16.3 10.7c2 .5 3.2 1.9 4.2 4.6"/></svg>
+            <span class="lbl">Colaboradores</span>
+        </a>
+        <a href="{% url 'panel:visita_tecnica_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'visita_tecnica_lista' %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 1 5.4-5.4L21 6l-3-3Z"/></svg>
+            <span class="lbl">Visita técnica</span>
+        </a>
 
-            <div class="px-5 pt-4 pb-1 text-xs uppercase tracking-wide text-slate-500">Sistema</div>
-            <a href="{% url 'panel:auditoria_lista' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'auditoria' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Auditoría</a>
-            <a href="{% url 'panel:reportes_index' %}" class="block px-5 py-2.5 hover:bg-slate-800 {% if 'reporte' in request.resolver_match.url_name %}bg-slate-800 text-white font-medium{% endif %}">Reportes</a>
-            <a href="/admin/" class="block px-5 py-2.5 hover:bg-slate-800 text-slate-400">Admin (avanzado)</a>
-        </nav>
-        <div class="px-5 py-4 border-t border-slate-800 text-xs text-slate-400">
-            <div class="mb-2">{{ user.username }}</div>
+        <div class="nav-label">Mantenimiento</div>
+        <a href="{% url 'panel:mantenimientos_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'mantenimientos_lista' or request.resolver_match.url_name == 'mantenimiento_detalle' or request.resolver_match.url_name == 'mantenimiento_crear' %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.13.36.36.68.66.94"/></svg>
+            <span class="lbl">Mantenimientos</span>
+        </a>
+        <a href="{% url 'panel:mantenimientos_programados_lista' %}" class="nav-item {% if 'programado' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/></svg>
+            <span class="lbl">Programados</span>
+        </a>
+        <a href="{% url 'panel:actividades_planificadas_lista' %}" class="nav-item {% if 'actividad_planificada' in request.resolver_match.url_name or request.resolver_match.url_name == 'actividades_planificadas_lista' %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l2 2 4-4"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>
+            <span class="lbl">Actividades técnicas</span>
+        </a>
+        <a href="{% url 'panel:notificaciones_lista' %}" class="nav-item {% if 'notificacion' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            <span class="lbl">Notificaciones</span>
+        </a>
+
+        <div class="nav-label">Planificación y Cumplimiento</div>
+        <a href="{% url 'panel:cumplimiento_lista' %}" class="nav-item {% if 'cumplimiento' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
+            <span class="lbl">Cumplimiento</span>
+        </a>
+
+        <div class="nav-label">Sistema</div>
+        <a href="{% url 'panel:auditoria_lista' %}" class="nav-item {% if 'auditoria' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V5a1 1 0 0 1 1-1h13a1 1 0 0 1 1 1v13H6a2 2 0 0 0-2 2Z"/><path d="M4 19.5A2 2 0 0 0 6 21h13"/><path d="M8 7h8"/><path d="M8 11h5"/></svg>
+            <span class="lbl">Auditoría</span>
+        </a>
+        <a href="{% url 'panel:reportes_index' %}" class="nav-item {% if 'reporte' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
+            <span class="lbl">Reportes</span>
+        </a>
+        <a href="/admin/" class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3 8-8 9-5-1-8-4.5-8-9V6Z"/></svg>
+            <span class="lbl">Admin (avanzado)</span>
+        </a>
+
+        <div class="sidebar-foot">
+            <span class="lbl">{{ user.username }}</span>
             <form method="post" action="{% url 'panel:logout' %}">
                 {% csrf_token %}
-                <button type="submit" class="text-slate-300 hover:text-white">Cerrar sesión</button>
+                <button type="submit" class="lbl" style="background:none;border:none;color:inherit;cursor:pointer;font:inherit;">Salir</button>
             </form>
         </div>
     </aside>
-    <main class="flex-1 p-8">
+
+    <header class="topbar">
+        <div class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <span>Buscar estación, activo, script…</span>
+            <kbd>Ctrl K</kbd>
+        </div>
+        <div class="topbar-spacer"></div>
+        <div class="sys-status"><span class="led"></span> Todos los sistemas operativos</div>
+        <div class="clockbox">
+            <div class="time mono" id="clock">00:00:00</div>
+            <div class="date" id="clockdate"></div>
+        </div>
+        <button type="button" class="icon-btn theme-toggle" id="themeToggle" aria-label="Cambiar tema" title="Cambiar tema">
+            <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2.5M12 19.5V22M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2 12h2.5M19.5 12H22M4.2 19.8 6 18M18 6l1.8-1.8"/></svg>
+            <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+        </button>
+        <a href="{% url 'panel:notificaciones_lista' %}" class="icon-btn" aria-label="Notificaciones" title="Notificaciones">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        </a>
+        <div class="userchip">
+            <div class="avatar">{{ user.username|slice:":2"|upper }}</div>
+            <div class="who"><b>{{ user.get_full_name|default:user.username }}</b>{% if user.groups.first %}<span>{{ user.groups.first.name }}</span>{% endif %}</div>
+        </div>
+    </header>
+
+    <main class="main">
         {% if messages %}
-            <div class="mb-6 space-y-2">
+            <div style="display:flex;flex-direction:column;gap:8px;">
             {% for message in messages %}
-                <div class="rounded-md px-4 py-2.5 text-sm {% if message.tags == 'error' %}bg-red-50 text-red-700 border border-red-200{% else %}bg-green-50 text-green-700 border border-green-200{% endif %}">
+                <div class="alert {% if message.tags == 'error' %}sev-critical{% else %}sev-good{% endif %}" style="font-size:13px;">
                     {{ message }}
                 </div>
             {% endfor %}
@@ -62,9 +170,33 @@
         {% block content %}{% endblock %}
     </main>
 </div>
-<dialog id="modal-info" class="rounded-lg shadow-xl backdrop:bg-slate-900/40 w-full max-w-lg p-0">
+<dialog id="modal-info" class="rounded-lg shadow-xl w-full max-w-lg p-0">
     <div id="modal-info-content"></div>
 </dialog>
+<script>
+    // Reloj en vivo del topbar
+    function tick(){
+        var now = new Date();
+        var hh = String(now.getHours()).padStart(2,'0');
+        var mm = String(now.getMinutes()).padStart(2,'0');
+        var ss = String(now.getSeconds()).padStart(2,'0');
+        document.getElementById('clock').textContent = hh+':'+mm+':'+ss;
+        document.getElementById('clockdate').textContent = now.toLocaleDateString('es-EC', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
+    }
+    tick();
+    setInterval(tick, 1000);
+
+    // Toggle de tema, persistido en localStorage
+    var themeToggle = document.getElementById('themeToggle');
+    function setTheme(theme){
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('saidsoft-theme', theme);
+    }
+    themeToggle.addEventListener('click', function(){
+        var current = document.documentElement.getAttribute('data-theme');
+        setTheme(current === 'dark' ? 'light' : 'dark');
+    });
+</script>
 {% else %}
     {% block content_anon %}{% endblock %}
 {% endif %}

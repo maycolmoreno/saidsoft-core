@@ -2,26 +2,24 @@
 {% block title %}Inventario de activos · SAIDSOFT{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold text-slate-900">Inventario de activos</h1>
-    <a href="{% url 'panel:activo_crear' %}" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">
-        + Registrar ingreso
-    </a>
+    <h1 class="text-xl font-semibold">Inventario de activos</h1>
+    <a href="{% url 'panel:activo_crear' %}" class="btn primary">+ Registrar ingreso</a>
 </div>
 
 <form method="get" class="flex items-center gap-3 mb-4">
-    <select name="tipo" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+    <select name="tipo" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Todos los tipos</option>
         {% for valor, etiqueta in tipos %}
         <option value="{{ valor }}" {% if valor == filtro_tipo %}selected{% endif %}>{{ etiqueta }}</option>
         {% endfor %}
     </select>
-    <select name="estado" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+    <select name="estado" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Cualquier estado</option>
         {% for valor, etiqueta in estados %}
         <option value="{{ valor }}" {% if valor == filtro_estado %}selected{% endif %}>{{ etiqueta }}</option>
         {% endfor %}
     </select>
-    <select name="bodega" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+    <select name="bodega" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Todas las bodegas</option>
         {% for b in bodegas %}
         <option value="{{ b.codigo }}" {% if b.codigo == filtro_bodega %}selected{% endif %}>{{ b.codigo }}</option>
@@ -29,10 +27,10 @@
     </select>
 </form>
 
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+<div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Código</th>
                 <th class="text-left px-4 py-3">Tipo</th>
                 <th class="text-left px-4 py-3">Marca / Modelo</th>
@@ -40,28 +38,23 @@
                 <th class="text-left px-4 py-3">Ubicación / responsable</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for a in activos %}
-            <tr class="hover:bg-slate-50 cursor-pointer" onclick="window.location='{% url 'panel:activo_detalle' a.pk %}'">
-                <td class="px-4 py-3 font-mono text-slate-900">{{ a.codigo }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ a.get_tipo_display }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ a.marca }} {{ a.modelo }}</td>
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:activo_detalle' a.pk %}'">
+                <td class="px-4 py-3 font-mono">{{ a.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.get_tipo_display }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.marca }} {{ a.modelo }}</td>
                 <td class="px-4 py-3">
-                    <span class="text-xs px-2 py-0.5 rounded-full
-                        {% if a.estado == 'en_bodega' %}bg-blue-50 text-blue-700
-                        {% elif a.estado == 'asignado' %}bg-green-50 text-green-700
-                        {% elif a.estado == 'en_reparacion' %}bg-amber-50 text-amber-700
-                        {% elif a.estado == 'dado_de_baja' %}bg-red-50 text-red-700
-                        {% else %}bg-slate-100 text-slate-600{% endif %}">
+                    <span class="pill {% if a.estado == 'en_bodega' %}info{% elif a.estado == 'asignado' %}good{% elif a.estado == 'en_reparacion' %}warning{% elif a.estado == 'dado_de_baja' %}critical{% else %}neutral{% endif %}">
                         {{ a.get_estado_display }}
                     </span>
                 </td>
-                <td class="px-4 py-3 text-slate-500 text-xs">
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
                     {% if a.colaborador_actual %}{{ a.colaborador_actual.nombre }}{% elif a.bodega_actual %}{{ a.bodega_actual.codigo }}{% else %}—{% endif %}
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400">Sin activos para este filtro.</td></tr>
+            <tr><td colspan="5" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin activos para este filtro.</td></tr>
         {% endfor %}
         </tbody>
     </table>

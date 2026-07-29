@@ -2,14 +2,12 @@
 {% block title %}Actividades planificadas · SAIDSOFT{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold text-slate-900">Actividades planificadas</h1>
-    <a href="{% url 'panel:actividad_planificada_crear' %}" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">
-        + Nueva actividad
-    </a>
+    <h1 class="text-xl font-semibold">Actividades planificadas</h1>
+    <a href="{% url 'panel:actividad_planificada_crear' %}" class="btn primary">+ Nueva actividad</a>
 </div>
 
 <form method="get" class="flex items-center gap-3 mb-4">
-    <select name="estado" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+    <select name="estado" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Cualquier estado</option>
         {% for valor, etiqueta in estados %}
         <option value="{{ valor }}" {% if valor == filtro_estado %}selected{% endif %}>{{ etiqueta }}</option>
@@ -17,10 +15,10 @@
     </select>
 </form>
 
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+<div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Título</th>
                 <th class="text-left px-4 py-3">Técnico</th>
                 <th class="text-left px-4 py-3">Prioridad</th>
@@ -29,29 +27,26 @@
                 <th class="text-right px-4 py-3"></th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for a in actividades %}
-            <tr>
-                <td class="px-4 py-3 text-slate-900">{{ a.titulo }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ a.tecnico.username }}</td>
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3">{{ a.titulo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.tecnico.username }}</td>
                 <td class="px-4 py-3">
-                    <span class="text-xs px-2 py-0.5 rounded-full
-                        {% if a.prioridad == 'urgente' %}bg-red-50 text-red-700
-                        {% elif a.prioridad == 'alta' %}bg-amber-50 text-amber-700
-                        {% else %}bg-slate-100 text-slate-600{% endif %}">
+                    <span class="pill {% if a.prioridad == 'urgente' %}critical{% elif a.prioridad == 'alta' %}warning{% else %}neutral{% endif %}">
                         {{ a.get_prioridad_display }}
                     </span>
                 </td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ a.fecha_inicio }} — {{ a.fecha_fin }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ a.get_estado_display }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.fecha_inicio }} — {{ a.fecha_fin }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.get_estado_display }}</td>
                 <td class="px-4 py-3 text-right">
                     {% if a.estado != 'completada' and a.estado != 'cancelada' %}
-                    <a href="{% url 'panel:actividad_planificada_completar' a.pk %}" class="text-slate-700 text-xs font-medium hover:underline">Completar</a>
+                    <a href="{% url 'panel:actividad_planificada_completar' a.pk %}" class="text-xs font-medium hover:underline text-[var(--text-dim)]">Completar</a>
                     {% endif %}
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Sin actividades para este filtro.</td></tr>
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin actividades para este filtro.</td></tr>
         {% endfor %}
         </tbody>
     </table>

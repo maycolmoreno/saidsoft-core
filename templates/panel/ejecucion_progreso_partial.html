@@ -1,52 +1,44 @@
 <div class="flex items-center gap-3 mb-4 text-sm">
-    <span class="text-slate-500">Estado general:</span>
-    <span class="px-2 py-0.5 rounded-full text-xs
-        {% if ejecucion.estado == 'completado' %}bg-green-50 text-green-700
-        {% elif ejecucion.estado == 'con_errores' %}bg-red-50 text-red-700
-        {% elif ejecucion.estado == 'en_progreso' %}bg-amber-50 text-amber-700
-        {% else %}bg-slate-100 text-slate-600{% endif %}">
+    <span class="text-[var(--text-faint)]">Estado general:</span>
+    <span class="pill {% if ejecucion.estado == 'completado' %}good{% elif ejecucion.estado == 'con_errores' %}critical{% elif ejecucion.estado == 'en_progreso' %}warning{% else %}neutral{% endif %}">
         {{ ejecucion.get_estado_display }}
     </span>
 </div>
 
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+<div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Estación</th>
                 <th class="text-left px-4 py-3">Estado</th>
                 <th class="text-left px-4 py-3">Exit code</th>
                 <th class="text-left px-4 py-3">Salida</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for r in resultados %}
-            <tr>
-                <td class="px-4 py-3 font-mono text-slate-900">{{ r.estacion.codigo }}</td>
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-mono">{{ r.estacion.codigo }}</td>
                 <td class="px-4 py-3 text-xs">
-                    <span class="px-2 py-0.5 rounded-full
-                        {% if r.estado == 'completado' %}bg-green-50 text-green-700
-                        {% elif r.estado == 'error' or r.estado == 'timeout' %}bg-red-50 text-red-700
-                        {% elif r.estado == 'ejecutando' %}bg-amber-50 text-amber-700
-                        {% else %}bg-slate-100 text-slate-600{% endif %}">
+                    <span class="pill {% if r.estado == 'completado' %}good{% elif r.estado == 'error' or r.estado == 'timeout' %}critical{% elif r.estado == 'ejecutando' %}warning{% else %}neutral{% endif %}">
                         {{ r.get_estado_display }}
                     </span>
                 </td>
-                <td class="px-4 py-3 text-slate-600">{{ r.exit_code|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.exit_code|default:"—" }}</td>
                 <td class="px-4 py-3">
                     {% if r.stdout or r.stderr %}
                     <details>
-                        <summary class="text-xs text-slate-600 cursor-pointer hover:underline">Ver salida</summary>
-                        {% if r.stdout %}<pre class="bg-slate-900 text-slate-100 text-xs rounded p-2 mt-2 overflow-x-auto">{{ r.stdout }}</pre>{% endif %}
-                        {% if r.stderr %}<pre class="bg-red-950 text-red-100 text-xs rounded p-2 mt-2 overflow-x-auto">{{ r.stderr }}</pre>{% endif %}
+                        <summary class="text-xs text-[var(--text-dim)] cursor-pointer hover:underline">Ver salida</summary>
+                        {% if r.stdout %}<pre class="text-xs rounded p-2 mt-2 overflow-x-auto" style="background:#0E1626; color:#E7ECF3;">{{ r.stdout }}</pre>{% endif %}
+                        {% if r.stderr %}<pre class="text-xs rounded p-2 mt-2 overflow-x-auto" style="background:#2A0E12; color:#FCA5A5;">{{ r.stderr }}</pre>{% endif %}
                     </details>
                     {% else %}
-                    <span class="text-slate-400 text-xs">—</span>
+                    <span class="text-[var(--text-faint)] text-xs">—</span>
                     {% endif %}
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="4" class="px-4 py-6 text-center text-slate-400">Sin estaciones en el destino de esta ejecución.</td></tr>
+            <tr><td colspan="4" class="px-4 py-6 text-center text-[var(--text-faint)]">Sin estaciones en el destino de esta ejecución.</td></tr>
         {% endfor %}
         </tbody>
     </table>

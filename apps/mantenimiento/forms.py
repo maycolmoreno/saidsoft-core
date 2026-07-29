@@ -5,7 +5,7 @@ from apps.activos.models import Activo, Colaborador, Empresa, Ubicacion
 
 from .models import MantenimientoProgramado, PrioridadActividad, ResultadoTecnico, TipoFirma
 
-INPUT_CLASS = 'w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900'
+INPUT_CLASS = 'w-full rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]'
 
 User = get_user_model()
 

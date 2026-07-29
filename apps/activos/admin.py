@@ -58,10 +58,10 @@ class BodegaAdmin(admin.ModelAdmin):
 
 @admin.register(Colaborador)
 class ColaboradorAdmin(admin.ModelAdmin):
-    list_display = ('nombre', 'cedula', 'cargo', 'ubicacion', 'sucursal', 'zona', 'activo')
+    list_display = ('nombre', 'cedula', 'cargo', 'unidad_negocio', 'ubicacion', 'sucursal', 'zona', 'activo')
     search_fields = ('nombre', 'cedula', 'correo')
-    list_filter = ('activo', 'sucursal', 'ubicacion')
-    autocomplete_fields = ('cargo', 'ubicacion')
+    list_filter = ('activo', 'unidad_negocio', 'sucursal', 'ubicacion')
+    autocomplete_fields = ('cargo', 'ubicacion', 'unidad_negocio')
 
 
 @admin.register(TipoConsumible)
@@ -145,11 +145,11 @@ class EventoActivoInline(admin.TabularInline):
 class ActivoAdmin(admin.ModelAdmin):
     list_display = (
         'codigo', 'tipo', 'marca', 'categoria', 'modelo', 'estado', 'estado_fisico_actual',
-        'bodega_actual', 'colaborador_actual', 'baja_recomendada',
+        'bodega_actual', 'colaborador_actual', 'unidad_negocio', 'baja_recomendada',
     )
-    list_filter = ('tipo', 'estado', 'bodega_actual', 'baja_recomendada')
+    list_filter = ('tipo', 'estado', 'bodega_actual', 'unidad_negocio', 'baja_recomendada')
     search_fields = ('codigo', 'numero_serie', 'marca__nombre', 'modelo', 'codigo_sap')
-    autocomplete_fields = ('orden_compra', 'bodega_actual', 'colaborador_actual', 'marca', 'categoria')
+    autocomplete_fields = ('orden_compra', 'bodega_actual', 'colaborador_actual', 'marca', 'categoria', 'unidad_negocio')
     readonly_fields = ('codigo', 'fecha_creacion')
     inlines = [EventoActivoInline]
 

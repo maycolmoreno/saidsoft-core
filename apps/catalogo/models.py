@@ -5,6 +5,10 @@ codigo_grupo_validator = RegexValidator(
     regex=r'^[A-Z0-9]+$',
     message='El código de grupo solo admite mayúsculas y números, ej. TRX001',
 )
+codigo_unidad_negocio_validator = RegexValidator(
+    regex=r'^[A-Z0-9]+$',
+    message='El código de unidad de negocio solo admite mayúsculas y números, ej. SG',
+)
 codigo_farmacia_validator = RegexValidator(
     regex=r'^[A-Z0-9]+$',
     message='El código de farmacia solo admite mayúsculas y números, ej. ML001',
@@ -13,6 +17,28 @@ codigo_estacion_validator = RegexValidator(
     regex=r'^[A-Z0-9]+-[A-Z0-9]+$',
     message='El código de estación debe tener el formato FARMACIA-SUFIJO, ej. ML001-ADM',
 )
+
+
+class UnidadNegocio(models.Model):
+    """Unidad de negocio de la empresa (ej. SG = Farmacias San Gregorio, MIA = Farmacias MIA).
+
+    Entidad compartida entre módulos — no exclusiva de Cumplimiento: se referencia
+    también desde apps.activos (Colaborador, Activo) y cualquier módulo futuro que
+    necesite agrupar por unidad de negocio (Reportes, KPIs, Mesa de Ayuda).
+    """
+    codigo = models.CharField(max_length=10, unique=True, validators=[codigo_unidad_negocio_validator])
+    nombre = models.CharField(max_length=100, blank=True)
+    activo = models.BooleanField(default=True)
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'unidad_negocio'
+        ordering = ['codigo']
+        verbose_name = 'Unidad de negocio'
+        verbose_name_plural = 'Unidades de negocio'
+
+    def __str__(self):
+        return self.codigo
 
 
 class Grupo(models.Model):
@@ -38,12 +64,20 @@ class Farmacia(models.Model):
     codigo = models.CharField(max_length=15, unique=True, validators=[codigo_farmacia_validator])
     nombre = models.CharField(max_length=150, blank=True)
     grupo = models.ForeignKey(Grupo, on_delete=models.PROTECT, related_name='farmacias')
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='farmacias',
+    )
     ubicacion = models.CharField(max_length=150, blank=True)
     telefono = models.CharField(max_length=15, blank=True)
     email = models.EmailField(blank=True)
     observacion = models.TextField(blank=True)
     activa = models.BooleanField(default=True)
     fecha_registro = models.DateTimeField(auto_now_add=True)
+    fecha_apertura = models.DateField(
+        null=True, blank=True,
+        help_text='Fecha real de apertura del local (distinta de fecha_registro, que es '
+                  'cuándo se creó el registro en SAIDSOFT).',
+    )
 
     class Meta:
         db_table = 'farmacia'
@@ -126,11 +160,24 @@ class Estacion(models.Model):
     ip_lan = models.GenericIPAddressField(null=True, blank=True, help_text='IP LAN reportada por el agente.')
     puerto_cache = models.PositiveIntegerField(null=True, blank=True)
 
+    # Acceso remoto interactivo (MeshCentral) — bolt-on independiente del canal MQTT/HMAC.
+    # La correlación con el nodo de MeshCentral es manual en v1 (ver apps/catalogo/services.py):
+    # no hay sincronización automática contra la API de MeshCentral todavía.
+    meshcentral_node_id = models.CharField(
+        max_length=64, blank=True,
+        help_text='ID interno del dispositivo en MeshCentral (se copia manualmente desde la '
+                  'consola de MeshCentral tras instalar el agente). Vacío = no vinculada.',
+    )
+    meshcentral_vinculado_en = models.DateTimeField(null=True, blank=True)
+
     fecha_creacion = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'estacion'
         ordering = ['codigo']
+        permissions = [
+            ('acceso_remoto_estacion', 'Puede abrir sesiones de acceso remoto (MeshCentral) a estaciones'),
+        ]
 
     def __str__(self):
         return self.codigo

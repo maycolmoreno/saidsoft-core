@@ -1,0 +1,132 @@
+/* ============================= TOKENS =============================
+   Sistema de diseño NOC (ver noc-design-system.html) — geometría/tipografía
+   compartida + tokens de color oscuro (identidad primaria) y claro (mismo
+   nivel de cuidado, no una inversión). Orden de precedencia por superficie:
+   :root (default) -> prefers-color-scheme (sigue el SO si el usuario no
+   eligió) -> [data-theme] (elección explícita del toggle, siempre gana). */
+:root{
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --gap: 16px;
+  --page-pad: 24px;
+
+  --font-ui: "Segoe UI", Inter, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+:root{
+  --bg:            #0B1220;
+  --panel:         #131C2E;
+  --card:          #1A2438;
+  --card-hover:    #202C46;
+  --border:        #2C3E50;
+  --border-soft:   #22303f;
+  --border-hover:  #3a4d63;
+  --text:          #FFFFFF;
+  --text-dim:      #9CA3AF;
+  --text-faint:    #64748B;
+
+  --good:          #10B981;
+  --good-dim:      #10B98122;
+  --critical:      #EF4444;
+  --critical-dim:  #EF444422;
+  --warning:       #F59E0B;
+  --warning-dim:   #F59E0B22;
+  --info:          #3B82F6;
+  --info-dim:      #3B82F633;
+  --accent:        #8B5CF6;
+  --accent-2:      #5B3FD9;
+  --accent-dim:    #8B5CF622;
+  --accent-shadow: #8B5CF680;
+
+  --overlay-hover: rgba(255,255,255,.05);
+  --overlay-faint: rgba(255,255,255,.025);
+  --track-bg:      rgba(255,255,255,.06);
+  --sheen:         rgba(255,255,255,.08);
+
+  --skel-1: #1c2740;
+  --skel-2: #24304c;
+
+  --shadow-card: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.55);
+  --shadow-pop:  0 4px 8px rgba(0,0,0,.35), 0 16px 40px -16px rgba(0,0,0,.6);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light){
+  :root:not([data-theme]){
+    --bg:            #F1F4F9;
+    --panel:         #FFFFFF;
+    --card:          #FFFFFF;
+    --card-hover:    #F7F9FC;
+    --border:        #DEE4EC;
+    --border-soft:   #E9EDF3;
+    --border-hover:  #C7D0DC;
+    --text:          #0F172A;
+    --text-dim:      #55606E;
+    --text-faint:    #8A94A3;
+
+    --good:          #059669;
+    --good-dim:      #0596691A;
+    --critical:      #DC2626;
+    --critical-dim:  #DC26261A;
+    --warning:       #B45309;
+    --warning-dim:   #D977061A;
+    --info:          #2563EB;
+    --info-dim:      #2563EB1A;
+    --accent:        #7C3AED;
+    --accent-2:      #6D28D9;
+    --accent-dim:    #7C3AED17;
+    --accent-shadow: #7C3AED4D;
+
+    --overlay-hover: rgba(15,23,42,.045);
+    --overlay-faint: rgba(15,23,42,.028);
+    --track-bg:      rgba(15,23,42,.07);
+    --sheen:         rgba(255,255,255,.6);
+
+    --skel-1: #E7ECF3;
+    --skel-2: #F4F7FB;
+
+    --shadow-card: 0 1px 2px rgba(15,23,42,.05), 0 8px 20px -12px rgba(15,23,42,.12);
+    --shadow-pop:  0 4px 10px rgba(15,23,42,.07), 0 20px 36px -16px rgba(15,23,42,.16);
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="dark"]{
+  --bg:#0B1220; --panel:#131C2E; --card:#1A2438; --card-hover:#202C46;
+  --border:#2C3E50; --border-soft:#22303f; --border-hover:#3a4d63;
+  --text:#FFFFFF; --text-dim:#9CA3AF; --text-faint:#64748B;
+  --good:#10B981; --good-dim:#10B98122;
+  --critical:#EF4444; --critical-dim:#EF444422;
+  --warning:#F59E0B; --warning-dim:#F59E0B22;
+  --info:#3B82F6; --info-dim:#3B82F633;
+  --accent:#8B5CF6; --accent-2:#5B3FD9; --accent-dim:#8B5CF622; --accent-shadow:#8B5CF680;
+  --overlay-hover:rgba(255,255,255,.05); --overlay-faint:rgba(255,255,255,.025);
+  --track-bg:rgba(255,255,255,.06); --sheen:rgba(255,255,255,.08);
+  --skel-1:#1c2740; --skel-2:#24304c;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.55);
+  --shadow-pop:  0 4px 8px rgba(0,0,0,.35), 0 16px 40px -16px rgba(0,0,0,.6);
+  color-scheme: dark;
+}
+
+:root[data-theme="light"]{
+  --bg:#F1F4F9; --panel:#FFFFFF; --card:#FFFFFF; --card-hover:#F7F9FC;
+  --border:#DEE4EC; --border-soft:#E9EDF3; --border-hover:#C7D0DC;
+  --text:#0F172A; --text-dim:#55606E; --text-faint:#8A94A3;
+  --good:#059669; --good-dim:#0596691A;
+  --critical:#DC2626; --critical-dim:#DC26261A;
+  --warning:#B45309; --warning-dim:#D977061A;
+  --info:#2563EB; --info-dim:#2563EB1A;
+  --accent:#7C3AED; --accent-2:#6D28D9; --accent-dim:#7C3AED17; --accent-shadow:#7C3AED4D;
+  --overlay-hover:rgba(15,23,42,.045); --overlay-faint:rgba(15,23,42,.028);
+  --track-bg:rgba(15,23,42,.07); --sheen:rgba(255,255,255,.6);
+  --skel-1:#E7ECF3; --skel-2:#F4F7FB;
+  --shadow-card: 0 1px 2px rgba(15,23,42,.05), 0 8px 20px -12px rgba(15,23,42,.12);
+  --shadow-pop:  0 4px 10px rgba(15,23,42,.07), 0 20px 36px -16px rgba(15,23,42,.16);
+  color-scheme: light;
+}
+
+@media (prefers-reduced-motion: reduce){
+  *{ animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important; }
+}

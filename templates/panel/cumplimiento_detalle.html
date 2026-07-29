@@ -1,0 +1,71 @@
+{% extends "panel/base.html" %}
+{% block title %}{{ actividad.nombre }} · Cumplimiento · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-2">
+    <h1 class="text-xl font-semibold">{{ actividad.nombre }}</h1>
+    {% if actividad.vencida %}
+    <span class="pill critical">Vencida</span>
+    {% else %}
+    <span class="pill warning">Vence {{ actividad.fecha_limite|date:"d/m/Y" }}</span>
+    {% endif %}
+</div>
+<p class="text-sm text-[var(--text-faint)] mb-6">{{ actividad.descripcion|default:"Sin descripción." }}</p>
+
+<div class="grid grid-cols-3 gap-4 mb-6 text-sm">
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Unidad(es) de negocio</div>
+        <div>{% for u in actividad.unidades_negocio.all %}{{ u.codigo }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Objetivo</div>
+        <div>{{ actividad.get_tipo_objetivo_display }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Avance</div>
+        {% if avance is not None %}
+        <div class="rank-row"><span class="track"><span class="fill" style="width:{{ avance }}%; background:{% if avance == 100 %}var(--good){% elif avance >= 50 %}var(--warning){% else %}var(--critical){% endif %};"></span></span><span class="val">{{ avance }}%</span></div>
+        {% else %}
+        <div class="text-[var(--text-faint)]">Sin objetivos</div>
+        {% endif %}
+    </div>
+</div>
+
+<h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Objetivos</h2>
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Objetivo</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Completado</th>
+                <th class="text-left px-4 py-3">Observación</th>
+                <th class="text-right px-4 py-3"></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in resultados %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">
+                    {% if r.estacion %}{{ r.estacion.codigo }}{% elif r.farmacia %}{{ r.farmacia.codigo }}{% else %}{{ r.colaborador.nombre }}{% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if r.estado == 'completado' %}good{% else %}neutral{% endif %}">{{ r.get_estado_display }}</span>
+                </td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ r.fecha_completado|date:"d/m/Y H:i"|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ r.observacion|default:"—" }}</td>
+                <td class="px-4 py-3 text-right">
+                    {% if r.estado != 'completado' %}
+                    <form method="post" action="{% url 'panel:cumplimiento_resultado_completar' actividad.pk r.pk %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn primary" style="font-size:11px; padding:5px 10px;">Marcar completado</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="5" class="px-4 py-6 text-center text-[var(--text-faint)]">Sin objetivos resueltos todavía.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

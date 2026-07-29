@@ -1,0 +1,39 @@
+{% extends "panel/base.html" %}
+{% block title %}Planificación y Cumplimiento · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold">Planificación y Cumplimiento</h1>
+    <a href="{% url 'panel:cumplimiento_crear' %}" class="btn primary">+ Nueva actividad</a>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+{% for a in actividades %}
+    <a href="{% url 'panel:cumplimiento_detalle' a.pk %}" class="card hoverable p-4 block">
+        <div class="flex items-center justify-between mb-2">
+            <span class="font-medium">{{ a.nombre }}</span>
+            {% if a.vencida %}
+            <span class="pill critical">Vencida</span>
+            {% else %}
+            <span class="pill warning">{{ a.fecha_limite|date:"d/m/Y" }}</span>
+            {% endif %}
+        </div>
+        <div class="text-xs text-[var(--text-faint)] mb-3">
+            {% for u in a.unidades_negocio.all %}{{ u.codigo }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            · {{ a.get_tipo_objetivo_display }}
+        </div>
+        {% if a.avance is not None %}
+        <div class="rank-row">
+            <span class="track"><span class="fill" style="width:{{ a.avance }}%; background:{% if a.avance == 100 %}var(--good){% elif a.avance >= 50 %}var(--warning){% else %}var(--critical){% endif %};"></span></span>
+            <span class="val">{{ a.avance }}%</span>
+        </div>
+        {% else %}
+        <p class="text-xs text-[var(--text-faint)]">Sin objetivos resueltos todavía.</p>
+        {% endif %}
+    </a>
+{% empty %}
+    <div class="card px-4 py-8 text-center text-[var(--text-faint)] text-sm md:col-span-2 xl:col-span-3">
+        Sin actividades de cumplimiento registradas todavía.
+    </div>
+{% endfor %}
+</div>
+{% endblock %}

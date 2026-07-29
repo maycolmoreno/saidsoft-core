@@ -19,6 +19,9 @@ urlpatterns = [
     path('estaciones/<int:pk>/reiniciar/', views.estacion_reiniciar, name='estacion_reiniciar'),
     path('estaciones/<int:pk>/info/', views.estacion_info_modal, name='estacion_info_modal'),
     path('estaciones/<int:pk>/info/solicitar/', views.estacion_info_solicitar, name='estacion_info_solicitar'),
+    path('estaciones/<int:pk>/meshcentral/vincular/', views.estacion_meshcentral_vincular, name='estacion_meshcentral_vincular'),
+    path('estaciones/<int:pk>/meshcentral/escritorio/', views.estacion_meshcentral_escritorio, name='estacion_meshcentral_escritorio'),
+    path('estaciones/<int:pk>/meshcentral/terminal/', views.estacion_meshcentral_terminal, name='estacion_meshcentral_terminal'),
 
     path('despliegues/', views.despliegues_lista, name='despliegues_lista'),
     path('despliegues/nuevo/', views.despliegue_crear, name='despliegue_crear'),
@@ -122,4 +125,13 @@ urlpatterns = [
     path('ejecuciones/', views.ejecuciones_lista, name='ejecuciones_lista'),
     path('ejecuciones/<int:pk>/', views.ejecucion_detalle, name='ejecucion_detalle'),
     path('ejecuciones/<int:pk>/progreso/', views.ejecucion_progreso_partial, name='ejecucion_progreso_partial'),
+
+    # Módulo de Planificación y Cumplimiento
+    path('cumplimiento/', views.cumplimiento_lista, name='cumplimiento_lista'),
+    path('cumplimiento/nueva/', views.cumplimiento_crear, name='cumplimiento_crear'),
+    path('cumplimiento/<int:pk>/', views.cumplimiento_detalle, name='cumplimiento_detalle'),
+    path(
+        'cumplimiento/<int:pk>/resultados/<int:resultado_pk>/completar/',
+        views.cumplimiento_resultado_completar, name='cumplimiento_resultado_completar',
+    ),
 ]

@@ -2,58 +2,60 @@
 {% block title %}Orden de trabajo #{{ mantenimiento.pk }} · SAIDSOFT{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6 print:hidden">
-    <h1 class="text-xl font-semibold text-slate-900">Orden de trabajo #{{ mantenimiento.pk }}</h1>
-    <button onclick="window.print()" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">Imprimir</button>
+    <h1 class="text-xl font-semibold">Orden de trabajo #{{ mantenimiento.pk }}</h1>
+    <button onclick="window.print()" class="btn primary">Imprimir</button>
 </div>
 
-<div class="bg-white rounded-lg border border-slate-200 p-6 max-w-3xl">
-    <h2 class="text-lg font-semibold text-slate-900 mb-1">Orden de trabajo #{{ mantenimiento.pk }}</h2>
-    <p class="text-sm text-slate-500 mb-4">{{ mantenimiento.get_tipo_origen_display }} · {{ mantenimiento.fecha_programada|date:"d/m/Y H:i" }}</p>
+{# Documento imprimible: se mantiene deliberadamente blanco/negro sin importar el tema
+   de la app (mismo criterio que la firma) — es un artefacto que se imprime/archiva. #}
+<div class="rounded-lg p-6 max-w-3xl" style="background:#fff; color:#0f172a; border:1px solid #e2e8f0;">
+    <h2 class="text-lg font-semibold mb-1">Orden de trabajo #{{ mantenimiento.pk }}</h2>
+    <p class="text-sm mb-4" style="color:#64748b;">{{ mantenimiento.get_tipo_origen_display }} · {{ mantenimiento.fecha_programada|date:"d/m/Y H:i" }}</p>
 
     <table class="w-full text-sm mb-6">
-        <tr><td class="text-slate-400 py-1 pr-4 align-top">Cliente</td><td class="text-slate-900 py-1">{{ mantenimiento.cliente|default:"—" }}</td></tr>
-        <tr><td class="text-slate-400 py-1 pr-4 align-top">Técnico</td><td class="text-slate-900 py-1">{{ mantenimiento.tecnico.username|default:"—" }}</td></tr>
-        <tr><td class="text-slate-400 py-1 pr-4 align-top">Empresa</td><td class="text-slate-900 py-1">{{ mantenimiento.empresa|default:"—" }}</td></tr>
-        <tr><td class="text-slate-400 py-1 pr-4 align-top">Descripción</td><td class="text-slate-900 py-1">{{ mantenimiento.descripcion }}</td></tr>
-        <tr><td class="text-slate-400 py-1 pr-4 align-top">Resultado técnico</td><td class="text-slate-900 py-1">{{ mantenimiento.get_resultado_tecnico_display|default:"—" }}</td></tr>
+        <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Cliente</td><td class="py-1">{{ mantenimiento.cliente|default:"—" }}</td></tr>
+        <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Técnico</td><td class="py-1">{{ mantenimiento.tecnico.username|default:"—" }}</td></tr>
+        <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Empresa</td><td class="py-1">{{ mantenimiento.empresa|default:"—" }}</td></tr>
+        <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Descripción</td><td class="py-1">{{ mantenimiento.descripcion }}</td></tr>
+        <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Resultado técnico</td><td class="py-1">{{ mantenimiento.get_resultado_tecnico_display|default:"—" }}</td></tr>
     </table>
 
-    <h3 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-2">Equipos</h3>
-    <ul class="text-sm text-slate-700 mb-6 list-disc list-inside">
+    <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Equipos</h3>
+    <ul class="text-sm mb-6 list-disc list-inside">
         {% for me in equipos %}
         <li>{{ me.equipo.codigo }} — {{ me.equipo.get_tipo_display }} {{ me.equipo.marca }} {{ me.equipo.modelo }}</li>
         {% empty %}
-        <li class="text-slate-400 list-none">Sin equipos vinculados.</li>
+        <li class="list-none" style="color:#94a3b8;">Sin equipos vinculados.</li>
         {% endfor %}
     </ul>
 
-    <h3 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-2">Checklist</h3>
-    <ul class="text-sm text-slate-700 mb-6">
+    <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Checklist</h3>
+    <ul class="text-sm mb-6">
         {% for c in checklist %}
         <li>[{% if c.realizada %}X{% else %} {% endif %}] {{ c.item.nombre }}</li>
         {% empty %}
-        <li class="text-slate-400">Sin ítems de checklist configurados.</li>
+        <li style="color:#94a3b8;">Sin ítems de checklist configurados.</li>
         {% endfor %}
     </ul>
 
-    <h3 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-2">Evidencia fotográfica</h3>
+    <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Evidencia fotográfica</h3>
     <div class="flex flex-wrap gap-3 mb-6">
         {% for img in imagenes %}
-        <img src="{{ img.imagen.url }}" alt="{{ img.nombre_archivo }}" class="h-24 rounded border border-slate-200">
+        <img src="{{ img.imagen.url }}" alt="{{ img.nombre_archivo }}" class="h-24 rounded" style="border:1px solid #e2e8f0;">
         {% empty %}
-        <p class="text-slate-400 text-sm">Sin imágenes adjuntas.</p>
+        <p class="text-sm" style="color:#94a3b8;">Sin imágenes adjuntas.</p>
         {% endfor %}
     </div>
 
-    <h3 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-2">Firmas</h3>
+    <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Firmas</h3>
     <div class="grid grid-cols-2 gap-4">
         {% for f in firmas %}
         <div class="text-center">
-            <img src="{{ f.firma_base64 }}" alt="Firma {{ f.get_tipo_firma_display }}" class="border border-slate-200 rounded mx-auto mb-1" style="max-height: 100px;">
-            <div class="text-xs text-slate-500">{{ f.get_tipo_firma_display }} — {{ f.firmado_en|date:"d/m/Y H:i" }}</div>
+            <img src="{{ f.firma_base64 }}" alt="Firma {{ f.get_tipo_firma_display }}" class="rounded mx-auto mb-1" style="max-height: 100px; border:1px solid #e2e8f0;">
+            <div class="text-xs" style="color:#64748b;">{{ f.get_tipo_firma_display }} — {{ f.firmado_en|date:"d/m/Y H:i" }}</div>
         </div>
         {% empty %}
-        <p class="text-slate-400 text-sm col-span-2">Sin firmas registradas.</p>
+        <p class="text-sm col-span-2" style="color:#94a3b8;">Sin firmas registradas.</p>
         {% endfor %}
     </div>
 </div>

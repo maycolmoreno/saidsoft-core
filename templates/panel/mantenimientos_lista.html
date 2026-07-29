@@ -2,14 +2,12 @@
 {% block title %}Mantenimientos · SAIDSOFT{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold text-slate-900">Mantenimientos</h1>
-    <a href="{% url 'panel:mantenimiento_crear' %}" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">
-        + Nuevo mantenimiento
-    </a>
+    <h1 class="text-xl font-semibold">Mantenimientos</h1>
+    <a href="{% url 'panel:mantenimiento_crear' %}" class="btn primary">+ Nuevo mantenimiento</a>
 </div>
 
 <form method="get" class="flex items-center gap-3 mb-4">
-    <select name="estado" onchange="this.form.submit()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+    <select name="estado" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Cualquier estado</option>
         {% for valor, etiqueta in estados %}
         <option value="{{ valor }}" {% if valor == filtro_estado %}selected{% endif %}>{{ etiqueta }}</option>
@@ -17,10 +15,10 @@
     </select>
 </form>
 
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+<div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">#</th>
                 <th class="text-left px-4 py-3">Descripción</th>
                 <th class="text-left px-4 py-3">Cliente</th>
@@ -29,27 +27,22 @@
                 <th class="text-left px-4 py-3">Estado</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for m in mantenimientos %}
-            <tr class="hover:bg-slate-50 cursor-pointer" onclick="window.location='{% url 'panel:mantenimiento_detalle' m.pk %}'">
-                <td class="px-4 py-3 font-mono text-slate-900">#{{ m.pk }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ m.descripcion|truncatechars:60 }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ m.cliente|default:"—" }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ m.tecnico.username|default:"—" }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ m.fecha_programada|date:"d/m/Y H:i" }}</td>
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:mantenimiento_detalle' m.pk %}'">
+                <td class="px-4 py-3 font-mono">#{{ m.pk }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ m.descripcion|truncatechars:60 }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ m.cliente|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ m.tecnico.username|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ m.fecha_programada|date:"d/m/Y H:i" }}</td>
                 <td class="px-4 py-3">
-                    <span class="text-xs px-2 py-0.5 rounded-full
-                        {% if m.estado_interno == 'pendiente' %}bg-blue-50 text-blue-700
-                        {% elif m.estado_interno == 'en_proceso' %}bg-amber-50 text-amber-700
-                        {% elif m.estado_interno == 'cerrado' %}bg-green-50 text-green-700
-                        {% elif m.estado_interno == 'cancelado' %}bg-red-50 text-red-700
-                        {% else %}bg-slate-100 text-slate-600{% endif %}">
+                    <span class="pill {% if m.estado_interno == 'pendiente' %}info{% elif m.estado_interno == 'en_proceso' %}warning{% elif m.estado_interno == 'cerrado' %}good{% elif m.estado_interno == 'cancelado' %}critical{% else %}neutral{% endif %}">
                         {{ m.get_estado_interno_display }}
                     </span>
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Sin mantenimientos para este filtro.</td></tr>
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin mantenimientos para este filtro.</td></tr>
         {% endfor %}
         </tbody>
     </table>

@@ -2,41 +2,37 @@
 {% block title %}Biblioteca de scripts · SAIDSOFT{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold text-slate-900">Biblioteca de scripts</h1>
+    <h1 class="text-xl font-semibold">Biblioteca de scripts</h1>
     <div class="flex gap-3">
-        <a href="{% url 'panel:script_ejecutar_adhoc' %}" class="border border-slate-300 text-slate-700 text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-50">
-            Ejecutar sin guardar
-        </a>
-        <a href="{% url 'panel:script_crear' %}" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">
-            + Nuevo script
-        </a>
+        <a href="{% url 'panel:script_ejecutar_adhoc' %}" class="btn secondary">Ejecutar sin guardar</a>
+        <a href="{% url 'panel:script_crear' %}" class="btn primary">+ Nuevo script</a>
     </div>
 </div>
 
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+<div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Nombre</th>
                 <th class="text-left px-4 py-3">Tipo</th>
                 <th class="text-left px-4 py-3">Categoría</th>
                 <th class="text-left px-4 py-3">Estado</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for s in scripts %}
-            <tr class="hover:bg-slate-50 cursor-pointer" onclick="window.location='{% url 'panel:script_detalle' s.pk %}'">
-                <td class="px-4 py-3 font-medium text-slate-900">{{ s.nombre }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ s.get_tipo_display }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ s.categoria|default:"—" }}</td>
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:script_detalle' s.pk %}'">
+                <td class="px-4 py-3 font-medium">{{ s.nombre }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ s.get_tipo_display }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ s.categoria|default:"—" }}</td>
                 <td class="px-4 py-3 text-xs">
-                    <span class="px-2 py-0.5 rounded-full {% if s.activo %}bg-green-50 text-green-700{% else %}bg-slate-100 text-slate-600{% endif %}">
+                    <span class="pill {% if s.activo %}good{% else %}neutral{% endif %}">
                         {% if s.activo %}Activo{% else %}Inactivo{% endif %}
                     </span>
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="4" class="px-4 py-8 text-center text-slate-400">Sin scripts en la biblioteca todavía.</td></tr>
+            <tr><td colspan="4" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin scripts en la biblioteca todavía.</td></tr>
         {% endfor %}
         </tbody>
     </table>

@@ -1,12 +1,12 @@
 {% extends "panel/base.html" %}
 {% block title %}Ejecuciones de scripts · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold text-slate-900 mb-6">Ejecuciones de scripts</h1>
+<h1 class="text-xl font-semibold mb-6">Ejecuciones de scripts</h1>
 
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+<div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">#</th>
                 <th class="text-left px-4 py-3">Script</th>
                 <th class="text-left px-4 py-3">Destino</th>
@@ -15,18 +15,22 @@
                 <th class="text-left px-4 py-3">Fecha</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for e in ejecuciones %}
-            <tr class="hover:bg-slate-50 cursor-pointer" onclick="window.location='{% url 'panel:ejecucion_detalle' e.pk %}'">
-                <td class="px-4 py-3 font-mono text-slate-900">#{{ e.pk }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ e.script.nombre }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ e.get_destino_tipo_display }}</td>
-                <td class="px-4 py-3 text-xs">{{ e.get_estado_display }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.creado_por.username }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ e.fecha_creacion|date:"d/m/Y H:i" }}</td>
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:ejecucion_detalle' e.pk %}'">
+                <td class="px-4 py-3 font-mono">#{{ e.pk }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ e.script.nombre }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ e.get_destino_tipo_display }}</td>
+                <td class="px-4 py-3 text-xs">
+                    <span class="pill {% if e.estado == 'completado' %}good{% elif e.estado == 'con_errores' %}critical{% elif e.estado == 'en_progreso' %}warning{% else %}neutral{% endif %}">
+                        {{ e.get_estado_display }}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.creado_por.username }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.fecha_creacion|date:"d/m/Y H:i" }}</td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Sin ejecuciones todavía.</td></tr>
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin ejecuciones todavía.</td></tr>
         {% endfor %}
         </tbody>
     </table>

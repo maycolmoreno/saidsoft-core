@@ -1,24 +1,55 @@
 {% extends "panel/base.html" %}
 {% block title %}Dashboard · SAIDSOFT{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold text-slate-900">Dashboard</h1>
-    <a href="{% url 'panel:despliegue_crear' %}" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">
-        + Nuevo despliegue
-    </a>
+<div class="flex items-center justify-between mb-2">
+    <h1 class="text-xl font-semibold">Vista general de operación</h1>
+    <a href="{% url 'panel:despliegue_crear' %}" class="btn primary">+ Nuevo despliegue</a>
 </div>
 
 {% if total_pendientes %}
-<a href="{% url 'panel:estaciones_lista' %}" class="block mb-6 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 hover:bg-amber-100">
+<a href="{% url 'panel:estaciones_lista' %}" class="block mb-6 rounded-md alert sev-warning">
     <strong>{{ total_pendientes }}</strong> estación(es) esperando aprobación de enrolamiento.
 </a>
+{% else %}
+<div class="mb-2"></div>
 {% endif %}
 
-<h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Matriz de cumplimiento por grupo</h2>
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden mb-8">
+<div class="kpi-strip mb-8">
+    <div class="card kpi tone-good">
+        <div class="kpi-top">
+            <div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.3"/><rect x="3" y="14" width="18" height="6" rx="1.3"/><circle cx="7" cy="7" r=".8" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r=".8" fill="currentColor" stroke="none"/></svg></div>
+        </div>
+        <div class="kpi-label">Estaciones en línea</div>
+        <div class="kpi-value num">{{ total_online }}<small>/{{ total_estaciones }}</small></div>
+    </div>
+    <div class="card kpi tone-info">
+        <div class="kpi-top">
+            <div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg></div>
+        </div>
+        <div class="kpi-label">Total de estaciones</div>
+        <div class="kpi-value num">{{ total_estaciones }}</div>
+    </div>
+    <div class="card kpi tone-warning">
+        <div class="kpi-top">
+            <div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+        </div>
+        <div class="kpi-label">Pendientes de aprobación</div>
+        <div class="kpi-value num">{{ total_pendientes }}</div>
+    </div>
+    <div class="card kpi tone-accent">
+        <div class="kpi-top">
+            <div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg></div>
+        </div>
+        <div class="kpi-label">Despliegues activos</div>
+        <div class="kpi-value num">{{ despliegues_activos|length }}</div>
+    </div>
+</div>
+
+<h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Matriz de cumplimiento por grupo</h2>
+<div class="card mb-8" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Grupo</th>
                 <th class="text-left px-4 py-3">Versión objetivo</th>
                 <th class="text-left px-4 py-3">Farmacias</th>
@@ -28,57 +59,53 @@
                 <th class="text-left px-4 py-3">Pendientes</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for g in grupos %}
-            <tr class="hover:bg-slate-50">
-                <td class="px-4 py-3 font-medium text-slate-900">{{ g.codigo }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ g.version_objetivo|default:"—" }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ g.total_farmacias }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ g.total_estaciones }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ g.online }} / {{ g.total_estaciones }}</td>
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-4 py-3 font-medium">{{ g.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ g.version_objetivo|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ g.total_farmacias }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ g.total_estaciones }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ g.online }} / {{ g.total_estaciones }}</td>
                 <td class="px-4 py-3">
                     {% if g.pct_conforme is not None %}
-                    <div class="flex items-center gap-2">
-                        <div class="w-24 h-2 rounded-full bg-slate-100 overflow-hidden">
-                            <div class="h-full {% if g.pct_conforme == 100 %}bg-green-500{% elif g.pct_conforme >= 50 %}bg-amber-500{% else %}bg-red-500{% endif %}"
-                                 style="width: {{ g.pct_conforme }}%"></div>
-                        </div>
-                        <span class="text-slate-600 text-xs">{{ g.pct_conforme }}%</span>
+                    <div class="rank-row" style="max-width:160px;">
+                        <span class="track"><span class="fill" style="width:{{ g.pct_conforme }}%; background:{% if g.pct_conforme == 100 %}var(--good){% elif g.pct_conforme >= 50 %}var(--warning){% else %}var(--critical){% endif %};"></span></span>
+                        <span class="val">{{ g.pct_conforme }}%</span>
                     </div>
                     {% else %}
-                    <span class="text-slate-400 text-xs">sin estaciones</span>
+                    <span class="text-xs text-[var(--text-faint)]">sin estaciones</span>
                     {% endif %}
                 </td>
                 <td class="px-4 py-3">
                     {% if g.pendientes %}
-                        <span class="text-amber-700 font-medium">{{ g.pendientes }}</span>
+                        <span class="pill warning">{{ g.pendientes }}</span>
                     {% else %}
-                        <span class="text-slate-400">0</span>
+                        <span class="text-[var(--text-faint)]">0</span>
                     {% endif %}
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">Sin grupos registrados todavía.</td></tr>
+            <tr><td colspan="7" class="px-4 py-6 text-center text-[var(--text-faint)]">Sin grupos registrados todavía.</td></tr>
         {% endfor %}
         </tbody>
     </table>
 </div>
 
-<h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Despliegues en curso</h2>
-<div class="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100">
+<h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Despliegues en curso</h2>
+<div class="card" style="overflow:hidden;">
     {% for d in despliegues_activos %}
-    <a href="{% url 'panel:despliegue_detalle' d.pk %}" class="flex items-center justify-between px-4 py-3 hover:bg-slate-50">
+    <a href="{% url 'panel:despliegue_detalle' d.pk %}" class="flex items-center justify-between px-4 py-3 hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
         <div>
-            <span class="font-medium text-slate-900">v{{ d.version }}</span>
-            <span class="text-slate-500 text-sm ml-2">{{ d.get_destino_tipo_display }}</span>
+            <span class="font-medium">v{{ d.version }}</span>
+            <span class="text-[var(--text-faint)] text-sm ml-2">{{ d.get_destino_tipo_display }}</span>
         </div>
-        <span class="text-xs px-2.5 py-1 rounded-full
-            {% if d.estado == 'pausado' %}bg-red-50 text-red-700{% else %}bg-blue-50 text-blue-700{% endif %}">
+        <span class="pill {% if d.estado == 'pausado' %}critical{% else %}info{% endif %}">
             {{ d.get_estado_display }}
         </span>
     </a>
     {% empty %}
-    <div class="px-4 py-6 text-center text-slate-400 text-sm">No hay despliegues en curso.</div>
+    <div class="px-4 py-6 text-center text-[var(--text-faint)] text-sm">No hay despliegues en curso.</div>
     {% endfor %}
 </div>
 {% endblock %}

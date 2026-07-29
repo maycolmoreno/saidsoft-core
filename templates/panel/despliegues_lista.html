@@ -2,16 +2,14 @@
 {% block title %}Despliegues · SAIDSOFT{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold text-slate-900">Despliegues</h1>
-    <a href="{% url 'panel:despliegue_crear' %}" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">
-        + Nuevo despliegue
-    </a>
+    <h1 class="text-xl font-semibold">Despliegues</h1>
+    <a href="{% url 'panel:despliegue_crear' %}" class="btn primary">+ Nuevo despliegue</a>
 </div>
 
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+<div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Versión</th>
                 <th class="text-left px-4 py-3">Destino</th>
                 <th class="text-left px-4 py-3">Modo</th>
@@ -20,27 +18,22 @@
                 <th class="text-left px-4 py-3">Fecha</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for d in despliegues %}
-            <tr class="hover:bg-slate-50 cursor-pointer" onclick="window.location='{% url 'panel:despliegue_detalle' d.pk %}'">
-                <td class="px-4 py-3 font-medium text-slate-900">v{{ d.version }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ d.get_destino_tipo_display }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ d.get_modo_aplicacion_display }}</td>
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:despliegue_detalle' d.pk %}'">
+                <td class="px-4 py-3 font-medium">v{{ d.version }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ d.get_destino_tipo_display }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ d.get_modo_aplicacion_display }}</td>
                 <td class="px-4 py-3">
-                    <span class="text-xs px-2.5 py-1 rounded-full
-                        {% if d.estado == 'completado' %}bg-green-50 text-green-700
-                        {% elif d.estado == 'pausado' %}bg-red-50 text-red-700
-                        {% elif d.estado == 'publicando' %}bg-blue-50 text-blue-700
-                        {% elif d.estado == 'cancelado' %}bg-slate-100 text-slate-500
-                        {% else %}bg-slate-50 text-slate-600{% endif %}">
+                    <span class="pill {% if d.estado == 'completado' %}good{% elif d.estado == 'pausado' %}critical{% elif d.estado == 'publicando' %}info{% else %}neutral{% endif %}">
                         {{ d.get_estado_display }}
                     </span>
                 </td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ d.creado_por.username }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ d.fecha_creacion|date:"d/m/Y H:i" }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ d.creado_por.username }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ d.fecha_creacion|date:"d/m/Y H:i" }}</td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Todavía no hay despliegues. <a href="{% url 'panel:despliegue_crear' %}" class="text-slate-900 underline">Crear el primero</a>.</td></tr>
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Todavía no hay despliegues. <a href="{% url 'panel:despliegue_crear' %}" class="underline text-[var(--info)]">Crear el primero</a>.</td></tr>
         {% endfor %}
         </tbody>
     </table>

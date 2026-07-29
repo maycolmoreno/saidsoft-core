@@ -1,11 +1,14 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Grupo
-from apps.catalogo.services import enviar_comando
+from apps.catalogo.services import (
+    enviar_comando, url_escritorio_remoto_meshcentral, url_terminal_remoto_meshcentral,
+)
 
 
 @login_required
@@ -91,6 +94,54 @@ def estacion_info_solicitar(request, pk):
         registrar_evento(usuario=request.user, accion='estacion.consultar_info', objeto=estacion, request=request)
         solicitado = True
     return render(request, 'panel/estacion_info_modal.html', {'estacion': estacion, 'solicitado': solicitado})
+
+
+@login_required
+@permission_required('catalogo.acceso_remoto_estacion', raise_exception=True)
+@require_POST
+def estacion_meshcentral_vincular(request, pk):
+    estacion = get_object_or_404(Estacion, pk=pk)
+    node_id = request.POST.get('meshcentral_node_id', '').strip()
+    estacion.meshcentral_node_id = node_id
+    estacion.meshcentral_vinculado_en = timezone.now() if node_id else None
+    estacion.save(update_fields=['meshcentral_node_id', 'meshcentral_vinculado_en'])
+    registrar_evento(
+        usuario=request.user, accion='estacion.meshcentral_vincular', objeto=estacion,
+        detalle={'meshcentral_node_id': node_id}, request=request,
+    )
+    return render(request, 'panel/estacion_info_modal.html', {'estacion': estacion})
+
+
+@login_required
+@permission_required('catalogo.acceso_remoto_estacion', raise_exception=True)
+@require_POST
+def estacion_meshcentral_escritorio(request, pk):
+    estacion = get_object_or_404(Estacion, pk=pk)
+    url = url_escritorio_remoto_meshcentral(estacion)
+    if not url:
+        messages.error(request, f'{estacion.codigo} todavía no tiene un node_id de MeshCentral vinculado.')
+        return redirect('panel:estaciones_lista')
+    registrar_evento(
+        usuario=request.user, accion='estacion.meshcentral_abrir_escritorio', objeto=estacion,
+        detalle={'meshcentral_node_id': estacion.meshcentral_node_id}, request=request,
+    )
+    return redirect(url)
+
+
+@login_required
+@permission_required('catalogo.acceso_remoto_estacion', raise_exception=True)
+@require_POST
+def estacion_meshcentral_terminal(request, pk):
+    estacion = get_object_or_404(Estacion, pk=pk)
+    url = url_terminal_remoto_meshcentral(estacion)
+    if not url:
+        messages.error(request, f'{estacion.codigo} todavía no tiene un node_id de MeshCentral vinculado.')
+        return redirect('panel:estaciones_lista')
+    registrar_evento(
+        usuario=request.user, accion='estacion.meshcentral_abrir_terminal', objeto=estacion,
+        detalle={'meshcentral_node_id': estacion.meshcentral_node_id}, request=request,
+    )
+    return redirect(url)
 
 
 @login_required

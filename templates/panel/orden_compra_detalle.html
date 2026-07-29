@@ -2,56 +2,50 @@
 {% block title %}OC {{ oc.numero_oc }} · SAIDSOFT{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-2">
-    <h1 class="text-xl font-semibold text-slate-900">OC {{ oc.numero_oc }}</h1>
-    <span class="text-xs px-2.5 py-1 rounded-full
-        {% if oc.estado == 'recibida' %}bg-green-50 text-green-700
-        {% elif oc.estado == 'recepcion_parcial' %}bg-amber-50 text-amber-700
-        {% elif oc.estado == 'cancelada' %}bg-red-50 text-red-700
-        {% else %}bg-slate-100 text-slate-600{% endif %}">
+    <h1 class="text-xl font-semibold">OC {{ oc.numero_oc }}</h1>
+    <span class="pill {% if oc.estado == 'recibida' %}good{% elif oc.estado == 'recepcion_parcial' %}warning{% elif oc.estado == 'cancelada' %}critical{% else %}neutral{% endif %}">
         {{ oc.get_estado_display }}
     </span>
 </div>
 
 <div class="grid grid-cols-3 gap-4 mb-6 text-sm">
-    <div class="bg-white rounded-lg border border-slate-200 p-4">
-        <div class="text-slate-400 text-xs uppercase mb-1">Proveedor</div>
-        <div class="text-slate-900 font-medium">{{ oc.proveedor }}</div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Proveedor</div>
+        <div class="font-medium">{{ oc.proveedor }}</div>
     </div>
-    <div class="bg-white rounded-lg border border-slate-200 p-4">
-        <div class="text-slate-400 text-xs uppercase mb-1">Fecha de emisión</div>
-        <div class="text-slate-900">{{ oc.fecha_emision }}</div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Fecha de emisión</div>
+        <div>{{ oc.fecha_emision }}</div>
     </div>
-    <div class="bg-white rounded-lg border border-slate-200 p-4">
-        <div class="text-slate-400 text-xs uppercase mb-1">Bodega(s) destino</div>
-        <div class="text-slate-900">{% for b in oc.bodegas_destino.all %}{{ b.codigo }} {% empty %}—{% endfor %}</div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Bodega(s) destino</div>
+        <div>{% for b in oc.bodegas_destino.all %}{{ b.codigo }} {% empty %}—{% endfor %}</div>
     </div>
 </div>
 
 {% if oc.novedad_recepcion %}
-<div class="mb-6 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3">
+<div class="mb-6 alert sev-warning text-sm px-4 py-3">
     <strong>Novedad en recepción:</strong> {{ oc.novedad_recepcion }}
 </div>
 {% endif %}
 
 <div class="flex items-center gap-3 mb-8">
     {% if oc.estado == 'emitida' or oc.estado == 'recepcion_parcial' %}
-    <a href="{% url 'panel:orden_compra_recibir' oc.pk %}" class="bg-green-600 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-green-700">
+    <a href="{% url 'panel:orden_compra_recibir' oc.pk %}" class="btn primary" style="background:var(--good);">
         Marcar OC completa como recibida
     </a>
-    <a href="{% url 'panel:orden_compra_linea_crear' oc.pk %}" class="border border-slate-300 text-slate-700 text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-50">
-        + Agregar línea
-    </a>
+    <a href="{% url 'panel:orden_compra_linea_crear' oc.pk %}" class="btn secondary">+ Agregar línea</a>
     {% endif %}
-    <a href="{% url 'panel:activo_crear' %}?oc={{ oc.pk }}" class="border border-slate-300 text-slate-700 text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-50">
+    <a href="{% url 'panel:activo_crear' %}?oc={{ oc.pk }}" class="btn secondary">
         + Registrar ingreso de activo desde esta OC
     </a>
 </div>
 
-<h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Líneas de la orden</h2>
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden mb-8">
+<h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Líneas de la orden</h2>
+<div class="card mb-8" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Ítem</th>
                 <th class="text-left px-4 py-3">Tipo</th>
                 <th class="text-left px-4 py-3">Solicitado / Recibido</th>
@@ -60,56 +54,56 @@
                 <th class="text-right px-4 py-3"></th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for d in oc.detalles.all %}
-            <tr>
-                <td class="px-4 py-3 text-slate-900">
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3">
                     {{ d.descripcion|default:d.modelo }}
                     {% if d.marca %} · {{ d.marca }}{% endif %}
                     {% if d.tipo_consumible %} · {{ d.tipo_consumible }}{% endif %}
                 </td>
-                <td class="px-4 py-3 text-slate-600">{{ d.get_tipo_item_display }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ d.cantidad_recibida }} / {{ d.cantidad_solicitada }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ d.get_estado_display }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ d.get_tipo_item_display }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ d.cantidad_recibida }} / {{ d.cantidad_solicitada }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ d.get_estado_display }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
                     {% for r in d.recepciones.all %}
                         <div>{{ r.cantidad_recibida }} en {{ r.bodega_destino.codigo }} ({{ r.fecha_recepcion|date:"d/m/Y" }})</div>
                     {% empty %}—{% endfor %}
                 </td>
                 <td class="px-4 py-3 text-right">
                     {% if d.estado != 'completo' and d.estado != 'cancelado' %}
-                    <a href="{% url 'panel:orden_compra_linea_recibir' d.pk %}" class="text-slate-700 text-xs font-medium hover:underline">Recibir</a>
+                    <a href="{% url 'panel:orden_compra_linea_recibir' d.pk %}" class="text-xs font-medium hover:underline text-[var(--text-dim)]">Recibir</a>
                     {% endif %}
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">Sin líneas registradas todavía.</td></tr>
+            <tr><td colspan="6" class="px-4 py-6 text-center text-[var(--text-faint)]">Sin líneas registradas todavía.</td></tr>
         {% endfor %}
         </tbody>
     </table>
 </div>
 
-<h2 class="text-sm font-medium text-slate-500 uppercase tracking-wide mb-3">Activos vinculados</h2>
-<div class="bg-white rounded-lg border border-slate-200 overflow-hidden">
+<h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Activos vinculados</h2>
+<div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Código</th>
                 <th class="text-left px-4 py-3">Tipo</th>
                 <th class="text-left px-4 py-3">Marca / Modelo</th>
                 <th class="text-left px-4 py-3">Estado</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody>
         {% for a in oc.activos.all %}
-            <tr class="hover:bg-slate-50 cursor-pointer" onclick="window.location='{% url 'panel:activo_detalle' a.pk %}'">
-                <td class="px-4 py-3 font-medium text-slate-900">{{ a.codigo }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ a.get_tipo_display }}</td>
-                <td class="px-4 py-3 text-slate-600">{{ a.marca }} {{ a.modelo }}</td>
-                <td class="px-4 py-3 text-slate-500 text-xs">{{ a.get_estado_display }}</td>
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:activo_detalle' a.pk %}'">
+                <td class="px-4 py-3 font-medium">{{ a.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.get_tipo_display }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.marca }} {{ a.modelo }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.get_estado_display }}</td>
             </tr>
         {% empty %}
-            <tr><td colspan="4" class="px-4 py-6 text-center text-slate-400">Todavía no se ha registrado ningún activo de esta OC.</td></tr>
+            <tr><td colspan="4" class="px-4 py-6 text-center text-[var(--text-faint)]">Todavía no se ha registrado ningún activo de esta OC.</td></tr>
         {% endfor %}
         </tbody>
     </table>

@@ -50,6 +50,10 @@ class Command(BaseCommand):
                 permisos = []
                 for app_label, model_name, acciones in reglas:
                     for accion in acciones:
+                        # Asume el patrón CRUD estándar de Django (view_x/add_x/...). Un
+                        # permiso custom como catalogo.acceso_remoto_estacion no calza acá
+                        # (su codename no es "{accion}_estacion"); si un rol más angosto que
+                        # Administrador llega a necesitarlo, hay que aceptar un codename literal.
                         codename = f'{accion}_{model_name}'
                         try:
                             permisos.append(

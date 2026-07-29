@@ -4,9 +4,11 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from apps.auditoria.models import registrar_evento
+from apps.catalogo.models import Estacion
+from apps.catalogo.services import generar_comando_instalacion_meshcentral
 from apps.scripts import services as scripts_services
 from apps.scripts.forms import EjecutarScriptAdhocForm, EjecutarScriptForm, ScriptForm
-from apps.scripts.models import EjecucionScript, Script
+from apps.scripts.models import EjecucionScript, Script, TipoScript
 
 
 @login_required
@@ -79,7 +81,21 @@ def script_ejecutar_adhoc(request):
             ejecucion = _crear_ejecucion(request, form, script)
             return redirect('panel:ejecucion_detalle', pk=ejecucion.pk)
     else:
-        form = EjecutarScriptAdhocForm()
+        initial = {}
+        estacion_id = request.GET.get('estacion')
+        if estacion_id:
+            # Hand-off desde "Instalar agente ahora" en el modal de la estación
+            # (acceso remoto MeshCentral) — precarga el one-liner de instalación
+            # apuntado a esa única estación, sin tocar registrar_ejecucion_script.
+            estacion = get_object_or_404(Estacion, pk=estacion_id)
+            initial = {
+                'nombre': f'Instalar agente MeshCentral en {estacion.codigo}',
+                'tipo': TipoScript.POWERSHELL,
+                'contenido': generar_comando_instalacion_meshcentral(estacion),
+                'destino_tipo': EjecucionScript.DestinoTipo.ESTACIONES,
+                'estaciones': [estacion.pk],
+            }
+        form = EjecutarScriptAdhocForm(initial=initial)
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': 'Ejecutar script sin guardar en biblioteca',
         'subtitulo': 'Se guarda igual como un Script auditado (marcado ad-hoc), pero no aparece en la biblioteca.',

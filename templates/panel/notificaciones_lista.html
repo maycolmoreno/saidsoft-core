@@ -1,28 +1,28 @@
 {% extends "panel/base.html" %}
 {% block title %}Notificaciones · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold text-slate-900 mb-6">Notificaciones</h1>
+<h1 class="text-xl font-semibold mb-6">Notificaciones</h1>
 
-<div class="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100">
+<div class="card" style="overflow:hidden;">
     {% for n in notificaciones %}
-    <div class="px-4 py-3 flex items-start justify-between gap-4 {% if not n.leida %}bg-blue-50/40{% endif %}">
+    <div class="px-4 py-3 flex items-start justify-between gap-4" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %} {% if not n.leida %}background:var(--info-dim);{% endif %}">
         <div>
             {% if n.url %}
-            <a href="{{ n.url }}" class="text-sm font-medium text-slate-900 hover:underline">{{ n.mensaje }}</a>
+            <a href="{{ n.url }}" class="text-sm font-medium hover:underline">{{ n.mensaje }}</a>
             {% else %}
-            <span class="text-sm font-medium text-slate-900">{{ n.mensaje }}</span>
+            <span class="text-sm font-medium">{{ n.mensaje }}</span>
             {% endif %}
-            <div class="text-xs text-slate-400 mt-0.5">{{ n.creado_en|date:"d/m/Y H:i" }}</div>
+            <div class="text-xs text-[var(--text-faint)] mt-0.5">{{ n.creado_en|date:"d/m/Y H:i" }}</div>
         </div>
         {% if not n.leida %}
         <form method="post" action="{% url 'panel:notificacion_marcar_leida' n.pk %}">
             {% csrf_token %}
-            <button type="submit" class="text-xs text-slate-500 hover:underline">Marcar leída</button>
+            <button type="submit" class="text-xs text-[var(--text-faint)] hover:underline">Marcar leída</button>
         </form>
         {% endif %}
     </div>
     {% empty %}
-    <div class="px-4 py-8 text-center text-slate-400 text-sm">Sin notificaciones.</div>
+    <div class="px-4 py-8 text-center text-[var(--text-faint)] text-sm">Sin notificaciones.</div>
     {% endfor %}
 </div>
 {% endblock %}

@@ -16,6 +16,9 @@ from .activos import (
     visita_tecnica_lista,
 )
 from .auditoria import auditoria_lista
+from .cumplimiento import (
+    cumplimiento_crear, cumplimiento_detalle, cumplimiento_lista, cumplimiento_resultado_completar,
+)
 from .dashboard import dashboard
 from .despliegues import (
     despliegue_aprobar, despliegue_crear, despliegue_detalle, despliegue_pausar,
@@ -23,8 +26,10 @@ from .despliegues import (
     despliegues_lista,
 )
 from .estaciones import (
-    estacion_aprobar, estacion_info_modal, estacion_info_solicitar, estacion_rechazar,
-    estacion_reiniciar, estaciones_aprobar_lote, estaciones_lista, estaciones_pendientes_partial,
+    estacion_aprobar, estacion_info_modal, estacion_info_solicitar,
+    estacion_meshcentral_escritorio, estacion_meshcentral_terminal, estacion_meshcentral_vincular,
+    estacion_rechazar, estacion_reiniciar, estaciones_aprobar_lote, estaciones_lista,
+    estaciones_pendientes_partial,
 )
 from .mantenimiento import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,
@@ -48,11 +53,14 @@ __all__ = [
     'auditoria_lista',
     'bodega_stock_ingresar', 'bodegas_lista',
     'colaborador_crear', 'colaboradores_lista',
+    'cumplimiento_crear', 'cumplimiento_detalle', 'cumplimiento_lista', 'cumplimiento_resultado_completar',
     'dashboard',
     'despliegue_aprobar', 'despliegue_crear', 'despliegue_detalle', 'despliegue_pausar',
     'despliegue_progreso_partial', 'despliegue_promover', 'despliegue_publicar', 'despliegue_reanudar',
     'despliegues_lista',
-    'estacion_aprobar', 'estacion_info_modal', 'estacion_info_solicitar', 'estacion_rechazar',
+    'estacion_aprobar', 'estacion_info_modal', 'estacion_info_solicitar',
+    'estacion_meshcentral_escritorio', 'estacion_meshcentral_terminal', 'estacion_meshcentral_vincular',
+    'estacion_rechazar',
     'estacion_reiniciar', 'estaciones_aprobar_lote', 'estaciones_lista', 'estaciones_pendientes_partial',
     'actividad_planificada_completar', 'actividad_planificada_crear', 'actividades_planificadas_lista',
     'mantenimiento_cancelar', 'mantenimiento_cerrar', 'mantenimiento_checklist_actualizar',

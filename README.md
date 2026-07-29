@@ -199,6 +199,47 @@ LAN de pruebas colisionaban; en producción el hostname ya es único).
 (`netsh http add urlacl url=http://+:8766/ ...`) que configurará el instalador MSI. En
 desarrollo cae a `localhost` automáticamente.
 
+## Acceso remoto (MeshCentral)
+
+Control remoto interactivo (ver pantalla / terminal en vivo) de una estación, para lo que
+ni el canal de comandos MQTT/HMAC ni Scripts RMM sirven (ambos son fire-and-forget, no
+sesiones interactivas). Se resuelve con [MeshCentral](https://github.com/Ylianst/MeshCentral)
+autoalojado, **completamente aparte** del canal MQTT/HMAC existente — la sesión viaja
+navegador ↔ servidor MeshCentral ↔ MeshAgent, sin tocar `saidsoft-agente` ni el broker.
+
+**Levantar una instancia local de MeshCentral:**
+
+```bash
+docker run -d --name meshcentral \
+  -p 443:443 \
+  -v meshcentral-data:/opt/meshcentral/meshcentral-data \
+  ghcr.io/ylianst/meshcentral:latest
+```
+
+1. Entrar a `https://localhost:443` — la primera cuenta que se crea queda como admin.
+2. Crear un único device group para todas las estaciones (ej. "Estaciones SAIDSOFT" bajo
+   "Mis dispositivos") — no hace falta uno por farmacia.
+3. Copiar el Mesh ID del grupo (panel de detalles del grupo) a `MESHCENTRAL_MESH_ID` en `.env`.
+4. Reiniciar `python manage.py runserver` para que `MESHCENTRAL_CONFIG` tome el valor nuevo.
+
+**Vincular una estación**: desde su ficha en el panel (botón "Instalar agente ahora"), se
+prellena un script ad-hoc de Scripts RMM que descarga e instala el agente de MeshCentral en
+modo silencioso (`installflags=2`, solo servicio, sin UI) vía el endpoint
+`/meshagents?id=<arch>&meshid=<mesh_id>&installflags=2` que expone MeshCentral. Tras
+instalarse, el dispositivo aparece en la consola de MeshCentral con un `node_id` propio; ese
+`node_id` se copia a mano al panel (no hay sincronización automática contra la API de
+MeshCentral todavía — ver `apps/catalogo/models.py::Estacion.meshcentral_node_id`).
+
+**Permisos**: el botón y las tres vistas nuevas exigen el permiso Django
+`catalogo.acceso_remoto_estacion` (el primer permiso *custom*, no-CRUD, del proyecto — hasta
+ahora toda acción del panel, incluso reiniciar una estación, solo pedía sesión iniciada). Se
+asigna al Group `Administrador` automáticamente vía `seed_permisos`.
+
+**Nota sobre `viewmode`**: los valores de `MESHCENTRAL_VIEWMODE_ESCRITORIO`/`_TERMINAL` que
+saltan directo a la pestaña de escritorio o terminal del dispositivo no se verificaron contra
+una instancia real — al validar, abrir el link `?node=<id>` una vez, navegar a mano a cada
+pestaña y ajustar el `.env` con el valor que MeshCentral ponga en su propia URL.
+
 ## Seguridad y robustez
 
 - **Enrolamiento verificado por hardware**: el agente reporta un `hardware_id` estable

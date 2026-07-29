@@ -1,6 +1,17 @@
 from django.contrib import admin
 
-from .models import Estacion, Farmacia, Grupo
+from .models import Estacion, Farmacia, Grupo, UnidadNegocio
+
+
+@admin.register(UnidadNegocio)
+class UnidadNegocioAdmin(admin.ModelAdmin):
+    list_display = ('codigo', 'nombre', 'activo', 'total_farmacias')
+    search_fields = ('codigo', 'nombre')
+    list_filter = ('activo',)
+
+    @admin.display(description='Farmacias')
+    def total_farmacias(self, obj):
+        return obj.farmacias.count()
 
 
 @admin.register(Grupo)
@@ -16,10 +27,13 @@ class GrupoAdmin(admin.ModelAdmin):
 
 @admin.register(Farmacia)
 class FarmaciaAdmin(admin.ModelAdmin):
-    list_display = ('codigo', 'nombre', 'grupo', 'ubicacion', 'activa', 'total_estaciones')
+    list_display = (
+        'codigo', 'nombre', 'grupo', 'unidad_negocio', 'ubicacion', 'activa',
+        'fecha_apertura', 'total_estaciones',
+    )
     search_fields = ('codigo', 'nombre')
-    list_filter = ('grupo', 'activa')
-    autocomplete_fields = ('grupo',)
+    list_filter = ('grupo', 'unidad_negocio', 'activa')
+    autocomplete_fields = ('grupo', 'unidad_negocio')
 
     @admin.display(description='Estaciones')
     def total_estaciones(self, obj):

@@ -3,6 +3,8 @@ import uuid
 from django.conf import settings
 from django.db import models
 
+from apps.catalogo.models import UnidadNegocio
+
 
 class CategoriaEquipo(models.Model):
     """Categoría de equipo para fines de mantenimiento (checklist aplicable, frecuencia, etc.)."""
@@ -144,6 +146,9 @@ class Colaborador(models.Model):
     ubicacion = models.ForeignKey(
         Ubicacion, on_delete=models.SET_NULL, null=True, blank=True, related_name='colaboradores',
         help_text='Agencia/local donde trabaja, usada para agrupar la visita técnica de mantenimiento.',
+    )
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='colaboradores',
     )
     sucursal = models.CharField(max_length=100, blank=True)
     zona = models.CharField(max_length=100, blank=True)
@@ -429,6 +434,9 @@ class Activo(models.Model):
     )
     colaborador_actual = models.ForeignKey(
         Colaborador, on_delete=models.SET_NULL, null=True, blank=True, related_name='activos_asignados',
+    )
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='activos',
     )
     estado = models.CharField(max_length=15, choices=Estado.choices, default=Estado.EN_BODEGA)
     estado_fisico_actual = models.CharField(max_length=10, choices=EstadoFisico.choices, blank=True)

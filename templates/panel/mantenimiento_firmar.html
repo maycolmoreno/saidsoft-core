@@ -1,28 +1,29 @@
 {% extends "panel/base.html" %}
 {% block title %}Firmar mantenimiento #{{ mantenimiento.pk }} · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold text-slate-900 mb-1">Firmar mantenimiento #{{ mantenimiento.pk }}</h1>
-<p class="text-sm text-slate-500 mb-6">Firma con el mouse o el dedo (pantalla táctil) dentro del recuadro.</p>
+<h1 class="text-xl font-semibold mb-1">Firmar mantenimiento #{{ mantenimiento.pk }}</h1>
+<p class="text-sm text-[var(--text-faint)] mb-6">Firma con el mouse o el dedo (pantalla táctil) dentro del recuadro.</p>
 
 <form method="post" id="firma-form" class="max-w-lg">
     {% csrf_token %}
     {% if form.non_field_errors %}
-    <div class="mb-3 text-sm text-red-700">{{ form.non_field_errors }}</div>
+    <div class="mb-3 text-sm" style="color:var(--critical);">{{ form.non_field_errors }}</div>
     {% endif %}
 
-    <label class="block text-sm text-slate-700 mb-1">{{ form.tipo_firma.label }}</label>
+    <label class="block text-sm text-[var(--text-dim)] mb-1">{{ form.tipo_firma.label }}</label>
     {{ form.tipo_firma }}
 
-    <div class="mt-4 mb-2 text-sm text-slate-700">Firma</div>
-    <canvas id="firma-canvas" width="500" height="200" class="border border-slate-300 rounded-md bg-white touch-none"></canvas>
+    <div class="mt-4 mb-2 text-sm text-[var(--text-dim)]">Firma</div>
+    {# La firma queda tinta oscura sobre blanco a propósito, sin importar el tema: es un artefacto real que se imprime/archiva, no una superficie de la UI. #}
+    <canvas id="firma-canvas" width="500" height="200" class="rounded-md touch-none" style="border:1px solid var(--border); background:#fff;"></canvas>
     <div class="mt-2 flex gap-3">
-        <button type="button" id="firma-limpiar" class="text-xs text-slate-500 hover:underline">Limpiar</button>
+        <button type="button" id="firma-limpiar" class="text-xs hover:underline text-[var(--text-faint)]">Limpiar</button>
     </div>
     {{ form.firma_base64 }}
 
     <div class="mt-6 flex gap-3">
-        <button type="submit" class="bg-slate-900 text-white text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-800">Guardar firma</button>
-        <a href="{{ volver_url }}" class="border border-slate-300 text-slate-700 text-sm font-medium rounded-md px-4 py-2 hover:bg-slate-50">Cancelar</a>
+        <button type="submit" class="btn primary">Guardar firma</button>
+        <a href="{{ volver_url }}" class="btn secondary">Cancelar</a>
     </div>
 </form>
 
