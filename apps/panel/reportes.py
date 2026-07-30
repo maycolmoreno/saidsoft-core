@@ -2,17 +2,22 @@
 
 CSV en vez de PDF: es lo que se abre en Excel y se analiza, sin dependencias extra.
 Cada función escribe en un objeto tipo-archivo (el HttpResponse) usando el módulo csv
-estándar. Los reportes cubren los tres ejes de auditoría acordados: cumplimiento de
-versión, resultado de un despliegue, y bitácora de acciones.
+estándar. Cubren cumplimiento de versión, resultado de un despliegue, activos, alertas
+y bitácora de acciones. Todos salvo auditoría aceptan `unidad_negocio` para acotar a un
+solo cliente (ver "Reportes por cliente"); auditoría queda deliberadamente sin escopar
+— es polimórfica (EventoAuditoria no tiene FK real al objeto auditado) y es una
+herramienta de cumplimiento interno, no algo que se le entregue a un cliente.
 """
 import csv
 
 from django.utils import timezone
 
+from apps.activos.models import Activo
 from apps.auditoria.models import EventoAuditoria
 from apps.catalogo.models import Estacion
-from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa, unidades_negocio_en_foco
-from apps.despliegues.models import Despliegue, EventoDespliegue
+from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa
+from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
+from apps.monitoreo.models import Alerta
 
 
 def _escribir(salida, encabezados, filas):
@@ -21,23 +26,23 @@ def _escribir(salida, encabezados, filas):
     writer.writerows(filas)
 
 
-def reporte_cumplimiento(salida, request, grupo_codigo=None):
+def reporte_cumplimiento(salida, unidades_negocio=None, grupo_codigo=None):
     """Qué versión corre cada estación vs. la objetivo de su grupo.
 
-    Un Grupo (canal TRX) puede estar compartido por farmacias de varias unidades de
-    negocio (ver apps.catalogo.services.validar_destino_unidad_negocio), así que no
-    basta con filtrar por grupo: hay que acotar además a las estaciones cuya farmacia
-    es visible para `request.user`, igual que el dashboard.
+    `unidades_negocio`: iterable de UnidadNegocio a las que acotar (una sola, para el
+    reporte de un cliente puntual, o varias, para "todas las que este usuario puede
+    ver"). `None` = sin acotar por tenant — el llamador es responsable de solo pasar
+    `None` cuando quien pide el reporte tiene acceso a todo (ver
+    apps.panel.views.reportes.reporte_cumplimiento_csv).
     """
     estaciones = (
         Estacion.objects
-        .filter(
-            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
-            farmacia__unidad_negocio__in=unidades_negocio_en_foco(request),
-        )
+        .filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
         .select_related('farmacia', 'farmacia__grupo')
         .order_by('farmacia__grupo__codigo', 'farmacia__codigo', 'codigo')
     )
+    if unidades_negocio is not None:
+        estaciones = estaciones.filter(farmacia__unidad_negocio__in=unidades_negocio)
     if grupo_codigo:
         estaciones = estaciones.filter(farmacia__grupo__codigo=grupo_codigo)
 
@@ -115,6 +120,65 @@ def reporte_auditoria(salida, request, desde=None, hasta=None):
         for ev in eventos
     ]
     _escribir(salida, ['fecha', 'usuario', 'accion', 'objeto', 'unidad_negocio', 'ip'], filas)
+
+
+def reporte_activos(salida, unidad_negocio):
+    """Inventario actual de una unidad de negocio: qué activos tiene, en qué estado."""
+    activos = (
+        Activo.objects
+        .filter(unidad_negocio=unidad_negocio)
+        .select_related('marca', 'categoria', 'bodega_actual', 'colaborador_actual')
+        .order_by('codigo')
+    )
+    filas = [
+        [
+            a.codigo,
+            a.get_tipo_display(),
+            a.marca.nombre if a.marca else '',
+            a.modelo or '',
+            a.numero_serie or '',
+            a.get_estado_display(),
+            a.bodega_actual.codigo if a.bodega_actual else '',
+            a.colaborador_actual.nombre if a.colaborador_actual else '',
+            a.fecha_compra.strftime('%Y-%m-%d') if a.fecha_compra else '',
+            a.vencimiento_garantia.strftime('%Y-%m-%d') if a.vencimiento_garantia else '',
+        ]
+        for a in activos
+    ]
+    _escribir(salida, [
+        'codigo', 'tipo', 'marca', 'modelo', 'numero_serie', 'estado',
+        'bodega', 'colaborador_actual', 'fecha_compra', 'vencimiento_garantia',
+    ], filas)
+
+
+def reporte_alertas(salida, unidad_negocio, desde=None, hasta=None):
+    """Alertas de las estaciones de una unidad de negocio en un rango de fechas."""
+    alertas = (
+        Alerta.objects
+        .filter(estacion__farmacia__unidad_negocio=unidad_negocio)
+        .select_related('regla', 'estacion')
+        .order_by('-abierta_en')
+    )
+    if desde:
+        alertas = alertas.filter(abierta_en__gte=desde)
+    if hasta:
+        alertas = alertas.filter(abierta_en__lte=hasta)
+
+    filas = [
+        [
+            a.regla.nombre,
+            a.regla.get_severidad_display(),
+            a.estacion.codigo,
+            a.valor_disparador,
+            a.get_estado_display(),
+            a.abierta_en.strftime('%Y-%m-%d %H:%M:%S'),
+            a.resuelta_en.strftime('%Y-%m-%d %H:%M:%S') if a.resuelta_en else '',
+        ]
+        for a in alertas
+    ]
+    _escribir(salida, [
+        'regla', 'severidad', 'estacion', 'valor', 'estado', 'abierta_en', 'resuelta_en',
+    ], filas)
 
 
 def nombre_archivo(prefijo: str) -> str:

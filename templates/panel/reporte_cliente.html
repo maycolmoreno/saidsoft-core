@@ -1,0 +1,91 @@
+{% extends "panel/base.html" %}
+{% block title %}Resumen por cliente · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6 print:hidden">
+    <h1 class="text-xl font-semibold">Resumen por cliente</h1>
+    {% if unidad %}<button onclick="window.print()" class="btn primary">Imprimir</button>{% endif %}
+</div>
+
+<form method="get" class="card p-4 mb-6 flex flex-wrap items-end gap-3 print:hidden">
+    <div>
+        <label class="block text-xs text-[var(--text-faint)] mb-1">Cliente</label>
+        <select name="unidad_negocio" class="rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+            <option value="">Elegir…</option>
+            {% for u in unidades_negocio %}
+            <option value="{{ u.pk }}" {% if unidad.pk == u.pk %}selected{% endif %}>{{ u.codigo }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div>
+        <label class="block text-xs text-[var(--text-faint)] mb-1">Desde</label>
+        <input type="date" name="desde" value="{{ desde|date:'Y-m-d' }}" class="rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+    </div>
+    <div>
+        <label class="block text-xs text-[var(--text-faint)] mb-1">Hasta</label>
+        <input type="date" name="hasta" value="{{ hasta|date:'Y-m-d' }}" class="rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+    </div>
+    <button type="submit" class="btn secondary">Ver</button>
+    {% if unidad %}
+    <a href="{% url 'panel:reporte_activos_csv' %}?unidad_negocio={{ unidad.pk }}" class="btn secondary">Activos (CSV)</a>
+    <a href="{% url 'panel:reporte_alertas_csv' %}?unidad_negocio={{ unidad.pk }}&desde={{ desde|date:'Y-m-d' }}&hasta={{ hasta|date:'Y-m-d' }}" class="btn secondary">Alertas (CSV)</a>
+    <a href="{% url 'panel:reporte_cumplimiento_csv' %}?unidad_negocio={{ unidad.pk }}" class="btn secondary">Cumplimiento (CSV)</a>
+    {% endif %}
+</form>
+
+{% if not unidad %}
+<div class="card p-8 text-center text-[var(--text-faint)] text-sm">
+    Elige un cliente arriba para generar su resumen.
+</div>
+{% else %}
+{# Documento imprimible: se mantiene deliberadamente blanco/negro sin importar el tema
+   de la app (mismo criterio que la orden de trabajo de mantenimiento) — es un
+   artefacto que se imprime/entrega, no parte de la UI del panel. #}
+<div class="rounded-lg p-6 max-w-3xl" style="background:#fff; color:#0f172a; border:1px solid #e2e8f0;">
+    <h2 class="text-lg font-semibold mb-1">Resumen de servicio — {{ unidad.nombre|default:unidad.codigo }}</h2>
+    <p class="text-sm mb-6" style="color:#64748b;">Período: {{ desde|date:"d/m/Y" }} — {{ hasta|date:"d/m/Y" }}</p>
+
+    <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Cumplimiento de versión POS</h3>
+    <table class="w-full text-sm mb-2">
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Estaciones conformes</td><td class="py-1">{% if pct_conforme is not None %}{{ pct_conforme }}%{% else %}—{% endif %} ({{ total_estaciones }} estación{{ total_estaciones|pluralize }} en total)</td></tr>
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">En línea</td><td class="py-1">{{ total_online }} / {{ total_estaciones }}</td></tr>
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Pendientes de aprobación</td><td class="py-1">{{ total_pendientes }}</td></tr>
+    </table>
+    <table class="w-full text-sm mb-6">
+        <thead><tr class="text-xs" style="color:#94a3b8;"><th class="text-left py-1">Grupo</th><th class="text-left py-1">Estaciones</th><th class="text-left py-1">Conformes</th></tr></thead>
+        {% for g in grupos %}
+        <tr style="border-top:1px solid #e2e8f0;"><td class="py-1">{{ g.codigo }}</td><td class="py-1">{{ g.total_estaciones }}</td><td class="py-1">{{ g.conformes }} ({{ g.pct_conforme|default:"—" }}%)</td></tr>
+        {% endfor %}
+    </table>
+
+    <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Despliegues del período</h3>
+    <table class="w-full text-sm mb-6">
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Publicados</td><td class="py-1">{{ despliegues_total }}</td></tr>
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Completados</td><td class="py-1">{{ despliegues_completados }}</td></tr>
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Con al menos un error</td><td class="py-1">{{ despliegues_con_error }}</td></tr>
+    </table>
+
+    <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Alertas</h3>
+    <table class="w-full text-sm mb-2">
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Abiertas actualmente</td><td class="py-1">{{ alertas_abiertas_ahora }}</td></tr>
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Resueltas en el período</td><td class="py-1">{{ alertas_resueltas_periodo }}</td></tr>
+    </table>
+    <table class="w-full text-sm mb-6">
+        <thead><tr class="text-xs" style="color:#94a3b8;"><th class="text-left py-1">Severidad</th><th class="text-left py-1">Abiertas en el período</th></tr></thead>
+        {% for fila in alertas_por_severidad %}
+        <tr style="border-top:1px solid #e2e8f0;"><td class="py-1">{{ fila.label }}</td><td class="py-1">{{ fila.total }}</td></tr>
+        {% endfor %}
+    </table>
+
+    <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Inventario de activos</h3>
+    <table class="w-full text-sm mb-2">
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Total</td><td class="py-1">{{ total_activos }}</td></tr>
+    </table>
+    <table class="w-full text-sm">
+        <thead><tr class="text-xs" style="color:#94a3b8;"><th class="text-left py-1">Estado</th><th class="text-left py-1">Cantidad</th></tr></thead>
+        {% for fila in activos_por_estado %}
+        <tr style="border-top:1px solid #e2e8f0;"><td class="py-1">{{ fila.label }}</td><td class="py-1">{{ fila.total }}</td></tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+{% endblock %}

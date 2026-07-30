@@ -42,7 +42,8 @@ from .mantenimiento import (
 )
 from .monitoreo import monitoreo_detalle, monitoreo_detalle_partial, monitoreo_lista
 from .reportes import (
-    reporte_auditoria_csv, reporte_cumplimiento_csv, reporte_despliegue_csv, reportes_index,
+    reporte_activos_csv, reporte_alertas_csv, reporte_auditoria_csv, reporte_cliente_resumen,
+    reporte_cumplimiento_csv, reporte_despliegue_csv, reportes_index,
 )
 from .scripts import (
     ejecucion_detalle, ejecucion_progreso_partial, ejecuciones_lista, script_crear, script_detalle,
@@ -82,7 +83,8 @@ __all__ = [
     'movimientos_inventario_lista',
     'orden_compra_crear', 'orden_compra_detalle', 'orden_compra_linea_crear',
     'orden_compra_linea_recibir', 'orden_compra_recibir', 'ordenes_compra_lista',
-    'reporte_auditoria_csv', 'reporte_cumplimiento_csv', 'reporte_despliegue_csv', 'reportes_index',
+    'reporte_activos_csv', 'reporte_alertas_csv', 'reporte_auditoria_csv', 'reporte_cliente_resumen',
+    'reporte_cumplimiento_csv', 'reporte_despliegue_csv', 'reportes_index',
     'ejecucion_detalle', 'ejecucion_progreso_partial', 'ejecuciones_lista', 'script_crear',
     'script_detalle', 'script_ejecutar', 'script_ejecutar_adhoc', 'script_programado_crear',
     'scripts_lista', 'scripts_programados_lista',

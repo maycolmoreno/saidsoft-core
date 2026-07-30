@@ -49,9 +49,12 @@ urlpatterns = [
     path('alertas/reglas/nueva/', views.regla_alerta_crear, name='regla_alerta_crear'),
 
     path('reportes/', views.reportes_index, name='reportes_index'),
+    path('reportes/cliente/', views.reporte_cliente_resumen, name='reporte_cliente_resumen'),
     path('reportes/cumplimiento.csv', views.reporte_cumplimiento_csv, name='reporte_cumplimiento_csv'),
     path('reportes/despliegue/<int:pk>.csv', views.reporte_despliegue_csv, name='reporte_despliegue_csv'),
     path('reportes/auditoria.csv', views.reporte_auditoria_csv, name='reporte_auditoria_csv'),
+    path('reportes/activos.csv', views.reporte_activos_csv, name='reporte_activos_csv'),
+    path('reportes/alertas.csv', views.reporte_alertas_csv, name='reporte_alertas_csv'),
 
     # Módulo de Activos
     path('colaboradores/', views.colaboradores_lista, name='colaboradores_lista'),

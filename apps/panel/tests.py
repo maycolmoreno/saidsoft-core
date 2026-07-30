@@ -1,3 +1,5 @@
+import csv
+import io
 from datetime import date
 
 from cryptography.fernet import Fernet
@@ -700,3 +702,76 @@ class SoftwarePanelMultiTenantTests(TestCase):
         resp = self.client.get(reverse('panel:solicitud_instalacion_crear'))
         self.assertNotContains(resp, '>SG</option>')
         self.assertContains(resp, '>MIA</option>')
+
+
+class ReportesPorClienteTests(TestCase):
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001', version_objetivo='4.2.1')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.farmacia_mia = Farmacia.objects.create(codigo='MAM01', grupo=grupo, unidad_negocio=self.mia)
+        self.estacion_sg = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia_sg, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            version_pos='4.2.1',
+        )
+        self.estacion_mia = Estacion.objects.create(
+            codigo='MAM01-A', farmacia=self.farmacia_mia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_reportes', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_reporte_cumplimiento_service_filtra_por_unidad(self):
+        from apps.panel.reportes import reporte_cumplimiento
+        salida = io.StringIO()
+        reporte_cumplimiento(salida, unidades_negocio=[self.mia])
+        salida.seek(0)
+        codigos = [fila[2] for fila in list(csv.reader(salida))[1:]]
+        self.assertIn('MAM01-A', codigos)
+        self.assertNotIn('ML001-A', codigos)
+
+    def test_reporte_activos_service_filtra_por_unidad(self):
+        from apps.panel.reportes import reporte_activos
+        Activo.objects.create(codigo='CR-DSK-9001', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.mia)
+        Activo.objects.create(codigo='CR-DSK-9002', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg)
+        salida = io.StringIO()
+        reporte_activos(salida, self.mia)
+        salida.seek(0)
+        codigos = [fila[0] for fila in list(csv.reader(salida))[1:]]
+        self.assertIn('CR-DSK-9001', codigos)
+        self.assertNotIn('CR-DSK-9002', codigos)
+
+    def test_reporte_alertas_service_filtra_por_unidad(self):
+        from apps.panel.reportes import reporte_alertas
+        regla = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90, creado_por=self.usuario_mia,
+        )
+        Alerta.objects.create(regla=regla, estacion=self.estacion_mia, valor_disparador=95)
+        Alerta.objects.create(regla=regla, estacion=self.estacion_sg, valor_disparador=95)
+        salida = io.StringIO()
+        reporte_alertas(salida, self.mia)
+        salida.seek(0)
+        estaciones = [fila[2] for fila in list(csv.reader(salida))[1:]]
+        self.assertIn('MAM01-A', estaciones)
+        self.assertNotIn('ML001-A', estaciones)
+
+    def test_reporte_cumplimiento_csv_sin_parametro_no_muestra_todo(self):
+        resp = self.client.get(reverse('panel:reporte_cumplimiento_csv'))
+        contenido = resp.content.decode('utf-8-sig')
+        self.assertIn('MAM01-A', contenido)
+        self.assertNotIn('ML001-A', contenido)
+
+    def test_reporte_cliente_resumen_de_otro_tenant_404(self):
+        # _resolver_unidad_negocio busca dentro del queryset ya escopado a lo visible
+        # (get_object_or_404(visibles, ...)) — para un tenant ajeno eso es un 404, no
+        # un 403: no confirma que la unidad de negocio exista, simplemente no aparece.
+        resp = self.client.get(reverse('panel:reporte_cliente_resumen'), {'unidad_negocio': self.sg.pk})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_reporte_cliente_resumen_propio_no_filtra_datos_ajenos(self):
+        resp = self.client.get(reverse('panel:reporte_cliente_resumen'), {'unidad_negocio': self.mia.pk})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, self.mia.codigo)
+        self.assertNotContains(resp, 'ML001')

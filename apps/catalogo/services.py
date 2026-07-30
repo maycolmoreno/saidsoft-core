@@ -249,3 +249,46 @@ def url_grabaciones_meshcentral(estacion) -> str | None:
         return None
     conf = settings.MESHCENTRAL_CONFIG
     return f"{conf['SERVER_URL']}/index.html?node={estacion.meshcentral_node_id}"
+
+
+def calcular_matriz_cumplimiento(unidades_negocio, *, umbral_online_minutos=5):
+    """Grupos con cobertura de estaciones/farmacias dentro de `unidades_negocio`, con
+    conteos de conformidad de versión, en línea y pendientes de aprobación.
+
+    Reusada por el dashboard (`apps.panel.views.dashboard`, con las unidades visibles
+    del usuario) y por el reporte por cliente (`apps.panel.views.reportes`, con una
+    sola unidad) — misma agregación, distinto alcance.
+    """
+    from datetime import timedelta
+
+    from django.db.models import Count, F, Q
+    from django.utils import timezone
+
+    from apps.catalogo.models import Estacion, Grupo
+
+    umbral_online = timezone.now() - timedelta(minutes=umbral_online_minutos)
+    en_alcance = Q(farmacias__unidad_negocio__in=unidades_negocio)
+
+    grupos = Grupo.objects.filter(en_alcance).distinct().annotate(
+        total_estaciones=Count('farmacias__estaciones', filter=en_alcance, distinct=True),
+        total_farmacias=Count('farmacias', filter=en_alcance, distinct=True),
+        conformes=Count(
+            'farmacias__estaciones',
+            filter=Q(farmacias__estaciones__version_pos=F('version_objetivo')) & en_alcance,
+            distinct=True,
+        ),
+        online=Count(
+            'farmacias__estaciones',
+            filter=Q(farmacias__estaciones__ultimo_heartbeat__gte=umbral_online) & en_alcance,
+            distinct=True,
+        ),
+        pendientes=Count(
+            'farmacias__estaciones',
+            filter=Q(farmacias__estaciones__estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE) & en_alcance,
+            distinct=True,
+        ),
+    ).order_by('codigo')
+
+    for g in grupos:
+        g.pct_conforme = round(100 * g.conformes / g.total_estaciones) if g.total_estaciones else None
+    return grupos
