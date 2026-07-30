@@ -5,6 +5,7 @@ from django.urls import reverse
 from django.views.decorators.http import require_POST
 
 from apps.auditoria.models import registrar_evento
+from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
 from apps.despliegues.services import publicar_despliegue
 
@@ -13,14 +14,17 @@ from ..forms import DespliegueForm, PromoverDespliegueForm
 
 @login_required
 def despliegues_lista(request):
-    despliegues = Despliegue.objects.select_related('creado_por', 'aprobado_por').order_by('-fecha_creacion')
+    despliegues = scope_por_unidad_negocio_activa(
+        Despliegue.objects.select_related('creado_por', 'aprobado_por').order_by('-fecha_creacion'),
+        request, 'unidad_negocio',
+    )
     return render(request, 'panel/despliegues_lista.html', {'despliegues': despliegues})
 
 
 @login_required
 def despliegue_crear(request):
     if request.method == 'POST':
-        form = DespliegueForm(request.POST, request.FILES)
+        form = DespliegueForm(request.POST, request.FILES, user=request.user)
         if form.is_valid():
             despliegue = form.save(commit=False)
             despliegue.creado_por = request.user
@@ -31,7 +35,7 @@ def despliegue_crear(request):
             messages.success(request, f'Despliegue {despliegue.version} creado, pendiente de aprobación.')
             return redirect('panel:despliegue_detalle', pk=despliegue.pk)
     else:
-        form = DespliegueForm()
+        form = DespliegueForm(user=request.user)
     return render(request, 'panel/despliegue_form.html', {'form': form})
 
 
@@ -43,6 +47,7 @@ def despliegue_detalle(request, pk):
         .prefetch_related('grupos', 'farmacias', 'promovidos'),
         pk=pk,
     )
+    verificar_acceso(request.user, despliegue.unidad_negocio)
     puede_aprobar = (
         despliegue.estado == Despliegue.Estado.PENDIENTE_APROBACION
         and despliegue.creado_por_id != request.user.id
@@ -58,12 +63,13 @@ def despliegue_detalle(request, pk):
 @login_required
 def despliegue_promover(request, pk):
     origen = get_object_or_404(Despliegue, pk=pk)
+    verificar_acceso(request.user, origen.unidad_negocio)
     if origen.estado != Despliegue.Estado.COMPLETADO:
         messages.error(request, 'Solo se puede promover un despliegue ya completado.')
         return redirect('panel:despliegue_detalle', pk=pk)
 
     if request.method == 'POST':
-        form = PromoverDespliegueForm(request.POST)
+        form = PromoverDespliegueForm(request.POST, unidad_negocio=origen.unidad_negocio)
         if form.is_valid():
             nuevo = form.save(commit=False)
             nuevo.version = origen.version
@@ -71,6 +77,7 @@ def despliegue_promover(request, pk):
             nuevo.sha256 = origen.sha256
             nuevo.descripcion = f'Anillo siguiente de despliegue #{origen.pk} ({origen.get_destino_tipo_display()})'
             nuevo.modo_aplicacion = origen.modo_aplicacion
+            nuevo.unidad_negocio = origen.unidad_negocio
             nuevo.creado_por = request.user
             nuevo.estado = Despliegue.Estado.PENDIENTE_APROBACION
             nuevo.despliegue_origen = origen
@@ -80,7 +87,7 @@ def despliegue_promover(request, pk):
             messages.success(request, f'Anillo siguiente creado para v{nuevo.version}, pendiente de aprobación.')
             return redirect('panel:despliegue_detalle', pk=nuevo.pk)
     else:
-        form = PromoverDespliegueForm()
+        form = PromoverDespliegueForm(unidad_negocio=origen.unidad_negocio)
 
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': f'Promover v{origen.version} al siguiente anillo',
@@ -92,6 +99,7 @@ def despliegue_promover(request, pk):
 @login_required
 def despliegue_progreso_partial(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
+    verificar_acceso(request.user, despliegue.unidad_negocio)
     resultados = despliegue.resultados.select_related('estacion', 'estacion__farmacia').order_by('estacion__codigo')
 
     total = resultados.count()
@@ -117,6 +125,7 @@ def despliegue_progreso_partial(request, pk):
 @require_POST
 def despliegue_aprobar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
+    verificar_acceso(request.user, despliegue.unidad_negocio)
     if despliegue.estado != Despliegue.Estado.PENDIENTE_APROBACION:
         messages.error(request, 'Este despliegue ya no está pendiente de aprobación.')
     elif despliegue.creado_por_id == request.user.id:
@@ -134,6 +143,7 @@ def despliegue_aprobar(request, pk):
 @require_POST
 def despliegue_publicar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
+    verificar_acceso(request.user, despliegue.unidad_negocio)
     if despliegue.estado != Despliegue.Estado.APROBADO:
         messages.error(request, 'El despliegue debe estar aprobado antes de publicarse.')
     else:
@@ -150,6 +160,7 @@ def despliegue_publicar(request, pk):
 @require_POST
 def despliegue_pausar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
+    verificar_acceso(request.user, despliegue.unidad_negocio)
     if despliegue.estado == Despliegue.Estado.PUBLICANDO:
         despliegue.estado = Despliegue.Estado.PAUSADO
         despliegue.save(update_fields=['estado'])
@@ -162,6 +173,7 @@ def despliegue_pausar(request, pk):
 @require_POST
 def despliegue_reanudar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
+    verificar_acceso(request.user, despliegue.unidad_negocio)
     if despliegue.estado == Despliegue.Estado.PAUSADO:
         despliegue.estado = Despliegue.Estado.PUBLICANDO
         # Reanudar es una decisión consciente del operador: marca que ya vio los errores,

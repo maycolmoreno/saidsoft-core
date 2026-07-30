@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from apps.cuentas.services import scope_opcional_por_unidad_negocio
+
 from .models import (
     ActividadCumplimiento, ResultadoCumplimientoColaborador, ResultadoCumplimientoEstacion,
     ResultadoCumplimientoFarmacia,
@@ -31,6 +33,10 @@ class ActividadCumplimientoAdmin(admin.ModelAdmin):
     search_fields = ('nombre',)
     autocomplete_fields = ('unidades_negocio', 'cargos')
     inlines = [ResultadoEstacionInline, ResultadoFarmaciaInline, ResultadoColaboradorInline]
+
+    def get_queryset(self, request):
+        qs = scope_opcional_por_unidad_negocio(super().get_queryset(request), request.user, 'unidades_negocio')
+        return qs.distinct()
 
     @admin.display(description='¿Vencida?', boolean=True)
     def vencida_badge(self, obj):

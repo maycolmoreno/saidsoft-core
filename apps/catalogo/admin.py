@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from apps.cuentas.services import scope_por_unidad_negocio
+
 from .models import Estacion, Farmacia, Grupo, UnidadNegocio
 
 
@@ -35,6 +37,9 @@ class FarmaciaAdmin(admin.ModelAdmin):
     list_filter = ('grupo', 'unidad_negocio', 'activa')
     autocomplete_fields = ('grupo', 'unidad_negocio')
 
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(super().get_queryset(request), request.user, 'unidad_negocio')
+
     @admin.display(description='Estaciones')
     def total_estaciones(self, obj):
         return obj.estaciones.count()
@@ -52,6 +57,9 @@ class EstacionAdmin(admin.ModelAdmin):
     list_editable = ('es_cache_farmacia', 'monitorear_recursos')
     autocomplete_fields = ('farmacia',)
     readonly_fields = ('token_enrolamiento', 'ip_lan', 'puerto_cache', 'ultimo_heartbeat', 'fecha_creacion')
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(super().get_queryset(request), request.user, 'farmacia__unidad_negocio')
 
     @admin.display(description='¿Desactualizada?', boolean=True)
     def desactualizada_badge(self, obj):

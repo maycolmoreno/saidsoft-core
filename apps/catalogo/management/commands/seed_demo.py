@@ -2,7 +2,7 @@ from django.contrib.auth.models import Group
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from apps.catalogo.models import Estacion, Farmacia, Grupo
+from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
 
 class Command(BaseCommand):
@@ -19,11 +19,17 @@ class Command(BaseCommand):
             codigo='TRX004', defaults={'nombre': 'Canal TRX004', 'version_objetivo': '4.1.9'},
         )
 
+        # SG/MIA las siembra la migración de datos de catalogo (0008) — reutilizarlas.
+        mia = UnidadNegocio.objects.get(codigo='MIA')
+        sg = UnidadNegocio.objects.get(codigo='SG')
+
         ml001, _ = Farmacia.objects.update_or_create(
-            codigo='ML001', defaults={'nombre': 'Farmacia Milagro 001', 'grupo': trx001, 'ubicacion': 'Milagro'},
+            codigo='ML001',
+            defaults={'nombre': 'Farmacia Milagro 001', 'grupo': trx001, 'unidad_negocio': mia, 'ubicacion': 'Milagro'},
         )
         mam01, _ = Farmacia.objects.update_or_create(
-            codigo='MAM01', defaults={'nombre': 'Farmacia Mamá 01', 'grupo': trx004, 'ubicacion': 'Guayaquil'},
+            codigo='MAM01',
+            defaults={'nombre': 'Farmacia Mamá 01', 'grupo': trx004, 'unidad_negocio': sg, 'ubicacion': 'Guayaquil'},
         )
 
         estaciones_ml001 = ['ML001-ADM', 'ML001-A']

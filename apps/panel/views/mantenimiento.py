@@ -4,6 +4,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from apps.auditoria.models import registrar_evento
+from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa, verificar_acceso
 from apps.mantenimiento import services as mantenimiento_services
 from apps.mantenimiento.forms import (
     ActividadPlanificadaForm, CancelarMantenimientoForm, CerrarMantenimientoForm, CompletarActividadForm,
@@ -16,7 +17,9 @@ from apps.mantenimiento.models import (
 
 @login_required
 def mantenimientos_lista(request):
-    mantenimientos = Mantenimiento.objects.select_related('cliente', 'tecnico').order_by('-fecha_programada')
+    mantenimientos = scope_opcional_por_unidad_negocio_activa(
+        Mantenimiento.objects.select_related('cliente', 'tecnico'), request, 'cliente__unidad_negocio',
+    ).order_by('-fecha_programada')
 
     estado = request.GET.get('estado')
     if estado:
@@ -64,6 +67,7 @@ def mantenimiento_detalle(request, pk):
         Mantenimiento.objects.select_related('cliente', 'tecnico', 'empresa', 'mantenimiento_programado'),
         pk=pk,
     )
+    verificar_acceso(request.user, mantenimiento.unidad_negocio)
     equipos = mantenimiento.equipos.select_related('equipo')
     eventos = mantenimiento.eventos.select_related('usuario').order_by('-timestamp')
 
@@ -82,6 +86,7 @@ def mantenimiento_detalle(request, pk):
 @login_required
 def mantenimiento_iniciar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
+    verificar_acceso(request.user, mantenimiento.unidad_negocio)
     try:
         mantenimiento_services.iniciar_mantenimiento(mantenimiento=mantenimiento, usuario=request.user)
     except ValueError as exc:
@@ -97,6 +102,7 @@ def mantenimiento_iniciar(request, pk):
 @login_required
 def mantenimiento_checklist_actualizar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
+    verificar_acceso(request.user, mantenimiento.unidad_negocio)
     if request.method == 'POST':
         for item in ActividadChecklist.objects.filter(activo=True):
             realizada = request.POST.get(f'actividad_{item.pk}') == 'on'
@@ -113,6 +119,7 @@ def mantenimiento_checklist_actualizar(request, pk):
 @login_required
 def mantenimiento_cerrar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
+    verificar_acceso(request.user, mantenimiento.unidad_negocio)
     if request.method == 'POST':
         form = CerrarMantenimientoForm(request.POST)
         if form.is_valid():
@@ -141,6 +148,7 @@ def mantenimiento_cerrar(request, pk):
 @login_required
 def mantenimiento_cancelar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
+    verificar_acceso(request.user, mantenimiento.unidad_negocio)
     if request.method == 'POST':
         form = CancelarMantenimientoForm(request.POST)
         if form.is_valid():
@@ -166,7 +174,9 @@ def mantenimiento_cancelar(request, pk):
 
 @login_required
 def mantenimientos_programados_lista(request):
-    programados = MantenimientoProgramado.objects.select_related('equipo', 'tecnico').order_by('fecha_proximo')
+    programados = scope_opcional_por_unidad_negocio_activa(
+        MantenimientoProgramado.objects.select_related('equipo', 'tecnico'), request, 'equipo__unidad_negocio',
+    ).order_by('fecha_proximo')
     return render(request, 'panel/mantenimientos_programados_lista.html', {'programados': programados})
 
 
@@ -192,6 +202,7 @@ def mantenimiento_programado_crear(request):
 @login_required
 def mantenimiento_firmar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
+    verificar_acceso(request.user, mantenimiento.unidad_negocio)
     if request.method == 'POST':
         form = FirmaMantenimientoForm(request.POST)
         if form.is_valid():
@@ -216,6 +227,7 @@ def mantenimiento_firmar(request, pk):
 @login_required
 def mantenimiento_imagen_adjuntar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
+    verificar_acceso(request.user, mantenimiento.unidad_negocio)
     if request.method == 'POST':
         form = ImagenMantenimientoForm(request.POST, request.FILES)
         if form.is_valid():
@@ -246,6 +258,7 @@ def mantenimiento_orden_trabajo(request, pk):
     mantenimiento = get_object_or_404(
         Mantenimiento.objects.select_related('cliente', 'tecnico', 'empresa'), pk=pk,
     )
+    verificar_acceso(request.user, mantenimiento.unidad_negocio)
     equipos = mantenimiento.equipos.select_related('equipo')
     checklist_items = ActividadChecklist.objects.filter(activo=True).order_by('orden', 'nombre')
     realizadas = {ar.actividad_id: ar.realizada for ar in mantenimiento.actividades_realizadas.all()}

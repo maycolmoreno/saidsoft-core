@@ -84,26 +84,60 @@ def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script
     })
 
 
-def resolver_estaciones(destino_tipo, *, grupos=None, farmacias=None, estaciones=None):
-    """Resuelve el queryset de Estacion aprobada para un destino_tipo/grupos/farmacias/estaciones.
+def resolver_estaciones(destino_tipo, *, unidad_negocio, grupos=None, farmacias=None, estaciones=None):
+    """Resuelve el queryset de Estacion aprobada para un destino_tipo/grupos/farmacias/estaciones,
+    siempre acotado a `unidad_negocio` (el tenant del Despliegue/EjecucionScript que llama).
 
     Compartido por `Despliegue.resolver_estaciones_destino` y
     `EjecucionScript` (apps/scripts): ambos envían algo a un conjunto de
     estaciones definido de la misma forma (cadena completa / grupos /
     farmacias / estaciones puntuales), así que la resolución vive una sola vez aquí.
+
+    `unidad_negocio` es obligatorio y se aplica en la base del queryset, no solo en la
+    rama "farmacias"/"estaciones": un Grupo (canal de versión) puede estar compartido
+    por farmacias de varias unidades de negocio (ver apps.cumplimiento), así que
+    "grupos"/"cadena" NUNCA deben devolver estaciones de un tenant distinto al del
+    despliegue/ejecución que las pidió, aunque el grupo en sí sea compartido.
     """
     from apps.catalogo.models import Estacion
 
     aprobada = Estacion.EstadoAprobacion.APROBADA
+    base = Estacion.objects.filter(estado_aprobacion=aprobada, farmacia__unidad_negocio=unidad_negocio)
+
     if destino_tipo == 'cadena':
-        return Estacion.objects.filter(estado_aprobacion=aprobada)
+        return base
     if destino_tipo == 'grupos':
-        return Estacion.objects.filter(farmacia__grupo__in=grupos or [], estado_aprobacion=aprobada)
+        return base.filter(farmacia__grupo__in=grupos or [])
     if destino_tipo == 'farmacias':
-        return Estacion.objects.filter(farmacia__in=farmacias or [], estado_aprobacion=aprobada)
-    return (estaciones if estaciones is not None else Estacion.objects.none()).filter(
-        estado_aprobacion=aprobada,
-    )
+        return base.filter(farmacia__in=farmacias or [])
+    ids_estaciones = estaciones if estaciones is not None else Estacion.objects.none()
+    return base.filter(pk__in=ids_estaciones)
+
+
+def validar_destino_unidad_negocio(unidad_negocio, *, farmacias=None, estaciones=None):
+    """Rechaza farmacias/estaciones elegidas a mano que no pertenezcan a `unidad_negocio`.
+
+    Pensado para llamarse desde `Form.clean()` (DespliegueForm, EjecutarScriptForm) con
+    los querysets de `cleaned_data`, antes de guardar — ahí `farmacias`/`estaciones` son
+    instancias reales, no hace falta ir a la base de datos de nuevo.
+
+    No valida `grupos` a propósito: un Grupo puede ser compartido entre unidades de
+    negocio (ver docstring de `resolver_estaciones`), así que un grupo "ajeno" no es un
+    error de por sí — `resolver_estaciones` ya se encarga de que solo aporte las
+    estaciones que sí son de esta unidad de negocio.
+    """
+    from django.core.exceptions import ValidationError
+
+    ajenas = [f.codigo for f in (farmacias or []) if f.unidad_negocio_id != unidad_negocio.id]
+    if ajenas:
+        raise ValidationError(
+            f'Estas farmacias no pertenecen a {unidad_negocio.codigo}: {", ".join(ajenas)}.'
+        )
+    ajenas_est = [e.codigo for e in (estaciones or []) if e.farmacia.unidad_negocio_id != unidad_negocio.id]
+    if ajenas_est:
+        raise ValidationError(
+            f'Estas estaciones no pertenecen a {unidad_negocio.codigo}: {", ".join(ajenas_est)}.'
+        )
 
 
 # --- Acceso remoto interactivo (MeshCentral) ---

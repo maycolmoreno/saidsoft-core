@@ -3,7 +3,7 @@ import hashlib
 from django.conf import settings
 from django.db import models
 
-from apps.catalogo.models import Estacion, Farmacia, Grupo
+from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
 
 class TipoScript(models.TextChoices):
@@ -24,6 +24,11 @@ class Script(models.Model):
     categoria = models.CharField(max_length=50, blank=True)
     es_adhoc = models.BooleanField(default=False)
     activo = models.BooleanField(default=True)
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='scripts',
+        help_text='Vacío = script compartido, visible y ejecutable por cualquier cliente. '
+                  'Con valor = script privado de esa unidad de negocio.',
+    )
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='scripts_creados',
     )
@@ -59,6 +64,15 @@ class EjecucionScript(models.Model):
     )
     sha256 = models.CharField(max_length=64, blank=True, editable=False)
 
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, related_name='ejecuciones_script',
+        help_text='Cliente al que se dirige esta ejecución. "Toda la cadena" significa toda '
+                  'la cadena de esta unidad de negocio, nunca de otras.',
+    )
+    programado = models.ForeignKey(
+        'ScriptProgramado', on_delete=models.SET_NULL, null=True, blank=True, related_name='ejecuciones_generadas',
+        help_text='Vacío = ejecución manual/ad-hoc. Con valor = generada por esta política recurrente.',
+    )
     destino_tipo = models.CharField(max_length=20, choices=DestinoTipo.choices)
     grupos = models.ManyToManyField(Grupo, blank=True, related_name='ejecuciones_script')
     farmacias = models.ManyToManyField(Farmacia, blank=True, related_name='ejecuciones_script')
@@ -117,3 +131,41 @@ class ResultadoEjecucionScript(models.Model):
 
     def __str__(self):
         return f'{self.ejecucion_id} -> {self.estacion.codigo}: {self.get_estado_display()}'
+
+
+class ScriptProgramado(models.Model):
+    """Política "correr este script cada N días contra tal destino" (ej. parcheo de
+    terceros con winget). Mismo patrón que apps.mantenimiento.MantenimientoProgramado:
+    un comando periódico (generar_ejecuciones_programadas) recorre las vencidas y crea
+    la EjecucionScript correspondiente, reusando registrar_ejecucion_script tal cual.
+    """
+    script = models.ForeignKey(Script, on_delete=models.PROTECT, related_name='programaciones')
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, related_name='scripts_programados',
+        help_text='Cliente al que se dirige. "Toda la cadena" significa toda la cadena '
+                  'de esta unidad de negocio, nunca de otras.',
+    )
+    destino_tipo = models.CharField(max_length=20, choices=EjecucionScript.DestinoTipo.choices)
+    grupos = models.ManyToManyField(Grupo, blank=True, related_name='scripts_programados')
+    farmacias = models.ManyToManyField(Farmacia, blank=True, related_name='scripts_programados')
+    estaciones = models.ManyToManyField(Estacion, blank=True, related_name='scripts_programados')
+
+    frecuencia_dias = models.PositiveIntegerField()
+    timeout_segundos = models.PositiveIntegerField(default=300)
+    fecha_ultima_ejecucion = models.DateField(null=True, blank=True)
+    fecha_proxima_ejecucion = models.DateField()
+    activo = models.BooleanField(default=True)
+
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='scripts_programados_creados',
+    )
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'script_programado'
+        ordering = ['fecha_proxima_ejecucion']
+        verbose_name = 'Script programado'
+        verbose_name_plural = 'Scripts programados'
+
+    def __str__(self):
+        return f'{self.script.nombre} cada {self.frecuencia_dias} días ({self.unidad_negocio.codigo})'

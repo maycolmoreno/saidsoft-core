@@ -2,6 +2,7 @@ from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404, render
 
 from apps.catalogo.models import Estacion
+from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
 
 
 def _clasificar(valor, umbral_warning, umbral_critico):
@@ -17,12 +18,12 @@ def _clasificar(valor, umbral_warning, umbral_critico):
 
 @login_required
 def monitoreo_lista(request):
-    servidores = (
+    servidores = scope_por_unidad_negocio_activa(
         Estacion.objects
         .filter(monitorear_recursos=True)
-        .select_related('farmacia', 'farmacia__grupo')
-        .order_by('codigo')
-    )
+        .select_related('farmacia', 'farmacia__grupo'),
+        request, 'farmacia__unidad_negocio',
+    ).order_by('codigo')
     tarjetas = []
     for estacion in servidores:
         ultima = estacion.metricas.first()  # ordering = -timestamp
@@ -41,6 +42,7 @@ def monitoreo_detalle(request, pk):
         Estacion.objects.select_related('farmacia', 'farmacia__grupo'),
         pk=pk, monitorear_recursos=True,
     )
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     return render(request, 'panel/monitoreo_detalle.html', {'estacion': estacion})
 
 
@@ -49,6 +51,7 @@ def monitoreo_detalle_partial(request, pk):
     from apps.monitoreo.graficos import construir_grafico
 
     estacion = get_object_or_404(Estacion, pk=pk, monitorear_recursos=True)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     # Últimas 60 muestras en orden cronológico (más viejo → más nuevo) para graficar.
     muestras = list(estacion.metricas.all()[:60])[::-1]
 

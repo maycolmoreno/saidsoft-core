@@ -10,6 +10,7 @@ urlpatterns = [
     path('logout/', auth_views.LogoutView.as_view(), name='logout'),
 
     path('', views.dashboard, name='dashboard'),
+    path('unidad-negocio/activar/', views.unidad_negocio_activar, name='unidad_negocio_activar'),
 
     path('estaciones/', views.estaciones_lista, name='estaciones_lista'),
     path('estaciones/pendientes/', views.estaciones_pendientes_partial, name='estaciones_pendientes_partial'),
@@ -38,6 +39,12 @@ urlpatterns = [
     path('monitoreo/', views.monitoreo_lista, name='monitoreo_lista'),
     path('monitoreo/<int:pk>/', views.monitoreo_detalle, name='monitoreo_detalle'),
     path('monitoreo/<int:pk>/datos/', views.monitoreo_detalle_partial, name='monitoreo_detalle_partial'),
+
+    path('alertas/', views.alertas_lista, name='alertas_lista'),
+    path('alertas/<int:pk>/reconocer/', views.alerta_reconocer, name='alerta_reconocer'),
+    path('alertas/<int:pk>/resolver/', views.alerta_resolver, name='alerta_resolver'),
+    path('alertas/reglas/', views.reglas_alerta_lista, name='reglas_alerta_lista'),
+    path('alertas/reglas/nueva/', views.regla_alerta_crear, name='regla_alerta_crear'),
 
     path('reportes/', views.reportes_index, name='reportes_index'),
     path('reportes/cumplimiento.csv', views.reporte_cumplimiento_csv, name='reporte_cumplimiento_csv'),
@@ -120,6 +127,8 @@ urlpatterns = [
     path('scripts/', views.scripts_lista, name='scripts_lista'),
     path('scripts/nuevo/', views.script_crear, name='script_crear'),
     path('scripts/ejecutar-adhoc/', views.script_ejecutar_adhoc, name='script_ejecutar_adhoc'),
+    path('scripts/programados/', views.scripts_programados_lista, name='scripts_programados_lista'),
+    path('scripts/programados/nuevo/', views.script_programado_crear, name='script_programado_crear'),
     path('scripts/<int:pk>/', views.script_detalle, name='script_detalle'),
     path('scripts/<int:pk>/ejecutar/', views.script_ejecutar, name='script_ejecutar'),
     path('ejecuciones/', views.ejecuciones_lista, name='ejecuciones_lista'),

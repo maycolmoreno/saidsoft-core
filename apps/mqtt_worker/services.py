@@ -132,6 +132,10 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
     if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
         return
 
+    if estacion.estado_conexion != Estacion.EstadoConexion.ONLINE:
+        from apps.monitoreo.services import resolver_alertas_sin_heartbeat
+        resolver_alertas_sin_heartbeat(estacion)
+
     estacion.version_agente = payload.get('version_agente', estacion.version_agente)
     estacion.version_pos = payload.get('version_pos', estacion.version_pos)
     estacion.so_nombre = payload.get('so_nombre', estacion.so_nombre)
@@ -279,7 +283,7 @@ def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
         valor = payload.get(clave)
         return valor if isinstance(valor, (int, float)) else None
 
-    MuestraMetrica.objects.create(
+    muestra = MuestraMetrica.objects.create(
         estacion=estacion,
         ram_total=_num('ram_total'),
         ram_usada=_num('ram_usada'),
@@ -291,3 +295,6 @@ def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
         temperatura_c=_num('temperatura_c'),
         latencia_ms=_num('latencia_ms'),
     )
+
+    from apps.monitoreo.services import evaluar_reglas_metricas
+    evaluar_reglas_metricas(estacion, muestra)

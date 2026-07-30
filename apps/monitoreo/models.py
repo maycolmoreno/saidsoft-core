@@ -1,6 +1,7 @@
+from django.conf import settings
 from django.db import models
 
-from apps.catalogo.models import Estacion
+from apps.catalogo.models import Estacion, UnidadNegocio
 
 
 class MuestraMetrica(models.Model):
@@ -46,3 +47,87 @@ class MuestraMetrica(models.Model):
         if self.ram_total and self.ram_usada is not None:
             return round(100 * self.ram_usada / self.ram_total, 1)
         return None
+
+
+class Metrica(models.TextChoices):
+    CPU_CARGA_PCT = 'cpu_carga_pct', 'CPU (%)'
+    RAM_USADA_PCT = 'ram_usada_pct', 'RAM (%)'
+    LATENCIA_MS = 'latencia_ms', 'Latencia (ms)'
+    TEMPERATURA_C = 'temperatura_c', 'Temperatura (°C)'
+    SIN_HEARTBEAT = 'sin_heartbeat', 'Sin heartbeat (minutos)'
+
+
+class ReglaAlerta(models.Model):
+    """Condición que, sostenida por `duracion_minutos`, abre una Alerta.
+
+    `sin_heartbeat` es la única métrica que no compara contra MuestraMetrica: se evalúa
+    en el comando `marcar_estaciones_offline` (ver apps.monitoreo.services), que ya
+    calcula qué estaciones llevan más de X minutos calladas.
+    """
+
+    class Operador(models.TextChoices):
+        GTE = 'gte', '≥ (mayor o igual)'
+        LTE = 'lte', '≤ (menor o igual)'
+
+    class Severidad(models.TextChoices):
+        WARNING = 'warning', 'Advertencia'
+        CRITICAL = 'critical', 'Crítica'
+
+    nombre = models.CharField(max_length=150)
+    metrica = models.CharField(max_length=20, choices=Metrica.choices)
+    operador = models.CharField(
+        max_length=3, choices=Operador.choices, default=Operador.GTE,
+        help_text='Ignorado para "Sin heartbeat" (siempre es "más de X minutos").',
+    )
+    umbral = models.FloatField(help_text='% para CPU/RAM, ms para latencia, °C para temperatura, minutos para sin heartbeat.')
+    duracion_minutos = models.PositiveIntegerField(
+        default=10,
+        help_text='La condición debe sostenerse este tiempo antes de abrir la alerta (evita falsos positivos por un pico aislado).',
+    )
+    severidad = models.CharField(max_length=10, choices=Severidad.choices, default=Severidad.WARNING)
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='reglas_alerta',
+        help_text='Vacío = regla global, aplica a todos los clientes. Con valor = solo ese cliente.',
+    )
+    activo = models.BooleanField(default=True)
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='reglas_alerta_creadas',
+    )
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'regla_alerta'
+        ordering = ['nombre']
+        verbose_name = 'Regla de alerta'
+        verbose_name_plural = 'Reglas de alerta'
+
+    def __str__(self):
+        return self.nombre
+
+
+class Alerta(models.Model):
+    """Una instancia de ReglaAlerta incumplida en una estación puntual."""
+
+    class Estado(models.TextChoices):
+        ABIERTA = 'abierta', 'Abierta'
+        RECONOCIDA = 'reconocida', 'Reconocida'
+        RESUELTA = 'resuelta', 'Resuelta'
+
+    regla = models.ForeignKey(ReglaAlerta, on_delete=models.PROTECT, related_name='alertas')
+    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='alertas')
+    estado = models.CharField(max_length=10, choices=Estado.choices, default=Estado.ABIERTA)
+    valor_disparador = models.FloatField(help_text='Valor de la métrica que confirmó la alerta.')
+
+    abierta_en = models.DateTimeField(auto_now_add=True)
+    reconocida_en = models.DateTimeField(null=True, blank=True)
+    reconocida_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    resuelta_en = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'alerta'
+        ordering = ['-abierta_en']
+
+    def __str__(self):
+        return f'{self.regla.nombre} · {self.estacion.codigo} ({self.get_estado_display()})'

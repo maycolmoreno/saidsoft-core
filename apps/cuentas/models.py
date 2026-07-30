@@ -19,6 +19,16 @@ class PerfilUsuario(models.Model):
         max_length=255, blank=True,
         help_text='Token de push (FCM) del último dispositivo móvil registrado. Sin lógica de envío todavía.',
     )
+    unidades_negocio = models.ManyToManyField(
+        'catalogo.UnidadNegocio', blank=True, related_name='usuarios',
+        help_text='Clientes que este usuario puede ver y accionar. Vacío + '
+                  'acceso_todas_unidades=False equivale a no ver ningún dato con tenant.',
+    )
+    acceso_todas_unidades = models.BooleanField(
+        default=False,
+        help_text='Para personal interno (soporte/operaciones) que necesita ver todos los '
+                  'clientes. `unidades_negocio` se ignora si esto está activo.',
+    )
 
     class Meta:
         db_table = 'perfil_usuario'

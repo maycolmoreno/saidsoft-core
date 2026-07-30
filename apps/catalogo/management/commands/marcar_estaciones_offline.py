@@ -25,11 +25,20 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         umbral = timezone.now() - timedelta(minutes=options['minutos'])
-        actualizadas = Estacion.objects.filter(
-            estado_conexion=Estacion.EstadoConexion.ONLINE,
-            ultimo_heartbeat__lt=umbral,
-        ).update(estado_conexion=Estacion.EstadoConexion.OFFLINE)
+        # Se traen los objetos (no un .update() directo) porque evaluar_reglas_sin_heartbeat
+        # necesita la unidad_negocio de cada estación afectada, no solo el conteo.
+        afectadas = list(
+            Estacion.objects.select_related('farmacia__unidad_negocio').filter(
+                estado_conexion=Estacion.EstadoConexion.ONLINE, ultimo_heartbeat__lt=umbral,
+            )
+        )
+        if afectadas:
+            Estacion.objects.filter(pk__in=[e.pk for e in afectadas]).update(
+                estado_conexion=Estacion.EstadoConexion.OFFLINE,
+            )
+            from apps.monitoreo.services import evaluar_reglas_sin_heartbeat
+            evaluar_reglas_sin_heartbeat(afectadas)
 
         # Caso borde: estaciones que reportaron heartbeat alguna vez pero el campo quedó
         # en "nunca conectada" — no aplica aquí; solo movemos ONLINE -> OFFLINE.
-        self.stdout.write(self.style.SUCCESS(f'{actualizadas} estación(es) marcada(s) como offline.'))
+        self.stdout.write(self.style.SUCCESS(f'{len(afectadas)} estación(es) marcada(s) como offline.'))

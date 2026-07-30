@@ -1,6 +1,8 @@
 from django.contrib import admin
 
-from .models import MuestraMetrica
+from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_por_unidad_negocio
+
+from .models import Alerta, MuestraMetrica, ReglaAlerta
 
 
 @admin.register(MuestraMetrica)
@@ -10,8 +12,43 @@ class MuestraMetricaAdmin(admin.ModelAdmin):
     date_hierarchy = 'timestamp'
     readonly_fields = [f.name for f in MuestraMetrica._meta.fields]
 
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(
+            super().get_queryset(request), request.user, 'estacion__farmacia__unidad_negocio',
+        )
+
     def has_add_permission(self, request):
         return False
 
     def has_change_permission(self, request, obj=None):
         return False
+
+
+@admin.register(ReglaAlerta)
+class ReglaAlertaAdmin(admin.ModelAdmin):
+    list_display = ('nombre', 'metrica', 'operador', 'umbral', 'duracion_minutos', 'severidad', 'unidad_negocio', 'activo')
+    list_filter = ('unidad_negocio', 'metrica', 'severidad', 'activo')
+    search_fields = ('nombre',)
+    autocomplete_fields = ('unidad_negocio', 'creado_por')
+
+    def get_queryset(self, request):
+        return scope_opcional_por_unidad_negocio(super().get_queryset(request), request.user, 'unidad_negocio')
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.creado_por = request.user
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(Alerta)
+class AlertaAdmin(admin.ModelAdmin):
+    list_display = ('regla', 'estacion', 'estado', 'valor_disparador', 'abierta_en', 'resuelta_en')
+    list_filter = ('estado', 'regla')
+    search_fields = ('estacion__codigo', 'regla__nombre')
+    autocomplete_fields = ('regla', 'estacion', 'reconocida_por')
+    readonly_fields = ('abierta_en',)
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(
+            super().get_queryset(request), request.user, 'estacion__farmacia__unidad_negocio',
+        )

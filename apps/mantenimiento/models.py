@@ -107,6 +107,13 @@ class Mantenimiento(models.Model):
     def __str__(self):
         return f'Mantenimiento #{self.pk} ({self.get_estado_interno_display()})'
 
+    @property
+    def unidad_negocio(self):
+        """Cliente al que pertenece, heredado de `cliente` (Colaborador). None si no
+        tiene cliente asignado o el cliente no tiene unidad_negocio — se trata como
+        "compartido", igual que en apps.cuentas.services."""
+        return self.cliente.unidad_negocio if self.cliente_id else None
+
 
 class MantenimientoEquipo(models.Model):
     """N:M Mantenimiento<->Activo (un mantenimiento puede cubrir varios equipos a la vez).

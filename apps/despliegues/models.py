@@ -3,7 +3,7 @@ import hashlib
 from django.conf import settings
 from django.db import models
 
-from apps.catalogo.models import Estacion, Farmacia, Grupo
+from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
 
 def ruta_archivo_despliegue(instance, filename):
@@ -44,6 +44,11 @@ class Despliegue(models.Model):
         help_text='Requerido si el modo de aplicación es "ventana programada".',
     )
 
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, related_name='despliegues',
+        help_text='Cliente al que se dirige este despliegue. "Toda la cadena" significa toda '
+                  'la cadena de esta unidad de negocio, nunca de otras.',
+    )
     destino_tipo = models.CharField(max_length=20, choices=DestinoTipo.choices)
     grupos = models.ManyToManyField(Grupo, blank=True, related_name='despliegues')
     farmacias = models.ManyToManyField(Farmacia, blank=True, related_name='despliegues')
@@ -100,8 +105,8 @@ class Despliegue(models.Model):
         """Devuelve el queryset de Estacion que corresponde al destino configurado."""
         from apps.catalogo.services import resolver_estaciones
         return resolver_estaciones(
-            self.destino_tipo, grupos=self.grupos.all(), farmacias=self.farmacias.all(),
-            estaciones=self.estaciones.all(),
+            self.destino_tipo, unidad_negocio=self.unidad_negocio, grupos=self.grupos.all(),
+            farmacias=self.farmacias.all(), estaciones=self.estaciones.all(),
         )
 
 

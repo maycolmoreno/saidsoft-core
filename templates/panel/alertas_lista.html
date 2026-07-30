@@ -1,0 +1,63 @@
+{% extends "panel/base.html" %}
+{% block title %}Alertas · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold">Alertas</h1>
+        <p class="text-sm text-[var(--text-faint)]">{% if solo_activas %}Abiertas y reconocidas.{% else %}Todas, incluyendo resueltas.{% endif %}</p>
+    </div>
+    <div class="flex gap-3">
+        <a href="?{% if solo_activas %}todas=1{% endif %}" class="btn secondary">{% if solo_activas %}Ver todas{% else %}Ver solo activas{% endif %}</a>
+        <a href="{% url 'panel:reglas_alerta_lista' %}" class="btn secondary">Reglas</a>
+    </div>
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Regla</th>
+                <th class="text-left px-4 py-3">Estación</th>
+                <th class="text-left px-4 py-3">Valor</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Abierta</th>
+                <th class="text-right px-4 py-3">Acciones</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for a in alertas %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">
+                    <span class="pill {% if a.regla.severidad == 'critical' %}critical{% else %}warning{% endif %}">{{ a.regla.get_severidad_display }}</span>
+                    {{ a.regla.nombre }}
+                </td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.estacion.codigo }} · {{ a.estacion.farmacia.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.valor_disparador|floatformat:1 }}</td>
+                <td class="px-4 py-3 text-xs">
+                    <span class="pill {% if a.estado == 'abierta' %}critical{% elif a.estado == 'reconocida' %}warning{% else %}good{% endif %}">
+                        {{ a.get_estado_display }}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.abierta_en|date:"d/m H:i" }}</td>
+                <td class="px-4 py-3 text-right space-x-2">
+                    {% if a.estado == 'abierta' %}
+                    <form method="post" action="{% url 'panel:alerta_reconocer' a.pk %}" class="inline">
+                        {% csrf_token %}
+                        <button type="submit" class="btn secondary" style="font-size:12px; padding:6px 12px;">Reconocer</button>
+                    </form>
+                    {% endif %}
+                    {% if a.estado != 'resuelta' %}
+                    <form method="post" action="{% url 'panel:alerta_resolver' a.pk %}" class="inline">
+                        {% csrf_token %}
+                        <button type="submit" class="btn primary" style="background:var(--good); font-size:12px; padding:6px 12px;">Resolver</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin alertas{% if solo_activas %} activas{% endif %}.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

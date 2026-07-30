@@ -79,7 +79,13 @@ def registrar_asignacion(*, activo, colaborador, estado_fisico_entrega, usuario)
     activo.colaborador_actual = colaborador
     activo.estado = Activo.Estado.ASIGNADO
     activo.estado_fisico_actual = estado_fisico_entrega
-    activo.save(update_fields=['colaborador_actual', 'estado', 'estado_fisico_actual'])
+    campos = ['colaborador_actual', 'estado', 'estado_fisico_actual']
+    # Hereda el cliente del colaborador — no se limpia al devolver/dar de baja: queda
+    # como el último dueño conocido, útil para auditoría de a quién perteneció.
+    if colaborador.unidad_negocio_id:
+        activo.unidad_negocio_id = colaborador.unidad_negocio_id
+        campos.append('unidad_negocio')
+    activo.save(update_fields=campos)
     EventoActivo.objects.create(
         activo=activo, tipo_evento=EventoActivo.TipoEvento.ASIGNACION, usuario=usuario,
         detalle={

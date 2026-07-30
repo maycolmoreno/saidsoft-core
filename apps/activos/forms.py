@@ -13,7 +13,7 @@ class ColaboradorForm(forms.ModelForm):
         model = Colaborador
         fields = [
             'nombre', 'cedula', 'correo', 'telefono', 'cargo', 'ubicacion',
-            'sucursal', 'zona', 'fecha_ingreso',
+            'unidad_negocio', 'sucursal', 'zona', 'fecha_ingreso',
         ]
         widgets = {
             'nombre': forms.TextInput(attrs={'class': INPUT_CLASS}),
@@ -22,10 +22,21 @@ class ColaboradorForm(forms.ModelForm):
             'telefono': forms.TextInput(attrs={'class': INPUT_CLASS}),
             'cargo': forms.Select(attrs={'class': INPUT_CLASS}),
             'ubicacion': forms.Select(attrs={'class': INPUT_CLASS}),
+            'unidad_negocio': forms.Select(attrs={'class': INPUT_CLASS}),
             'sucursal': forms.TextInput(attrs={'class': INPUT_CLASS}),
             'zona': forms.TextInput(attrs={'class': INPUT_CLASS}),
             'fecha_ingreso': forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
         }
+        help_texts = {
+            'unidad_negocio': 'Vacío = colaborador compartido (ej. nómina central), visible para todos los clientes.',
+        }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        from apps.cuentas.services import unidades_negocio_visibles
+        self.fields['unidad_negocio'].queryset = (
+            unidades_negocio_visibles(user) if user is not None else self.fields['unidad_negocio'].queryset.none()
+        )
 
 
 class OrdenCompraForm(forms.ModelForm):

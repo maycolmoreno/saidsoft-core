@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from apps.cuentas.services import scope_opcional_por_unidad_negocio
+
 from .models import (
     ActividadChecklist, ActividadPlanificada, ActividadRealizada, ConsentimientoMonitoreo, EventoMantenimiento,
     FirmaMantenimiento, ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado,
@@ -13,6 +15,9 @@ class MantenimientoProgramadoAdmin(admin.ModelAdmin):
     list_filter = ('activo',)
     search_fields = ('equipo__codigo',)
     autocomplete_fields = ('equipo', 'tecnico')
+
+    def get_queryset(self, request):
+        return scope_opcional_por_unidad_negocio(super().get_queryset(request), request.user, 'equipo__unidad_negocio')
 
 
 class MantenimientoEquipoInline(admin.TabularInline):
@@ -66,6 +71,9 @@ class MantenimientoAdmin(admin.ModelAdmin):
         MantenimientoEquipoInline, ActividadRealizadaInline, FirmaMantenimientoInline,
         ImagenMantenimientoInline, EventoMantenimientoInline,
     ]
+
+    def get_queryset(self, request):
+        return scope_opcional_por_unidad_negocio(super().get_queryset(request), request.user, 'cliente__unidad_negocio')
 
     def has_delete_permission(self, request, obj=None):
         return False

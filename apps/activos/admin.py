@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from apps.cuentas.services import scope_opcional_por_unidad_negocio
+
 from .models import (
     Activo, Bodega, Cargo, CategoriaEquipo, Colaborador, Departamento, Empresa, EventoActivo,
     Marca, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, RecepcionLote, StockBodega,
@@ -62,6 +64,9 @@ class ColaboradorAdmin(admin.ModelAdmin):
     search_fields = ('nombre', 'cedula', 'correo')
     list_filter = ('activo', 'unidad_negocio', 'sucursal', 'ubicacion')
     autocomplete_fields = ('cargo', 'ubicacion', 'unidad_negocio')
+
+    def get_queryset(self, request):
+        return scope_opcional_por_unidad_negocio(super().get_queryset(request), request.user, 'unidad_negocio')
 
 
 @admin.register(TipoConsumible)
@@ -152,6 +157,9 @@ class ActivoAdmin(admin.ModelAdmin):
     autocomplete_fields = ('orden_compra', 'bodega_actual', 'colaborador_actual', 'marca', 'categoria', 'unidad_negocio')
     readonly_fields = ('codigo', 'fecha_creacion')
     inlines = [EventoActivoInline]
+
+    def get_queryset(self, request):
+        return scope_opcional_por_unidad_negocio(super().get_queryset(request), request.user, 'unidad_negocio')
 
     def has_delete_permission(self, request, obj=None):
         return False

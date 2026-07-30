@@ -43,6 +43,13 @@
         <div class="kpi-label">Despliegues activos</div>
         <div class="kpi-value num">{{ despliegues_activos|length }}</div>
     </div>
+    <a href="{% url 'panel:alertas_lista' %}" class="card kpi {% if total_alertas_abiertas %}tone-critical{% else %}tone-good{% endif %}">
+        <div class="kpi-top">
+            <div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div>
+        </div>
+        <div class="kpi-label">Alertas abiertas</div>
+        <div class="kpi-value num">{{ total_alertas_abiertas }}</div>
+    </a>
 </div>
 
 <h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Matriz de cumplimiento por grupo</h2>

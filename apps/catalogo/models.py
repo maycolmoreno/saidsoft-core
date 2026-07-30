@@ -65,7 +65,9 @@ class Farmacia(models.Model):
     nombre = models.CharField(max_length=150, blank=True)
     grupo = models.ForeignKey(Grupo, on_delete=models.PROTECT, related_name='farmacias')
     unidad_negocio = models.ForeignKey(
-        UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='farmacias',
+        UnidadNegocio, on_delete=models.PROTECT, related_name='farmacias',
+        help_text='Cliente/cadena dueña de esta farmacia. Define el aislamiento de datos (tenant): '
+                  'una farmacia siempre pertenece a una única unidad de negocio.',
     )
     ubicacion = models.CharField(max_length=150, blank=True)
     telefono = models.CharField(max_length=15, blank=True)

@@ -1,0 +1,50 @@
+{% extends "panel/base.html" %}
+{% block title %}Scripts programados · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold">Scripts programados</h1>
+        <p class="text-sm text-[var(--text-faint)]">Políticas que corren un script cada N días (ej. parcheo de terceros con winget).</p>
+    </div>
+    <a href="{% url 'panel:script_programado_crear' %}" class="btn primary">+ Nueva programación</a>
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Script</th>
+                <th class="text-left px-4 py-3">Cliente</th>
+                <th class="text-left px-4 py-3">Frecuencia</th>
+                <th class="text-left px-4 py-3">Próxima ejecución</th>
+                <th class="text-left px-4 py-3">Última corrida</th>
+                <th class="text-left px-4 py-3">Estado</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for p in programados %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">{{ p.script.nombre }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ p.unidad_negocio.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">cada {{ p.frecuencia_dias }} días</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ p.fecha_proxima_ejecucion|date:"d/m/Y" }}</td>
+                <td class="px-4 py-3 text-xs">
+                    {% if p.ultima_ejecucion %}
+                    <a href="{% url 'panel:ejecucion_detalle' p.ultima_ejecucion.pk %}" class="pill {% if p.ultima_ejecucion.estado == 'con_errores' %}critical{% elif p.ultima_ejecucion.estado == 'completado' %}good{% else %}neutral{% endif %}">
+                        {{ p.ultima_ejecucion.get_estado_display }}
+                    </a>
+                    {% else %}
+                    <span class="text-[var(--text-faint)]">Sin corridas todavía</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 text-xs">
+                    <span class="pill {% if p.activo %}good{% else %}neutral{% endif %}">{% if p.activo %}Activa{% else %}Inactiva{% endif %}</span>
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin programaciones todavía.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

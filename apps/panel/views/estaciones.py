@@ -9,11 +9,15 @@ from apps.catalogo.models import Estacion, Grupo
 from apps.catalogo.services import (
     enviar_comando, url_escritorio_remoto_meshcentral, url_terminal_remoto_meshcentral,
 )
+from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
 
 
 @login_required
 def estaciones_lista(request):
-    estaciones = Estacion.objects.select_related('farmacia', 'farmacia__grupo').order_by('codigo')
+    estaciones = scope_por_unidad_negocio_activa(
+        Estacion.objects.select_related('farmacia', 'farmacia__grupo').order_by('codigo'),
+        request, 'farmacia__unidad_negocio',
+    )
 
     grupo = request.GET.get('grupo')
     estado_conexion = request.GET.get('estado_conexion')
@@ -37,8 +41,11 @@ def estaciones_lista(request):
 
 @login_required
 def estaciones_pendientes_partial(request):
-    pendientes = Estacion.objects.select_related('farmacia', 'farmacia__grupo').filter(
-        estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
+    pendientes = scope_por_unidad_negocio(
+        Estacion.objects.select_related('farmacia', 'farmacia__grupo').filter(
+            estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
+        ),
+        request.user, 'farmacia__unidad_negocio',
     ).order_by('codigo')
     return render(request, 'panel/estaciones_pendientes_partial.html', {'pendientes': pendientes})
 
@@ -47,6 +54,7 @@ def estaciones_pendientes_partial(request):
 @require_POST
 def estacion_aprobar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     estacion.estado_aprobacion = Estacion.EstadoAprobacion.APROBADA
     estacion.save(update_fields=['estado_aprobacion'])
     registrar_evento(usuario=request.user, accion='estacion.aprobar', objeto=estacion, request=request)
@@ -57,6 +65,7 @@ def estacion_aprobar(request, pk):
 @require_POST
 def estacion_rechazar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     estacion.estado_aprobacion = Estacion.EstadoAprobacion.RECHAZADA
     estacion.save(update_fields=['estado_aprobacion'])
     registrar_evento(usuario=request.user, accion='estacion.rechazar', objeto=estacion, request=request)
@@ -67,6 +76,7 @@ def estacion_rechazar(request, pk):
 @require_POST
 def estacion_reiniciar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
         messages.error(request, 'La estación no está aprobada.')
     elif estacion.estado_conexion != Estacion.EstadoConexion.ONLINE:
@@ -82,6 +92,7 @@ def estacion_reiniciar(request, pk):
 @login_required
 def estacion_info_modal(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     return render(request, 'panel/estacion_info_modal.html', {'estacion': estacion})
 
 
@@ -89,6 +100,7 @@ def estacion_info_modal(request, pk):
 @require_POST
 def estacion_info_solicitar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     solicitado = False
     if estacion.estado_aprobacion == Estacion.EstadoAprobacion.APROBADA and enviar_comando(estacion, 'consultar_info'):
         registrar_evento(usuario=request.user, accion='estacion.consultar_info', objeto=estacion, request=request)
@@ -101,6 +113,7 @@ def estacion_info_solicitar(request, pk):
 @require_POST
 def estacion_meshcentral_vincular(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     node_id = request.POST.get('meshcentral_node_id', '').strip()
     estacion.meshcentral_node_id = node_id
     estacion.meshcentral_vinculado_en = timezone.now() if node_id else None
@@ -117,6 +130,7 @@ def estacion_meshcentral_vincular(request, pk):
 @require_POST
 def estacion_meshcentral_escritorio(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     url = url_escritorio_remoto_meshcentral(estacion)
     if not url:
         messages.error(request, f'{estacion.codigo} todavía no tiene un node_id de MeshCentral vinculado.')
@@ -133,6 +147,7 @@ def estacion_meshcentral_escritorio(request, pk):
 @require_POST
 def estacion_meshcentral_terminal(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     url = url_terminal_remoto_meshcentral(estacion)
     if not url:
         messages.error(request, f'{estacion.codigo} todavía no tiene un node_id de MeshCentral vinculado.')
@@ -148,7 +163,10 @@ def estacion_meshcentral_terminal(request, pk):
 @require_POST
 def estaciones_aprobar_lote(request):
     ids = request.POST.getlist('estacion_ids')
-    estaciones = Estacion.objects.filter(pk__in=ids, estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE)
+    estaciones = scope_por_unidad_negocio(
+        Estacion.objects.filter(pk__in=ids, estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE),
+        request.user, 'farmacia__unidad_negocio',
+    )
     for estacion in estaciones:
         estacion.estado_aprobacion = Estacion.EstadoAprobacion.APROBADA
         estacion.save(update_fields=['estado_aprobacion'])

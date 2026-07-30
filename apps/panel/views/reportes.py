@@ -6,6 +6,7 @@ from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
 
 from apps.catalogo.models import Grupo
+from apps.cuentas.services import scope_por_unidad_negocio, verificar_acceso
 from apps.despliegues.models import Despliegue
 
 
@@ -18,9 +19,12 @@ def _csv_response(nombre):
 
 @login_required
 def reportes_index(request):
+    despliegues = scope_por_unidad_negocio(
+        Despliegue.objects.order_by('-fecha_creacion'), request.user, 'unidad_negocio',
+    )[:100]
     return render(request, 'panel/reportes_index.html', {
         'grupos': Grupo.objects.order_by('codigo'),
-        'despliegues': Despliegue.objects.order_by('-fecha_creacion')[:100],
+        'despliegues': despliegues,
     })
 
 
@@ -36,6 +40,7 @@ def reporte_cumplimiento_csv(request):
 def reporte_despliegue_csv(request, pk):
     from apps.panel import reportes
     despliegue = get_object_or_404(Despliegue, pk=pk)
+    verificar_acceso(request.user, despliegue.unidad_negocio)
     resp = _csv_response(reportes.nombre_archivo(f'despliegue_{despliegue.version}'))
     reportes.reporte_despliegue(resp, despliegue)
     return resp

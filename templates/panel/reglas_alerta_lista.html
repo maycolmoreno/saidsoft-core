@@ -1,0 +1,49 @@
+{% extends "panel/base.html" %}
+{% block title %}Reglas de alerta · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold">Reglas de alerta</h1>
+        <p class="text-sm text-[var(--text-faint)]">Condiciones que abren una alerta cuando se sostienen.</p>
+    </div>
+    <div class="flex gap-3">
+        <a href="{% url 'panel:alertas_lista' %}" class="btn secondary">Ver alertas</a>
+        <a href="{% url 'panel:regla_alerta_crear' %}" class="btn primary">+ Nueva regla</a>
+    </div>
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Nombre</th>
+                <th class="text-left px-4 py-3">Métrica</th>
+                <th class="text-left px-4 py-3">Condición</th>
+                <th class="text-left px-4 py-3">Cliente</th>
+                <th class="text-left px-4 py-3">Estado</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in reglas %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">
+                    <span class="pill {% if r.severidad == 'critical' %}critical{% else %}warning{% endif %}">{{ r.get_severidad_display }}</span>
+                    {{ r.nombre }}
+                </td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.get_metrica_display }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">
+                    {% if r.metrica == 'sin_heartbeat' %}más de {{ r.umbral }} min sin heartbeat
+                    {% else %}{{ r.get_operador_display }} {{ r.umbral }} por {{ r.duracion_minutos }} min{% endif %}
+                </td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.unidad_negocio.codigo|default:"Todos (global)" }}</td>
+                <td class="px-4 py-3 text-xs">
+                    <span class="pill {% if r.activo %}good{% else %}neutral{% endif %}">{% if r.activo %}Activa{% else %}Inactiva{% endif %}</span>
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="5" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin reglas todavía.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

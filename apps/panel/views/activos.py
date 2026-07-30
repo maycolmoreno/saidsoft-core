@@ -15,25 +15,30 @@ from apps.activos.models import (
 )
 from apps.activos.services import ConcurrencyError
 from apps.auditoria.models import registrar_evento
+from apps.cuentas.services import (
+    scope_opcional_por_unidad_negocio_activa, usuario_puede_ver, verificar_acceso,
+)
 
 
 @login_required
 def colaboradores_lista(request):
-    colaboradores = Colaborador.objects.order_by('nombre')
+    colaboradores = scope_opcional_por_unidad_negocio_activa(
+        Colaborador.objects.order_by('nombre'), request, 'unidad_negocio',
+    )
     return render(request, 'panel/colaboradores_lista.html', {'colaboradores': colaboradores})
 
 
 @login_required
 def colaborador_crear(request):
     if request.method == 'POST':
-        form = ColaboradorForm(request.POST)
+        form = ColaboradorForm(request.POST, user=request.user)
         if form.is_valid():
             colaborador = form.save()
             registrar_evento(usuario=request.user, accion='colaborador.crear', objeto=colaborador, request=request)
             messages.success(request, f'Colaborador {colaborador.nombre} registrado.')
             return redirect('panel:colaboradores_lista')
     else:
-        form = ColaboradorForm()
+        form = ColaboradorForm(user=request.user)
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': 'Nuevo colaborador',
         'subtitulo': 'Carga manual mientras se integra con RRHH/nómina.',
@@ -61,7 +66,10 @@ def visita_tecnica_lista(request):
 
     secciones = []
     for ubicacion in ubicaciones:
-        colaboradores = list(ubicacion.colaboradores.filter(activo=True))
+        colaboradores = [
+            c for c in ubicacion.colaboradores.filter(activo=True).select_related('unidad_negocio')
+            if usuario_puede_ver(request.user, c.unidad_negocio)
+        ]
         total_equipos = sum(c.activos_asignados.count() for c in colaboradores)
         secciones.append({'ubicacion': ubicacion, 'colaboradores': colaboradores, 'total_equipos': total_equipos})
 
@@ -215,8 +223,9 @@ def orden_compra_recibir(request, pk):
 
 @login_required
 def activos_lista(request):
-    activos = Activo.objects.select_related(
-        'bodega_actual', 'colaborador_actual', 'marca', 'categoria',
+    activos = scope_opcional_por_unidad_negocio_activa(
+        Activo.objects.select_related('bodega_actual', 'colaborador_actual', 'marca', 'categoria'),
+        request, 'unidad_negocio',
     ).order_by('codigo')
 
     tipo = request.GET.get('tipo')
@@ -275,6 +284,7 @@ def activo_detalle(request, pk):
             'bodega_actual', 'colaborador_actual', 'orden_compra', 'marca', 'categoria',
         ), pk=pk,
     )
+    verificar_acceso(request.user, activo.unidad_negocio)
     eventos = activo.eventos.select_related('usuario').order_by('-timestamp')
     return render(request, 'panel/activo_detalle.html', {'activo': activo, 'eventos': eventos})
 
@@ -282,6 +292,7 @@ def activo_detalle(request, pk):
 @login_required
 def activo_asignar(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
+    verificar_acceso(request.user, activo.unidad_negocio)
     if activo.estado != Activo.Estado.EN_BODEGA:
         messages.error(request, 'Solo se pueden asignar activos que están en bodega.')
         return redirect('panel:activo_detalle', pk=pk)
@@ -306,6 +317,7 @@ def activo_asignar(request, pk):
 @login_required
 def activo_devolver(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
+    verificar_acceso(request.user, activo.unidad_negocio)
     if activo.estado != Activo.Estado.ASIGNADO:
         messages.error(request, 'El activo no está asignado actualmente.')
         return redirect('panel:activo_detalle', pk=pk)
@@ -331,6 +343,7 @@ def activo_devolver(request, pk):
 @login_required
 def activo_reparacion_enviar(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
+    verificar_acceso(request.user, activo.unidad_negocio)
     if activo.estado == Activo.Estado.DADO_DE_BAJA:
         messages.error(request, 'Un activo dado de baja no puede enviarse a reparación.')
         return redirect('panel:activo_detalle', pk=pk)
@@ -355,6 +368,7 @@ def activo_reparacion_enviar(request, pk):
 @login_required
 def activo_reparacion_retorno(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
+    verificar_acceso(request.user, activo.unidad_negocio)
     if activo.estado != Activo.Estado.EN_REPARACION:
         messages.error(request, 'El activo no está en reparación.')
         return redirect('panel:activo_detalle', pk=pk)
@@ -379,6 +393,7 @@ def activo_reparacion_retorno(request, pk):
 @login_required
 def activo_baja(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
+    verificar_acceso(request.user, activo.unidad_negocio)
     if activo.estado == Activo.Estado.DADO_DE_BAJA:
         messages.error(request, 'El activo ya está dado de baja.')
         return redirect('panel:activo_detalle', pk=pk)
@@ -404,6 +419,7 @@ def activo_baja(request, pk):
 @login_required
 def activo_consumible_entregar(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
+    verificar_acceso(request.user, activo.unidad_negocio)
     if activo.estado != Activo.Estado.ASIGNADO:
         messages.error(request, 'El activo debe estar asignado para entregarle consumibles.')
         return redirect('panel:activo_detalle', pk=pk)

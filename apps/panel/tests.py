@@ -1,22 +1,30 @@
 from datetime import date
 
 from django.contrib.auth.models import Permission, User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.activos.models import Activo, Colaborador
 from apps.auditoria.models import EventoAuditoria
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
+from apps.cuentas.models import PerfilUsuario
 from apps.cumplimiento.models import (
     ActividadCumplimiento, ResultadoCumplimientoEstacion, TipoObjetivoCumplimiento,
 )
+from apps.despliegues.models import Despliegue
 from apps.mantenimiento.models import EstadoGeneralEquipo, Mantenimiento
+from apps.monitoreo.models import Alerta, Metrica, ReglaAlerta
+from apps.scripts.models import EjecucionScript, Script, ScriptProgramado, TipoScript
 
 
 class EstacionMeshCentralTests(TestCase):
     def setUp(self):
         grupo = Grupo.objects.create(codigo='TRX001')
-        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo)
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
         self.estacion = Estacion.objects.create(
             codigo='ML001-A', farmacia=farmacia,
             estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
@@ -24,8 +32,10 @@ class EstacionMeshCentralTests(TestCase):
         )
 
         self.usuario_sin_permiso = User.objects.create_user(username='sin_permiso', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_sin_permiso, acceso_todas_unidades=True)
 
         self.usuario_con_permiso = User.objects.create_user(username='con_permiso', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_con_permiso, acceso_todas_unidades=True)
         permiso = Permission.objects.get(content_type__app_label='catalogo', codename='acceso_remoto_estacion')
         self.usuario_con_permiso.user_permissions.add(permiso)
 
@@ -99,6 +109,7 @@ class EstacionMeshCentralTests(TestCase):
 class CumplimientoViewsTests(TestCase):
     def setUp(self):
         self.usuario = User.objects.create_user(username='u', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
         self.client.force_login(self.usuario)
 
         self.sg = UnidadNegocio.objects.get(codigo='SG')
@@ -212,3 +223,231 @@ class MantenimientoApiCrearTests(TestCase):
             '/api/v1/mantenimientos/', self._payload(), HTTP_AUTHORIZATION=f'Token {self.token.key}',
         )
         self.assertEqual(resp.status_code, 400)
+
+
+class MultiTenantAislamientoTests(TestCase):
+    """R1: un usuario restringido a una unidad de negocio no debe ver ni poder
+    accionar sobre datos de otra, ni siquiera forzando el ID por URL."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.farmacia_mia = Farmacia.objects.create(codigo='MAM01', grupo=grupo, unidad_negocio=self.mia)
+        self.estacion_sg = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia_sg, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.estacion_mia = Estacion.objects.create(
+            codigo='MAM01-A', farmacia=self.farmacia_mia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+        self.usuario_sg = User.objects.create_user(username='user_sg', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_sg).unidades_negocio.add(self.sg)
+        self.client.force_login(self.usuario_sg)
+
+    def test_lista_de_estaciones_no_muestra_las_de_otro_tenant(self):
+        resp = self.client.get(reverse('panel:estaciones_lista'))
+        self.assertContains(resp, 'ML001-A')
+        self.assertNotContains(resp, 'MAM01-A')
+
+    def test_forzar_id_de_estacion_de_otro_tenant_devuelve_403(self):
+        resp = self.client.get(reverse('panel:estacion_info_modal', args=[self.estacion_mia.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_acceso_total_ve_ambos_tenants(self):
+        soporte = User.objects.create_user(username='soporte', password='x', is_superuser=True, is_staff=True)
+        self.client.force_login(soporte)
+        resp = self.client.get(reverse('panel:estaciones_lista'))
+        self.assertContains(resp, 'ML001-A')
+        self.assertContains(resp, 'MAM01-A')
+
+
+class DespliegueMultiTenantTests(TestCase):
+    """Prueba el validar_destino_unidad_negocio de DespliegueForm de punta a punta
+    (POST real al panel), no solo la función de servicio en aislamiento."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.farmacia_mia = Farmacia.objects.create(codigo='MAM01', grupo=grupo, unidad_negocio=self.mia)
+
+        # acceso_todas_unidades=True: ambas farmacias son opciones válidas del campo,
+        # así que si el envío se rechaza es por validar_destino_unidad_negocio (el
+        # cruce unidad_negocio vs. farmacias elegidas), no por el recorte del queryset.
+        self.usuario = User.objects.create_user(username='soporte2', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def test_crear_despliegue_rechaza_farmacia_de_otra_unidad_negocio(self):
+        archivo = SimpleUploadedFile('pkg.zip', b'contenido-falso')
+        resp = self.client.post(reverse('panel:despliegue_crear'), {
+            'unidad_negocio': self.sg.pk,
+            'version': '1.0.0',
+            'archivo': archivo,
+            'modo_aplicacion': Despliegue.ModoAplicacion.INMEDIATO,
+            'destino_tipo': Despliegue.DestinoTipo.FARMACIAS,
+            'farmacias': [self.farmacia_mia.pk],
+            'umbral_error_pct': '10',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(Despliegue.objects.filter(version='1.0.0').exists())
+
+    def test_crear_despliegue_con_farmacia_del_mismo_tenant_funciona(self):
+        archivo = SimpleUploadedFile('pkg.zip', b'contenido-falso')
+        resp = self.client.post(reverse('panel:despliegue_crear'), {
+            'unidad_negocio': self.sg.pk,
+            'version': '1.0.0',
+            'archivo': archivo,
+            'modo_aplicacion': Despliegue.ModoAplicacion.INMEDIATO,
+            'destino_tipo': Despliegue.DestinoTipo.FARMACIAS,
+            'farmacias': [self.farmacia_sg.pk],
+            'umbral_error_pct': '10',
+        })
+        despliegue = Despliegue.objects.get(version='1.0.0')
+        self.assertRedirects(resp, reverse('panel:despliegue_detalle', args=[despliegue.pk]))
+
+
+class AlertaMultiTenantTests(TestCase):
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion_sg = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia_sg, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        creador = User.objects.create_user(username='creador_regla', password='x')
+        self.regla_sg = ReglaAlerta.objects.create(
+            nombre='Privada SG', metrica=Metrica.CPU_CARGA_PCT, umbral=90,
+            unidad_negocio=self.sg, creado_por=creador,
+        )
+        self.alerta = Alerta.objects.create(regla=self.regla_sg, estacion=self.estacion_sg, valor_disparador=95)
+
+        self.usuario_mia = User.objects.create_user(username='user_mia', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_usuario_de_otro_tenant_no_ve_la_alerta_en_el_listado(self):
+        resp = self.client.get(reverse('panel:alertas_lista'))
+        self.assertNotContains(resp, 'Privada SG')
+
+    def test_usuario_de_otro_tenant_no_puede_resolverla(self):
+        resp = self.client.post(reverse('panel:alerta_resolver', args=[self.alerta.pk]))
+        self.assertEqual(resp.status_code, 403)
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.estado, Alerta.Estado.ABIERTA)
+
+
+class ScriptProgramadoMultiTenantTests(TestCase):
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        creador = User.objects.create_user(username='creador_prog', password='x')
+        self.script = Script.objects.create(
+            nombre='Actualizar winget', tipo=TipoScript.POWERSHELL, contenido='winget upgrade --all',
+            creado_por=creador,
+        )
+        self.programado_sg = ScriptProgramado.objects.create(
+            script=self.script, unidad_negocio=self.sg, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
+            frecuencia_dias=7, fecha_proxima_ejecucion=date(2026, 12, 1), creado_por=creador,
+        )
+
+        self.usuario_mia = User.objects.create_user(username='user_mia2', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_usuario_de_otro_tenant_no_ve_la_programacion(self):
+        resp = self.client.get(reverse('panel:scripts_programados_lista'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, self.script.nombre)
+
+    def test_form_no_ofrece_unidad_de_negocio_ajena(self):
+        resp = self.client.get(reverse('panel:script_programado_crear'))
+        self.assertNotContains(resp, '>SG</option>')
+        self.assertContains(resp, '>MIA</option>')
+
+
+class ActivosMultiTenantTests(TestCase):
+    """RBAC fast-follow: activos/colaboradores heredan/declaran unidad_negocio pero
+    hasta ahora nada escopaba las vistas del panel por ella."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.colaborador_sg = Colaborador.objects.create(nombre='Ana SG', cedula='1001', unidad_negocio=self.sg)
+        self.colaborador_compartido = Colaborador.objects.create(nombre='Beto RRHH', cedula='1002')
+        self.activo_sg = Activo.objects.create(
+            codigo='CR-DSK-0010', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg,
+        )
+        self.activo_compartido = Activo.objects.create(codigo='CR-DSK-0011', tipo=Activo.Tipo.DESKTOP)
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_activos', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_colaboradores_lista_oculta_los_de_otro_tenant_pero_muestra_compartidos(self):
+        resp = self.client.get(reverse('panel:colaboradores_lista'))
+        self.assertNotContains(resp, 'Ana SG')
+        self.assertContains(resp, 'Beto RRHH')
+
+    def test_activos_lista_oculta_los_de_otro_tenant_pero_muestra_compartidos(self):
+        resp = self.client.get(reverse('panel:activos_lista'))
+        self.assertNotContains(resp, 'CR-DSK-0010')
+        self.assertContains(resp, 'CR-DSK-0011')
+
+    def test_forzar_detalle_de_activo_de_otro_tenant_devuelve_403(self):
+        resp = self.client.get(reverse('panel:activo_detalle', args=[self.activo_sg.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_activo_compartido_es_accesible(self):
+        resp = self.client.get(reverse('panel:activo_detalle', args=[self.activo_compartido.pk]))
+        self.assertEqual(resp.status_code, 200)
+
+
+class MantenimientoMultiTenantTests(TestCase):
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        colaborador_sg = Colaborador.objects.create(nombre='Ana SG', cedula='2001', unidad_negocio=self.sg)
+        self.mantenimiento_sg = Mantenimiento.objects.create(
+            cliente=colaborador_sg, fecha_programada=timezone.now(),
+        )
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_mant', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_lista_no_muestra_mantenimiento_de_otro_tenant(self):
+        resp = self.client.get(reverse('panel:mantenimientos_lista'))
+        self.assertNotContains(resp, f'#{self.mantenimiento_sg.pk}')
+
+    def test_forzar_detalle_devuelve_403(self):
+        resp = self.client.get(reverse('panel:mantenimiento_detalle', args=[self.mantenimiento_sg.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+
+class CumplimientoMultiTenantTests(TestCase):
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        creador = User.objects.create_user(username='creador_cump', password='x')
+        self.actividad_sg = ActividadCumplimiento.objects.create(
+            nombre='Actividad SG', tipo_objetivo=TipoObjetivoCumplimiento.ESTACIONES,
+            fecha_limite=date(2026, 12, 31), creado_por=creador,
+        )
+        self.actividad_sg.unidades_negocio.add(self.sg)
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_cump', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_lista_no_muestra_actividad_de_otro_tenant(self):
+        resp = self.client.get(reverse('panel:cumplimiento_lista'))
+        self.assertNotContains(resp, 'Actividad SG')
+
+    def test_forzar_detalle_devuelve_403(self):
+        resp = self.client.get(reverse('panel:cumplimiento_detalle', args=[self.actividad_sg.pk]))
+        self.assertEqual(resp.status_code, 403)

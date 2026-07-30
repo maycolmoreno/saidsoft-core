@@ -4,6 +4,8 @@ Sigue el mismo patrón que apps/despliegues/services.py: la lógica de negocio
 vive aquí, separada de las vistas, y reusa apps.catalogo.services para la
 resolución de destino y el envío por MQTT.
 """
+from datetime import timedelta
+
 from django.utils import timezone
 
 from apps.catalogo.services import enviar_script, resolver_estaciones
@@ -11,17 +13,19 @@ from apps.catalogo.services import enviar_script, resolver_estaciones
 from .models import EjecucionScript, ResultadoEjecucionScript, Script
 
 
-def crear_script_adhoc(*, nombre, tipo, contenido, usuario):
+def crear_script_adhoc(*, nombre, tipo, contenido, unidad_negocio, usuario):
     return Script.objects.create(
-        nombre=nombre, tipo=tipo, contenido=contenido, es_adhoc=True, creado_por=usuario,
+        nombre=nombre, tipo=tipo, contenido=contenido, unidad_negocio=unidad_negocio,
+        es_adhoc=True, creado_por=usuario,
     )
 
 
-def registrar_ejecucion_script(*, script, destino_tipo, usuario, timeout_segundos=300,
-                                grupos=None, farmacias=None, estaciones=None, parametros=None):
+def registrar_ejecucion_script(*, script, destino_tipo, usuario, unidad_negocio, timeout_segundos=300,
+                                grupos=None, farmacias=None, estaciones=None, parametros=None, programado=None):
     ejecucion = EjecucionScript(
         script=script, contenido_snapshot=script.contenido, destino_tipo=destino_tipo,
-        timeout_segundos=timeout_segundos, parametros=parametros or {}, creado_por=usuario,
+        unidad_negocio=unidad_negocio, timeout_segundos=timeout_segundos, programado=programado,
+        parametros=parametros or {}, creado_por=usuario,
     )
     ejecucion.save()
     if destino_tipo == EjecucionScript.DestinoTipo.GRUPOS:
@@ -32,8 +36,8 @@ def registrar_ejecucion_script(*, script, destino_tipo, usuario, timeout_segundo
         ejecucion.estaciones.set(estaciones or [])
 
     estaciones_destino = resolver_estaciones(
-        destino_tipo, grupos=ejecucion.grupos.all(), farmacias=ejecucion.farmacias.all(),
-        estaciones=ejecucion.estaciones.all(),
+        destino_tipo, unidad_negocio=unidad_negocio, grupos=ejecucion.grupos.all(),
+        farmacias=ejecucion.farmacias.all(), estaciones=ejecucion.estaciones.all(),
     )
     resultados = ResultadoEjecucionScript.objects.bulk_create([
         ResultadoEjecucionScript(ejecucion=ejecucion, estacion=estacion)
@@ -73,3 +77,23 @@ def recalcular_estado_ejecucion(ejecucion):
     if ejecucion.estado != nuevo_estado:
         ejecucion.estado = nuevo_estado
         ejecucion.save(update_fields=['estado'])
+
+
+def generar_ejecucion_programada(*, programado):
+    """Crea la EjecucionScript de un ScriptProgramado vencido y avanza sus fechas.
+
+    Pensado para ejecutarse desde el management command periódico
+    `generar_ejecuciones_programadas` (cron/Programador de tareas) — mismo patrón que
+    apps.mantenimiento.services.generar_proximo_mantenimiento_programado.
+    """
+    ejecucion = registrar_ejecucion_script(
+        script=programado.script, destino_tipo=programado.destino_tipo,
+        unidad_negocio=programado.unidad_negocio, timeout_segundos=programado.timeout_segundos,
+        grupos=programado.grupos.all(), farmacias=programado.farmacias.all(),
+        estaciones=programado.estaciones.all(), usuario=programado.creado_por, programado=programado,
+    )
+    hoy = timezone.now().date()
+    programado.fecha_ultima_ejecucion = hoy
+    programado.fecha_proxima_ejecucion = hoy + timedelta(days=programado.frecuencia_dias)
+    programado.save(update_fields=['fecha_ultima_ejecucion', 'fecha_proxima_ejecucion'])
+    return ejecucion

@@ -25,3 +25,11 @@ class ActividadCumplimientoForm(forms.ModelForm):
             'farmacias_aperturadas_desde': 'Farmacias aperturadas desde (solo objetivo Farmacias)',
             'cargos': 'Cargos incluidos (solo objetivo Colaboradores)',
         }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        from apps.catalogo.models import UnidadNegocio
+        from apps.cuentas.services import unidades_negocio_visibles
+        self.fields['unidades_negocio'].queryset = (
+            unidades_negocio_visibles(user) if user is not None else UnidadNegocio.objects.none()
+        )

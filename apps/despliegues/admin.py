@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from apps.auditoria.models import registrar_evento
+from apps.cuentas.services import scope_por_unidad_negocio
 
 from .models import Despliegue, EventoDespliegue, ResultadoDespliegue
 from .services import publicar_despliegue
@@ -20,15 +21,18 @@ class ResultadoDespliegueInline(admin.TabularInline):
 @admin.register(Despliegue)
 class DespliegueAdmin(admin.ModelAdmin):
     list_display = (
-        'version', 'destino_tipo', 'modo_aplicacion', 'estado',
+        'version', 'unidad_negocio', 'destino_tipo', 'modo_aplicacion', 'estado',
         'progreso', 'creado_por', 'fecha_creacion', 'fecha_publicacion',
     )
-    list_filter = ('estado', 'destino_tipo', 'modo_aplicacion')
+    list_filter = ('unidad_negocio', 'estado', 'destino_tipo', 'modo_aplicacion')
     search_fields = ('version', 'descripcion')
-    autocomplete_fields = ('grupos', 'farmacias', 'estaciones')
+    autocomplete_fields = ('unidad_negocio', 'grupos', 'farmacias', 'estaciones')
     readonly_fields = ('sha256', 'creado_por', 'aprobado_por', 'fecha_creacion', 'fecha_publicacion', 'estado')
     inlines = [ResultadoDespliegueInline]
     actions = ['aprobar_despliegues', 'publicar_despliegues']
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(super().get_queryset(request), request.user, 'unidad_negocio')
 
     @admin.display(description='Progreso')
     def progreso(self, obj):
@@ -96,3 +100,6 @@ class ResultadoDespliegueAdmin(admin.ModelAdmin):
     search_fields = ('estacion__codigo', 'despliegue__version')
     autocomplete_fields = ('despliegue', 'estacion')
     inlines = [EventoDespliegueInline]
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(super().get_queryset(request), request.user, 'despliegue__unidad_negocio')
