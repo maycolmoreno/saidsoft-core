@@ -35,16 +35,21 @@ def mantenimiento_crear(request):
         form = MantenimientoManualForm(request.POST)
         if form.is_valid():
             d = form.cleaned_data
-            mantenimiento = mantenimiento_services.crear_mantenimiento_manual(
-                equipos=list(d['equipos']), cliente=d['cliente'], tecnico=d['tecnico'], empresa=d['empresa'],
-                tipo_mantenimiento=d['tipo_mantenimiento'], descripcion=d['descripcion'],
-                fecha_programada=d['fecha_programada'], usuario=request.user,
-            )
-            registrar_evento(
-                usuario=request.user, accion='mantenimiento.crear', objeto=mantenimiento, request=request,
-            )
-            messages.success(request, f'Mantenimiento #{mantenimiento.pk} creado.')
-            return redirect('panel:mantenimiento_detalle', pk=mantenimiento.pk)
+            try:
+                mantenimiento = mantenimiento_services.crear_mantenimiento_manual(
+                    equipos=list(d['equipos']), cliente=d['cliente'], tecnico=d['tecnico'], empresa=d['empresa'],
+                    tipo_mantenimiento=d['tipo_mantenimiento'], descripcion=d['descripcion'],
+                    fecha_programada=d['fecha_programada'], estado_general=d['estado_general'],
+                    mantenimiento_programado=d['mantenimiento_programado'], usuario=request.user,
+                )
+            except ValueError as exc:
+                form.add_error(None, str(exc))
+            else:
+                registrar_evento(
+                    usuario=request.user, accion='mantenimiento.crear', objeto=mantenimiento, request=request,
+                )
+                messages.success(request, f'Mantenimiento #{mantenimiento.pk} creado.')
+                return redirect('panel:mantenimiento_detalle', pk=mantenimiento.pk)
     else:
         form = MantenimientoManualForm()
     return render(request, 'panel/accion_form.html', {

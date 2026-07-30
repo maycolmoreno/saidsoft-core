@@ -4,11 +4,13 @@ from django.contrib.auth.models import Permission, User
 from django.test import TestCase
 from django.urls import reverse
 
+from apps.activos.models import Activo, Colaborador
 from apps.auditoria.models import EventoAuditoria
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.cumplimiento.models import (
     ActividadCumplimiento, ResultadoCumplimientoEstacion, TipoObjetivoCumplimiento,
 )
+from apps.mantenimiento.models import EstadoGeneralEquipo, Mantenimiento
 
 
 class EstacionMeshCentralTests(TestCase):
@@ -141,3 +143,72 @@ class CumplimientoViewsTests(TestCase):
         self.assertRedirects(resp, reverse('panel:cumplimiento_detalle', args=[actividad.pk]))
         resultado.refresh_from_db()
         self.assertEqual(resultado.estado, 'completado')
+
+
+class MantenimientoCrearViewTests(TestCase):
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u', password='x')
+        self.client.force_login(self.usuario)
+        self.equipo = Activo.objects.create(codigo='CR-DSK-0099', tipo=Activo.Tipo.DESKTOP)
+        self.cliente = Colaborador.objects.create(nombre='Ana', cedula='9999')
+
+    def _post_valido(self):
+        return self.client.post(reverse('panel:mantenimiento_crear'), {
+            'equipos': [self.equipo.pk],
+            'cliente': self.cliente.pk,
+            'tipo_mantenimiento': 'preventivo',
+            'estado_general': EstadoGeneralEquipo.OPERATIVO,
+            'descripcion': 'Revisión de rutina',
+            'fecha_programada': '2026-10-01T09:00',
+        })
+
+    def test_crea_y_redirige(self):
+        resp = self._post_valido()
+        mantenimiento = Mantenimiento.objects.get(descripcion='Revisión de rutina')
+        self.assertRedirects(resp, reverse('panel:mantenimiento_detalle', args=[mantenimiento.pk]))
+
+    def test_rechaza_segundo_mantenimiento_para_el_mismo_equipo_sin_500(self):
+        self._post_valido()
+        resp = self._post_valido()
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Ya hay un mantenimiento abierto')
+
+
+class MantenimientoApiCrearTests(TestCase):
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec', password='x')
+        self.token = Token.objects.create(user=self.tecnico)
+        self.equipo = Activo.objects.create(codigo='CR-DSK-0100', tipo=Activo.Tipo.DESKTOP)
+        self.cliente = Colaborador.objects.create(nombre='Beto', cedula='8888')
+
+    def _payload(self):
+        return {
+            'equipos': [self.equipo.pk],
+            'cliente': self.cliente.pk,
+            'tipo_mantenimiento': 'correctivo',
+            'estado_general': EstadoGeneralEquipo.NO_OPERATIVO,
+            'descripcion': 'Falla de pantalla',
+            'fecha_programada': '2026-10-01T09:00:00Z',
+        }
+
+    def test_crear_sin_token_devuelve_401(self):
+        resp = self.client.post('/api/v1/mantenimientos/', self._payload())
+        self.assertEqual(resp.status_code, 401)
+
+    def test_crear_autoasigna_al_tecnico_del_token(self):
+        resp = self.client.post(
+            '/api/v1/mantenimientos/', self._payload(),
+            HTTP_AUTHORIZATION=f'Token {self.token.key}',
+        )
+        self.assertEqual(resp.status_code, 201)
+        mantenimiento = Mantenimiento.objects.get(descripcion='Falla de pantalla')
+        self.assertEqual(mantenimiento.tecnico, self.tecnico)
+        self.assertEqual(mantenimiento.estado_general, EstadoGeneralEquipo.NO_OPERATIVO)
+
+    def test_crear_rechaza_si_equipo_ya_tiene_uno_abierto(self):
+        self.client.post('/api/v1/mantenimientos/', self._payload(), HTTP_AUTHORIZATION=f'Token {self.token.key}')
+        resp = self.client.post(
+            '/api/v1/mantenimientos/', self._payload(), HTTP_AUTHORIZATION=f'Token {self.token.key}',
+        )
+        self.assertEqual(resp.status_code, 400)

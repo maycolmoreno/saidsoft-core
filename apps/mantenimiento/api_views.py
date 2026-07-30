@@ -9,8 +9,8 @@ from .models import ActividadChecklist, ConsentimientoMonitoreo, Mantenimiento, 
 from .serializers import (
     CerrarMantenimientoSerializer, ChecklistActualizarSerializer, ChecklistItemSerializer,
     ConsentimientoMonitoreoSerializer, FirmaMantenimientoSerializer, FirmarMantenimientoSerializer,
-    ImagenAdjuntarSerializer, ImagenMantenimientoSerializer, MantenimientoDetalleSerializer,
-    MantenimientoListSerializer, UbicacionTecnicoSerializer,
+    ImagenAdjuntarSerializer, ImagenMantenimientoSerializer, MantenimientoCrearSerializer,
+    MantenimientoDetalleSerializer, MantenimientoListSerializer, UbicacionTecnicoSerializer,
 )
 
 
@@ -26,7 +26,30 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
     def get_serializer_class(self):
         if self.action == 'list':
             return MantenimientoListSerializer
+        if self.action == 'create':
+            return MantenimientoCrearSerializer
         return MantenimientoDetalleSerializer
+
+    def create(self, request, *args, **kwargs):
+        """Autoservicio: el técnico crea su propio mantenimiento (igual que en InvTICS).
+
+        `tecnico` siempre es request.user, nunca viene del payload — a diferencia
+        del formulario del panel, donde un coordinador puede asignarlo a otra persona.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        d = serializer.validated_data
+        try:
+            mantenimiento = services.crear_mantenimiento_manual(
+                equipos=list(d['equipos']), tecnico=request.user, cliente=d['cliente'],
+                empresa=d.get('empresa'), tipo_mantenimiento=d['tipo_mantenimiento'],
+                descripcion=d['descripcion'], fecha_programada=d['fecha_programada'],
+                estado_general=d['estado_general'], mantenimiento_programado=d.get('mantenimiento_programado'),
+                usuario=request.user,
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(MantenimientoDetalleSerializer(mantenimiento).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['get'])
     def checklist(self, request, pk=None):

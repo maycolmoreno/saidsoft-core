@@ -21,13 +21,28 @@ def _snapshot_equipo(equipo):
 
 
 def crear_mantenimiento_manual(*, equipos, tecnico, descripcion, fecha_programada, usuario,
-                                cliente=None, empresa=None, tipo_mantenimiento='', equipo_principal=None):
+                                cliente=None, empresa=None, tipo_mantenimiento='', equipo_principal=None,
+                                estado_general='', mantenimiento_programado=None):
     if not equipos:
         raise ValueError('Un mantenimiento debe tener al menos un equipo.')
+
+    conflictos = MantenimientoEquipo.objects.filter(
+        equipo__in=equipos,
+        mantenimiento__estado_interno__in=[
+            Mantenimiento.EstadoInterno.PENDIENTE, Mantenimiento.EstadoInterno.EN_PROCESO,
+        ],
+    ).select_related('equipo').distinct()
+    if conflictos.exists():
+        codigos = sorted({me.equipo.codigo for me in conflictos})
+        raise ValueError(
+            f'Ya hay un mantenimiento abierto para: {", ".join(codigos)}. Debe finalizarlo antes de crear uno nuevo.',
+        )
+
     principal = equipo_principal or equipos[0]
     mantenimiento = Mantenimiento.objects.create(
         cliente=cliente, tecnico=tecnico, empresa=empresa, descripcion=descripcion,
         tipo_mantenimiento=tipo_mantenimiento, tipo_origen=TipoOrigenMantenimiento.MANUAL,
+        estado_general=estado_general, mantenimiento_programado=mantenimiento_programado,
         fecha_programada=fecha_programada, snapshot_equipo=_snapshot_equipo(principal),
     )
     MantenimientoEquipo.objects.bulk_create([
@@ -76,11 +91,18 @@ def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario):
         mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.CERRADO, usuario=usuario,
         detalle={'resultado_tecnico': resultado_tecnico},
     )
-    if resultado_tecnico == ResultadoTecnico.REQUIERE_BAJA:
+    if resultado_tecnico in (ResultadoTecnico.REQUIERE_BAJA, ResultadoTecnico.IRREPARABLE):
         for me in mantenimiento.equipos.select_related('equipo'):
             activos_services.registrar_baja_recomendada(
-                activo=me.equipo, motivo=f'Mantenimiento #{mantenimiento.pk}: requiere baja', usuario=usuario,
+                activo=me.equipo, motivo=f'Mantenimiento #{mantenimiento.pk}: {resultado_tecnico}', usuario=usuario,
             )
+
+    if mantenimiento.mantenimiento_programado_id:
+        programado = mantenimiento.mantenimiento_programado
+        hoy = mantenimiento.fecha_cierre.date()
+        programado.fecha_ultimo = hoy
+        programado.fecha_proximo = hoy + timedelta(days=programado.frecuencia_dias)
+        programado.save(update_fields=['fecha_ultimo', 'fecha_proximo'])
 
 
 def cancelar_mantenimiento(*, mantenimiento, motivo, usuario):

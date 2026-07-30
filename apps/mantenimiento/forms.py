@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 
 from apps.activos.models import Activo, Colaborador, Empresa, Ubicacion
 
-from .models import MantenimientoProgramado, PrioridadActividad, ResultadoTecnico, TipoFirma
+from .models import EstadoGeneralEquipo, MantenimientoProgramado, PrioridadActividad, ResultadoTecnico, TipoFirma
 
 INPUT_CLASS = 'w-full rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]'
 
@@ -17,21 +17,33 @@ class MantenimientoManualForm(forms.Form):
         help_text='Selecciona uno o varios equipos cubiertos por este mantenimiento.',
     )
     cliente = forms.ModelChoiceField(
-        queryset=Colaborador.objects.filter(activo=True), required=False,
+        queryset=Colaborador.objects.filter(activo=True),
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
     tecnico = forms.ModelChoiceField(
         queryset=User.objects.filter(is_active=True).order_by('username'), required=False,
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        help_text='Si no se asigna aquí, el técnico queda sin asignar (a diferencia de la app móvil, '
+                  'donde el técnico siempre se autoasigna).',
     )
     empresa = forms.ModelChoiceField(
         queryset=Empresa.objects.filter(activo=True), required=False,
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
-    tipo_mantenimiento = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
+    tipo_mantenimiento = forms.CharField(widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
+    estado_general = forms.ChoiceField(
+        choices=EstadoGeneralEquipo.choices, widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        label='Estado general del equipo',
+    )
     descripcion = forms.CharField(widget=forms.Textarea(attrs={'class': INPUT_CLASS, 'rows': 3}))
     fecha_programada = forms.DateTimeField(
         widget=forms.DateTimeInput(attrs={'class': INPUT_CLASS, 'type': 'datetime-local'}),
+    )
+    mantenimiento_programado = forms.ModelChoiceField(
+        queryset=MantenimientoProgramado.objects.filter(activo=True), required=False,
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        label='Vincular a plan preventivo (opcional)',
+        help_text='Si se elige, al cerrar este mantenimiento se recalcula la próxima fecha del plan.',
     )
 
 

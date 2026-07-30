@@ -27,6 +27,13 @@ class ResultadoTecnico(models.TextChoices):
     INSTALADO = 'instalado', 'Instalado'
 
 
+class EstadoGeneralEquipo(models.TextChoices):
+    """Condición del equipo al momento del mantenimiento (portado de InvTICS, ausente hasta ahora)."""
+    OPERATIVO = 'operativo', 'Operativo'
+    REQUIERE_REVISION = 'requiere_revision', 'Requiere revisión'
+    NO_OPERATIVO = 'no_operativo', 'No operativo'
+
+
 class MantenimientoProgramado(models.Model):
     """Plantilla recurrente: cada `frecuencia_dias` genera un Mantenimiento nuevo."""
     equipo = models.ForeignKey(Activo, on_delete=models.PROTECT, related_name='mantenimientos_programados')
@@ -80,6 +87,7 @@ class Mantenimiento(models.Model):
     )
     estado_interno = models.CharField(max_length=15, choices=EstadoInterno.choices, default=EstadoInterno.PENDIENTE)
     resultado_tecnico = models.CharField(max_length=25, choices=ResultadoTecnico.choices, blank=True)
+    estado_general = models.CharField(max_length=20, choices=EstadoGeneralEquipo.choices, blank=True)
     snapshot_equipo = models.JSONField(
         default=dict, blank=True,
         help_text='Código/serie/modelo del equipo principal, congelados al crear el mantenimiento.',

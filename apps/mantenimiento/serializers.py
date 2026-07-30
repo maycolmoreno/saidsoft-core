@@ -2,11 +2,11 @@
 la API es una capa de transporte, no reimplementa reglas de negocio."""
 from rest_framework import serializers
 
-from apps.activos.models import Activo
+from apps.activos.models import Activo, Colaborador, Empresa
 
 from .models import (
-    ActividadChecklist, ConsentimientoMonitoreo, EventoMantenimiento, FirmaMantenimiento,
-    ImagenMantenimiento, Mantenimiento, ResultadoTecnico, TipoFirma, UbicacionTecnico,
+    ActividadChecklist, ConsentimientoMonitoreo, EstadoGeneralEquipo, EventoMantenimiento, FirmaMantenimiento,
+    ImagenMantenimiento, Mantenimiento, MantenimientoProgramado, ResultadoTecnico, TipoFirma, UbicacionTecnico,
 )
 
 
@@ -73,6 +73,25 @@ class MantenimientoDetalleSerializer(MantenimientoListSerializer):
     class Meta(MantenimientoListSerializer.Meta):
         fields = MantenimientoListSerializer.Meta.fields + ['snapshot_equipo', 'firmas', 'imagenes', 'eventos']
         read_only_fields = fields
+
+
+class MantenimientoCrearSerializer(serializers.Serializer):
+    """Creación self-service desde la app móvil: el técnico se autoasigna (ver
+    MantenimientoViewSet.create, que fija tecnico=request.user sin importar el payload)."""
+    equipos = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA),
+    )
+    cliente = serializers.PrimaryKeyRelatedField(queryset=Colaborador.objects.filter(activo=True))
+    empresa = serializers.PrimaryKeyRelatedField(
+        queryset=Empresa.objects.filter(activo=True), required=False, allow_null=True,
+    )
+    tipo_mantenimiento = serializers.CharField()
+    estado_general = serializers.ChoiceField(choices=EstadoGeneralEquipo.choices)
+    descripcion = serializers.CharField()
+    fecha_programada = serializers.DateTimeField()
+    mantenimiento_programado = serializers.PrimaryKeyRelatedField(
+        queryset=MantenimientoProgramado.objects.filter(activo=True), required=False, allow_null=True,
+    )
 
 
 class CerrarMantenimientoSerializer(serializers.Serializer):

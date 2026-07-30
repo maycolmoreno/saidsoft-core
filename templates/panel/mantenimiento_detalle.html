@@ -26,6 +26,16 @@
         <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Resultado técnico</div>
         <div>{{ mantenimiento.get_resultado_tecnico_display|default:"—" }}</div>
     </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Estado general del equipo</div>
+        <div>{{ mantenimiento.get_estado_general_display|default:"—" }}</div>
+    </div>
+    {% if mantenimiento.mantenimiento_programado %}
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Plan preventivo vinculado</div>
+        <div>{{ mantenimiento.mantenimiento_programado }}</div>
+    </div>
+    {% endif %}
 </div>
 
 <h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Equipos cubiertos</h2>
