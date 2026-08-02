@@ -12,6 +12,7 @@
                 <th class="text-left px-4 py-3">Usuario</th>
                 <th class="text-left px-4 py-3">Acción</th>
                 <th class="text-left px-4 py-3">Objeto</th>
+                <th class="text-left px-4 py-3">Unidad de negocio</th>
                 <th class="text-left px-4 py-3">IP</th>
             </tr>
         </thead>
@@ -22,10 +23,11 @@
                 <td class="px-4 py-3">{{ ev.usuario.username|default:"sistema" }}</td>
                 <td class="px-4 py-3"><code class="text-xs px-1.5 py-0.5 rounded" style="background:var(--overlay-hover);">{{ ev.accion }}</code></td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ ev.objeto_repr }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ ev.unidad_negocio.codigo|default:"Todos (global)" }}</td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ ev.ip_address|default:"—" }}</td>
             </tr>
         {% empty %}
-            <tr><td colspan="5" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin eventos registrados todavía.</td></tr>
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin eventos registrados todavía.</td></tr>
         {% endfor %}
         </tbody>
     </table>

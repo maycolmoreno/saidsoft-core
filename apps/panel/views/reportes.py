@@ -64,5 +64,5 @@ def reporte_auditoria_csv(request):
     if hasta:
         hasta = hasta + timedelta(days=1)  # incluir todo el día 'hasta'
     resp = _csv_response(reportes.nombre_archivo('auditoria'))
-    reportes.reporte_auditoria(resp, desde=desde, hasta=hasta)
+    reportes.reporte_auditoria(resp, request, desde=desde, hasta=hasta)
     return resp

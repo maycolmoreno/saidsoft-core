@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from apps.auditoria.models import EventoAuditoria
 from apps.catalogo.models import Estacion
+from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa
 from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
 
 
@@ -82,9 +83,12 @@ def reporte_despliegue(salida, despliegue: Despliegue):
     ], filas)
 
 
-def reporte_auditoria(salida, desde=None, hasta=None):
-    """Bitácora de acciones sobre el panel en un rango de fechas."""
-    eventos = EventoAuditoria.objects.select_related('usuario').order_by('timestamp')
+def reporte_auditoria(salida, request, desde=None, hasta=None):
+    """Bitácora de acciones sobre el panel en un rango de fechas, acotada a lo que
+    `request.user` puede ver (mismo aislamiento por unidad de negocio que la lista)."""
+    eventos = scope_opcional_por_unidad_negocio_activa(
+        EventoAuditoria.objects.select_related('usuario', 'unidad_negocio'), request, 'unidad_negocio',
+    ).order_by('timestamp')
     if desde:
         eventos = eventos.filter(timestamp__gte=desde)
     if hasta:
@@ -96,11 +100,12 @@ def reporte_auditoria(salida, desde=None, hasta=None):
             ev.usuario.username if ev.usuario else 'sistema',
             ev.accion,
             ev.objeto_repr,
+            ev.unidad_negocio.codigo if ev.unidad_negocio else 'global',
             ev.ip_address or '',
         ]
         for ev in eventos
     ]
-    _escribir(salida, ['fecha', 'usuario', 'accion', 'objeto', 'ip'], filas)
+    _escribir(salida, ['fecha', 'usuario', 'accion', 'objeto', 'unidad_negocio', 'ip'], filas)
 
 
 def nombre_archivo(prefijo: str) -> str:

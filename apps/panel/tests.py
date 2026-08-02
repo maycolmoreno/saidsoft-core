@@ -7,7 +7,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from apps.activos.models import Activo, Colaborador
-from apps.auditoria.models import EventoAuditoria
+from apps.auditoria.models import EventoAuditoria, registrar_evento
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
 from apps.cumplimiento.models import (
@@ -451,3 +451,36 @@ class CumplimientoMultiTenantTests(TestCase):
     def test_forzar_detalle_devuelve_403(self):
         resp = self.client.get(reverse('panel:cumplimiento_detalle', args=[self.actividad_sg.pk]))
         self.assertEqual(resp.status_code, 403)
+
+
+class AuditoriaMultiTenantTests(TestCase):
+    """La bitácora de auditoría quedó fuera del primer rollout de tenancy: mostraba a
+    cualquier usuario logueado las acciones de todos los clientes. Cubre tanto que
+    registrar_evento() derive el tenant del objeto auditado, como que la lista/CSV
+    respeten ese aislamiento igual que el resto del panel."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.activo_sg = Activo.objects.create(codigo='CR-DSK-0020', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg)
+        self.evento_sg = registrar_evento(usuario=None, accion='activo.ingreso', objeto=self.activo_sg)
+        self.evento_global = registrar_evento(usuario=None, accion='orden_compra.crear', objeto=None)
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_audit', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_registrar_evento_deriva_unidad_negocio_del_objeto(self):
+        self.assertEqual(self.evento_sg.unidad_negocio, self.sg)
+        self.assertIsNone(self.evento_global.unidad_negocio)
+
+    def test_lista_oculta_evento_de_otro_tenant_pero_muestra_globales(self):
+        resp = self.client.get(reverse('panel:auditoria_lista'))
+        self.assertNotContains(resp, 'CR-DSK-0020')
+        self.assertContains(resp, 'orden_compra.crear')
+
+    def test_csv_oculta_evento_de_otro_tenant(self):
+        resp = self.client.get(reverse('panel:reporte_auditoria_csv'))
+        contenido = resp.content.decode('utf-8-sig')
+        self.assertNotIn('CR-DSK-0020', contenido)
+        self.assertIn('orden_compra.crear', contenido)
