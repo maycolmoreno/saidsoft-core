@@ -484,3 +484,43 @@ class AuditoriaMultiTenantTests(TestCase):
         contenido = resp.content.decode('utf-8-sig')
         self.assertNotIn('CR-DSK-0020', contenido)
         self.assertIn('orden_compra.crear', contenido)
+
+
+class ReporteCumplimientoMultiTenantTests(TestCase):
+    """Un Grupo (canal TRX) puede estar compartido por farmacias de varias unidades de
+    negocio (a diferencia de Despliegue, que sí es de una sola unidad_negocio): el CSV
+    de cumplimiento de versión filtraba solo por grupo, sin acotar además al tenant del
+    usuario, así que pedir un grupo compartido exponía las estaciones de otro cliente."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        farmacia_mia = Farmacia.objects.create(codigo='MAM01', grupo=grupo, unidad_negocio=self.mia)
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia_sg, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        Estacion.objects.create(
+            codigo='MAM01-A', farmacia=farmacia_mia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+        self.usuario_sg = User.objects.create_user(username='user_sg_reportes', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_sg).unidades_negocio.add(self.sg)
+        self.client.force_login(self.usuario_sg)
+
+    def test_csv_pidiendo_el_grupo_compartido_no_incluye_la_estacion_de_otro_tenant(self):
+        resp = self.client.get(reverse('panel:reporte_cumplimiento_csv'), {'grupo': 'TRX001'})
+        contenido = resp.content.decode('utf-8-sig')
+        self.assertIn('ML001-A', contenido)
+        self.assertNotIn('MAM01-A', contenido)
+
+    def test_csv_sin_filtro_de_grupo_tampoco_incluye_otro_tenant(self):
+        resp = self.client.get(reverse('panel:reporte_cumplimiento_csv'))
+        contenido = resp.content.decode('utf-8-sig')
+        self.assertIn('ML001-A', contenido)
+        self.assertNotIn('MAM01-A', contenido)
+
+    def test_selector_de_grupos_ofrece_el_grupo_compartido_una_sola_vez(self):
+        resp = self.client.get(reverse('panel:reportes_index'))
+        self.assertContains(resp, '>TRX001<', count=1)

@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from apps.auditoria.models import EventoAuditoria
 from apps.catalogo.models import Estacion
-from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa
+from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa, unidades_negocio_en_foco
 from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
 
 
@@ -21,11 +21,20 @@ def _escribir(salida, encabezados, filas):
     writer.writerows(filas)
 
 
-def reporte_cumplimiento(salida, grupo_codigo=None):
-    """Qué versión corre cada estación vs. la objetivo de su grupo."""
+def reporte_cumplimiento(salida, request, grupo_codigo=None):
+    """Qué versión corre cada estación vs. la objetivo de su grupo.
+
+    Un Grupo (canal TRX) puede estar compartido por farmacias de varias unidades de
+    negocio (ver apps.catalogo.services.validar_destino_unidad_negocio), así que no
+    basta con filtrar por grupo: hay que acotar además a las estaciones cuya farmacia
+    es visible para `request.user`, igual que el dashboard.
+    """
     estaciones = (
         Estacion.objects
-        .filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        .filter(
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            farmacia__unidad_negocio__in=unidades_negocio_en_foco(request),
+        )
         .select_related('farmacia', 'farmacia__grupo')
         .order_by('farmacia__grupo__codigo', 'farmacia__codigo', 'codigo')
     )
