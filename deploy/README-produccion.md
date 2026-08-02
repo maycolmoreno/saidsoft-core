@@ -3,12 +3,18 @@
 Stack en `deploy/`: panel web (Django + gunicorn), worker MQTT, TimescaleDB y EMQX,
 orquestados con Docker Compose. Reemplaza el SQLite y el broker `amqtt` de desarrollo.
 
-> **Estado**: la infraestructura está escrita y validada en lo que se puede sin Docker
-> (la config de producción de Django carga con PostgreSQL, `collectstatic` con WhiteNoise
-> funciona, la WSGI app importa, el `docker-compose.yml` es YAML válido, la migración del
-> hypertable es un no-op seguro fuera de TimescaleDB). **No se ejecutó `docker compose up`
-> en el equipo de desarrollo** (no tiene Docker). El primer arranque debe hacerse en el
-> servidor destino siguiendo estos pasos, y ahí conviene una prueba piloto antes del rollout.
+> **Estado**: la infraestructura está escrita y validada en lo que se puede sin levantar
+> el stack completo (la config de producción de Django carga con PostgreSQL,
+> `collectstatic` con WhiteNoise funciona, la WSGI app importa, el `docker-compose.yml`
+> es YAML válido, la migración del hypertable es un no-op seguro fuera de TimescaleDB).
+> El servicio `meshcentral` sí se probó suelto (imagen oficial, fuera de este
+> `docker-compose.yml`): levanta, genera certificados, sirve la consola HTTPS y el
+> endpoint `/meshagents` responde (401 con un `meshid` inventado — se comporta como se
+> espera). **No se ejecutó `docker compose up` del stack completo** (db+emqx+web+worker
+> juntos) — en el equipo donde se escribió esto, el puerto 5433 que usa `db` ya lo ocupa
+> otro proyecto corriendo en Docker; revisar puertos libres antes de probarlo aquí mismo.
+> El primer arranque completo debe hacerse en el servidor destino siguiendo estos pasos,
+> y ahí conviene una prueba piloto antes del rollout.
 
 ## Requisitos del servidor
 
@@ -45,6 +51,8 @@ sh deploy/bootstrap-emqx.sh
 #    - purgar métricas viejas (diario)
 #    docker compose -f deploy/docker-compose.yml exec web python manage.py marcar_estaciones_offline
 #    docker compose -f deploy/docker-compose.yml exec web python manage.py purgar_metricas --dias 30
+
+# 7. (Opcional) Acceso remoto — configurar MeshCentral, ver sección abajo.
 ```
 
 ## Servicios
@@ -55,6 +63,7 @@ sh deploy/bootstrap-emqx.sh
 | `emqx` | emqx:5.8 | Broker MQTT con TLS (8883) y auth built-in; TCP plano desactivado |
 | `web` | (build local) | Panel Django con gunicorn; corre migraciones/collectstatic al arrancar |
 | `worker` | (build local) | Worker MQTT (`run_mqtt_worker`) |
+| `meshcentral` | ghcr.io/ylianst/meshcentral | Acceso remoto interactivo (opcional, ver abajo) |
 
 ## TimescaleDB — nota sobre el hypertable
 
@@ -68,6 +77,34 @@ Para activar el hypertable de verdad a escala real, hay que quitar ese PK simple
 2. Ejecutar el `create_hypertable` manualmente tras ajustar los índices.
 
 No es urgente para el piloto; sí conviene resolverlo antes del rollout completo.
+
+## MeshCentral (acceso remoto) — opcional, no validado end-to-end
+
+El servicio `meshcentral` en `docker-compose.yml` es **nuevo y sin correr todavía**: se
+armó siguiendo la guía oficial (imagen `ghcr.io/ylianst/meshcentral`, variables
+`HOSTNAME`/`NODE_ENV`/`ALLOW_NEW_ACCOUNTS`, volúmenes `meshcentral-data`/`meshcentral-files`),
+pero nadie lo levantó contra un servidor real todavía. Antes de depender de él en
+producción:
+
+1. Completar `MESHCENTRAL_HOSTNAME`/`MESHCENTRAL_SERVER_URL` en `deploy/.env` (mismo
+   dominio, con y sin esquema) y levantarlo: `docker compose -f deploy/docker-compose.yml up -d meshcentral`.
+2. Entrar a `https://<MESHCENTRAL_HOSTNAME>:8083` (o el puerto que exponga el proxy TLS)
+   con `MESHCENTRAL_ALLOW_NEW_ACCOUNTS=true` — la primera cuenta creada queda como admin.
+   **Volver `ALLOW_NEW_ACCOUNTS` a `false` y reiniciar el contenedor** apenas se crea esa cuenta.
+3. Crear un device group único (ej. "Estaciones SAIDSOFT"), copiar su Mesh ID a
+   `MESHCENTRAL_MESH_ID` en `deploy/.env` y reiniciar `web` (`docker compose -f deploy/docker-compose.yml up -d web`).
+4. Instalar el agente en una estación piloto desde el panel ("Instalar agente ahora")
+   y verificar que aparece en la consola de MeshCentral.
+5. Abrir el link `?node=<id>` una vez a mano, navegar a las pestañas de escritorio y
+   terminal, y ajustar `MESHCENTRAL_VIEWMODE_ESCRITORIO`/`_TERMINAL` en `deploy/.env`
+   con los valores que MeshCentral use en su propia URL (los `.env.prod.example` traen
+   `11`/`12` sin verificar).
+6. A partir de ~50 estaciones vinculadas, sumar MongoDB (`USE_MONGODB`/`MONGO_URL`,
+   no incluido en este stack) — NeDB (archivo, el default) alcanza para el piloto pero
+   no está pensado para la escala completa (~1.800 equipos) del plan.
+
+Es un bolt-on completamente aparte del canal MQTT/HMAC del agente SAIDSOFT: si algo
+falla acá, no afecta despliegues, heartbeats ni Scripts RMM.
 
 ## Notas
 

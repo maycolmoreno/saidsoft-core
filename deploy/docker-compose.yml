@@ -73,6 +73,15 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD_PANEL}
       MQTT_USE_TLS: "True"
       MQTT_CA_CERT: /app/deploy/certs/cert.pem
+      # Acceso remoto (MeshCentral) — opcional, ver servicio `meshcentral` más abajo.
+      # Vacío por defecto: sin MESHCENTRAL_MESH_ID el botón de "instalar agente" y los
+      # links de escritorio/terminal remotos no funcionan, pero el resto del panel sí.
+      MESHCENTRAL_SERVER_URL: ${MESHCENTRAL_SERVER_URL:-https://localhost:443}
+      MESHCENTRAL_MESH_ID: ${MESHCENTRAL_MESH_ID:-}
+      MESHCENTRAL_AGENT_ARCH_ID: ${MESHCENTRAL_AGENT_ARCH_ID:-4}
+      MESHCENTRAL_INSTALL_FLAGS: ${MESHCENTRAL_INSTALL_FLAGS:-2}
+      MESHCENTRAL_VIEWMODE_ESCRITORIO: ${MESHCENTRAL_VIEWMODE_ESCRITORIO:-11}
+      MESHCENTRAL_VIEWMODE_TERMINAL: ${MESHCENTRAL_VIEWMODE_TERMINAL:-12}
     volumes:
       - media_data:/app/media
     depends_on:
@@ -107,7 +116,32 @@ services:
       emqx:
         condition: service_started
 
+  # Acceso remoto interactivo (ver README.md "Acceso remoto (MeshCentral)"). Bolt-on
+  # completamente separado del canal MQTT/HMAC: web/worker no lo llaman por red, solo
+  # arman URLs (MESHCENTRAL_SERVER_URL de arriba) que se abren en el navegador del panel.
+  # NO validado end-to-end en este repo todavía (falta correrlo contra una estación real
+  # y confirmar los MESHCENTRAL_VIEWMODE_* contra la consola) — ver deploy/README-produccion.md.
+  meshcentral:
+    image: ghcr.io/ylianst/meshcentral:latest
+    restart: unless-stopped
+    environment:
+      HOSTNAME: ${MESHCENTRAL_HOSTNAME}
+      NODE_ENV: production
+      # "true" solo para crear la primera cuenta (admin) en el primer arranque; apagar
+      # después (ver paso en deploy/README-produccion.md) para que nadie más se registre.
+      ALLOW_NEW_ACCOUNTS: ${MESHCENTRAL_ALLOW_NEW_ACCOUNTS:-false}
+      # NeDB (archivo) alcanza para el piloto; a partir de ~50 estaciones vinculadas,
+      # sumar un servicio mongo y USE_MONGODB/MONGO_URL (no incluido: fuera de alcance
+      # de este stack hasta que el piloto de MeshCentral esté validado).
+    volumes:
+      - meshcentral_data:/opt/meshcentral/meshcentral-data
+      - meshcentral_files:/opt/meshcentral/meshcentral-files
+    ports:
+      - "8083:443"   # remapeado a 8083 (rango 8080-8085 abierto en firewall); detrás de proxy TLS en prod real
+
 volumes:
   db_data:
   media_data:
   emqx_data:
+  meshcentral_data:
+  meshcentral_files:
