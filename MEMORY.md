@@ -1,0 +1,1 @@
+- [Levantar el proyecto localmente](levantar_proyecto_local.md) — los 3 procesos + trampas de este entorno (buffering, ps no confiable, orden de seeds, CSRF con curl)
