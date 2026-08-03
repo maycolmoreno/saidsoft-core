@@ -55,14 +55,19 @@ class Metrica(models.TextChoices):
     LATENCIA_MS = 'latencia_ms', 'Latencia (ms)'
     TEMPERATURA_C = 'temperatura_c', 'Temperatura (°C)'
     SIN_HEARTBEAT = 'sin_heartbeat', 'Sin heartbeat (minutos)'
+    BITLOCKER_DESHABILITADO = 'bitlocker_deshabilitado', 'BitLocker deshabilitado'
 
 
 class ReglaAlerta(models.Model):
     """Condición que, sostenida por `duracion_minutos`, abre una Alerta.
 
-    `sin_heartbeat` es la única métrica que no compara contra MuestraMetrica: se evalúa
-    en el comando `marcar_estaciones_offline` (ver apps.monitoreo.services), que ya
-    calcula qué estaciones llevan más de X minutos calladas.
+    `sin_heartbeat` y `bitlocker_deshabilitado` son las únicas métricas que no
+    comparan contra MuestraMetrica: `sin_heartbeat` se evalúa en el comando
+    `marcar_estaciones_offline`; `bitlocker_deshabilitado` se evalúa en
+    apps.mqtt_worker.services.manejar_info_equipo, justo cuando el agente reporta el
+    estado de cifrado (Estacion.bitlocker_habilitado) — no es una serie de tiempo, es
+    un estado binario, así que no hay "condición sostenida" que evaluar: se abre o
+    resuelve la alerta directo con cada reporte.
     """
 
     class Operador(models.TextChoices):
@@ -74,12 +79,17 @@ class ReglaAlerta(models.Model):
         CRITICAL = 'critical', 'Crítica'
 
     nombre = models.CharField(max_length=150)
-    metrica = models.CharField(max_length=20, choices=Metrica.choices)
+    metrica = models.CharField(max_length=30, choices=Metrica.choices)
     operador = models.CharField(
         max_length=3, choices=Operador.choices, default=Operador.GTE,
-        help_text='Ignorado para "Sin heartbeat" (siempre es "más de X minutos").',
+        help_text='Ignorado para "Sin heartbeat" (siempre "más de X minutos") y para '
+                  '"BitLocker deshabilitado" (condición binaria, no hay umbral que comparar).',
     )
-    umbral = models.FloatField(help_text='% para CPU/RAM, ms para latencia, °C para temperatura, minutos para sin heartbeat.')
+    umbral = models.FloatField(
+        default=0,
+        help_text='% para CPU/RAM, ms para latencia, °C para temperatura, minutos para sin heartbeat. '
+                  'Ignorado (dejar en 0) para "BitLocker deshabilitado".',
+    )
     duracion_minutos = models.PositiveIntegerField(
         default=10,
         help_text='La condición debe sostenerse este tiempo antes de abrir la alerta (evita falsos positivos por un pico aislado).',

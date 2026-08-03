@@ -10,7 +10,10 @@ from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
 
 from .models import Alerta, Metrica, MuestraMetrica, ReglaAlerta
-from .services import evaluar_reglas_metricas, reglas_aplicables_a, resolver_alertas_sin_heartbeat
+from .services import (
+    evaluar_regla_bitlocker, evaluar_reglas_metricas, reglas_aplicables_a, resolver_alertas_bitlocker,
+    resolver_alertas_sin_heartbeat,
+)
 
 
 class EvaluarReglasMetricasTests(TestCase):
@@ -115,6 +118,56 @@ class SinHeartbeatAlertaTests(TestCase):
 
         alerta.refresh_from_db()
         self.assertEqual(alerta.estado, Alerta.Estado.RESUELTA)
+
+
+class BitlockerAlertaTests(TestCase):
+    """bitlocker_deshabilitado es binario (no serie de tiempo, ver docstring de
+    ReglaAlerta): se abre/resuelve directo con cada reporte, sin duracion_minutos."""
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            bitlocker_habilitado=False,
+        )
+        usuario = User.objects.create_user(username='u3', password='x')
+        self.regla = ReglaAlerta.objects.create(
+            nombre='Disco sin cifrar', metrica=Metrica.BITLOCKER_DESHABILITADO, umbral=0, creado_por=usuario,
+        )
+
+    def test_reportar_sin_cifrar_abre_alerta(self):
+        evaluar_regla_bitlocker(self.estacion)
+        alerta = Alerta.objects.get()
+        self.assertEqual(alerta.regla, self.regla)
+        self.assertEqual(alerta.estado, Alerta.Estado.ABIERTA)
+
+    def test_no_duplica_si_ya_hay_una_activa(self):
+        evaluar_regla_bitlocker(self.estacion)
+        evaluar_regla_bitlocker(self.estacion)
+        self.assertEqual(Alerta.objects.count(), 1)
+
+    def test_reportar_cifrado_de_nuevo_resuelve_la_alerta(self):
+        evaluar_regla_bitlocker(self.estacion)
+        alerta = Alerta.objects.get()
+
+        resolver_alertas_bitlocker(self.estacion)
+
+        alerta.refresh_from_db()
+        self.assertEqual(alerta.estado, Alerta.Estado.RESUELTA)
+        self.assertIsNotNone(alerta.resuelta_en)
+
+    def test_correo_no_menciona_umbral_numerico_sin_sentido(self):
+        PerfilUsuario.objects.create(usuario=self.regla.creado_por, acceso_todas_unidades=True)
+        self.regla.creado_por.email = 'ops@example.com'
+        self.regla.creado_por.save(update_fields=['email'])
+
+        evaluar_regla_bitlocker(self.estacion)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('BitLocker deshabilitado', mail.outbox[0].body)
+        self.assertNotIn('umbral', mail.outbox[0].body.lower())
 
 
 class ReglasAplicablesMultiTenantTests(TestCase):

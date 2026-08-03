@@ -194,3 +194,21 @@ class ManejarInfoEquipoBitlockerTests(TestCase):
         manejar_info_equipo('ML001-A', {'token': 'token-equivocado', 'bitlocker_habilitado': True})
         self.estacion.refresh_from_db()
         self.assertIsNone(self.estacion.bitlocker_habilitado)
+
+    def test_reportar_sin_cifrar_abre_alerta_si_hay_regla(self):
+        from django.contrib.auth.models import User
+
+        from apps.monitoreo.models import Alerta, Metrica, ReglaAlerta
+
+        usuario = User.objects.create_user(username='creador_regla_bl', password='x')
+        ReglaAlerta.objects.create(
+            nombre='Disco sin cifrar', metrica=Metrica.BITLOCKER_DESHABILITADO, umbral=0, creado_por=usuario,
+        )
+
+        manejar_info_equipo('ML001-A', {'token': 'tok123', 'bitlocker_habilitado': False})
+        self.assertEqual(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).count(), 1)
+
+        # Vuelve a cifrarse: la alerta se resuelve sola, no queda abierta para siempre.
+        manejar_info_equipo('ML001-A', {'token': 'tok123', 'bitlocker_habilitado': True})
+        self.assertEqual(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).count(), 0)
+        self.assertEqual(Alerta.objects.get().estado, Alerta.Estado.RESUELTA)

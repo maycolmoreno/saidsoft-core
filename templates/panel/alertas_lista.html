@@ -32,7 +32,9 @@
                     {{ a.regla.nombre }}
                 </td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.estacion.codigo }} · {{ a.estacion.farmacia.codigo }}</td>
-                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.valor_disparador|floatformat:1 }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">
+                    {% if a.regla.metrica == 'bitlocker_deshabilitado' %}—{% else %}{{ a.valor_disparador|floatformat:1 }}{% endif %}
+                </td>
                 <td class="px-4 py-3 text-xs">
                     <span class="pill {% if a.estado == 'abierta' %}critical{% elif a.estado == 'reconocida' %}warning{% else %}good{% endif %}">
                         {{ a.get_estado_display }}

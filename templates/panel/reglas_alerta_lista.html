@@ -33,6 +33,7 @@
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.get_metrica_display }}</td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">
                     {% if r.metrica == 'sin_heartbeat' %}más de {{ r.umbral }} min sin heartbeat
+                    {% elif r.metrica == 'bitlocker_deshabilitado' %}al reportarse sin cifrar
                     {% else %}{{ r.get_operador_display }} {{ r.umbral }} por {{ r.duracion_minutos }} min{% endif %}
                 </td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.unidad_negocio.codigo|default:"Todos (global)" }}</td>

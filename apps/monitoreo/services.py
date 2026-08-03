@@ -119,6 +119,27 @@ def resolver_alertas_sin_heartbeat(estacion):
     ).update(estado=Alerta.Estado.RESUELTA, resuelta_en=timezone.now())
 
 
+def evaluar_regla_bitlocker(estacion):
+    """Llamada justo después de guardar `Estacion.bitlocker_habilitado=False` (ver
+    apps.mqtt_worker.services.manejar_info_equipo). Es un estado binario reportado
+    puntualmente, no una serie de tiempo — a diferencia de evaluar_reglas_metricas, no
+    hay "condición sostenida" que esperar: se abre directo si hay una regla aplicable."""
+    unidad = estacion.farmacia.unidad_negocio
+    for regla in reglas_aplicables_a(unidad, metrica=Metrica.BITLOCKER_DESHABILITADO):
+        # valor_disparador es un FloatField requerido pero no tiene un valor numérico
+        # natural para una condición binaria; 0 es solo un marcador ("no cifrado").
+        abrir_o_mantener_alerta(regla, estacion, valor=0)
+
+
+def resolver_alertas_bitlocker(estacion):
+    """Al reportarse BitLocker habilitado de nuevo, resuelve cualquier alerta
+    'bitlocker_deshabilitado' activa de esta estación."""
+    Alerta.objects.filter(
+        estacion=estacion, regla__metrica=Metrica.BITLOCKER_DESHABILITADO,
+        estado__in=[Alerta.Estado.ABIERTA, Alerta.Estado.RECONOCIDA],
+    ).update(estado=Alerta.Estado.RESUELTA, resuelta_en=timezone.now())
+
+
 def notificar_alerta(alerta):
     """Correo a quienes tengan acceso a la unidad de negocio de la estación (equipo
     interno + usuarios de ese cliente) con email configurado. Solo se llama al abrir
@@ -137,9 +158,17 @@ def notificar_alerta(alerta):
         return
 
     asunto = f'[{alerta.regla.get_severidad_display()}] {alerta.regla.nombre} — {alerta.estacion.codigo}'
+    if alerta.regla.metrica == Metrica.BITLOCKER_DESHABILITADO:
+        # Condición binaria: "valor (umbral: >= X)" no significa nada aquí, a diferencia
+        # de las métricas numéricas (CPU/RAM/latencia/sin_heartbeat).
+        detalle_condicion = 'BitLocker deshabilitado.'
+    else:
+        detalle_condicion = (
+            f'Valor: {alerta.valor_disparador} (umbral: {alerta.regla.get_operador_display()} {alerta.regla.umbral}).'
+        )
     cuerpo = (
         f'{alerta.regla.nombre} en {alerta.estacion.codigo} ({unidad.codigo}).\n'
-        f'Valor: {alerta.valor_disparador} (umbral: {alerta.regla.get_operador_display()} {alerta.regla.umbral}).\n'
+        f'{detalle_condicion}\n'
         f'Abierta: {alerta.abierta_en:%Y-%m-%d %H:%M:%S}.'
     )
     # fail_silently: un SMTP caído no debe tumbar la ingesta de métricas del worker MQTT

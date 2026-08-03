@@ -234,6 +234,13 @@ def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:
     estacion.info_equipo_fecha = timezone.now()
     estacion.save()
 
+    if 'bitlocker_habilitado' in payload:
+        from apps.monitoreo.services import evaluar_regla_bitlocker, resolver_alertas_bitlocker
+        if estacion.bitlocker_habilitado:
+            resolver_alertas_bitlocker(estacion)
+        else:
+            evaluar_regla_bitlocker(estacion)
+
     # La clave de recuperación solo viaja si BitLocker está habilitado y el agente la
     # incluyó en esta respuesta puntual (no en cada heartbeat). Se cifra antes de
     # guardarse: en ningún momento queda en texto plano en la base de datos.
