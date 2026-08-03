@@ -7,14 +7,17 @@ Uso: python manage.py run_mqtt_worker
 """
 import json
 import logging
+import signal
 
 import paho.mqtt.client as mqtt
 from django.conf import settings
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from apps.mqtt_worker.services import (
-    manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_script, manejar_heartbeat,
-    manejar_info_equipo, manejar_metricas,
+    NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_script,
+    manejar_heartbeat, manejar_info_equipo, manejar_metricas, registrar_latido_worker,
+    registrar_mensaje_fallido,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,6 +29,12 @@ TOPICO_METRICAS = '/saidsof/agente/+/metricas/'
 TOPICO_INFO_EQUIPO = '/saidsof/agente/+/info_equipo/'
 TOPICO_ESTADO_SCRIPT = '/saidsof/agente/+/script_estado/'
 
+# El latido se guarda como mucho cada N segundos (no en cada mensaje): a la
+# frecuencia de heartbeat/métricas de 1.800+ estaciones, escribirlo en cada
+# mensaje sería overhead de BD sin aportar nada — el dashboard solo necesita
+# saber "sigue vivo hace poco", no el segundo exacto del último mensaje.
+LATIDO_INTERVALO_SEGUNDOS = 30
+
 
 def _codigo_desde_topico(topic: str) -> str:
     # /saidsof/agente/{codigo}/heartbeat/  ->  {codigo}
@@ -36,9 +45,15 @@ def _codigo_desde_topico(topic: str) -> str:
 class Command(BaseCommand):
     help = 'Escucha MQTT y sincroniza estaciones y despliegues en la base de datos.'
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._client = None
+        self._ultimo_latido_guardado = None
+
     def handle(self, *args, **options):
         conf = settings.MQTT_CONFIG
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=conf['CLIENT_ID_WORKER'])
+        self._client = client
 
         if conf['USERNAME']:
             client.username_pw_set(conf['USERNAME'], conf['PASSWORD'])
@@ -49,9 +64,21 @@ class Command(BaseCommand):
         client.on_message = self._on_message
         client.on_disconnect = self._on_disconnect
 
+        # SIGTERM es lo que envía `docker stop`/un redeploy. Sin este handler, el
+        # proceso muere de golpe pudiendo dejar un mensaje a medio procesar; con él,
+        # loop_forever() termina su iteración actual y sale limpio.
+        signal.signal(signal.SIGTERM, self._manejar_apagado)
+        signal.signal(signal.SIGINT, self._manejar_apagado)
+
         self.stdout.write(self.style.NOTICE(f'Conectando a {conf["HOST"]}:{conf["PORT"]}...'))
         client.connect(conf['HOST'], conf['PORT'], keepalive=60)
         client.loop_forever()
+        self.stdout.write(self.style.NOTICE('Worker MQTT detenido.'))
+
+    def _manejar_apagado(self, signum, frame):
+        self.stdout.write(self.style.NOTICE('Señal de apagado recibida, desconectando del broker...'))
+        if self._client is not None:
+            self._client.disconnect()
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         if reason_code != 0:
@@ -60,19 +87,39 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS('[MQTT] Conectado al broker'))
         client.subscribe(TOPICO_ENROLAMIENTO)
         client.subscribe(TOPICO_HEARTBEAT)
-        client.subscribe(TOPICO_ESTADO_DESPLIEGUE)
+        # QoS 1 solo en los reportes de resultado: perder un heartbeat/métrica entre
+        # miles no importa (QoS 0, más liviano), pero perder el "ok"/"error" de un
+        # despliegue o script deja ese resultado estancado en el panel para siempre
+        # — ni el agente ni el broker lo reintentan por su cuenta a QoS 0.
+        client.subscribe(TOPICO_ESTADO_DESPLIEGUE, qos=1)
         client.subscribe(TOPICO_METRICAS)
         client.subscribe(TOPICO_INFO_EQUIPO)
-        client.subscribe(TOPICO_ESTADO_SCRIPT)
+        client.subscribe(TOPICO_ESTADO_SCRIPT, qos=1)
+        registrar_latido_worker(NOMBRE_WORKER_MQTT)
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
         self.stdout.write(self.style.WARNING(f'[MQTT] Desconectado ({reason_code}), reintentando...'))
 
+    def _registrar_latido_si_corresponde(self):
+        ahora = timezone.now()
+        if (
+            self._ultimo_latido_guardado is not None
+            and (ahora - self._ultimo_latido_guardado).total_seconds() < LATIDO_INTERVALO_SEGUNDOS
+        ):
+            return
+        registrar_latido_worker(NOMBRE_WORKER_MQTT)
+        self._ultimo_latido_guardado = ahora
+
     def _on_message(self, client, userdata, msg):
+        self._registrar_latido_si_corresponde()
+
         try:
             payload = json.loads(msg.payload.decode('utf-8'))
         except (UnicodeDecodeError, json.JSONDecodeError):
             logger.warning('Mensaje no-JSON descartado en %s', msg.topic)
+            registrar_mensaje_fallido(
+                topico=msg.topic, payload_crudo=repr(msg.payload), error='Payload no es JSON válido',
+            )
             return
 
         try:
@@ -88,8 +135,11 @@ class Command(BaseCommand):
                 manejar_info_equipo(_codigo_desde_topico(msg.topic), payload)
             elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/script_estado/'):
                 manejar_estado_script(_codigo_desde_topico(msg.topic), payload)
-        except Exception:
+        except Exception as exc:
+            # Antes esto solo quedaba en el log del proceso — fácil de no ver hasta
+            # que ya importa. Ahora además queda en una cola de revisión manual.
             logger.exception('Error procesando mensaje de %s', msg.topic)
+            registrar_mensaje_fallido(topico=msg.topic, payload_crudo=json.dumps(payload), error=str(exc))
 
     def _responder_enrolamiento(self, client, payload):
         respuesta = manejar_enrolamiento(payload)

@@ -9,8 +9,14 @@ from apps.catalogo.models import Estacion, Grupo
 from apps.cuentas.services import unidades_negocio_en_foco
 from apps.despliegues.models import Despliegue
 from apps.monitoreo.models import Alerta
+from apps.mqtt_worker.models import WorkerHeartbeat
+from apps.mqtt_worker.services import NOMBRE_WORKER_MQTT
 
 ONLINE_UMBRAL_MINUTOS = 5
+
+# 3x el intervalo de latido del worker (30s) con margen para jitter/latencia de red,
+# antes de considerar que dejó de reportarse.
+WORKER_MQTT_UMBRAL_SEGUNDOS = 90
 
 
 @login_required
@@ -64,6 +70,15 @@ def dashboard(request):
     total_estaciones = sum(g.total_estaciones for g in grupos)
     total_online = sum(g.online for g in grupos)
 
+    # Estado del worker MQTT: antes solo se podía inferir indirectamente (estaciones
+    # empezando a reportarse offline, tardío). No tiene tenant propio — es salud de
+    # infraestructura, no dato de cliente, así que se muestra igual para todos.
+    latido_worker = WorkerHeartbeat.objects.filter(nombre=NOMBRE_WORKER_MQTT).first()
+    worker_mqtt_activo = bool(
+        latido_worker
+        and (timezone.now() - latido_worker.ultimo_latido).total_seconds() < WORKER_MQTT_UMBRAL_SEGUNDOS
+    )
+
     return render(request, 'panel/dashboard.html', {
         'grupos': grupos,
         'despliegues_activos': despliegues_activos,
@@ -71,4 +86,6 @@ def dashboard(request):
         'total_estaciones': total_estaciones,
         'total_online': total_online,
         'total_alertas_abiertas': total_alertas_abiertas,
+        'worker_mqtt_activo': worker_mqtt_activo,
+        'worker_mqtt_ultimo_latido': latido_worker.ultimo_latido if latido_worker else None,
     })

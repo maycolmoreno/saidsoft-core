@@ -13,11 +13,16 @@ from django.utils import timezone
 from apps.catalogo.models import Estacion, Farmacia
 from apps.despliegues.models import EventoDespliegue, ResultadoDespliegue
 from apps.despliegues.services import evaluar_freno_automatico, verificar_completado
+from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
 
 logger = logging.getLogger(__name__)
 
 # Una caché se considera utilizable solo si dio señales de vida recientemente.
 CACHE_FRESCO_MINUTOS = 5
+
+# Nombre de fila en WorkerHeartbeat para run_mqtt_worker — compartido con el
+# dashboard, que lo usa para mostrar si el worker sigue activo.
+NOMBRE_WORKER_MQTT = 'mqtt_worker'
 
 # Traduce cada paso fino de la línea de tiempo al estado agregado de ResultadoDespliegue
 _PASO_A_ESTADO = {
@@ -298,3 +303,19 @@ def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
 
     from apps.monitoreo.services import evaluar_reglas_metricas
     evaluar_reglas_metricas(estacion, muestra)
+
+
+def registrar_latido_worker(nombre: str) -> None:
+    """Marca que el worker `nombre` sigue vivo y procesando. Ver WorkerHeartbeat."""
+    close_old_connections()
+    WorkerHeartbeat.objects.update_or_create(nombre=nombre, defaults={'ultimo_latido': timezone.now()})
+
+
+def registrar_mensaje_fallido(*, topico: str, payload_crudo: str, error: str) -> None:
+    """Cola de revisión manual para un mensaje MQTT que no se pudo procesar.
+
+    Antes esto solo quedaba en el log del proceso (fácil de perder de vista); ahora
+    queda en una tabla que el panel/admin puede revisar y marcar como resuelta.
+    """
+    close_old_connections()
+    MensajeMqttFallido.objects.create(topico=topico, payload_crudo=payload_crudo, error=error)

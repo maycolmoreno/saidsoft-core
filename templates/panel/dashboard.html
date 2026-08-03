@@ -6,6 +6,14 @@
     <a href="{% url 'panel:despliegue_crear' %}" class="btn primary">+ Nuevo despliegue</a>
 </div>
 
+{% if not worker_mqtt_activo %}
+<div class="block mb-2 rounded-md alert sev-critical">
+    <strong>Worker MQTT sin señal.</strong>
+    {% if worker_mqtt_ultimo_latido %}Último latido: {{ worker_mqtt_ultimo_latido|date:"d/m/Y H:i:s" }} — {% else %}Nunca reportó un latido — {% endif %}
+    despliegues, heartbeats y scripts no se están procesando. Revisar el proceso <code>run_mqtt_worker</code>.
+</div>
+{% endif %}
+
 {% if total_pendientes %}
 <a href="{% url 'panel:estaciones_lista' %}" class="block mb-6 rounded-md alert sev-warning">
     <strong>{{ total_pendientes }}</strong> estación(es) esperando aprobación de enrolamiento.
