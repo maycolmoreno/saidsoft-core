@@ -4,7 +4,7 @@ from django.test import TestCase, override_settings
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.catalogo.services import (
     generar_comando_instalacion_meshcentral, resolver_estaciones, url_escritorio_remoto_meshcentral,
-    url_terminal_remoto_meshcentral, validar_destino_unidad_negocio,
+    url_grabaciones_meshcentral, url_terminal_remoto_meshcentral, validar_destino_unidad_negocio,
 )
 
 MESHCENTRAL_CONFIG_TEST = {
@@ -33,6 +33,7 @@ class MeshCentralServiciosTests(TestCase):
     def test_urls_remotas_none_sin_node_id(self):
         self.assertIsNone(url_escritorio_remoto_meshcentral(self.estacion))
         self.assertIsNone(url_terminal_remoto_meshcentral(self.estacion))
+        self.assertIsNone(url_grabaciones_meshcentral(self.estacion))
 
     def test_urls_remotas_con_node_id(self):
         self.estacion.meshcentral_node_id = 'nodeid123'
@@ -40,11 +41,13 @@ class MeshCentralServiciosTests(TestCase):
 
         url_escritorio = url_escritorio_remoto_meshcentral(self.estacion)
         url_terminal = url_terminal_remoto_meshcentral(self.estacion)
+        url_grabaciones = url_grabaciones_meshcentral(self.estacion)
 
         self.assertIn('node=nodeid123', url_escritorio)
         self.assertIn('viewmode=11', url_escritorio)
         self.assertIn('node=nodeid123', url_terminal)
         self.assertIn('viewmode=12', url_terminal)
+        self.assertIn('node=nodeid123', url_grabaciones)
 
 
 class MultiTenantAislamientoTests(TestCase):

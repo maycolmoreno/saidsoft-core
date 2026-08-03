@@ -7,7 +7,8 @@ from django.views.decorators.http import require_POST
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Grupo
 from apps.catalogo.services import (
-    enviar_comando, url_escritorio_remoto_meshcentral, url_terminal_remoto_meshcentral,
+    enviar_comando, url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral,
+    url_terminal_remoto_meshcentral,
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
 
@@ -154,6 +155,26 @@ def estacion_meshcentral_terminal(request, pk):
         return redirect('panel:estaciones_lista')
     registrar_evento(
         usuario=request.user, accion='estacion.meshcentral_abrir_terminal', objeto=estacion,
+        detalle={'meshcentral_node_id': estacion.meshcentral_node_id}, request=request,
+    )
+    return redirect(url)
+
+
+@login_required
+@permission_required('catalogo.supervision_auditoria_estacion', raise_exception=True)
+@require_POST
+def estacion_supervision_grabaciones(request, pk):
+    """Auditoría de atención al cliente por grabación (no en vivo): permiso separado de
+    acceso_remoto_estacion a propósito — ver soporte remoto en vivo y revisar grabaciones
+    de sesión son capacidades distintas, no todo el que tiene una debería tener la otra."""
+    estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
+    url = url_grabaciones_meshcentral(estacion)
+    if not url:
+        messages.error(request, f'{estacion.codigo} todavía no tiene un node_id de MeshCentral vinculado.')
+        return redirect('panel:estaciones_lista')
+    registrar_evento(
+        usuario=request.user, accion='estacion.supervision_grabacion_ver', objeto=estacion,
         detalle={'meshcentral_node_id': estacion.meshcentral_node_id}, request=request,
     )
     return redirect(url)

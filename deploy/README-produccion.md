@@ -106,6 +106,43 @@ producción:
 Es un bolt-on completamente aparte del canal MQTT/HMAC del agente SAIDSOFT: si algo
 falla acá, no afecta despliegues, heartbeats ni Scripts RMM.
 
+### Auditoría por grabación (no en vivo)
+
+Distinto del acceso remoto en vivo de arriba: es el botón "Ver grabaciones" del panel
+(permiso `catalogo.supervision_auditoria_estacion`, separado de `acceso_remoto_estacion`
+a propósito — ver `apps/catalogo/models.py`). No graba nada por sí solo: hay que
+habilitar la grabación de sesión en el servidor MeshCentral.
+
+**Probado** (contenedor suelto, fuera de este `docker-compose.yml`): el bloque de abajo,
+agregado a `domains[""]` en `meshcentral-data/config.json` y reiniciando el contenedor,
+lo acepta sin error — instala solo el módulo `image-size` que necesita para indexar, y
+el servidor vuelve a arrancar normal.
+
+```json
+"domains": {
+  "": {
+    "sessionRecording": {
+      "onlySelectedDeviceGroups": true,
+      "filepath": "records",
+      "index": true,
+      "maxRecordings": 100,
+      "maxRecordingDays": 90,
+      "maxRecordingSizeMegabytes": 500,
+      "protocols": [2]
+    }
+  }
+}
+```
+
+`protocols: [2]` = solo escritorio (no terminal ni transferencia de archivos).
+`onlySelectedDeviceGroups: true` porque no se quiere grabar todo por defecto: además de
+este bloque, hay que marcar el device group "Estaciones SAIDSOFT" para grabación desde
+su configuración en la consola de MeshCentral (checkbox de grabación del grupo).
+
+**No probado**: que la grabación ocurra de verdad al conectarse a un agente real, ni el
+checkbox exacto del device group — falta correrlo con una estación piloto real para
+confirmar el flujo completo (grabar → listar en "Recordings" → reproducir).
+
 ## Notas
 
 - **Los agentes** apuntan a `emqx:8883` con `MqttUsarTls=true` y las credenciales del

@@ -179,6 +179,10 @@ class Estacion(models.Model):
         ordering = ['codigo']
         permissions = [
             ('acceso_remoto_estacion', 'Puede abrir sesiones de acceso remoto (MeshCentral) a estaciones'),
+            # Permiso separado a propósito: ver grabaciones de sesión (auditoría de atención al
+            # cliente) es una capacidad más sensible que dar soporte remoto en vivo, y no todo el
+            # que tiene acceso_remoto_estacion debería tenerla por defecto.
+            ('supervision_auditoria_estacion', 'Puede ver grabaciones de sesión (auditoría) de estaciones'),
         ]
 
     def __str__(self):

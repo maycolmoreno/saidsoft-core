@@ -23,6 +23,7 @@ urlpatterns = [
     path('estaciones/<int:pk>/meshcentral/vincular/', views.estacion_meshcentral_vincular, name='estacion_meshcentral_vincular'),
     path('estaciones/<int:pk>/meshcentral/escritorio/', views.estacion_meshcentral_escritorio, name='estacion_meshcentral_escritorio'),
     path('estaciones/<int:pk>/meshcentral/terminal/', views.estacion_meshcentral_terminal, name='estacion_meshcentral_terminal'),
+    path('estaciones/<int:pk>/meshcentral/grabaciones/', views.estacion_supervision_grabaciones, name='estacion_supervision_grabaciones'),
 
     path('despliegues/', views.despliegues_lista, name='despliegues_lista'),
     path('despliegues/nuevo/', views.despliegue_crear, name='despliegue_crear'),

@@ -183,3 +183,20 @@ def url_terminal_remoto_meshcentral(estacion) -> str | None:
     """URL de MeshCentral para abrir una terminal remota en `estacion`, o None si
     todavía no tiene un node_id vinculado."""
     return _url_dispositivo_meshcentral(estacion, settings.MESHCENTRAL_CONFIG['VIEWMODE_TERMINAL'])
+
+
+def url_grabaciones_meshcentral(estacion) -> str | None:
+    """URL de MeshCentral para revisar las grabaciones de sesión de `estacion`, o None
+    si todavía no tiene un node_id vinculado.
+
+    A diferencia de escritorio/terminal (que sí tienen un `viewmode` fijo y verificado
+    con un servidor de prueba), la lista de grabaciones no tiene un deep-link estable
+    por dispositivo — abre la ficha general del equipo y desde ahí hay que entrar a la
+    pestaña "Recordings" a mano. Requiere además que la grabación esté habilitada para
+    el device group en el `config.json` del servidor MeshCentral (ver
+    deploy/README-produccion.md) — sin eso, aunque el link abra, no habrá nada grabado.
+    """
+    if not estacion.meshcentral_node_id:
+        return None
+    conf = settings.MESHCENTRAL_CONFIG
+    return f"{conf['SERVER_URL']}/index.html?node={estacion.meshcentral_node_id}"

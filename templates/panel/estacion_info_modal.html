@@ -76,6 +76,20 @@
     </div>
     {% endif %}
 
+    {% if perms.catalogo.supervision_auditoria_estacion and estacion.meshcentral_node_id %}
+    <div class="mt-5 pt-4" style="border-top:1px solid var(--border-soft);">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-[var(--text-faint)] mb-2">Auditoría (grabación de sesión)</h3>
+        <p class="text-xs text-[var(--text-dim)] mb-2">
+            Revisión posterior de la atención al cliente, no en vivo. Requiere que la grabación
+            esté habilitada para este equipo en el servidor MeshCentral (ver deploy/README-produccion.md).
+        </p>
+        <form method="post" action="{% url 'panel:estacion_supervision_grabaciones' estacion.pk %}" target="_blank">
+            {% csrf_token %}
+            <button type="submit" class="btn secondary">Ver grabaciones</button>
+        </form>
+    </div>
+    {% endif %}
+
     <div class="mt-5 flex justify-end gap-2">
         <button type="button" onclick="document.getElementById('modal-info').close()" class="btn secondary">
             Cerrar

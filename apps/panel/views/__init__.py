@@ -29,8 +29,8 @@ from .despliegues import (
 from .estaciones import (
     estacion_aprobar, estacion_info_modal, estacion_info_solicitar,
     estacion_meshcentral_escritorio, estacion_meshcentral_terminal, estacion_meshcentral_vincular,
-    estacion_rechazar, estacion_reiniciar, estaciones_aprobar_lote, estaciones_lista,
-    estaciones_pendientes_partial,
+    estacion_rechazar, estacion_reiniciar, estacion_supervision_grabaciones, estaciones_aprobar_lote,
+    estaciones_lista, estaciones_pendientes_partial,
 )
 from .mantenimiento import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,
@@ -63,7 +63,7 @@ __all__ = [
     'despliegues_lista',
     'estacion_aprobar', 'estacion_info_modal', 'estacion_info_solicitar',
     'estacion_meshcentral_escritorio', 'estacion_meshcentral_terminal', 'estacion_meshcentral_vincular',
-    'estacion_rechazar',
+    'estacion_rechazar', 'estacion_supervision_grabaciones',
     'estacion_reiniciar', 'estaciones_aprobar_lote', 'estaciones_lista', 'estaciones_pendientes_partial',
     'actividad_planificada_completar', 'actividad_planificada_crear', 'actividades_planificadas_lista',
     'mantenimiento_cancelar', 'mantenimiento_cerrar', 'mantenimiento_checklist_actualizar',

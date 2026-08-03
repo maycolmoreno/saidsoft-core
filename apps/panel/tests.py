@@ -106,6 +106,52 @@ class EstacionMeshCentralTests(TestCase):
         self.assertContains(resp, 'Vinculado')
 
 
+class EstacionSupervisionGrabacionesTests(TestCase):
+    """Auditoría por grabación (revisión posterior) es un permiso separado de
+    acceso_remoto_estacion (soporte en vivo): quien puede uno no necesariamente puede el otro."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, meshcentral_node_id='nodeid123',
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+        self.usuario_soporte = User.objects.create_user(username='soporte_vivo', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_soporte, acceso_todas_unidades=True)
+        self.usuario_soporte.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='acceso_remoto_estacion'),
+        )
+
+        self.usuario_auditor = User.objects.create_user(username='auditor_grab', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_auditor, acceso_todas_unidades=True)
+        self.usuario_auditor.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='supervision_auditoria_estacion'),
+        )
+
+    def test_tener_acceso_remoto_no_alcanza_para_ver_grabaciones(self):
+        self.client.force_login(self.usuario_soporte)
+        resp = self.client.post(reverse('panel:estacion_supervision_grabaciones', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_auditor_no_puede_abrir_soporte_en_vivo(self):
+        self.client.force_login(self.usuario_auditor)
+        resp = self.client.post(reverse('panel:estacion_meshcentral_escritorio', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_auditor_puede_ver_grabaciones_y_queda_auditado(self):
+        self.client.force_login(self.usuario_auditor)
+        resp = self.client.post(reverse('panel:estacion_supervision_grabaciones', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('node=nodeid123', resp.url)
+        self.assertTrue(
+            EventoAuditoria.objects.filter(accion='estacion.supervision_grabacion_ver').exists(),
+        )
+
+
 class CumplimientoViewsTests(TestCase):
     def setUp(self):
         self.usuario = User.objects.create_user(username='u', password='x')
