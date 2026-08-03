@@ -90,7 +90,12 @@ def registrar_asignacion(*, activo, colaborador, estado_fisico_entrega, usuario)
         activo=activo, tipo_evento=EventoActivo.TipoEvento.ASIGNACION, usuario=usuario,
         detalle={
             'colaborador': colaborador.nombre, 'cedula': colaborador.cedula,
-            'cargo': colaborador.cargo, 'sucursal': colaborador.sucursal,
+            # colaborador.cargo es FK a Cargo (no serializable a JSON tal cual) — se
+            # asignaba el objeto directo, lo que reventaba con TypeError en cuanto el
+            # colaborador tuviera un cargo asignado (no lo detectaban los tests porque
+            # ninguno seteaba `cargo`).
+            'cargo': colaborador.cargo.nombre if colaborador.cargo_id else None,
+            'sucursal': colaborador.sucursal,
             'bodega_origen': bodega_origen.codigo if bodega_origen else None,
             'estado_fisico_entrega': estado_fisico_entrega,
         },

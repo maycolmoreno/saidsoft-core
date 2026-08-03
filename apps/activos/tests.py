@@ -4,7 +4,7 @@ from django.test import TestCase
 
 from apps.catalogo.models import UnidadNegocio
 
-from .models import Activo, Colaborador
+from .models import Activo, Cargo, Colaborador, Departamento, EventoActivo
 from .services import registrar_asignacion
 
 
@@ -47,6 +47,22 @@ class RegistrarAsignacionTests(TestCase):
         )
         self.activo.refresh_from_db()
         self.assertEqual(self.activo.unidad_negocio, self.mia)
+
+    def test_colaborador_con_cargo_no_revienta_al_serializar_el_evento(self):
+        """colaborador.cargo es FK a Cargo (no serializable a JSON tal cual) — antes
+        se guardaba el objeto directo en el detalle y reventaba con TypeError en
+        cuanto el colaborador tuviera un cargo asignado."""
+        departamento = Departamento.objects.create(nombre='TI')
+        cargo = Cargo.objects.create(nombre='Técnico de soporte', departamento=departamento)
+        self.colaborador.cargo = cargo
+        self.colaborador.save(update_fields=['cargo'])
+
+        registrar_asignacion(
+            activo=self.activo, colaborador=self.colaborador,
+            estado_fisico_entrega=Activo.EstadoFisico.BUENO, usuario=self.usuario,
+        )
+        evento = EventoActivo.objects.get(activo=self.activo, tipo_evento=EventoActivo.TipoEvento.ASIGNACION)
+        self.assertEqual(evento.detalle['cargo'], 'Técnico de soporte')
 
     def test_devolver_no_limpia_la_unidad_negocio_heredada(self):
         from .services import registrar_devolucion
