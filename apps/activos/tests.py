@@ -18,6 +18,20 @@ class SeedPermisosTests(TestCase):
             ).exists(),
         )
 
+    def test_auditor_incluye_supervision_auditoria_pero_no_acceso_remoto(self):
+        call_command('seed_permisos')
+        grupo = Group.objects.get(name='Auditor')
+        self.assertTrue(
+            grupo.permissions.filter(
+                content_type__app_label='catalogo', codename='supervision_auditoria_estacion',
+            ).exists(),
+        )
+        self.assertFalse(
+            grupo.permissions.filter(
+                content_type__app_label='catalogo', codename='acceso_remoto_estacion',
+            ).exists(),
+        )
+
 
 class RegistrarAsignacionTests(TestCase):
     def setUp(self):

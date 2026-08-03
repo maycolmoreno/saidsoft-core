@@ -32,6 +32,15 @@ ROLES = {
     ],
 }
 
+# Permisos custom que no calzan en el patrón CRUD de ROLES (su codename no es
+# "{accion}_{model_name}"), por rol que los necesite además de Administrador
+# (que ya los tiene todos vía `None` arriba). codename literal: (app_label, codename).
+PERMISOS_LITERALES = {
+    'Auditor': [
+        ('catalogo', 'supervision_auditoria_estacion'),  # grabaciones de sesión, no soporte en vivo
+    ],
+}
+
 
 class Command(BaseCommand):
     help = (
@@ -50,10 +59,7 @@ class Command(BaseCommand):
                 permisos = []
                 for app_label, model_name, acciones in reglas:
                     for accion in acciones:
-                        # Asume el patrón CRUD estándar de Django (view_x/add_x/...). Un
-                        # permiso custom como catalogo.acceso_remoto_estacion no calza acá
-                        # (su codename no es "{accion}_estacion"); si un rol más angosto que
-                        # Administrador llega a necesitarlo, hay que aceptar un codename literal.
+                        # Asume el patrón CRUD estándar de Django (view_x/add_x/...).
                         codename = f'{accion}_{model_name}'
                         try:
                             permisos.append(
@@ -63,6 +69,15 @@ class Command(BaseCommand):
                             self.stderr.write(self.style.WARNING(
                                 f'Permiso {app_label}.{codename} no existe (¿falta una migración?), se omite.',
                             ))
+                for app_label, codename in PERMISOS_LITERALES.get(nombre_rol, []):
+                    try:
+                        permisos.append(
+                            Permission.objects.get(content_type__app_label=app_label, codename=codename),
+                        )
+                    except Permission.DoesNotExist:
+                        self.stderr.write(self.style.WARNING(
+                            f'Permiso {app_label}.{codename} no existe (¿falta una migración?), se omite.',
+                        ))
                 grupo.permissions.set(permisos)
             verbo = 'creado' if creado else 'actualizado'
             self.stdout.write(self.style.SUCCESS(f'Group "{nombre_rol}" {verbo} con {grupo.permissions.count()} permiso(s).'))
