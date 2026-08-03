@@ -73,6 +73,10 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD_PANEL}
       MQTT_USE_TLS: "True"
       MQTT_CA_CERT: /app/deploy/certs/cert.pem
+      # Sin default: ambas son settings requeridas (sin ellas Django no arranca). Antes
+      # faltaban aquí — el stack tal como estaba no podía levantar `web`/`worker` en limpio.
+      COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
+      BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
       # Acceso remoto (MeshCentral) — opcional, ver servicio `meshcentral` más abajo.
       # Vacío por defecto: sin MESHCENTRAL_MESH_ID el botón de "instalar agente" y los
       # links de escritorio/terminal remotos no funcionan, pero el resto del panel sí.
@@ -108,6 +112,8 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD_WORKER}
       MQTT_USE_TLS: "True"
       MQTT_CA_CERT: /app/deploy/certs/cert.pem
+      COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
+      BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
     volumes:
       - media_data:/app/media   # el worker lee los paquetes que sirve el web
     depends_on:

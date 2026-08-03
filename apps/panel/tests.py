@@ -1,14 +1,16 @@
 from datetime import date
 
+from cryptography.fernet import Fernet
 from django.contrib.auth.models import Permission, User
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from apps.activos.models import Activo, Colaborador
 from apps.auditoria.models import EventoAuditoria, registrar_evento
-from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
+from apps.catalogo import crypto
+from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
 from apps.cumplimiento.models import (
     ActividadCumplimiento, ResultadoCumplimientoEstacion, TipoObjetivoCumplimiento,
@@ -150,6 +152,71 @@ class EstacionSupervisionGrabacionesTests(TestCase):
         self.assertTrue(
             EventoAuditoria.objects.filter(accion='estacion.supervision_grabacion_ver').exists(),
         )
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=Fernet.generate_key().decode())
+class EstacionBitlockerClaveTests(TestCase):
+    """ver_clave_bitlocker es un permiso propio, más sensible que los otros dos de
+    acceso a estaciones (con la clave se descifra el disco): nadie lo hereda."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia_sg, bitlocker_habilitado=True,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        ClaveRecuperacionBitLocker.objects.create(
+            estacion=self.estacion, clave_cifrada=crypto.cifrar('111111-222222-333333'),
+        )
+
+        self.usuario_soporte = User.objects.create_user(username='soporte_bl', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_soporte, acceso_todas_unidades=True)
+        self.usuario_soporte.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='acceso_remoto_estacion'),
+        )
+
+        self.usuario_bl = User.objects.create_user(username='ve_bitlocker', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_bl, acceso_todas_unidades=True)
+        self.usuario_bl.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='ver_clave_bitlocker'),
+        )
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_bl', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='ver_clave_bitlocker'),
+        )
+
+    def test_acceso_remoto_no_alcanza_para_ver_la_clave(self):
+        self.client.force_login(self.usuario_soporte)
+        resp = self.client.post(reverse('panel:estacion_bitlocker_ver_clave', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_usuario_con_permiso_ve_la_clave_y_queda_auditado(self):
+        self.client.force_login(self.usuario_bl)
+        resp = self.client.post(reverse('panel:estacion_bitlocker_ver_clave', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '111111-222222-333333')
+        self.assertTrue(EventoAuditoria.objects.filter(accion='estacion.bitlocker_clave_ver').exists())
+
+    def test_otro_tenant_con_el_permiso_no_puede_verla(self):
+        self.client.force_login(self.usuario_mia)
+        resp = self.client.post(reverse('panel:estacion_bitlocker_ver_clave', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_sin_clave_registrada_no_audita_ni_revienta(self):
+        estacion_sin_clave = Estacion.objects.create(
+            codigo='ML001-B', farmacia=self.estacion.farmacia, bitlocker_habilitado=True,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.client.force_login(self.usuario_bl)
+        resp = self.client.post(reverse('panel:estacion_bitlocker_ver_clave', args=[estacion_sin_clave.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, '111111-222222-333333')
+        self.assertFalse(EventoAuditoria.objects.filter(accion='estacion.bitlocker_clave_ver').exists())
 
 
 class CumplimientoViewsTests(TestCase):

@@ -129,6 +129,17 @@ class Estacion(models.Model):
         null=True, blank=True, help_text='Cuándo se actualizó por última vez la info de hardware.',
     )
 
+    # Estado de cifrado de disco, reportado junto con el resto de info de hardware (mismo
+    # comando "consultar_info"). null = nunca se consultó todavía (distinto de "reportado
+    # como no cifrado"). No requiere permiso especial, a diferencia de la clave de
+    # recuperación (ver ClaveRecuperacionBitLocker) — es solo un sí/no, no un secreto.
+    bitlocker_habilitado = models.BooleanField(null=True, blank=True)
+    bitlocker_metodo_proteccion = models.CharField(
+        max_length=30, blank=True,
+        help_text='Ej. tpm, tpm_pin, password — tal como lo reporta el agente (Get-BitLockerVolume). '
+                  'Texto libre, no choices: los protectores de BitLocker no son un set fijo pequeño.',
+    )
+
     estado_conexion = models.CharField(
         max_length=20, choices=EstadoConexion.choices, default=EstadoConexion.NUNCA_CONECTADA,
     )
@@ -183,6 +194,9 @@ class Estacion(models.Model):
             # cliente) es una capacidad más sensible que dar soporte remoto en vivo, y no todo el
             # que tiene acceso_remoto_estacion debería tenerla por defecto.
             ('supervision_auditoria_estacion', 'Puede ver grabaciones de sesión (auditoría) de estaciones'),
+            # Más sensible todavía que las dos de arriba: con la clave de recuperación se
+            # descifra el disco completo. Permiso propio, nadie lo hereda de los otros dos.
+            ('ver_clave_bitlocker', 'Puede ver la clave de recuperación de BitLocker de estaciones'),
         ]
 
     def __str__(self):
@@ -199,3 +213,30 @@ class Estacion(models.Model):
         """True si la versión de POS reportada no coincide con la versión objetivo de su grupo."""
         objetivo = self.farmacia.grupo.version_objetivo
         return bool(objetivo) and self.version_pos != objetivo
+
+
+class ClaveRecuperacionBitLocker(models.Model):
+    """Clave de recuperación de BitLocker de una estación, cifrada en reposo.
+
+    Una fila por estación (se sobrescribe si BitLocker rota la clave — no hace falta
+    historial de claves viejas, solo la que sirve para descifrar el disco *ahora*).
+    `clave_cifrada` nunca se guarda ni se muestra en texto plano fuera de la vista que
+    la descifra bajo demanda (apps.catalogo.services.obtener_clave_bitlocker_descifrada),
+    detrás del permiso `catalogo.ver_clave_bitlocker` y auditada en cada consulta.
+    """
+    estacion = models.OneToOneField(Estacion, on_delete=models.CASCADE, related_name='clave_bitlocker')
+    clave_cifrada = models.TextField(help_text='Token Fernet — nunca texto plano.')
+    id_protector = models.CharField(
+        max_length=100, blank=True,
+        help_text='Recovery Key ID de BitLocker (no sensible por sí solo): ayuda a confirmar '
+                  'en Windows que es la clave correcta antes de aplicarla.',
+    )
+    actualizada_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'clave_recuperacion_bitlocker'
+        verbose_name = 'Clave de recuperación BitLocker'
+        verbose_name_plural = 'Claves de recuperación BitLocker'
+
+    def __str__(self):
+        return f'Clave BitLocker de {self.estacion.codigo}'

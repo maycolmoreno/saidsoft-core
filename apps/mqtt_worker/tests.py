@@ -3,14 +3,20 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from cryptography.fernet import Fernet
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.mqtt_worker.management.commands.run_mqtt_worker import (
     TOPICO_ESTADO_DESPLIEGUE, TOPICO_ESTADO_SCRIPT, TOPICO_HEARTBEAT, Command,
 )
 from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
-from apps.mqtt_worker.services import NOMBRE_WORKER_MQTT, registrar_latido_worker, registrar_mensaje_fallido
+from apps.mqtt_worker.services import (
+    NOMBRE_WORKER_MQTT, manejar_info_equipo, registrar_latido_worker, registrar_mensaje_fallido,
+)
+
+BITLOCKER_KEY_TEST = Fernet.generate_key().decode()
 
 
 def _msg(topic, payload):
@@ -138,3 +144,53 @@ class ApagadoOrdenadoTests(TestCase):
         cmd = Command()
         cmd._client = None
         cmd._manejar_apagado(signum=15, frame=None)  # no debe lanzar
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=BITLOCKER_KEY_TEST)
+class ManejarInfoEquipoBitlockerTests(TestCase):
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            token_enrolamiento='tok123',
+        )
+
+    def test_guarda_estado_de_cifrado_sin_clave(self):
+        manejar_info_equipo('ML001-A', {
+            'token': 'tok123', 'bitlocker_habilitado': True, 'bitlocker_metodo_proteccion': 'tpm',
+        })
+        self.estacion.refresh_from_db()
+        self.assertTrue(self.estacion.bitlocker_habilitado)
+        self.assertEqual(self.estacion.bitlocker_metodo_proteccion, 'tpm')
+        self.assertFalse(ClaveRecuperacionBitLocker.objects.exists())
+
+    def test_clave_de_recuperacion_se_guarda_cifrada_nunca_en_texto_plano(self):
+        clave_real = '111111-222222-333333-444444-555555-666666-777777-888888'
+        manejar_info_equipo('ML001-A', {
+            'token': 'tok123', 'bitlocker_habilitado': True, 'bitlocker_metodo_proteccion': 'tpm',
+            'bitlocker_clave_recuperacion': clave_real, 'bitlocker_id_protector': 'ABC-123',
+        })
+
+        fila = ClaveRecuperacionBitLocker.objects.get(estacion=self.estacion)
+        self.assertNotEqual(fila.clave_cifrada, clave_real)  # nunca texto plano en la BD
+        self.assertNotIn(clave_real, fila.clave_cifrada)
+        self.assertEqual(fila.id_protector, 'ABC-123')
+
+        from apps.catalogo import crypto
+        self.assertEqual(crypto.descifrar(fila.clave_cifrada), clave_real)
+
+    def test_reportar_de_nuevo_actualiza_la_clave_existente_no_duplica_fila(self):
+        manejar_info_equipo('ML001-A', {'token': 'tok123', 'bitlocker_clave_recuperacion': 'clave-vieja'})
+        manejar_info_equipo('ML001-A', {'token': 'tok123', 'bitlocker_clave_recuperacion': 'clave-nueva'})
+
+        self.assertEqual(ClaveRecuperacionBitLocker.objects.filter(estacion=self.estacion).count(), 1)
+        from apps.catalogo.services import obtener_clave_bitlocker_descifrada
+        self.assertEqual(obtener_clave_bitlocker_descifrada(self.estacion), 'clave-nueva')
+
+    def test_token_invalido_no_guarda_nada(self):
+        manejar_info_equipo('ML001-A', {'token': 'token-equivocado', 'bitlocker_habilitado': True})
+        self.estacion.refresh_from_db()
+        self.assertIsNone(self.estacion.bitlocker_habilitado)

@@ -240,6 +240,31 @@ saltan directo a la pestaña de escritorio o terminal del dispositivo no se veri
 una instancia real — al validar, abrir el link `?node=<id>` una vez, navegar a mano a cada
 pestaña y ajustar el `.env` con el valor que MeshCentral ponga en su propia URL.
 
+## BitLocker (estado de cifrado y clave de recuperación)
+
+Se reporta junto con el resto de info de hardware (comando `consultar_info`, mismo
+canal que procesador/RAM/almacenamiento — ver "Probar el flujo completo" arriba):
+`bitlocker_habilitado` y `bitlocker_metodo_proteccion` en `Estacion` no piden permiso
+especial, se muestran igual que el resto de la ficha del equipo.
+
+La **clave de recuperación** es otra historia — con ella se descifra el disco completo:
+
+- Viaja del agente al servidor por el mismo canal MQTT/TLS de `info_equipo` (no es un
+  canal nuevo), pero **nunca se guarda en texto plano**: se cifra con Fernet
+  (`apps/catalogo/crypto.py`) usando `BITLOCKER_ENCRYPTION_KEY` antes de tocar la base
+  de datos (`ClaveRecuperacionBitLocker.clave_cifrada`).
+- Verla desde el panel exige el permiso `catalogo.ver_clave_bitlocker` — **separado**
+  de `acceso_remoto_estacion` y `supervision_auditoria_estacion` a propósito, nadie lo
+  hereda de los otros dos. Por defecto solo lo tiene el grupo `Administrador`
+  (vía `seed_permisos`); si algún rol más angosto lo necesita, hay que agregarlo a mano
+  en `PERMISOS_LITERALES` (`apps/activos/management/commands/seed_permisos.py`) — es
+  una decisión de a quién confiarle esto, no la tomamos por defecto.
+- Cada vista de la clave queda auditada (`estacion.bitlocker_clave_ver` en
+  `EventoAuditoria`), igual que el resto de acciones sensibles del panel.
+- `BITLOCKER_ENCRYPTION_KEY` es una setting requerida (sin default, igual que
+  `COMANDO_HMAC_SECRET`): generar con
+  `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+
 ## Seguridad y robustez
 
 - **Enrolamiento verificado por hardware**: el agente reporta un `hardware_id` estable

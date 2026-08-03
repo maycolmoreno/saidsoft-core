@@ -10,7 +10,8 @@ from datetime import timedelta
 from django.db import close_old_connections
 from django.utils import timezone
 
-from apps.catalogo.models import Estacion, Farmacia
+from apps.catalogo import crypto
+from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia
 from apps.despliegues.models import EventoDespliegue, ResultadoDespliegue
 from apps.despliegues.services import evaluar_freno_automatico, verificar_completado
 from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
@@ -225,8 +226,26 @@ def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:
     estacion.procesador = payload.get('procesador', estacion.procesador)
     estacion.ram_total_mb = _entero('ram_total_mb') or estacion.ram_total_mb
     estacion.almacenamiento_total_gb = _entero('almacenamiento_total_gb') or estacion.almacenamiento_total_gb
+    if 'bitlocker_habilitado' in payload:
+        estacion.bitlocker_habilitado = bool(payload['bitlocker_habilitado'])
+    estacion.bitlocker_metodo_proteccion = payload.get(
+        'bitlocker_metodo_proteccion', estacion.bitlocker_metodo_proteccion,
+    )
     estacion.info_equipo_fecha = timezone.now()
     estacion.save()
+
+    # La clave de recuperación solo viaja si BitLocker está habilitado y el agente la
+    # incluyó en esta respuesta puntual (no en cada heartbeat). Se cifra antes de
+    # guardarse: en ningún momento queda en texto plano en la base de datos.
+    clave_plana = payload.get('bitlocker_clave_recuperacion')
+    if clave_plana:
+        ClaveRecuperacionBitLocker.objects.update_or_create(
+            estacion=estacion,
+            defaults={
+                'clave_cifrada': crypto.cifrar(clave_plana),
+                'id_protector': payload.get('bitlocker_id_protector', ''),
+            },
+        )
 
 
 def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:

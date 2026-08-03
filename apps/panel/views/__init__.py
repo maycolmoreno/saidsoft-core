@@ -27,7 +27,7 @@ from .despliegues import (
     despliegues_lista,
 )
 from .estaciones import (
-    estacion_aprobar, estacion_info_modal, estacion_info_solicitar,
+    estacion_aprobar, estacion_bitlocker_ver_clave, estacion_info_modal, estacion_info_solicitar,
     estacion_meshcentral_escritorio, estacion_meshcentral_terminal, estacion_meshcentral_vincular,
     estacion_rechazar, estacion_reiniciar, estacion_supervision_grabaciones, estaciones_aprobar_lote,
     estaciones_lista, estaciones_pendientes_partial,
@@ -62,6 +62,7 @@ __all__ = [
     'despliegue_progreso_partial', 'despliegue_promover', 'despliegue_publicar', 'despliegue_reanudar',
     'despliegues_lista',
     'estacion_aprobar', 'estacion_info_modal', 'estacion_info_solicitar',
+    'estacion_bitlocker_ver_clave',
     'estacion_meshcentral_escritorio', 'estacion_meshcentral_terminal', 'estacion_meshcentral_vincular',
     'estacion_rechazar', 'estacion_supervision_grabaciones',
     'estacion_reiniciar', 'estaciones_aprobar_lote', 'estaciones_lista', 'estaciones_pendientes_partial',

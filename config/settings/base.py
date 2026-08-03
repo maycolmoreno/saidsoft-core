@@ -124,6 +124,12 @@ MQTT_CONFIG = {
 # publish al broker podría inyectar comandos (incluyendo ejecutar_script).
 COMANDO_HMAC_SECRET = env('COMANDO_HMAC_SECRET')
 
+# Clave de cifrado simétrico (Fernet) para datos en reposo que ameritan más que el
+# control de acceso normal de Django — hoy solo la clave de recuperación de BitLocker
+# (apps.catalogo.models.ClaveRecuperacionBitLocker). Sin default a propósito: generar
+# con `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+BITLOCKER_ENCRYPTION_KEY = env('BITLOCKER_ENCRYPTION_KEY')
+
 # URL base desde la que los agentes descargan los archivos de despliegue
 # (equivalente a GET_DOMAIN_FILE del sistema anterior)
 ARCHIVOS_BASE_URL = env('ARCHIVOS_BASE_URL', default='http://localhost:8000')

@@ -1,10 +1,13 @@
+from cryptography.fernet import Fernet
 from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 
-from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
+from apps.catalogo import crypto
+from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.catalogo.services import (
-    generar_comando_instalacion_meshcentral, resolver_estaciones, url_escritorio_remoto_meshcentral,
-    url_grabaciones_meshcentral, url_terminal_remoto_meshcentral, validar_destino_unidad_negocio,
+    generar_comando_instalacion_meshcentral, obtener_clave_bitlocker_descifrada, resolver_estaciones,
+    url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
+    validar_destino_unidad_negocio,
 )
 
 MESHCENTRAL_CONFIG_TEST = {
@@ -15,6 +18,46 @@ MESHCENTRAL_CONFIG_TEST = {
     'VIEWMODE_ESCRITORIO': '11',
     'VIEWMODE_TERMINAL': '12',
 }
+
+BITLOCKER_KEY_TEST = Fernet.generate_key().decode()
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=BITLOCKER_KEY_TEST)
+class BitLockerCryptoTests(TestCase):
+    def test_cifrar_descifrar_es_reversible(self):
+        original = '111111-222222-333333-444444-555555-666666-777777-888888'
+        token = crypto.cifrar(original)
+        self.assertNotEqual(token, original)  # nunca texto plano
+        self.assertEqual(crypto.descifrar(token), original)
+
+    def test_descifrar_token_invalido_lanza_value_error(self):
+        with self.assertRaises(ValueError):
+            crypto.descifrar('esto-no-es-un-token-fernet-valido')
+
+    def test_clave_cifrada_con_otra_llave_no_se_puede_descifrar(self):
+        token = crypto.cifrar('secreto')
+        with override_settings(BITLOCKER_ENCRYPTION_KEY=Fernet.generate_key().decode()):
+            with self.assertRaises(ValueError):
+                crypto.descifrar(token)
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=BITLOCKER_KEY_TEST)
+class ObtenerClaveBitlockerTests(TestCase):
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+
+    def test_none_si_no_hay_clave_registrada(self):
+        self.assertIsNone(obtener_clave_bitlocker_descifrada(self.estacion))
+
+    def test_devuelve_la_clave_en_texto_plano_cuando_existe(self):
+        ClaveRecuperacionBitLocker.objects.create(
+            estacion=self.estacion, clave_cifrada=crypto.cifrar('111111-222222-333333'),
+        )
+        self.assertEqual(obtener_clave_bitlocker_descifrada(self.estacion), '111111-222222-333333')
 
 
 @override_settings(MESHCENTRAL_CONFIG=MESHCENTRAL_CONFIG_TEST)

@@ -185,6 +185,24 @@ def url_terminal_remoto_meshcentral(estacion) -> str | None:
     return _url_dispositivo_meshcentral(estacion, settings.MESHCENTRAL_CONFIG['VIEWMODE_TERMINAL'])
 
 
+# --- Clave de recuperación de BitLocker ---
+# Igual que MeshCentral: función puntual, no un canal nuevo. La clave llega cifrada
+# desde el agente (ver apps.mqtt_worker.services.manejar_info_equipo) y solo se
+# descifra aquí, bajo demanda, para la vista que la muestra (permiso propio + auditada).
+
+def obtener_clave_bitlocker_descifrada(estacion) -> str | None:
+    """Clave de recuperación de `estacion` en texto plano, o None si no hay ninguna
+    registrada (nunca se reportó, o el equipo no usa BitLocker)."""
+    from apps.catalogo import crypto
+    from apps.catalogo.models import ClaveRecuperacionBitLocker
+
+    try:
+        clave = estacion.clave_bitlocker
+    except ClaveRecuperacionBitLocker.DoesNotExist:
+        return None
+    return crypto.descifrar(clave.clave_cifrada)
+
+
 def url_grabaciones_meshcentral(estacion) -> str | None:
     """URL de MeshCentral para revisar las grabaciones de sesión de `estacion`, o None
     si todavía no tiene un node_id vinculado.

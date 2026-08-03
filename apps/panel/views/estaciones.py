@@ -7,8 +7,8 @@ from django.views.decorators.http import require_POST
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Grupo
 from apps.catalogo.services import (
-    enviar_comando, url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral,
-    url_terminal_remoto_meshcentral,
+    enviar_comando, obtener_clave_bitlocker_descifrada, url_escritorio_remoto_meshcentral,
+    url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
 
@@ -178,6 +178,25 @@ def estacion_supervision_grabaciones(request, pk):
         detalle={'meshcentral_node_id': estacion.meshcentral_node_id}, request=request,
     )
     return redirect(url)
+
+
+@login_required
+@permission_required('catalogo.ver_clave_bitlocker', raise_exception=True)
+@require_POST
+def estacion_bitlocker_ver_clave(request, pk):
+    """Revela la clave de recuperación de BitLocker en el modal. Permiso propio y
+    auditado a propósito: con la clave se descifra el disco completo — más sensible
+    que soporte remoto en vivo o supervisión por grabación, no se hereda de ninguno."""
+    estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
+    clave = obtener_clave_bitlocker_descifrada(estacion)
+    if clave is not None:
+        registrar_evento(
+            usuario=request.user, accion='estacion.bitlocker_clave_ver', objeto=estacion, request=request,
+        )
+    return render(request, 'panel/estacion_info_modal.html', {
+        'estacion': estacion, 'bitlocker_clave_revelada': clave, 'bitlocker_solicitada': True,
+    })
 
 
 @login_required

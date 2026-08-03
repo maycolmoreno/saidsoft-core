@@ -23,6 +23,13 @@
             <dd>{% if estacion.ram_total_mb %}{{ estacion.ram_total_mb }} MB{% else %}—{% endif %}</dd></div>
         <div><dt class="text-[var(--text-faint)] text-xs">Almacenamiento</dt>
             <dd>{% if estacion.almacenamiento_total_gb %}{{ estacion.almacenamiento_total_gb }} GB{% else %}—{% endif %}</dd></div>
+        <div><dt class="text-[var(--text-faint)] text-xs">BitLocker</dt>
+            <dd>
+                {% if estacion.bitlocker_habilitado is None %}—
+                {% elif estacion.bitlocker_habilitado %}<span class="pill good">Habilitado</span> {{ estacion.bitlocker_metodo_proteccion|default:"" }}
+                {% else %}<span class="pill critical">No habilitado</span>
+                {% endif %}
+            </dd></div>
         <div><dt class="text-[var(--text-faint)] text-xs">Última actualización</dt><dd>{{ estacion.info_equipo_fecha|default:"nunca" }}</dd></div>
     </dl>
 
@@ -87,6 +94,24 @@
             {% csrf_token %}
             <button type="submit" class="btn secondary">Ver grabaciones</button>
         </form>
+    </div>
+    {% endif %}
+
+    {% if perms.catalogo.ver_clave_bitlocker and estacion.bitlocker_habilitado %}
+    <div class="mt-5 pt-4" style="border-top:1px solid var(--border-soft);">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-[var(--text-faint)] mb-2">Clave de recuperación BitLocker</h3>
+        {% if bitlocker_clave_revelada %}
+        <p class="mb-1 text-xs px-3 py-2 rounded-md alert sev-critical">Sensible — con esta clave se descifra el disco. No la compartas fuera de este panel.</p>
+        <code class="block text-sm px-3 py-2 rounded-md mb-2 break-all" style="background:var(--overlay-hover);">{{ bitlocker_clave_revelada }}</code>
+        {% elif bitlocker_solicitada %}
+        <p class="text-xs text-[var(--text-faint)] mb-2">{{ estacion.codigo }} no tiene una clave de recuperación registrada todavía.</p>
+        {% else %}
+        <form method="post" action="{% url 'panel:estacion_bitlocker_ver_clave' estacion.pk %}"
+              hx-post="{% url 'panel:estacion_bitlocker_ver_clave' estacion.pk %}" hx-target="#modal-info-content" hx-swap="innerHTML">
+            {% csrf_token %}
+            <button type="submit" class="btn secondary">Ver clave de recuperación</button>
+        </form>
+        {% endif %}
     </div>
     {% endif %}
 
