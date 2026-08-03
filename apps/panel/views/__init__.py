@@ -47,6 +47,11 @@ from .scripts import (
     ejecucion_detalle, ejecucion_progreso_partial, ejecuciones_lista, script_crear, script_detalle,
     script_ejecutar, script_ejecutar_adhoc, script_programado_crear, scripts_lista, scripts_programados_lista,
 )
+from .software import (
+    aplicacion_crear, aplicacion_detalle, aplicaciones_lista, solicitud_instalacion_crear,
+    solicitud_instalacion_detalle, solicitud_instalacion_progreso_partial, solicitud_instalacion_publicar,
+    solicitudes_instalacion_lista, version_crear,
+)
 from .tenant import unidad_negocio_activar
 
 __all__ = [
@@ -80,6 +85,9 @@ __all__ = [
     'ejecucion_detalle', 'ejecucion_progreso_partial', 'ejecuciones_lista', 'script_crear',
     'script_detalle', 'script_ejecutar', 'script_ejecutar_adhoc', 'script_programado_crear',
     'scripts_lista', 'scripts_programados_lista',
+    'aplicacion_crear', 'aplicacion_detalle', 'aplicaciones_lista', 'solicitud_instalacion_crear',
+    'solicitud_instalacion_detalle', 'solicitud_instalacion_progreso_partial', 'solicitud_instalacion_publicar',
+    'solicitudes_instalacion_lista', 'version_crear',
     'unidad_negocio_activar',
     'visita_tecnica_lista',
 ]

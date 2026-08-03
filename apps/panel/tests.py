@@ -637,3 +637,66 @@ class ReporteCumplimientoMultiTenantTests(TestCase):
     def test_selector_de_grupos_ofrece_el_grupo_compartido_una_sola_vez(self):
         resp = self.client.get(reverse('panel:reportes_index'))
         self.assertContains(resp, '>TRX001<', count=1)
+
+
+class SoftwarePanelMultiTenantTests(TestCase):
+    """Catálogo de software (Fase 2, panel HTMX): mismo criterio "compartida o del
+    tenant" que ya usa Script, y misma verificación de acceso puntual que el resto
+    del panel para no dejar forzar un ID de otro cliente por URL."""
+
+    def setUp(self):
+        from apps.software.models import AplicacionCatalogo, DestinoTipo, SolicitudInstalacion, VersionAplicacion
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        creador = User.objects.create_user(username='creador_sw_panel', password='x')
+
+        self.app_privada_sg = AplicacionCatalogo.objects.create(
+            nombre='ERP Interno SG', unidad_negocio=self.sg, creado_por=creador,
+        )
+        self.app_compartida = AplicacionCatalogo.objects.create(nombre='Google Chrome', creado_por=creador)
+        self.version_compartida = VersionAplicacion.objects.create(
+            aplicacion=self.app_compartida, version='128.0.0',
+            instalador=SimpleUploadedFile('chrome.msi', b'x'),
+            comando_instalacion_silenciosa='msiexec /i "{archivo}" /qn',
+        )
+        self.solicitud_sg = SolicitudInstalacion.objects.create(
+            version_aplicacion=self.version_compartida, unidad_negocio=self.sg,
+            destino_tipo=DestinoTipo.CADENA, creado_por=creador,
+        )
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_sw', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_catalogo_oculta_app_privada_de_otro_tenant_pero_muestra_compartida(self):
+        resp = self.client.get(reverse('panel:aplicaciones_lista'))
+        self.assertNotContains(resp, 'ERP Interno SG')
+        self.assertContains(resp, 'Google Chrome')
+
+    def test_forzar_detalle_de_app_privada_de_otro_tenant_devuelve_403(self):
+        resp = self.client.get(reverse('panel:aplicacion_detalle', args=[self.app_privada_sg.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_app_compartida_es_accesible(self):
+        resp = self.client.get(reverse('panel:aplicacion_detalle', args=[self.app_compartida.pk]))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_lista_de_solicitudes_no_muestra_la_de_otro_tenant(self):
+        resp = self.client.get(reverse('panel:solicitudes_instalacion_lista'))
+        self.assertNotContains(resp, f'#{self.solicitud_sg.pk}')
+
+    def test_forzar_detalle_de_solicitud_de_otro_tenant_devuelve_403(self):
+        resp = self.client.get(reverse('panel:solicitud_instalacion_detalle', args=[self.solicitud_sg.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_forzar_publicar_solicitud_de_otro_tenant_devuelve_403(self):
+        resp = self.client.post(reverse('panel:solicitud_instalacion_publicar', args=[self.solicitud_sg.pk]))
+        self.assertEqual(resp.status_code, 403)
+        self.solicitud_sg.refresh_from_db()
+        self.assertEqual(self.solicitud_sg.estado, 'borrador')
+
+    def test_form_de_nueva_solicitud_no_ofrece_unidad_de_negocio_ajena(self):
+        resp = self.client.get(reverse('panel:solicitud_instalacion_crear'))
+        self.assertNotContains(resp, '>SG</option>')
+        self.assertContains(resp, '>MIA</option>')

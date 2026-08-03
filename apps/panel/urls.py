@@ -137,6 +137,23 @@ urlpatterns = [
     path('ejecuciones/<int:pk>/', views.ejecucion_detalle, name='ejecucion_detalle'),
     path('ejecuciones/<int:pk>/progreso/', views.ejecucion_progreso_partial, name='ejecucion_progreso_partial'),
 
+    # Catálogo de software
+    path('aplicaciones/', views.aplicaciones_lista, name='aplicaciones_lista'),
+    path('aplicaciones/nueva/', views.aplicacion_crear, name='aplicacion_crear'),
+    path('aplicaciones/<int:pk>/', views.aplicacion_detalle, name='aplicacion_detalle'),
+    path('aplicaciones/<int:pk>/versiones/nueva/', views.version_crear, name='version_crear'),
+    path('solicitudes-instalacion/', views.solicitudes_instalacion_lista, name='solicitudes_instalacion_lista'),
+    path('solicitudes-instalacion/nueva/', views.solicitud_instalacion_crear, name='solicitud_instalacion_crear'),
+    path('solicitudes-instalacion/<int:pk>/', views.solicitud_instalacion_detalle, name='solicitud_instalacion_detalle'),
+    path(
+        'solicitudes-instalacion/<int:pk>/progreso/', views.solicitud_instalacion_progreso_partial,
+        name='solicitud_instalacion_progreso_partial',
+    ),
+    path(
+        'solicitudes-instalacion/<int:pk>/publicar/', views.solicitud_instalacion_publicar,
+        name='solicitud_instalacion_publicar',
+    ),
+
     # Módulo de Planificación y Cumplimiento
     path('cumplimiento/', views.cumplimiento_lista, name='cumplimiento_lista'),
     path('cumplimiento/nueva/', views.cumplimiento_crear, name='cumplimiento_crear'),

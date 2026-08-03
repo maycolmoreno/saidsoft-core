@@ -67,6 +67,16 @@
             <span class="lbl">Programados</span>
         </a>
 
+        <div class="nav-label">Software</div>
+        <a href="{% url 'panel:aplicaciones_lista' %}" class="nav-item {% if 'aplicacion' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8"/><path d="M8 11h8"/><path d="M8 15h5"/></svg>
+            <span class="lbl">Catálogo</span>
+        </a>
+        <a href="{% url 'panel:solicitudes_instalacion_lista' %}" class="nav-item {% if 'solicitud_instalacion' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
+            <span class="lbl">Solicitudes</span>
+        </a>
+
         <div class="nav-label">Activos</div>
         <a href="{% url 'panel:activos_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'activos_lista' or request.resolver_match.url_name == 'activo_detalle' or request.resolver_match.url_name == 'activo_crear' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></svg>

@@ -1,0 +1,38 @@
+{% extends "panel/base.html" %}
+{% block title %}Catálogo de software · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold">Catálogo de software</h1>
+    <div class="flex gap-3">
+        <a href="{% url 'panel:solicitudes_instalacion_lista' %}" class="btn secondary">Solicitudes</a>
+        <a href="{% url 'panel:aplicacion_crear' %}" class="btn primary">+ Nueva aplicación</a>
+    </div>
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Nombre</th>
+                <th class="text-left px-4 py-3">Fabricante</th>
+                <th class="text-left px-4 py-3">Categoría</th>
+                <th class="text-left px-4 py-3">Versiones</th>
+                <th class="text-left px-4 py-3">Unidad de negocio</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for a in aplicaciones %}
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:aplicacion_detalle' a.pk %}'">
+                <td class="px-4 py-3 font-medium">{{ a.nombre }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.fabricante|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.categoria|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.versiones.all|length }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.unidad_negocio.codigo|default:"Todos (global)" }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="5" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin aplicaciones en el catálogo todavía. <a href="{% url 'panel:aplicacion_crear' %}" class="underline text-[var(--info)]">Agregar la primera</a>.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

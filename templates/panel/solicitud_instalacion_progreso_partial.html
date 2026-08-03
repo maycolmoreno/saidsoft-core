@@ -1,0 +1,47 @@
+{% load i18n %}
+<div class="card p-5 mb-6">
+    <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-medium">Progreso: {{ instalados }} / {{ total }} instalados</span>
+        <span class="text-sm text-[var(--text-faint)]">{{ pct_completado }}%</span>
+    </div>
+    <div class="rank-row mb-3"><span class="track"><span class="fill" style="width:{{ pct_completado }}%; background:var(--good);"></span></span></div>
+    <div class="flex gap-4 text-xs text-[var(--text-faint)]">
+        <span>Pendientes: {{ conteo.pendiente }}</span>
+        <span>Descargando: {{ conteo.descargando }}</span>
+        <span>Instalando: {{ conteo.instalando }}</span>
+        <span style="color:var(--good);">Instalados: {{ conteo.instalado }}</span>
+        {% if errores %}<span style="color:var(--critical);" class="font-medium">Errores: {{ errores }}</span>{% endif %}
+    </div>
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Estación</th>
+                <th class="text-left px-4 py-3">Farmacia</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Versión previa → instalada</th>
+                <th class="text-left px-4 py-3">Actualizado</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in resultados %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">{{ r.estacion.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ r.estacion.farmacia.codigo }}</td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if r.estado == 'instalado' %}good{% elif r.estado == 'error' %}critical{% elif r.estado == 'pendiente' %}neutral{% else %}info{% endif %}">
+                        {{ r.get_estado_display }}
+                    </span>
+                    {% if r.detalle_error %}<div class="text-xs mt-1" style="color:var(--critical);">{{ r.detalle_error }}</div>{% endif %}
+                </td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ r.version_previa_detectada|default:"—" }} → {{ r.version_instalada|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ r.fecha_actualizacion|date:"d/m H:i:s" }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="5" class="px-4 py-6 text-center text-[var(--text-faint)]">Todavía no se ha publicado a ninguna estación.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
