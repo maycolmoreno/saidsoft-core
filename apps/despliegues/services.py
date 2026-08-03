@@ -6,6 +6,7 @@ larga duración: esto es una acción puntual disparada por un humano.
 """
 import json
 import logging
+from dataclasses import dataclass
 
 import paho.mqtt.publish as mqtt_publish
 from django.conf import settings
@@ -14,6 +15,12 @@ from django.utils import timezone
 from .models import Despliegue, EventoDespliegue, ResultadoDespliegue
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ResultadoPublicacion:
+    total_estaciones: int
+    exitoso: bool
 
 
 def _topicos_para(despliegue: Despliegue) -> list[str]:
@@ -43,10 +50,14 @@ def _payload(despliegue: Despliegue) -> dict:
     }
 
 
-def publicar_despliegue(despliegue: Despliegue) -> int:
+def publicar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     """Resuelve el destino, crea ResultadoDespliegue por estación y publica por MQTT.
 
-    Devuelve la cantidad de estaciones destinatarias.
+    Si la publicación falla (ej. broker caído), el despliegue se queda en su estado
+    actual — no avanza a PUBLICANDO ni se registra ningún EventoDespliegue "publicado".
+    Antes esto se registraba igual aunque la publicación hubiera fallado por completo,
+    dejando al operador viendo "publicado con éxito" sin que ninguna estación recibiera
+    nada. El caller decide qué mostrar/reintentar según `ResultadoPublicacion.exitoso`.
     """
     estaciones = list(despliegue.resolver_estaciones_destino())
 
@@ -65,24 +76,29 @@ def publicar_despliegue(despliegue: Despliegue) -> int:
         auth = {'username': mqtt_conf['USERNAME'], 'password': mqtt_conf['PASSWORD']}
     tls = None
     if mqtt_conf['USE_TLS']:
-        # EMQX en producción solo expone el listener TLS (8883); sin esto, publish.single
+        # EMQX en producción solo expone el listener TLS (8883); sin esto, publish.multiple
         # se conecta en plano y el broker cierra la conexión.
         tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
 
-    for topico in topicos:
-        try:
-            mqtt_publish.single(
-                topico,
-                payload,
-                hostname=mqtt_conf['HOST'],
-                port=mqtt_conf['PORT'],
-                auth=auth,
-                tls=tls,
-                client_id=mqtt_conf['CLIENT_ID_PANEL'],
-                retain=True,  # equipos apagados lo reciben al encender
-            )
-        except Exception:
-            logger.exception('No se pudo publicar el despliegue %s en %s', despliegue.id, topico)
+    mensajes = [{'topic': topico, 'payload': payload, 'retain': True} for topico in topicos]
+
+    try:
+        # Una sola conexión para todos los tópicos del destino (antes: connect+disconnect
+        # por tópico vía publish.single() en loop — con un destino de muchas estaciones
+        # puntuales, eso bloqueaba la request HTTP con decenas de handshakes secuenciales).
+        mqtt_publish.multiple(
+            mensajes,
+            hostname=mqtt_conf['HOST'],
+            port=mqtt_conf['PORT'],
+            auth=auth,
+            tls=tls,
+            client_id=mqtt_conf['CLIENT_ID_PANEL'],
+        )
+    except Exception:
+        logger.exception(
+            'No se pudo publicar el despliegue %s por MQTT (%d tópico(s) destino)', despliegue.id, len(topicos),
+        )
+        return ResultadoPublicacion(total_estaciones=len(estaciones), exitoso=False)
 
     EventoDespliegue.objects.bulk_create([
         EventoDespliegue(resultado=r, paso=EventoDespliegue.Paso.PUBLICADO, detalle=f'Tópicos: {", ".join(topicos)}')
@@ -93,7 +109,7 @@ def publicar_despliegue(despliegue: Despliegue) -> int:
     despliegue.fecha_publicacion = timezone.now()
     despliegue.save(update_fields=['estado', 'fecha_publicacion'])
 
-    return len(estaciones)
+    return ResultadoPublicacion(total_estaciones=len(estaciones), exitoso=True)
 
 
 def evaluar_freno_automatico(despliegue: Despliegue) -> bool:
@@ -104,10 +120,16 @@ def evaluar_freno_automatico(despliegue: Despliegue) -> bool:
     if despliegue.freno_omitido:
         # El operador ya reanudó a pesar de los errores: no volver a frenar.
         return False
-    total = despliegue.resultados.count()
+    # Solo cuentan las estaciones que ya salieron de PENDIENTE (recibieron el mensaje y
+    # empezaron a reportar). Antes el denominador era TODOS los destinatarios: en una
+    # publicación amplia (ej. toda la cadena sin pasar por anillos), miles de estaciones
+    # que ni siquiera habían descargado el paquete todavía diluían el % de error de las
+    # pocas que ya habían fallado, y el freno no llegaba a activarse a tiempo.
+    ya_reportaron = despliegue.resultados.exclude(estado=ResultadoDespliegue.Estado.PENDIENTE)
+    total = ya_reportaron.count()
     if not total:
         return False
-    errores = despliegue.resultados.filter(estado=ResultadoDespliegue.Estado.ERROR).count()
+    errores = ya_reportaron.filter(estado=ResultadoDespliegue.Estado.ERROR).count()
     porcentaje = (errores / total) * 100
     if porcentaje >= float(despliegue.umbral_error_pct) and despliegue.estado == Despliegue.Estado.PUBLICANDO:
         despliegue.estado = Despliegue.Estado.PAUSADO

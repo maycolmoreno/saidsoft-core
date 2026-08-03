@@ -147,12 +147,20 @@ def despliegue_publicar(request, pk):
     if despliegue.estado != Despliegue.Estado.APROBADO:
         messages.error(request, 'El despliegue debe estar aprobado antes de publicarse.')
     else:
-        total = publicar_despliegue(despliegue)
+        resultado = publicar_despliegue(despliegue)
         registrar_evento(
             usuario=request.user, accion='despliegue.publicar', objeto=despliegue,
-            detalle={'estaciones_destino': total}, request=request,
+            detalle={'estaciones_destino': resultado.total_estaciones, 'exitoso': resultado.exitoso},
+            request=request,
         )
-        messages.success(request, f'Despliegue publicado a {total} estación(es).')
+        if resultado.exitoso:
+            messages.success(request, f'Despliegue publicado a {resultado.total_estaciones} estación(es).')
+        else:
+            messages.error(
+                request,
+                'No se pudo publicar: falló la conexión con el broker MQTT. El despliegue '
+                'sigue en estado "Aprobado" — puede reintentar publicar cuando el broker esté disponible.',
+            )
     return redirect('panel:despliegue_detalle', pk=pk)
 
 
