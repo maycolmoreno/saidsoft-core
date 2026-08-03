@@ -15,8 +15,8 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from apps.mqtt_worker.services import (
-    NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_script,
-    manejar_heartbeat, manejar_info_equipo, manejar_metricas, registrar_latido_worker,
+    NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_instalacion,
+    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, registrar_latido_worker,
     registrar_mensaje_fallido,
 )
 
@@ -28,6 +28,7 @@ TOPICO_ESTADO_DESPLIEGUE = '/saidsof/agente/+/despliegue_estado/'
 TOPICO_METRICAS = '/saidsof/agente/+/metricas/'
 TOPICO_INFO_EQUIPO = '/saidsof/agente/+/info_equipo/'
 TOPICO_ESTADO_SCRIPT = '/saidsof/agente/+/script_estado/'
+TOPICO_ESTADO_INSTALACION = '/saidsof/agente/+/software_estado/'
 
 # El latido se guarda como mucho cada N segundos (no en cada mensaje): a la
 # frecuencia de heartbeat/métricas de 1.800+ estaciones, escribirlo en cada
@@ -95,6 +96,7 @@ class Command(BaseCommand):
         client.subscribe(TOPICO_METRICAS)
         client.subscribe(TOPICO_INFO_EQUIPO)
         client.subscribe(TOPICO_ESTADO_SCRIPT, qos=1)
+        client.subscribe(TOPICO_ESTADO_INSTALACION, qos=1)
         registrar_latido_worker(NOMBRE_WORKER_MQTT)
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
@@ -135,6 +137,8 @@ class Command(BaseCommand):
                 manejar_info_equipo(_codigo_desde_topico(msg.topic), payload)
             elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/script_estado/'):
                 manejar_estado_script(_codigo_desde_topico(msg.topic), payload)
+            elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/software_estado/'):
+                manejar_estado_instalacion(_codigo_desde_topico(msg.topic), payload)
         except Exception as exc:
             # Antes esto solo quedaba en el log del proceso — fácil de no ver hasta
             # que ya importa. Ahora además queda en una cola de revisión manual.

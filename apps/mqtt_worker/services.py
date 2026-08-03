@@ -204,6 +204,67 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
     verificar_completado(despliegue)
 
 
+def manejar_estado_instalacion(codigo_estacion: str, payload: dict) -> None:
+    """Progreso/resultado de una SolicitudInstalacion (catálogo de software).
+
+    Mismo patrón que manejar_estado_despliegue, sin los pasos de POS (pos_cerrado/
+    pos_relanzado) que no aplican a instalar software genérico, y sin freno automático
+    (instalar software es de menor radio que actualizar el POS de toda la cadena — ver
+    docstring de apps.software.models).
+    """
+    close_old_connections()
+    try:
+        estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
+    except Estacion.DoesNotExist:
+        logger.warning('Reporte de instalación con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        logger.warning('Reporte de instalación de estación no aprobada: %s', codigo_estacion)
+        return
+
+    from apps.software.models import EventoInstalacion, ResultadoInstalacion
+    from apps.software.services import verificar_completado as verificar_instalacion_completada
+
+    # Traduce cada paso fino al estado agregado — dict local (no a nivel de módulo, como
+    # _PASO_A_ESTADO) porque apps.software se importa diferido: viene después de
+    # mqtt_worker en INSTALLED_APPS, importar sus modelos arriba del todo del archivo
+    # rompería la carga de apps de Django (mismo motivo que scripts/monitoreo abajo).
+    paso_a_estado = {
+        EventoInstalacion.Paso.RECIBIDO: ResultadoInstalacion.Estado.DESCARGANDO,
+        EventoInstalacion.Paso.DESCARGADO: ResultadoInstalacion.Estado.DESCARGADO,
+        EventoInstalacion.Paso.HASH_VERIFICADO: ResultadoInstalacion.Estado.VERIFICADO,
+        EventoInstalacion.Paso.INSTALANDO: ResultadoInstalacion.Estado.INSTALANDO,
+        EventoInstalacion.Paso.INSTALADO: ResultadoInstalacion.Estado.INSTALADO,
+        EventoInstalacion.Paso.ERROR: ResultadoInstalacion.Estado.ERROR,
+    }
+
+    solicitud_id = payload.get('solicitud_id')
+    paso = payload.get('paso')
+    if paso not in EventoInstalacion.Paso.values:
+        logger.warning('Paso desconocido "%s" reportado por %s (instalación)', paso, codigo_estacion)
+        return
+
+    resultado, _ = ResultadoInstalacion.objects.get_or_create(solicitud_id=solicitud_id, estacion=estacion)
+
+    if paso == EventoInstalacion.Paso.RECIBIDO:
+        resultado.version_previa_detectada = payload.get(
+            'version_previa_detectada', resultado.version_previa_detectada,
+        )
+    if paso == EventoInstalacion.Paso.INSTALADO:
+        resultado.version_instalada = payload.get('version_instalada', resultado.version_instalada)
+
+    nuevo_estado = paso_a_estado.get(paso)
+    if nuevo_estado:
+        resultado.estado = nuevo_estado
+    if paso == EventoInstalacion.Paso.ERROR:
+        resultado.detalle_error = payload.get('detalle', '')
+    resultado.save()
+
+    EventoInstalacion.objects.create(resultado=resultado, paso=paso, detalle=payload.get('detalle', ''))
+
+    verificar_instalacion_completada(resultado.solicitud)
+
+
 def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:
     """Guarda la respuesta a una consulta puntual de hardware (comando "consultar_info")."""
     close_old_connections()

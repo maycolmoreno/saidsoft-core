@@ -4,16 +4,18 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from cryptography.fernet import Fernet
+from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.mqtt_worker.management.commands.run_mqtt_worker import (
-    TOPICO_ESTADO_DESPLIEGUE, TOPICO_ESTADO_SCRIPT, TOPICO_HEARTBEAT, Command,
+    TOPICO_ESTADO_DESPLIEGUE, TOPICO_ESTADO_INSTALACION, TOPICO_ESTADO_SCRIPT, TOPICO_HEARTBEAT, Command,
 )
 from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
 from apps.mqtt_worker.services import (
-    NOMBRE_WORKER_MQTT, manejar_info_equipo, registrar_latido_worker, registrar_mensaje_fallido,
+    NOMBRE_WORKER_MQTT, manejar_estado_instalacion, manejar_info_equipo, registrar_latido_worker,
+    registrar_mensaje_fallido,
 )
 
 BITLOCKER_KEY_TEST = Fernet.generate_key().decode()
@@ -42,7 +44,7 @@ class ServiciosHeartbeatYFallidosTests(TestCase):
 
 
 class OnConnectTests(TestCase):
-    def test_suscribe_qos1_solo_en_despliegue_y_script_estado(self):
+    def test_suscribe_qos1_solo_en_reportes_de_resultado(self):
         cmd = Command()
         client = MagicMock()
         cmd._on_connect(client, None, {}, reason_code=0)
@@ -50,6 +52,7 @@ class OnConnectTests(TestCase):
         llamadas = {c.args[0]: c.kwargs.get('qos', 0) for c in client.subscribe.call_args_list}
         self.assertEqual(llamadas[TOPICO_ESTADO_DESPLIEGUE], 1)
         self.assertEqual(llamadas[TOPICO_ESTADO_SCRIPT], 1)
+        self.assertEqual(llamadas[TOPICO_ESTADO_INSTALACION], 1)
         self.assertEqual(llamadas[TOPICO_HEARTBEAT], 0)
 
     def test_conectar_registra_latido(self):
@@ -196,8 +199,6 @@ class ManejarInfoEquipoBitlockerTests(TestCase):
         self.assertIsNone(self.estacion.bitlocker_habilitado)
 
     def test_reportar_sin_cifrar_abre_alerta_si_hay_regla(self):
-        from django.contrib.auth.models import User
-
         from apps.monitoreo.models import Alerta, Metrica, ReglaAlerta
 
         usuario = User.objects.create_user(username='creador_regla_bl', password='x')
@@ -212,3 +213,84 @@ class ManejarInfoEquipoBitlockerTests(TestCase):
         manejar_info_equipo('ML001-A', {'token': 'tok123', 'bitlocker_habilitado': True})
         self.assertEqual(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).count(), 0)
         self.assertEqual(Alerta.objects.get().estado, Alerta.Estado.RESUELTA)
+
+
+class ManejarEstadoInstalacionTests(TestCase):
+    def setUp(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from apps.software.models import AplicacionCatalogo, DestinoTipo, SolicitudInstalacion, VersionAplicacion
+
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            token_enrolamiento='tok123',
+        )
+        usuario = User.objects.create_user(username='creador_sw', password='x')
+        aplicacion = AplicacionCatalogo.objects.create(nombre='Google Chrome', creado_por=usuario)
+        version = VersionAplicacion.objects.create(
+            aplicacion=aplicacion, version='128.0.0',
+            instalador=SimpleUploadedFile('chrome.msi', b'x'),
+            comando_instalacion_silenciosa='msiexec /i "{archivo}" /qn',
+        )
+        self.solicitud = SolicitudInstalacion.objects.create(
+            version_aplicacion=version, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+            destino_tipo=DestinoTipo.ESTACIONES, creado_por=usuario,
+        )
+
+    def test_token_invalido_no_crea_resultado(self):
+        from apps.software.models import ResultadoInstalacion
+
+        manejar_estado_instalacion('ML001-A', {
+            'token': 'equivocado', 'solicitud_id': self.solicitud.id, 'paso': 'recibido',
+        })
+        self.assertFalse(ResultadoInstalacion.objects.exists())
+
+    def test_paso_desconocido_no_revienta_ni_crea_nada(self):
+        from apps.software.models import ResultadoInstalacion
+
+        manejar_estado_instalacion('ML001-A', {
+            'token': 'tok123', 'solicitud_id': self.solicitud.id, 'paso': 'paso_inventado',
+        })
+        self.assertFalse(ResultadoInstalacion.objects.exists())
+
+    def test_reporta_instalado_actualiza_estado_y_version_y_completa_la_solicitud(self):
+        from apps.software.models import EstadoSolicitud, EventoInstalacion, ResultadoInstalacion
+
+        manejar_estado_instalacion('ML001-A', {
+            'token': 'tok123', 'solicitud_id': self.solicitud.id, 'paso': 'recibido',
+        })
+        manejar_estado_instalacion('ML001-A', {
+            'token': 'tok123', 'solicitud_id': self.solicitud.id, 'paso': 'instalado',
+            'version_instalada': '128.0.0',
+        })
+
+        resultado = ResultadoInstalacion.objects.get(solicitud=self.solicitud, estacion=self.estacion)
+        self.assertEqual(resultado.estado, ResultadoInstalacion.Estado.INSTALADO)
+        self.assertEqual(resultado.version_instalada, '128.0.0')
+        self.assertEqual(resultado.eventos.count(), 2)
+        self.assertTrue(EventoInstalacion.objects.filter(paso=EventoInstalacion.Paso.INSTALADO).exists())
+
+        # La solicitud pasa a completada porque era el único resultado y ya terminó.
+        self.solicitud.estado = EstadoSolicitud.PUBLICANDO
+        self.solicitud.save(update_fields=['estado'])
+        manejar_estado_instalacion('ML001-A', {
+            'token': 'tok123', 'solicitud_id': self.solicitud.id, 'paso': 'instalado',
+            'version_instalada': '128.0.0',
+        })
+        self.solicitud.refresh_from_db()
+        self.assertEqual(self.solicitud.estado, EstadoSolicitud.COMPLETADO)
+
+    def test_reporta_error_guarda_el_detalle(self):
+        from apps.software.models import ResultadoInstalacion
+
+        manejar_estado_instalacion('ML001-A', {
+            'token': 'tok123', 'solicitud_id': self.solicitud.id, 'paso': 'error',
+            'detalle': 'msiexec devolvió código 1603',
+        })
+        resultado = ResultadoInstalacion.objects.get(solicitud=self.solicitud, estacion=self.estacion)
+        self.assertEqual(resultado.estado, ResultadoInstalacion.Estado.ERROR)
+        self.assertEqual(resultado.detalle_error, 'msiexec devolvió código 1603')

@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'apps.mantenimiento',
     'apps.scripts',
     'apps.cumplimiento',
+    'apps.software',
     'apps.panel',
 ]
 
