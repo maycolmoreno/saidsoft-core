@@ -31,6 +31,22 @@ de prueba se construyó justamente porque no había nada para instalar y probar.
   tiene a quién servirle.
 - Comandos `reiniciar`/`consultar_info` — se loguean como "no implementado" si llegan.
 
+## Límite real de compatibilidad con Windows 10 viejo — sin verificar
+
+El parque real incluye estaciones con Windows 10 en builds viejos, no solo Windows 11
+(ver `PLAN_MODERNIZACION.md`, que fija build 1607 como mínimo para el agente .NET real).
+Este `.exe` está compilado con **Python 3.12**, cuya documentación oficial dice soportar
+"Windows 10 y más nuevo" **sin especificar un build mínimo** — no hay garantía de que
+corra en una máquina Windows 10 vieja sin parchar (podría faltarle el Universal C
+Runtime si nunca se actualizó lo suficiente). No tengo forma de confirmarlo desde este
+entorno porque no hay ninguna estación Windows 10 vieja disponible para probar.
+
+**Conclusión**: este agente de prueba sirve para validar el protocolo/lógica del
+servidor contra una estación Windows razonablemente actualizada — no es un proxy
+confiable para responder "¿el agente corre en mi Windows 10 más viejo?". Esa pregunta
+solo la responde correr esto (o, mejor, el agente .NET real cuando exista) en esa
+máquina específica.
+
 ## Probado de verdad, no solo compilado
 
 Se validó contra el stack local completo (broker `amqtt` + panel + worker corriendo en
