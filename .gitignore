@@ -14,3 +14,10 @@ db.sqlite3
 # Secretos y certificados de producción
 /deploy/.env
 /deploy/certs/*.pem
+
+# Agente de prueba: artefactos de build de PyInstaller e identidad de la estación
+# de prueba (no tiene sentido versionar un token/hardware_id de una máquina puntual)
+/agente-prueba/build/
+/agente-prueba/dist/
+/agente-prueba/*.spec
+/agente-prueba/identidad.json
