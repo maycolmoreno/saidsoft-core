@@ -476,7 +476,10 @@ class EventoActivo(models.Model):
 
     class Meta:
         db_table = 'evento_activo'
-        ordering = ['activo', 'timestamp']
+        # 'pk' como desempate: timestamp (auto_now_add) puede repetirse entre dos eventos
+        # del mismo activo creados en el mismo tick de reloj, dejando .first()/.last()
+        # no determinísticos sin él (ver commit que agregó EventoSyncExterno).
+        ordering = ['activo', 'timestamp', 'pk']
 
     def __str__(self):
         return f'{self.activo.codigo} - {self.get_tipo_evento_display()} @ {self.timestamp:%Y-%m-%d %H:%M}'

@@ -99,6 +99,8 @@ class Mantenimiento(models.Model):
         related_name='mantenimientos_cerrados',
     )
     fecha_creacion = models.DateTimeField(auto_now_add=True)
+    informe_pdf = models.FileField(upload_to='mantenimiento/informes/%Y/%m/', blank=True)
+    informe_pdf_generado_en = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'mantenimiento'
@@ -177,6 +179,7 @@ class EventoMantenimiento(models.Model):
         CHECKLIST_ACTUALIZADO = 'checklist_actualizado', 'Checklist actualizado'
         FIRMADO = 'firmado', 'Firmado'
         IMAGEN_ADJUNTADA = 'imagen_adjuntada', 'Imagen adjuntada'
+        INFORME_GENERADO = 'informe_generado', 'Informe PDF generado'
         CERRADO = 'cerrado', 'Cerrado'
         CANCELADO = 'cancelado', 'Cancelado'
 
@@ -188,7 +191,10 @@ class EventoMantenimiento(models.Model):
 
     class Meta:
         db_table = 'evento_mantenimiento'
-        ordering = ['mantenimiento', 'timestamp']
+        # 'pk' como desempate: timestamp (auto_now_add) puede repetirse entre dos eventos
+        # del mismo mantenimiento creados en el mismo tick de reloj, dejando .first()/.last()
+        # no determinísticos sin él (ver commit que agregó EventoSyncExterno).
+        ordering = ['mantenimiento', 'timestamp', 'pk']
 
     def __str__(self):
         return f'Mantenimiento #{self.mantenimiento_id} - {self.get_tipo_evento_display()} @ {self.timestamp:%Y-%m-%d %H:%M}'

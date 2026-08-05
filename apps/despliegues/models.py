@@ -163,7 +163,10 @@ class EventoDespliegue(models.Model):
 
     class Meta:
         db_table = 'evento_despliegue'
-        ordering = ['resultado', 'timestamp']
+        # 'pk' como desempate: timestamp (auto_now_add) puede repetirse entre dos eventos
+        # del mismo resultado creados en el mismo tick de reloj, dejando .first()/.last()
+        # no determinísticos sin él (ver commit que agregó EventoSyncExterno).
+        ordering = ['resultado', 'timestamp', 'pk']
 
     def __str__(self):
         return f'{self.resultado} — {self.get_paso_display()} @ {self.timestamp:%Y-%m-%d %H:%M:%S}'

@@ -226,7 +226,10 @@ class EventoInstalacion(models.Model):
 
     class Meta:
         db_table = 'evento_instalacion'
-        ordering = ['resultado', 'timestamp']
+        # 'pk' como desempate: timestamp (auto_now_add) puede repetirse entre dos eventos
+        # del mismo resultado creados en el mismo tick de reloj, dejando .first()/.last()
+        # no determinísticos sin él (ver commit que agregó EventoSyncExterno).
+        ordering = ['resultado', 'timestamp', 'pk']
         verbose_name = 'Evento de instalación'
         verbose_name_plural = 'Eventos de instalación'
 

@@ -63,7 +63,11 @@ class EventoSyncExterno(models.Model):
 
     class Meta:
         db_table = 'evento_sync_externo'
-        ordering = ['sincronizacion', 'timestamp']
+        # 'pk' como desempate: dos eventos de la misma sincronización pueden crearse en el
+        # mismo tick de reloj (ej. "pendiente" seguido de "enviado" en un ejecutar_sync
+        # síncrono) y timestamp (auto_now_add) no siempre alcanza a distinguirlos — sin el
+        # desempate, .last() es no determinístico entre corridas.
+        ordering = ['sincronizacion', 'timestamp', 'pk']
         verbose_name = 'Evento de sincronización externa'
         verbose_name_plural = 'Eventos de sincronización externa'
 
