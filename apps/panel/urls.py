@@ -104,6 +104,10 @@ urlpatterns = [
         name='mantenimiento_orden_trabajo',
     ),
     path(
+        'mantenimientos/<int:pk>/informe-pdf/', views.mantenimiento_generar_informe_pdf,
+        name='mantenimiento_generar_informe_pdf',
+    ),
+    path(
         'mantenimientos-programados/', views.mantenimientos_programados_lista,
         name='mantenimientos_programados_lista',
     ),

@@ -13,6 +13,7 @@ from apps.mantenimiento.forms import (
 from apps.mantenimiento.models import (
     ActividadChecklist, ActividadPlanificada, Mantenimiento, MantenimientoProgramado, Notificacion,
 )
+from apps.mantenimiento.tasks import generar_informe_pdf_task
 
 
 @login_required
@@ -270,6 +271,23 @@ def mantenimiento_orden_trabajo(request, pk):
         'mantenimiento': mantenimiento, 'equipos': equipos, 'checklist': checklist,
         'firmas': firmas, 'imagenes': imagenes,
     })
+
+
+@login_required
+def mantenimiento_generar_informe_pdf(request, pk):
+    """Encola la generación del PDF (apps.mantenimiento.tasks.generar_informe_pdf_task).
+    En dev (CELERY_TASK_ALWAYS_EAGER) queda listo antes del redirect; en producción el
+    botón "Descargar informe PDF" de la plantilla no aparece hasta que celery_worker
+    termine y el campo informe_pdf quede poblado."""
+    mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
+    verificar_acceso(request.user, mantenimiento.unidad_negocio)
+    if request.method == 'POST':
+        generar_informe_pdf_task.delay(mantenimiento.pk)
+        registrar_evento(
+            usuario=request.user, accion='mantenimiento.generar_informe_pdf', objeto=mantenimiento, request=request,
+        )
+        messages.success(request, 'Generando informe PDF…')
+    return redirect('panel:mantenimiento_detalle', pk=pk)
 
 
 @login_required

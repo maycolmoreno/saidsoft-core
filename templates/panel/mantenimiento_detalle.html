@@ -71,6 +71,17 @@
     <a href="{% url 'panel:mantenimiento_cancelar' mantenimiento.pk %}" class="btn danger">Cancelar</a>
     {% endif %}
     <a href="{% url 'panel:mantenimiento_orden_trabajo' mantenimiento.pk %}" class="btn secondary">Ver orden de trabajo</a>
+    <form method="post" action="{% url 'panel:mantenimiento_generar_informe_pdf' mantenimiento.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="btn secondary">
+            {% if mantenimiento.informe_pdf %}Regenerar informe PDF{% else %}Generar informe PDF{% endif %}
+        </button>
+    </form>
+    {% if mantenimiento.informe_pdf %}
+    <a href="{{ mantenimiento.informe_pdf.url }}" class="btn secondary" target="_blank">
+        Descargar informe PDF ({{ mantenimiento.informe_pdf_generado_en|date:"d/m/Y H:i" }})
+    </a>
+    {% endif %}
 </div>
 
 <h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Checklist</h2>

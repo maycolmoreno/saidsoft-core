@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    @page { size: A4; margin: 2cm 1.5cm; }
+    body { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; color: #0f172a; }
+    h1 { font-size: 16pt; margin: 0 0 4px 0; }
+    h2 { font-size: 11pt; text-transform: uppercase; color: #64748b; margin: 16px 0 6px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 2px; }
+    .subtitulo { font-size: 9pt; color: #64748b; margin-bottom: 12px; }
+    table.datos { width: 100%; }
+    table.datos td { padding: 3px 0; vertical-align: top; }
+    table.datos td.etiqueta { color: #94a3b8; width: 25%; }
+    ul { margin: 0; padding-left: 16px; }
+    li { margin-bottom: 3px; }
+    .vacio { color: #94a3b8; }
+    table.firmas { width: 100%; }
+    table.firmas td { width: 50%; text-align: center; padding-top: 8px; }
+    table.firmas img { max-height: 80px; }
+    .pie-firma { font-size: 8pt; color: #64748b; }
+</style>
+</head>
+<body>
+    <h1>Orden de trabajo #{{ mantenimiento.pk }}</h1>
+    <div class="subtitulo">{{ mantenimiento.get_tipo_origen_display }} · {{ mantenimiento.fecha_programada|date:"d/m/Y H:i" }} · generado {{ generado_en|date:"d/m/Y H:i" }}</div>
+
+    <table class="datos">
+        <tr><td class="etiqueta">Cliente</td><td>{{ mantenimiento.cliente|default:"—" }}</td></tr>
+        <tr><td class="etiqueta">Técnico</td><td>{{ mantenimiento.tecnico.username|default:"—" }}</td></tr>
+        <tr><td class="etiqueta">Empresa</td><td>{{ mantenimiento.empresa|default:"—" }}</td></tr>
+        <tr><td class="etiqueta">Descripción</td><td>{{ mantenimiento.descripcion }}</td></tr>
+        <tr><td class="etiqueta">Estado general</td><td>{{ mantenimiento.get_estado_general_display|default:"—" }}</td></tr>
+        <tr><td class="etiqueta">Resultado técnico</td><td>{{ mantenimiento.get_resultado_tecnico_display|default:"—" }}</td></tr>
+    </table>
+
+    <h2>Equipos</h2>
+    <ul>
+        {% for me in equipos %}
+        <li>{{ me.equipo.codigo }} — {{ me.equipo.get_tipo_display }} {{ me.equipo.marca }} {{ me.equipo.modelo }}</li>
+        {% empty %}
+        <li class="vacio">Sin equipos vinculados.</li>
+        {% endfor %}
+    </ul>
+
+    <h2>Checklist</h2>
+    <ul>
+        {% for c in checklist %}
+        <li>[{% if c.realizada %}X{% else %} {% endif %}] {{ c.item.nombre }}</li>
+        {% empty %}
+        <li class="vacio">Sin ítems de checklist configurados.</li>
+        {% endfor %}
+    </ul>
+
+    <h2>Evidencia fotográfica</h2>
+    {% for img in imagenes %}
+    <img src="{{ img.imagen.url }}" style="max-height: 90px; margin: 0 8px 8px 0;">
+    {% empty %}
+    <p class="vacio">Sin imágenes adjuntas.</p>
+    {% endfor %}
+
+    <h2>Firmas</h2>
+    <table class="firmas">
+        <tr>
+            {% for f in firmas %}
+            <td>
+                <img src="{{ f.firma_base64 }}"><br>
+                <span class="pie-firma">{{ f.get_tipo_firma_display }} — {{ f.firmado_en|date:"d/m/Y H:i" }}</span>
+            </td>
+            {% empty %}
+            <td colspan="2" class="vacio">Sin firmas registradas.</td>
+            {% endfor %}
+        </tr>
+    </table>
+</body>
+</html>

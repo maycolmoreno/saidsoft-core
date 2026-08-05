@@ -6,8 +6,8 @@ from django.utils import timezone
 
 from apps.activos.models import Activo, Colaborador
 
-from .models import EstadoGeneralEquipo, Mantenimiento, MantenimientoProgramado, ResultadoTecnico
-from .services import cerrar_mantenimiento, crear_mantenimiento_manual
+from .models import EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado, ResultadoTecnico
+from .services import cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf
 
 
 class CrearMantenimientoManualTests(TestCase):
@@ -128,3 +128,63 @@ class GenerarMantenimientosProgramadosTaskTests(TestCase):
 
         self.assertTrue(Mantenimiento.objects.filter(mantenimiento_programado=programado).exists())
         self.assertIn('1 mantenimiento', resultado.get())
+
+
+class GenerarInformePdfTests(TestCase):
+    """Fase 2 IT Operations Platform: primer caso real de PDF/reporte pesado movido a
+    Celery (ver apps/mantenimiento/tasks.py::generar_informe_pdf_task)."""
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_pdf', password='x')
+        self.equipo = Activo.objects.create(codigo='CR-DSK-0100', tipo=Activo.Tipo.DESKTOP)
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.usuario, cliente=None, tipo_mantenimiento='preventivo',
+            estado_general=EstadoGeneralEquipo.OPERATIVO, descripcion='Revisión',
+            fecha_programada=timezone.now(), usuario=self.usuario,
+        )
+
+    def test_genera_pdf_valido_y_registra_evento(self):
+        generar_informe_pdf(mantenimiento=self.mantenimiento)
+
+        self.mantenimiento.refresh_from_db()
+        self.assertTrue(self.mantenimiento.informe_pdf.name)
+        self.assertIsNotNone(self.mantenimiento.informe_pdf_generado_en)
+        contenido = self.mantenimiento.informe_pdf.read()
+        self.assertTrue(contenido.startswith(b'%PDF'))
+        self.assertTrue(
+            EventoMantenimiento.objects.filter(
+                mantenimiento=self.mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.INFORME_GENERADO,
+            ).exists(),
+        )
+
+    def tearDown(self):
+        self.mantenimiento.refresh_from_db()
+        if self.mantenimiento.informe_pdf:
+            self.mantenimiento.informe_pdf.delete(save=False)
+
+
+class GenerarInformePdfTaskTests(TestCase):
+    """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test."""
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_pdf_task', password='x')
+        self.equipo = Activo.objects.create(codigo='CR-DSK-0101', tipo=Activo.Tipo.DESKTOP)
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.usuario, cliente=None, tipo_mantenimiento='preventivo',
+            estado_general=EstadoGeneralEquipo.OPERATIVO, descripcion='Revisión',
+            fecha_programada=timezone.now(), usuario=self.usuario,
+        )
+
+    def test_delay_genera_el_pdf(self):
+        from apps.mantenimiento.tasks import generar_informe_pdf_task
+
+        resultado = generar_informe_pdf_task.delay(self.mantenimiento.pk)
+
+        self.mantenimiento.refresh_from_db()
+        self.assertTrue(self.mantenimiento.informe_pdf.name)
+        self.assertIn(str(self.mantenimiento.pk), resultado.get())
+
+    def tearDown(self):
+        self.mantenimiento.refresh_from_db()
+        if self.mantenimiento.informe_pdf:
+            self.mantenimiento.informe_pdf.delete(save=False)

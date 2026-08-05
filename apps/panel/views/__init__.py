@@ -35,9 +35,9 @@ from .estaciones import (
 from .mantenimiento import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,
     mantenimiento_cancelar, mantenimiento_cerrar, mantenimiento_checklist_actualizar, mantenimiento_crear,
-    mantenimiento_detalle, mantenimiento_firmar, mantenimiento_iniciar, mantenimiento_imagen_adjuntar,
-    mantenimiento_orden_trabajo, mantenimiento_programado_crear, mantenimientos_lista,
-    mantenimientos_programados_lista, notificacion_marcar_leida, notificaciones_lista,
+    mantenimiento_detalle, mantenimiento_firmar, mantenimiento_generar_informe_pdf, mantenimiento_iniciar,
+    mantenimiento_imagen_adjuntar, mantenimiento_orden_trabajo, mantenimiento_programado_crear,
+    mantenimientos_lista, mantenimientos_programados_lista, notificacion_marcar_leida, notificaciones_lista,
 )
 from .monitoreo import monitoreo_detalle, monitoreo_detalle_partial, monitoreo_lista
 from .reportes import (
@@ -73,9 +73,9 @@ __all__ = [
     'estacion_reiniciar', 'estaciones_aprobar_lote', 'estaciones_lista', 'estaciones_pendientes_partial',
     'actividad_planificada_completar', 'actividad_planificada_crear', 'actividades_planificadas_lista',
     'mantenimiento_cancelar', 'mantenimiento_cerrar', 'mantenimiento_checklist_actualizar',
-    'mantenimiento_crear', 'mantenimiento_detalle', 'mantenimiento_firmar', 'mantenimiento_iniciar',
-    'mantenimiento_imagen_adjuntar', 'mantenimiento_orden_trabajo', 'mantenimiento_programado_crear',
-    'mantenimientos_lista', 'mantenimientos_programados_lista',
+    'mantenimiento_crear', 'mantenimiento_detalle', 'mantenimiento_firmar', 'mantenimiento_generar_informe_pdf',
+    'mantenimiento_iniciar', 'mantenimiento_imagen_adjuntar', 'mantenimiento_orden_trabajo',
+    'mantenimiento_programado_crear', 'mantenimientos_lista', 'mantenimientos_programados_lista',
     'notificacion_marcar_leida', 'notificaciones_lista',
     'monitoreo_detalle', 'monitoreo_detalle_partial', 'monitoreo_lista',
     'movimientos_inventario_lista',

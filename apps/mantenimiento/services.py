@@ -10,9 +10,9 @@ from django.utils import timezone
 from apps.activos import services as activos_services
 
 from .models import (
-    ActividadPlanificada, ActividadRealizada, EventoMantenimiento, FirmaMantenimiento, ImagenMantenimiento,
-    Mantenimiento, MantenimientoEquipo, MantenimientoProgramado, Notificacion, PrioridadActividad,
-    ResultadoTecnico, TipoOrigenMantenimiento,
+    ActividadChecklist, ActividadPlanificada, ActividadRealizada, EventoMantenimiento, FirmaMantenimiento,
+    ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado, Notificacion,
+    PrioridadActividad, ResultadoTecnico, TipoOrigenMantenimiento,
 )
 
 
@@ -200,6 +200,64 @@ def completar_actividad_planificada(*, actividad, tiempo_real_minutos=None):
     actividad.tiempo_real_minutos = tiempo_real_minutos
     actividad.save(update_fields=['estado', 'fecha_completada', 'tiempo_real_minutos'])
     return actividad
+
+
+def _resolver_ruta_local(uri, rel):
+    """link_callback de xhtml2pdf: traduce una URL de /media/ o /static/ a una ruta de
+    archivo local, porque el renderizador de PDF no puede resolver URLs relativas como
+    hace un navegador. Receta estándar de xhtml2pdf+Django."""
+    from django.conf import settings
+
+    media_url = settings.MEDIA_URL.lstrip('/')
+    static_url = settings.STATIC_URL.lstrip('/')
+    uri_limpia = uri.lstrip('/')
+    if uri_limpia.startswith(media_url):
+        return str(settings.MEDIA_ROOT / uri_limpia[len(media_url):])
+    if settings.STATIC_ROOT and uri_limpia.startswith(static_url):
+        return str(settings.STATIC_ROOT / uri_limpia[len(static_url):])
+    return uri
+
+
+def generar_informe_pdf(*, mantenimiento) -> Mantenimiento:
+    """Renderiza la orden de trabajo a PDF y la guarda en informe_pdf.
+
+    Pensada para correr como tarea Celery (apps.mantenimiento.tasks.generar_informe_pdf_task):
+    es el primer caso real de generación de PDF/reporte pesado movido a la cola async (ver
+    config/celery.py) en vez de bloquear el request que la dispara.
+    """
+    from io import BytesIO
+
+    from django.core.files.base import ContentFile
+    from django.template.loader import render_to_string
+    from xhtml2pdf import pisa
+
+    checklist_items = ActividadChecklist.objects.filter(activo=True).order_by('orden', 'nombre')
+    realizadas = {ar.actividad_id: ar.realizada for ar in mantenimiento.actividades_realizadas.all()}
+    generado_en = timezone.now()
+
+    html = render_to_string('panel/mantenimiento_informe_pdf.html', {
+        'mantenimiento': mantenimiento,
+        'equipos': mantenimiento.equipos.select_related('equipo'),
+        'checklist': [{'item': item, 'realizada': realizadas.get(item.pk, False)} for item in checklist_items],
+        'firmas': mantenimiento.firmas.select_related('firmado_por').order_by('tipo_firma'),
+        'imagenes': mantenimiento.imagenes.all(),
+        'generado_en': generado_en,
+    })
+
+    buffer = BytesIO()
+    resultado = pisa.CreatePDF(html, dest=buffer, link_callback=_resolver_ruta_local)
+    if resultado.err:
+        raise RuntimeError(f'No se pudo generar el PDF del mantenimiento #{mantenimiento.pk} ({resultado.err} error(es)).')
+
+    mantenimiento.informe_pdf.save(
+        f'mantenimiento_{mantenimiento.pk}.pdf', ContentFile(buffer.getvalue()), save=False,
+    )
+    mantenimiento.informe_pdf_generado_en = generado_en
+    mantenimiento.save(update_fields=['informe_pdf', 'informe_pdf_generado_en'])
+    EventoMantenimiento.objects.create(
+        mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.INFORME_GENERADO,
+    )
+    return mantenimiento
 
 
 def notificar(*, usuario, mensaje, url='', mantenimiento=None, actividad_planificada=None):
