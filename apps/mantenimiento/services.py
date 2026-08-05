@@ -21,7 +21,7 @@ def _snapshot_equipo(equipo):
 
 
 def crear_mantenimiento_manual(*, equipos, tecnico, descripcion, fecha_programada, usuario,
-                                cliente=None, empresa=None, tipo_mantenimiento='', equipo_principal=None,
+                                cliente=None, tipo_mantenimiento='', equipo_principal=None,
                                 estado_general='', mantenimiento_programado=None):
     if not equipos:
         raise ValueError('Un mantenimiento debe tener al menos un equipo.')
@@ -40,7 +40,7 @@ def crear_mantenimiento_manual(*, equipos, tecnico, descripcion, fecha_programad
 
     principal = equipo_principal or equipos[0]
     mantenimiento = Mantenimiento.objects.create(
-        cliente=cliente, tecnico=tecnico, empresa=empresa, descripcion=descripcion,
+        cliente=cliente, tecnico=tecnico, descripcion=descripcion,
         tipo_mantenimiento=tipo_mantenimiento, tipo_origen=TipoOrigenMantenimiento.MANUAL,
         estado_general=estado_general, mantenimiento_programado=mantenimiento_programado,
         fecha_programada=fecha_programada, snapshot_equipo=_snapshot_equipo(principal),

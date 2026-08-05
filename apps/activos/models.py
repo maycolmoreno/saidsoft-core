@@ -91,24 +91,6 @@ class Ubicacion(models.Model):
         return self.nombre
 
 
-class Empresa(models.Model):
-    """Cliente/empresa atendida. Catálogo simple, sin aislamiento multi-tenant de datos."""
-    nombre = models.CharField(max_length=150)
-    ruc = models.CharField(max_length=13, unique=True)
-    direccion = models.CharField(max_length=200, blank=True)
-    telefono = models.CharField(max_length=15, blank=True)
-    correo = models.EmailField(blank=True)
-    activo = models.BooleanField(default=True)
-
-    class Meta:
-        db_table = 'empresa'
-        ordering = ['nombre']
-        verbose_name_plural = 'Empresas'
-
-    def __str__(self):
-        return self.nombre
-
-
 class Bodega(models.Model):
     codigo = models.CharField(max_length=20, unique=True)
     nombre = models.CharField(max_length=100, blank=True)

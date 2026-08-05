@@ -42,7 +42,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             mantenimiento = services.crear_mantenimiento_manual(
                 equipos=list(d['equipos']), tecnico=request.user, cliente=d['cliente'],
-                empresa=d.get('empresa'), tipo_mantenimiento=d['tipo_mantenimiento'],
+                tipo_mantenimiento=d['tipo_mantenimiento'],
                 descripcion=d['descripcion'], fecha_programada=d['fecha_programada'],
                 estado_general=d['estado_general'], mantenimiento_programado=d.get('mantenimiento_programado'),
                 usuario=request.user,

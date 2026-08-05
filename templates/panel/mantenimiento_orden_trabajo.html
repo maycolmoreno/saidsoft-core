@@ -15,7 +15,7 @@
     <table class="w-full text-sm mb-6">
         <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Cliente</td><td class="py-1">{{ mantenimiento.cliente|default:"—" }}</td></tr>
         <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Técnico</td><td class="py-1">{{ mantenimiento.tecnico.username|default:"—" }}</td></tr>
-        <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Empresa</td><td class="py-1">{{ mantenimiento.empresa|default:"—" }}</td></tr>
+        <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Unidad de negocio</td><td class="py-1">{{ mantenimiento.unidad_negocio|default:"—" }}</td></tr>
         <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Descripción</td><td class="py-1">{{ mantenimiento.descripcion }}</td></tr>
         <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Resultado técnico</td><td class="py-1">{{ mantenimiento.get_resultado_tecnico_display|default:"—" }}</td></tr>
     </table>

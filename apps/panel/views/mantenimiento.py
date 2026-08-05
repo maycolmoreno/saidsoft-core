@@ -41,7 +41,7 @@ def mantenimiento_crear(request):
             d = form.cleaned_data
             try:
                 mantenimiento = mantenimiento_services.crear_mantenimiento_manual(
-                    equipos=list(d['equipos']), cliente=d['cliente'], tecnico=d['tecnico'], empresa=d['empresa'],
+                    equipos=list(d['equipos']), cliente=d['cliente'], tecnico=d['tecnico'],
                     tipo_mantenimiento=d['tipo_mantenimiento'], descripcion=d['descripcion'],
                     fecha_programada=d['fecha_programada'], estado_general=d['estado_general'],
                     mantenimiento_programado=d['mantenimiento_programado'], usuario=request.user,
@@ -65,7 +65,7 @@ def mantenimiento_crear(request):
 @login_required
 def mantenimiento_detalle(request, pk):
     mantenimiento = get_object_or_404(
-        Mantenimiento.objects.select_related('cliente', 'tecnico', 'empresa', 'mantenimiento_programado'),
+        Mantenimiento.objects.select_related('cliente', 'tecnico', 'mantenimiento_programado'),
         pk=pk,
     )
     verificar_acceso(request.user, mantenimiento.unidad_negocio)
@@ -257,7 +257,7 @@ def mantenimiento_orden_trabajo(request, pk):
     legal, es una decisión de infraestructura aparte (fase 7).
     """
     mantenimiento = get_object_or_404(
-        Mantenimiento.objects.select_related('cliente', 'tecnico', 'empresa'), pk=pk,
+        Mantenimiento.objects.select_related('cliente', 'tecnico'), pk=pk,
     )
     verificar_acceso(request.user, mantenimiento.unidad_negocio)
     equipos = mantenimiento.equipos.select_related('equipo')

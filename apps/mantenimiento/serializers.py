@@ -2,7 +2,7 @@
 la API es una capa de transporte, no reimplementa reglas de negocio."""
 from rest_framework import serializers
 
-from apps.activos.models import Activo, Colaborador, Empresa
+from apps.activos.models import Activo, Colaborador
 
 from .models import (
     ActividadChecklist, ConsentimientoMonitoreo, EstadoGeneralEquipo, EventoMantenimiento, FirmaMantenimiento,
@@ -82,9 +82,6 @@ class MantenimientoCrearSerializer(serializers.Serializer):
         many=True, queryset=Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA),
     )
     cliente = serializers.PrimaryKeyRelatedField(queryset=Colaborador.objects.filter(activo=True))
-    empresa = serializers.PrimaryKeyRelatedField(
-        queryset=Empresa.objects.filter(activo=True), required=False, allow_null=True,
-    )
     tipo_mantenimiento = serializers.CharField()
     estado_general = serializers.ChoiceField(choices=EstadoGeneralEquipo.choices)
     descripcion = serializers.CharField()

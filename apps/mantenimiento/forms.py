@@ -1,7 +1,7 @@
 from django import forms
 from django.contrib.auth import get_user_model
 
-from apps.activos.models import Activo, Colaborador, Empresa, Ubicacion
+from apps.activos.models import Activo, Colaborador, Ubicacion
 
 from .models import EstadoGeneralEquipo, MantenimientoProgramado, PrioridadActividad, ResultadoTecnico, TipoFirma
 
@@ -25,10 +25,6 @@ class MantenimientoManualForm(forms.Form):
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
         help_text='Si no se asigna aquí, el técnico queda sin asignar (a diferencia de la app móvil, '
                   'donde el técnico siempre se autoasigna).',
-    )
-    empresa = forms.ModelChoiceField(
-        queryset=Empresa.objects.filter(activo=True), required=False,
-        widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
     tipo_mantenimiento = forms.CharField(widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
     estado_general = forms.ChoiceField(

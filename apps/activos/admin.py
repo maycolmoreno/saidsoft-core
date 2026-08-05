@@ -3,7 +3,7 @@ from django.contrib import admin
 from apps.cuentas.services import scope_opcional_por_unidad_negocio
 
 from .models import (
-    Activo, Bodega, Cargo, CategoriaEquipo, Colaborador, Departamento, Empresa, EventoActivo,
+    Activo, Bodega, Cargo, CategoriaEquipo, Colaborador, Departamento, EventoActivo,
     Marca, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, RecepcionLote, StockBodega,
     SyncCambio, SyncEjecucion, TipoConsumible, Ubicacion,
 )
@@ -42,13 +42,6 @@ class UbicacionAdmin(admin.ModelAdmin):
     list_filter = ('departamento', 'activo', 'ciudad')
     search_fields = ('nombre', 'agencia', 'ciudad')
     autocomplete_fields = ('departamento', 'encargado')
-
-
-@admin.register(Empresa)
-class EmpresaAdmin(admin.ModelAdmin):
-    list_display = ('nombre', 'ruc', 'telefono', 'correo', 'activo')
-    search_fields = ('nombre', 'ruc')
-    list_filter = ('activo',)
 
 
 @admin.register(Bodega)

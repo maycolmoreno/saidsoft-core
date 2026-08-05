@@ -27,7 +27,7 @@
     <table class="datos">
         <tr><td class="etiqueta">Cliente</td><td>{{ mantenimiento.cliente|default:"—" }}</td></tr>
         <tr><td class="etiqueta">Técnico</td><td>{{ mantenimiento.tecnico.username|default:"—" }}</td></tr>
-        <tr><td class="etiqueta">Empresa</td><td>{{ mantenimiento.empresa|default:"—" }}</td></tr>
+        <tr><td class="etiqueta">Unidad de negocio</td><td>{{ mantenimiento.unidad_negocio|default:"—" }}</td></tr>
         <tr><td class="etiqueta">Descripción</td><td>{{ mantenimiento.descripcion }}</td></tr>
         <tr><td class="etiqueta">Estado general</td><td>{{ mantenimiento.get_estado_general_display|default:"—" }}</td></tr>
         <tr><td class="etiqueta">Resultado técnico</td><td>{{ mantenimiento.get_resultado_tecnico_display|default:"—" }}</td></tr>

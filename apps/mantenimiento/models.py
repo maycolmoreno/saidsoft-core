@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.db import models
 
-from apps.activos.models import Activo, CategoriaEquipo, Colaborador, Empresa, Ubicacion
+from apps.activos.models import Activo, CategoriaEquipo, Colaborador, Ubicacion
 
 
 class TipoOrigenMantenimiento(models.TextChoices):
@@ -72,9 +72,6 @@ class Mantenimiento(models.Model):
     tecnico = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='mantenimientos_tecnico',
-    )
-    empresa = models.ForeignKey(
-        Empresa, on_delete=models.SET_NULL, null=True, blank=True, related_name='mantenimientos',
     )
     mantenimiento_programado = models.ForeignKey(
         MantenimientoProgramado, on_delete=models.SET_NULL, null=True, blank=True,

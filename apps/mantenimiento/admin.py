@@ -65,7 +65,7 @@ class MantenimientoAdmin(admin.ModelAdmin):
     )
     list_filter = ('estado_interno', 'tipo_origen', 'resultado_tecnico')
     search_fields = ('descripcion', 'cliente__nombre')
-    autocomplete_fields = ('cliente', 'tecnico', 'empresa', 'mantenimiento_programado', 'cerrado_por')
+    autocomplete_fields = ('cliente', 'tecnico', 'mantenimiento_programado', 'cerrado_por')
     readonly_fields = ('snapshot_equipo', 'fecha_creacion')
     inlines = [
         MantenimientoEquipoInline, ActividadRealizadaInline, FirmaMantenimientoInline,
