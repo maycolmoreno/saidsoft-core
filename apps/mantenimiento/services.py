@@ -11,8 +11,8 @@ from apps.activos import services as activos_services
 
 from .models import (
     ActividadPlanificada, ActividadRealizada, EventoMantenimiento, FirmaMantenimiento, ImagenMantenimiento,
-    Mantenimiento, MantenimientoEquipo, Notificacion, PrioridadActividad, ResultadoTecnico,
-    TipoOrigenMantenimiento,
+    Mantenimiento, MantenimientoEquipo, MantenimientoProgramado, Notificacion, PrioridadActividad,
+    ResultadoTecnico, TipoOrigenMantenimiento,
 )
 
 
@@ -139,6 +139,22 @@ def generar_proximo_mantenimiento_programado(*, programado, usuario=None):
     programado.fecha_proximo = hoy + timedelta(days=programado.frecuencia_dias)
     programado.save(update_fields=['fecha_ultimo', 'fecha_proximo'])
     return mantenimiento
+
+
+def generar_mantenimientos_vencidos() -> int:
+    """Recorre los MantenimientoProgramado vencidos (fecha_proximo <= hoy) y genera el
+    siguiente Mantenimiento de cada uno. La llaman tanto el comando manual
+    (`generar_mantenimientos_programados`) como la tarea periódica de Celery."""
+    from django.db import transaction
+
+    with transaction.atomic():
+        hoy = timezone.now().date()
+        vencidos = MantenimientoProgramado.objects.filter(activo=True, fecha_proximo__lte=hoy)
+        total = 0
+        for programado in vencidos:
+            generar_proximo_mantenimiento_programado(programado=programado)
+            total += 1
+    return total
 
 
 def firmar_mantenimiento(*, mantenimiento, tipo_firma, firma_base64, usuario, ip_origen=None):

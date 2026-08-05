@@ -57,3 +57,29 @@ class GenerarEjecucionProgramadaTests(TestCase):
         self.programado.save(update_fields=['activo'])
         call_command('generar_ejecuciones_programadas')
         self.assertFalse(EjecucionScript.objects.filter(programado=self.programado).exists())
+
+
+class GenerarEjecucionesProgramadasTaskTests(TestCase):
+    """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test."""
+
+    def test_delay_genera_la_ejecucion_vencida(self):
+        from apps.scripts.tasks import generar_ejecuciones_programadas_task
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        Estacion.objects.create(codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        usuario = User.objects.create_user(username='u_task', password='x')
+        script = Script.objects.create(
+            nombre='Winget upgrade', tipo=TipoScript.POWERSHELL, contenido='winget upgrade --all',
+            creado_por=usuario,
+        )
+        programado = ScriptProgramado.objects.create(
+            script=script, unidad_negocio=sg, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
+            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.now().date(), creado_por=usuario,
+        )
+
+        resultado = generar_ejecuciones_programadas_task.delay()
+
+        self.assertTrue(EjecucionScript.objects.filter(programado=programado).exists())
+        self.assertIn('1 ejecución', resultado.get())

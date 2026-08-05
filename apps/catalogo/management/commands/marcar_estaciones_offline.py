@@ -1,20 +1,15 @@
 """Marca como OFFLINE las estaciones que dejaron de reportar heartbeat.
 
-El agente pone la estación ONLINE en cada heartbeat, pero nada la pasa a OFFLINE
-cuando se apaga o pierde la red. Este comando cierra ese hueco: se corre
-periódicamente (cron / Programador de tareas, ej. cada minuto).
+Wrapper delgado sobre apps.catalogo.services.marcar_estaciones_offline — la misma
+lógica la corre también la tarea periódica de Celery
+(apps.catalogo.tasks.marcar_estaciones_offline_task, cada minuto, ver
+CELERY_BEAT_SCHEDULE). Este comando queda para correrlo a mano si hace falta.
 
     python manage.py marcar_estaciones_offline
-
-Umbral: una estación se considera caída si su último heartbeat es más viejo que
-`--minutos` (por defecto 5, unas 5 veces el intervalo de heartbeat del agente).
 """
-from datetime import timedelta
-
 from django.core.management.base import BaseCommand
-from django.utils import timezone
 
-from apps.catalogo.models import Estacion
+from apps.catalogo.services import marcar_estaciones_offline
 
 
 class Command(BaseCommand):
@@ -24,21 +19,5 @@ class Command(BaseCommand):
         parser.add_argument('--minutos', type=int, default=5)
 
     def handle(self, *args, **options):
-        umbral = timezone.now() - timedelta(minutes=options['minutos'])
-        # Se traen los objetos (no un .update() directo) porque evaluar_reglas_sin_heartbeat
-        # necesita la unidad_negocio de cada estación afectada, no solo el conteo.
-        afectadas = list(
-            Estacion.objects.select_related('farmacia__unidad_negocio').filter(
-                estado_conexion=Estacion.EstadoConexion.ONLINE, ultimo_heartbeat__lt=umbral,
-            )
-        )
-        if afectadas:
-            Estacion.objects.filter(pk__in=[e.pk for e in afectadas]).update(
-                estado_conexion=Estacion.EstadoConexion.OFFLINE,
-            )
-            from apps.monitoreo.services import evaluar_reglas_sin_heartbeat
-            evaluar_reglas_sin_heartbeat(afectadas)
-
-        # Caso borde: estaciones que reportaron heartbeat alguna vez pero el campo quedó
-        # en "nunca conectada" — no aplica aquí; solo movemos ONLINE -> OFFLINE.
-        self.stdout.write(self.style.SUCCESS(f'{len(afectadas)} estación(es) marcada(s) como offline.'))
+        total = marcar_estaciones_offline(minutos=options['minutos'])
+        self.stdout.write(self.style.SUCCESS(f'{total} estación(es) marcada(s) como offline.'))

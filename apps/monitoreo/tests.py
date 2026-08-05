@@ -195,3 +195,24 @@ class ReglasAplicablesMultiTenantTests(TestCase):
         aplicables_sg = reglas_aplicables_a(self.sg)
         self.assertIn(self.regla_sg, aplicables_sg)
         self.assertIn(self.regla_global, aplicables_sg)
+
+
+class PurgarMetricasTaskTests(TestCase):
+    """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test."""
+
+    def test_delay_borra_muestras_viejas(self):
+        from apps.monitoreo.tasks import purgar_metricas_task
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+        vieja = MuestraMetrica.objects.create(estacion=estacion, cpu_carga_pct=50)
+        MuestraMetrica.objects.filter(pk=vieja.pk).update(timestamp=timezone.now() - timedelta(days=40))
+        reciente = MuestraMetrica.objects.create(estacion=estacion, cpu_carga_pct=60)
+
+        resultado = purgar_metricas_task.delay()
+
+        self.assertFalse(MuestraMetrica.objects.filter(pk=vieja.pk).exists())
+        self.assertTrue(MuestraMetrica.objects.filter(pk=reciente.pk).exists())
+        self.assertIn('1 muestra', resultado.get())

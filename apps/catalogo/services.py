@@ -140,6 +140,37 @@ def validar_destino_unidad_negocio(unidad_negocio, *, farmacias=None, estaciones
         )
 
 
+def marcar_estaciones_offline(*, minutos: int = 5) -> int:
+    """Pasa a OFFLINE las estaciones sin heartbeat reciente (más viejo que `minutos`).
+
+    El agente pone la estación ONLINE en cada heartbeat, pero nada la pasa a OFFLINE
+    cuando se apaga o pierde la red — esta función cierra ese hueco. La llaman tanto el
+    comando manual (`marcar_estaciones_offline`) como la tarea periódica de Celery
+    (`apps.catalogo.tasks.marcar_estaciones_offline_task`), para no duplicar la lógica.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.catalogo.models import Estacion
+
+    umbral = timezone.now() - timedelta(minutes=minutos)
+    # Se traen los objetos (no un .update() directo) porque evaluar_reglas_sin_heartbeat
+    # necesita la unidad_negocio de cada estación afectada, no solo el conteo.
+    afectadas = list(
+        Estacion.objects.select_related('farmacia__unidad_negocio').filter(
+            estado_conexion=Estacion.EstadoConexion.ONLINE, ultimo_heartbeat__lt=umbral,
+        )
+    )
+    if afectadas:
+        Estacion.objects.filter(pk__in=[e.pk for e in afectadas]).update(
+            estado_conexion=Estacion.EstadoConexion.OFFLINE,
+        )
+        from apps.monitoreo.services import evaluar_reglas_sin_heartbeat
+        evaluar_reglas_sin_heartbeat(afectadas)
+    return len(afectadas)
+
+
 # --- Acceso remoto interactivo (MeshCentral) ---
 # A diferencia de enviar_comando/enviar_script (arriba), esto NO viaja por el
 # broker MQTT propio: es un canal completamente aparte (navegador -> servidor

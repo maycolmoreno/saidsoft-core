@@ -131,3 +131,31 @@ class MultiTenantAislamientoTests(TestCase):
 
     def test_validar_destino_acepta_targets_del_mismo_tenant(self):
         validar_destino_unidad_negocio(self.sg, farmacias=[self.farmacia_sg], estaciones=[self.estacion_sg])
+
+
+class MarcarEstacionesOfflineTaskTests(TestCase):
+    """CELERY_TASK_ALWAYS_EAGER=True en desarrollo.py hace que .delay() corra sincrónico
+    en el mismo proceso — sirve para probar que la tarea está bien registrada y hace lo
+    mismo que el comando manual, sin necesitar Redis ni un worker real."""
+
+    def test_delay_marca_offline_igual_que_el_comando(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.catalogo.tasks import marcar_estaciones_offline_task
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+            ultimo_heartbeat=timezone.now() - timedelta(minutes=20),
+        )
+
+        resultado = marcar_estaciones_offline_task.delay()
+
+        estacion.refresh_from_db()
+        self.assertEqual(estacion.estado_conexion, Estacion.EstadoConexion.OFFLINE)
+        self.assertIn('1 estación', resultado.get())

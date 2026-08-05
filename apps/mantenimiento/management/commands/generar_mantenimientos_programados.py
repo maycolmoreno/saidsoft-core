@@ -1,24 +1,16 @@
+"""Wrapper delgado sobre apps.mantenimiento.services.generar_mantenimientos_vencidos —
+la misma lógica la corre también la tarea periódica de Celery
+(apps.mantenimiento.tasks.generar_mantenimientos_programados_task, diaria, ver
+CELERY_BEAT_SCHEDULE). Este comando queda para correrlo a mano si hace falta.
+"""
 from django.core.management.base import BaseCommand
-from django.db import transaction
-from django.utils import timezone
 
-from apps.mantenimiento import services
-from apps.mantenimiento.models import MantenimientoProgramado
+from apps.mantenimiento.services import generar_mantenimientos_vencidos
 
 
 class Command(BaseCommand):
-    help = (
-        'Recorre los MantenimientoProgramado vencidos (fecha_proximo <= hoy) y genera el '
-        'siguiente Mantenimiento de cada uno. Pensado para correr periódicamente vía cron/Celery '
-        'beat, igual que apps/monitoreo/management/commands/purgar_metricas.py.'
-    )
+    help = 'Genera el siguiente Mantenimiento de cada MantenimientoProgramado vencido.'
 
-    @transaction.atomic
     def handle(self, *args, **options):
-        hoy = timezone.now().date()
-        vencidos = MantenimientoProgramado.objects.filter(activo=True, fecha_proximo__lte=hoy)
-        total = 0
-        for programado in vencidos:
-            services.generar_proximo_mantenimiento_programado(programado=programado)
-            total += 1
+        total = generar_mantenimientos_vencidos()
         self.stdout.write(self.style.SUCCESS(f'{total} mantenimiento(s) programado(s) generado(s).'))

@@ -170,3 +170,37 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ],
 }
+
+# --- Celery (fundación async — ver config/celery.py) ---
+# Sin Redis local en dev (no hay build oficial de Redis para Windows): CELERY_TASK_ALWAYS_EAGER
+# en config/settings/desarrollo.py hace que las tareas corran en el mismo proceso, sin
+# necesitar un broker. En producción (deploy/docker-compose.yml) sí hay un `redis` real.
+CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+
+# Reemplaza el cron externo que requerían estos 4 comandos periódicos (documentado como
+# pendiente desde la Fase 1 original del proyecto — nunca se había implementado). El
+# nombre de cada entrada es solo una etiqueta legible en el log/dashboard de Celery.
+CELERY_BEAT_SCHEDULE = {
+    'marcar-estaciones-offline': {
+        'task': 'apps.catalogo.tasks.marcar_estaciones_offline_task',
+        'schedule': 60.0,  # cada minuto — mismo umbral que el comando manual (5 min sin heartbeat)
+    },
+    'purgar-metricas-viejas': {
+        'task': 'apps.monitoreo.tasks.purgar_metricas_task',
+        'schedule': 60.0 * 60 * 24,  # diario
+    },
+    'generar-ejecuciones-programadas': {
+        'task': 'apps.scripts.tasks.generar_ejecuciones_programadas_task',
+        'schedule': 60.0 * 60 * 24,  # diario — el propio filtro por fecha lo hace seguro de repetir
+    },
+    'generar-mantenimientos-programados': {
+        'task': 'apps.mantenimiento.tasks.generar_mantenimientos_programados_task',
+        'schedule': 60.0 * 60 * 24,  # diario
+    },
+}

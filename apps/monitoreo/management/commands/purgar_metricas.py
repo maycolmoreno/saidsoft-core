@@ -1,20 +1,15 @@
 """Borra muestras de métricas más viejas que un umbral de retención.
 
-Reemplaza el `vaciar_logs` del sistema viejo (que borraba TODO cada domingo). Aquí la
-retención es por antigüedad, para conservar historia reciente. Se corre por cron
-(ej. diario).
+Wrapper delgado sobre apps.monitoreo.services.purgar_metricas_antiguas — la misma
+lógica la corre también la tarea periódica de Celery
+(apps.monitoreo.tasks.purgar_metricas_task, diaria, ver CELERY_BEAT_SCHEDULE). Este
+comando queda para correrlo a mano si hace falta.
 
     python manage.py purgar_metricas --dias 30
-
-En producción con TimescaleDB esto lo haría una política de retención nativa; el comando
-queda como respaldo y para el entorno SQLite de desarrollo.
 """
-from datetime import timedelta
-
 from django.core.management.base import BaseCommand
-from django.utils import timezone
 
-from apps.monitoreo.models import MuestraMetrica
+from apps.monitoreo.services import purgar_metricas_antiguas
 
 
 class Command(BaseCommand):
@@ -24,6 +19,5 @@ class Command(BaseCommand):
         parser.add_argument('--dias', type=int, default=30)
 
     def handle(self, *args, **options):
-        umbral = timezone.now() - timedelta(days=options['dias'])
-        borradas, _ = MuestraMetrica.objects.filter(timestamp__lt=umbral).delete()
+        borradas = purgar_metricas_antiguas(dias=options['dias'])
         self.stdout.write(self.style.SUCCESS(f'{borradas} muestra(s) de métricas eliminada(s).'))

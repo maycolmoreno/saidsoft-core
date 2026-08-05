@@ -46,9 +46,11 @@ docker compose -f deploy/docker-compose.yml exec web python manage.py createsupe
 sh deploy/bootstrap-emqx.sh
 #    Luego, en el dashboard de EMQX (http://host:18083), definir las ACLs por tópico.
 
-# 6. Tareas periódicas (cron del host o del contenedor web):
-#    - marcar estaciones offline (cada minuto)
-#    - purgar métricas viejas (diario)
+# 6. Las tareas periódicas ya NO necesitan cron externo: el servicio `celery_beat`
+#    (ver docker-compose.yml) las dispara solo según CELERY_BEAT_SCHEDULE en
+#    config/settings/base.py — marcar estaciones offline (cada minuto), purgar métricas
+#    viejas, generar ejecuciones/mantenimientos programados vencidos (diario).
+#    Los comandos manuales se conservan por si hace falta correrlos a mano:
 #    docker compose -f deploy/docker-compose.yml exec web python manage.py marcar_estaciones_offline
 #    docker compose -f deploy/docker-compose.yml exec web python manage.py purgar_metricas --dias 30
 
@@ -63,6 +65,9 @@ sh deploy/bootstrap-emqx.sh
 | `emqx` | emqx:5.8 | Broker MQTT con TLS (8883) y auth built-in; TCP plano desactivado |
 | `web` | (build local) | Panel Django con gunicorn; corre migraciones/collectstatic al arrancar |
 | `worker` | (build local) | Worker MQTT (`run_mqtt_worker`) |
+| `redis` | redis:7-alpine | Broker/backend de Celery (fundación async, ver config/celery.py) |
+| `celery_worker` | (build local) | Ejecuta las tareas async (hoy: las 4 tareas periódicas; a futuro: PDF, notificaciones, sync Odoo) |
+| `celery_beat` | (build local) | Dispara las tareas periódicas según CELERY_BEAT_SCHEDULE — reemplaza el cron externo |
 | `meshcentral` | ghcr.io/ylianst/meshcentral | Acceso remoto interactivo (opcional, ver abajo) |
 
 ## TimescaleDB — nota sobre el hypertable

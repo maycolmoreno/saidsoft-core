@@ -86,12 +86,19 @@ services:
       MESHCENTRAL_INSTALL_FLAGS: ${MESHCENTRAL_INSTALL_FLAGS:-2}
       MESHCENTRAL_VIEWMODE_ESCRITORIO: ${MESHCENTRAL_VIEWMODE_ESCRITORIO:-11}
       MESHCENTRAL_VIEWMODE_TERMINAL: ${MESHCENTRAL_VIEWMODE_TERMINAL:-12}
+      # Fundación async (Fase 1 del roadmap) — sin esto, Django usa el default
+      # (redis://localhost:6379/0, no existe acá) y cualquier llamada a una tarea Celery
+      # colgaría intentando conectar a un Redis que no está.
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
       - media_data:/app/media
     depends_on:
       db:
         condition: service_healthy
       emqx:
+        condition: service_started
+      redis:
         condition: service_started
     ports:
       - "8080:8000"   # remapeado a 8080 (rango 8080-8085 abierto en firewall); detrás de proxy TLS en prod real
@@ -114,12 +121,73 @@ services:
       MQTT_CA_CERT: /app/deploy/certs/cert.pem
       COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
       BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
       - media_data:/app/media   # el worker lee los paquetes que sirve el web
     depends_on:
       db:
         condition: service_healthy
       emqx:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1"]   # snapshot cada 60s si hubo escrituras — alcanza para colas/beat, no es un dato crítico de negocio
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  celery_worker:
+    <<: *app-build
+    restart: unless-stopped
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=2"]
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.produccion
+      RUN_MIGRATIONS: "0"
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SECRET_KEY: ${SECRET_KEY}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+      COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
+      BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    volumes:
+      - media_data:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  celery_beat:
+    <<: *app-build
+    restart: unless-stopped
+    # Reemplaza el cron externo que documentaba README-produccion.md para las 4 tareas
+    # periódicas (marcar_estaciones_offline, purgar_metricas, generar_ejecuciones/
+    # mantenimientos_programados) — ver CELERY_BEAT_SCHEDULE en config/settings/base.py.
+    command: ["celery", "-A", "config", "beat", "--loglevel=INFO"]
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.produccion
+      RUN_MIGRATIONS: "0"
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SECRET_KEY: ${SECRET_KEY}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+      COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
+      BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
         condition: service_started
 
   # Acceso remoto interactivo (ver README.md "Acceso remoto (MeshCentral)"). Bolt-on
@@ -151,3 +219,4 @@ volumes:
   emqx_data:
   meshcentral_data:
   meshcentral_files:
+  redis_data:

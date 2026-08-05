@@ -12,7 +12,7 @@ from django.core.mail import send_mail
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import Alerta, Metrica, ReglaAlerta
+from .models import Alerta, Metrica, MuestraMetrica, ReglaAlerta
 
 logger = logging.getLogger(__name__)
 
@@ -174,3 +174,16 @@ def notificar_alerta(alerta):
     # fail_silently: un SMTP caído no debe tumbar la ingesta de métricas del worker MQTT
     # ni el cron de marcar_estaciones_offline — la alerta ya quedó guardada en la BD.
     send_mail(asunto, cuerpo, None, destinatarios, fail_silently=True)
+
+
+def purgar_metricas_antiguas(*, dias: int = 30) -> int:
+    """Borra MuestraMetrica más viejas que `dias`. Reemplaza el `vaciar_logs` del sistema
+    viejo (que borraba TODO cada domingo) — retención por antigüedad, no total.
+
+    En producción con TimescaleDB esto lo haría una política de retención nativa; esta
+    función queda como respaldo y para el entorno SQLite de desarrollo. La llaman tanto
+    el comando manual (`purgar_metricas`) como la tarea periódica de Celery.
+    """
+    umbral = timezone.now() - timedelta(days=dias)
+    borradas, _ = MuestraMetrica.objects.filter(timestamp__lt=umbral).delete()
+    return borradas

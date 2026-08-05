@@ -97,3 +97,21 @@ def generar_ejecucion_programada(*, programado):
     programado.fecha_proxima_ejecucion = hoy + timedelta(days=programado.frecuencia_dias)
     programado.save(update_fields=['fecha_ultima_ejecucion', 'fecha_proxima_ejecucion'])
     return ejecucion
+
+
+def generar_ejecuciones_vencidas() -> int:
+    """Recorre los ScriptProgramado vencidos (fecha_proxima_ejecucion <= hoy) y genera la
+    siguiente EjecucionScript de cada uno. La llaman tanto el comando manual
+    (`generar_ejecuciones_programadas`) como la tarea periódica de Celery."""
+    from django.db import transaction
+
+    from .models import ScriptProgramado
+
+    with transaction.atomic():
+        hoy = timezone.now().date()
+        vencidos = ScriptProgramado.objects.filter(activo=True, fecha_proxima_ejecucion__lte=hoy)
+        total = 0
+        for programado in vencidos:
+            generar_ejecucion_programada(programado=programado)
+            total += 1
+    return total

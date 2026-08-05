@@ -110,3 +110,21 @@ class CerrarMantenimientoTests(TestCase):
         hoy = timezone.now().date()
         self.assertEqual(programado.fecha_ultimo, hoy)
         self.assertEqual(programado.fecha_proximo, hoy + timedelta(days=30))
+
+
+class GenerarMantenimientosProgramadosTaskTests(TestCase):
+    """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test."""
+
+    def test_delay_genera_el_mantenimiento_vencido(self):
+        from apps.mantenimiento.tasks import generar_mantenimientos_programados_task
+
+        usuario = User.objects.create_user(username='u_task_mant', password='x')
+        equipo = Activo.objects.create(codigo='CR-DSK-0099', tipo=Activo.Tipo.DESKTOP)
+        programado = MantenimientoProgramado.objects.create(
+            equipo=equipo, tecnico=usuario, frecuencia_dias=30, fecha_proximo=timezone.now().date(),
+        )
+
+        resultado = generar_mantenimientos_programados_task.delay()
+
+        self.assertTrue(Mantenimiento.objects.filter(mantenimiento_programado=programado).exists())
+        self.assertIn('1 mantenimiento', resultado.get())
