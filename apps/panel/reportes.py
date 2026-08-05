@@ -12,7 +12,7 @@ from django.utils import timezone
 from apps.auditoria.models import EventoAuditoria
 from apps.catalogo.models import Estacion
 from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa, unidades_negocio_en_foco
-from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
+from apps.despliegues.models import Despliegue, EventoDespliegue
 
 
 def _escribir(salida, encabezados, filas):

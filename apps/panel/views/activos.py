@@ -129,7 +129,7 @@ def orden_compra_linea_crear(request, pk):
                 tipo_consumible=d['tipo_consumible'], precio_unitario=d['precio_unitario'],
                 unidad_medida=d['unidad_medida'],
             )
-            registrar_evento(usuario=request.user, accion='orden_compra.linea_crear', objeto=oc, request=request)
+            registrar_evento(usuario=request.user, accion='orden_compra.linea_crear', objeto=detalle, request=request)
             messages.success(request, f'Línea agregada a la OC {oc.numero_oc}.')
             return redirect('panel:orden_compra_detalle', pk=pk)
     else:

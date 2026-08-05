@@ -9,7 +9,7 @@ from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
 from .models import (
     ActividadCumplimiento, EstadoCumplimiento, ResultadoCumplimientoColaborador,
-    ResultadoCumplimientoEstacion, ResultadoCumplimientoFarmacia, TipoObjetivoCumplimiento,
+    ResultadoCumplimientoEstacion, TipoObjetivoCumplimiento,
 )
 from .services import calcular_avance, generar_resultados, marcar_completado, resolver_objetivos
 

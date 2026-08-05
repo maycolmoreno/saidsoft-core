@@ -12,7 +12,7 @@ from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Farmacia
 
 from .models import (
-    ActividadCumplimiento, EstadoCumplimiento, ResultadoCumplimientoColaborador,
+    EstadoCumplimiento, ResultadoCumplimientoColaborador,
     ResultadoCumplimientoEstacion, ResultadoCumplimientoFarmacia, TipoObjetivoCumplimiento,
 )
 
