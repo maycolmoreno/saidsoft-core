@@ -100,6 +100,10 @@ urlpatterns = [
         name='mantenimiento_imagen_adjuntar',
     ),
     path(
+        'mantenimientos/<int:pk>/repuestos/nuevo/', views.mantenimiento_repuesto_agregar,
+        name='mantenimiento_repuesto_agregar',
+    ),
+    path(
         'mantenimientos/<int:pk>/orden-trabajo/', views.mantenimiento_orden_trabajo,
         name='mantenimiento_orden_trabajo',
     ),

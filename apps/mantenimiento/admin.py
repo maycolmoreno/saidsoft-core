@@ -5,7 +5,7 @@ from apps.cuentas.services import scope_opcional_por_unidad_negocio
 from .models import (
     ActividadChecklist, ActividadPlanificada, ActividadRealizada, ConsentimientoMonitoreo, EventoMantenimiento,
     FirmaMantenimiento, ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado,
-    Notificacion, UbicacionTecnico,
+    Notificacion, RepuestoUtilizado, UbicacionTecnico,
 )
 
 
@@ -58,6 +58,13 @@ class ImagenMantenimientoInline(admin.TabularInline):
     readonly_fields = ('nombre_archivo', 'tamanio_bytes', 'subido_en')
 
 
+class RepuestoUtilizadoInline(admin.TabularInline):
+    model = RepuestoUtilizado
+    extra = 0
+    autocomplete_fields = ('tipo_consumible', 'bodega')
+    readonly_fields = ('registrado_por', 'registrado_en')
+
+
 @admin.register(Mantenimiento)
 class MantenimientoAdmin(admin.ModelAdmin):
     list_display = (
@@ -69,7 +76,7 @@ class MantenimientoAdmin(admin.ModelAdmin):
     readonly_fields = ('snapshot_equipo', 'fecha_creacion')
     inlines = [
         MantenimientoEquipoInline, ActividadRealizadaInline, FirmaMantenimientoInline,
-        ImagenMantenimientoInline, EventoMantenimientoInline,
+        ImagenMantenimientoInline, RepuestoUtilizadoInline, EventoMantenimientoInline,
     ]
 
     def get_queryset(self, request):

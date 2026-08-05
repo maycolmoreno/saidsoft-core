@@ -4,8 +4,8 @@ from django.test import TestCase
 
 from apps.catalogo.models import UnidadNegocio
 
-from .models import Activo, Cargo, Colaborador, Departamento, EventoActivo
-from .services import registrar_asignacion
+from .models import Activo, Bodega, Cargo, Colaborador, Departamento, EventoActivo, StockBodega, TipoConsumible
+from .services import registrar_asignacion, registrar_salida_stock
 
 
 class SeedPermisosTests(TestCase):
@@ -76,3 +76,24 @@ class RegistrarAsignacionTests(TestCase):
         )
         self.activo.refresh_from_db()
         self.assertEqual(self.activo.unidad_negocio, self.mia)
+
+
+class RegistrarSalidaStockTests(TestCase):
+    def setUp(self):
+        self.bodega = Bodega.objects.create(codigo='BOD01')
+        self.tipo_consumible = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB')
+        StockBodega.objects.create(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=5)
+
+    def test_descuenta_stock_disponible(self):
+        stock = registrar_salida_stock(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=3)
+        self.assertEqual(stock.cantidad, 2)
+
+    def test_rechaza_cantidad_mayor_al_disponible(self):
+        with self.assertRaises(ValueError):
+            registrar_salida_stock(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=6)
+        stock = StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible)
+        self.assertEqual(stock.cantidad, 5)
+
+    def test_rechaza_cantidad_cero_o_negativa(self):
+        with self.assertRaises(ValueError):
+            registrar_salida_stock(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=0)

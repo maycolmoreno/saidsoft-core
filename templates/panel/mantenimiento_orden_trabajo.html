@@ -18,6 +18,9 @@
         <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Unidad de negocio</td><td class="py-1">{{ mantenimiento.unidad_negocio|default:"—" }}</td></tr>
         <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Descripción</td><td class="py-1">{{ mantenimiento.descripcion }}</td></tr>
         <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Resultado técnico</td><td class="py-1">{{ mantenimiento.get_resultado_tecnico_display|default:"—" }}</td></tr>
+        {% if mantenimiento.tiempo_real_minutos %}
+        <tr><td class="py-1 pr-4 align-top" style="color:#94a3b8;">Tiempo real</td><td class="py-1">{{ mantenimiento.tiempo_real_minutos }} min</td></tr>
+        {% endif %}
     </table>
 
     <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Equipos</h3>
@@ -37,6 +40,25 @@
         <li style="color:#94a3b8;">Sin ítems de checklist configurados.</li>
         {% endfor %}
     </ul>
+
+    <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Repuestos utilizados</h3>
+    <table class="w-full text-sm mb-6">
+        {% for r in repuestos %}
+        <tr>
+            <td class="py-1">{{ r.tipo_consumible.nombre }}</td>
+            <td class="py-1" style="color:#64748b;">x{{ r.cantidad }}</td>
+            <td class="py-1 text-right">{% if r.costo_unitario %}${{ r.costo_total }}{% else %}—{% endif %}</td>
+        </tr>
+        {% empty %}
+        <tr><td style="color:#94a3b8;">Sin repuestos registrados.</td></tr>
+        {% endfor %}
+        {% if costo_total_repuestos %}
+        <tr style="border-top:1px solid #e2e8f0;">
+            <td class="py-1 font-medium" colspan="2">Total repuestos</td>
+            <td class="py-1 text-right font-medium">${{ costo_total_repuestos }}</td>
+        </tr>
+        {% endif %}
+    </table>
 
     <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Evidencia fotográfica</h3>
     <div class="flex flex-wrap gap-3 mb-6">

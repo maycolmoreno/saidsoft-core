@@ -8,11 +8,12 @@ from datetime import timedelta
 from django.utils import timezone
 
 from apps.activos import services as activos_services
+from apps.activos.models import MovimientoInventario
 
 from .models import (
     ActividadChecklist, ActividadPlanificada, ActividadRealizada, EventoMantenimiento, FirmaMantenimiento,
     ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado, Notificacion,
-    PrioridadActividad, ResultadoTecnico, TipoOrigenMantenimiento,
+    PrioridadActividad, RepuestoUtilizado, ResultadoTecnico, TipoOrigenMantenimiento,
 )
 
 
@@ -77,7 +78,7 @@ def registrar_actividad_checklist(*, mantenimiento, actividad, realizada, usuari
     return actividad_realizada
 
 
-def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario):
+def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_real_minutos=None):
     if mantenimiento.estado_interno == Mantenimiento.EstadoInterno.CERRADO:
         raise ValueError('El mantenimiento ya está cerrado.')
     if mantenimiento.estado_interno == Mantenimiento.EstadoInterno.CANCELADO:
@@ -86,7 +87,10 @@ def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario):
     mantenimiento.resultado_tecnico = resultado_tecnico
     mantenimiento.fecha_cierre = timezone.now()
     mantenimiento.cerrado_por = usuario
-    mantenimiento.save(update_fields=['estado_interno', 'resultado_tecnico', 'fecha_cierre', 'cerrado_por'])
+    mantenimiento.tiempo_real_minutos = tiempo_real_minutos
+    mantenimiento.save(update_fields=[
+        'estado_interno', 'resultado_tecnico', 'fecha_cierre', 'cerrado_por', 'tiempo_real_minutos',
+    ])
     EventoMantenimiento.objects.create(
         mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.CERRADO, usuario=usuario,
         detalle={'resultado_tecnico': resultado_tecnico},
@@ -180,6 +184,33 @@ def adjuntar_imagen_mantenimiento(*, mantenimiento, archivo, usuario):
     return imagen
 
 
+def registrar_repuesto_utilizado(*, mantenimiento, tipo_consumible, cantidad, usuario, bodega=None, costo_unitario=None):
+    """Registra un repuesto/consumible usado en la intervención. Si se indica `bodega`,
+    descuenta el stock real (apps.activos.services.registrar_salida_stock, que lanza
+    ValueError si no alcanza) y deja el kardex (MovimientoInventario) — si no se indica,
+    es un repuesto fuera del flujo de bodega, solo se registra el costo."""
+    if cantidad <= 0:
+        raise ValueError('La cantidad debe ser mayor a cero.')
+
+    if bodega is not None:
+        activos_services.registrar_salida_stock(bodega=bodega, tipo_consumible=tipo_consumible, cantidad=cantidad)
+        MovimientoInventario.objects.create(
+            tipo_movimiento=MovimientoInventario.TipoMovimiento.SALIDA_CONSUMO,
+            tipo_consumible=tipo_consumible, cantidad=-cantidad, bodega_origen=bodega,
+            realizado_por=usuario, motivo=f'Mantenimiento #{mantenimiento.pk}',
+        )
+
+    repuesto = RepuestoUtilizado.objects.create(
+        mantenimiento=mantenimiento, tipo_consumible=tipo_consumible, bodega=bodega, cantidad=cantidad,
+        costo_unitario=costo_unitario, registrado_por=usuario,
+    )
+    EventoMantenimiento.objects.create(
+        mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.REPUESTO_REGISTRADO, usuario=usuario,
+        detalle={'tipo_consumible': tipo_consumible.nombre, 'cantidad': cantidad},
+    )
+    return repuesto
+
+
 def crear_actividad_planificada(*, tecnico, creado_por, titulo, descripcion, tipo_actividad, fecha_inicio, fecha_fin,
                                  prioridad=None, mantenimiento=None, mantenimiento_programado=None, equipo=None,
                                  ubicacion=None, tiempo_estimado_minutos=None):
@@ -241,6 +272,8 @@ def generar_informe_pdf(*, mantenimiento) -> Mantenimiento:
         'checklist': [{'item': item, 'realizada': realizadas.get(item.pk, False)} for item in checklist_items],
         'firmas': mantenimiento.firmas.select_related('firmado_por').order_by('tipo_firma'),
         'imagenes': mantenimiento.imagenes.all(),
+        'repuestos': mantenimiento.repuestos_utilizados.select_related('tipo_consumible', 'bodega'),
+        'costo_total_repuestos': mantenimiento.costo_total_repuestos,
         'generado_en': generado_en,
     })
 

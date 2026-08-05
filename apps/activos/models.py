@@ -306,6 +306,7 @@ class MovimientoInventario(models.Model):
         INGRESO_CONSUMIBLE = 'ingreso_consumible', 'Ingreso de consumible (compra)'
         TRASLADO = 'traslado', 'Traslado entre bodegas'
         AJUSTE = 'ajuste', 'Ajuste de inventario'
+        SALIDA_CONSUMO = 'salida_consumo', 'Salida por consumo (repuesto usado en mantenimiento)'
 
     tipo_movimiento = models.CharField(max_length=20, choices=TipoMovimiento.choices)
     tipo_consumible = models.ForeignKey(

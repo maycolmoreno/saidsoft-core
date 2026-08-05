@@ -36,6 +36,18 @@
         <div>{{ mantenimiento.mantenimiento_programado }}</div>
     </div>
     {% endif %}
+    {% if mantenimiento.tiempo_real_minutos %}
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Tiempo real de intervención</div>
+        <div>{{ mantenimiento.tiempo_real_minutos }} min</div>
+    </div>
+    {% endif %}
+    {% if costo_total_repuestos %}
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Costo total de repuestos</div>
+        <div>${{ costo_total_repuestos }}</div>
+    </div>
+    {% endif %}
 </div>
 
 <h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Equipos cubiertos</h2>
@@ -130,6 +142,27 @@
     {% empty %}
     <p class="text-[var(--text-faint)] text-sm">Sin imágenes adjuntas.</p>
     {% endfor %}
+</div>
+
+<div class="flex items-center justify-between mb-3">
+    <h2 class="text-sm font-medium uppercase tracking-wide text-[var(--text-faint)]">Repuestos utilizados</h2>
+    <a href="{% url 'panel:mantenimiento_repuesto_agregar' mantenimiento.pk %}" class="text-xs hover:underline text-[var(--text-dim)]">+ Registrar repuesto</a>
+</div>
+<div class="card mb-8" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <tbody>
+        {% for r in repuestos %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3">{{ r.tipo_consumible.nombre }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">x{{ r.cantidad }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.bodega|default:"—" }}</td>
+                <td class="px-4 py-3 text-right">{% if r.costo_unitario %}${{ r.costo_total }}{% else %}—{% endif %}</td>
+            </tr>
+        {% empty %}
+            <tr><td class="px-4 py-4 text-center text-[var(--text-faint)]">Sin repuestos registrados.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
 </div>
 
 <h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Historial</h2>

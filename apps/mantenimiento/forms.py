@@ -1,7 +1,7 @@
 from django import forms
 from django.contrib.auth import get_user_model
 
-from apps.activos.models import Activo, Colaborador, Ubicacion
+from apps.activos.models import Activo, Bodega, Colaborador, TipoConsumible, Ubicacion
 
 from .models import EstadoGeneralEquipo, MantenimientoProgramado, PrioridadActividad, ResultadoTecnico, TipoFirma
 
@@ -47,10 +47,32 @@ class CerrarMantenimientoForm(forms.Form):
     resultado_tecnico = forms.ChoiceField(
         choices=ResultadoTecnico.choices, widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
+    tiempo_real_minutos = forms.IntegerField(
+        required=False, min_value=1, widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),
+        label='Tiempo real de intervención (minutos)',
+    )
 
 
 class CancelarMantenimientoForm(forms.Form):
     motivo = forms.CharField(widget=forms.Textarea(attrs={'class': INPUT_CLASS, 'rows': 2}))
+
+
+class RepuestoUtilizadoForm(forms.Form):
+    tipo_consumible = forms.ModelChoiceField(
+        queryset=TipoConsumible.objects.order_by('nombre'),
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
+    bodega = forms.ModelChoiceField(
+        queryset=Bodega.objects.filter(activa=True), required=False,
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        help_text='Si se elige, se descuenta el stock real de esa bodega. Vacío = repuesto '
+                  'fuera del flujo de bodega (solo se registra el costo).',
+    )
+    cantidad = forms.IntegerField(min_value=1, initial=1, widget=forms.NumberInput(attrs={'class': INPUT_CLASS}))
+    costo_unitario = forms.DecimalField(
+        required=False, min_value=0, max_digits=10, decimal_places=2,
+        widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),
+    )
 
 
 class MantenimientoProgramadoForm(forms.ModelForm):

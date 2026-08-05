@@ -37,7 +37,8 @@ from .mantenimiento import (
     mantenimiento_cancelar, mantenimiento_cerrar, mantenimiento_checklist_actualizar, mantenimiento_crear,
     mantenimiento_detalle, mantenimiento_firmar, mantenimiento_generar_informe_pdf, mantenimiento_iniciar,
     mantenimiento_imagen_adjuntar, mantenimiento_orden_trabajo, mantenimiento_programado_crear,
-    mantenimientos_lista, mantenimientos_programados_lista, notificacion_marcar_leida, notificaciones_lista,
+    mantenimiento_repuesto_agregar, mantenimientos_lista, mantenimientos_programados_lista,
+    notificacion_marcar_leida, notificaciones_lista,
 )
 from .monitoreo import monitoreo_detalle, monitoreo_detalle_partial, monitoreo_lista
 from .reportes import (
@@ -75,8 +76,8 @@ __all__ = [
     'mantenimiento_cancelar', 'mantenimiento_cerrar', 'mantenimiento_checklist_actualizar',
     'mantenimiento_crear', 'mantenimiento_detalle', 'mantenimiento_firmar', 'mantenimiento_generar_informe_pdf',
     'mantenimiento_iniciar', 'mantenimiento_imagen_adjuntar', 'mantenimiento_orden_trabajo',
-    'mantenimiento_programado_crear', 'mantenimientos_lista', 'mantenimientos_programados_lista',
-    'notificacion_marcar_leida', 'notificaciones_lista',
+    'mantenimiento_programado_crear', 'mantenimiento_repuesto_agregar', 'mantenimientos_lista',
+    'mantenimientos_programados_lista', 'notificacion_marcar_leida', 'notificaciones_lista',
     'monitoreo_detalle', 'monitoreo_detalle_partial', 'monitoreo_lista',
     'movimientos_inventario_lista',
     'orden_compra_crear', 'orden_compra_detalle', 'orden_compra_linea_crear',

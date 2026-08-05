@@ -1,7 +1,9 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.db import models
 
-from apps.activos.models import Activo, CategoriaEquipo, Colaborador, Ubicacion
+from apps.activos.models import Activo, Bodega, CategoriaEquipo, Colaborador, TipoConsumible, Ubicacion
 
 
 class TipoOrigenMantenimiento(models.TextChoices):
@@ -98,6 +100,11 @@ class Mantenimiento(models.Model):
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     informe_pdf = models.FileField(upload_to='mantenimiento/informes/%Y/%m/', blank=True)
     informe_pdf_generado_en = models.DateTimeField(null=True, blank=True)
+    tiempo_real_minutos = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='Tiempo real de intervención, capturado al cerrar (no siempre coincide con '
+                  'fecha_cierre - fecha_programada: el técnico puede pausar/retomar).',
+    )
 
     class Meta:
         db_table = 'mantenimiento'
@@ -112,6 +119,10 @@ class Mantenimiento(models.Model):
         tiene cliente asignado o el cliente no tiene unidad_negocio — se trata como
         "compartido", igual que en apps.cuentas.services."""
         return self.cliente.unidad_negocio if self.cliente_id else None
+
+    @property
+    def costo_total_repuestos(self):
+        return sum((r.costo_total for r in self.repuestos_utilizados.all()), Decimal('0'))
 
 
 class MantenimientoEquipo(models.Model):
@@ -176,6 +187,7 @@ class EventoMantenimiento(models.Model):
         CHECKLIST_ACTUALIZADO = 'checklist_actualizado', 'Checklist actualizado'
         FIRMADO = 'firmado', 'Firmado'
         IMAGEN_ADJUNTADA = 'imagen_adjuntada', 'Imagen adjuntada'
+        REPUESTO_REGISTRADO = 'repuesto_registrado', 'Repuesto registrado'
         INFORME_GENERADO = 'informe_generado', 'Informe PDF generado'
         CERRADO = 'cerrado', 'Cerrado'
         CANCELADO = 'cancelado', 'Cancelado'
@@ -250,6 +262,42 @@ class ImagenMantenimiento(models.Model):
 
     def __str__(self):
         return self.nombre_archivo or self.imagen.name
+
+
+class RepuestoUtilizado(models.Model):
+    """Repuesto/consumible usado en una intervención, con costo para el informe técnico.
+
+    `bodega` es opcional: si se indica, descuenta stock real (ver
+    apps.mantenimiento.services.registrar_repuesto_utilizado); si se deja vacío, es un
+    repuesto comprado/aportado fuera del flujo de bodega (igual se registra el costo).
+    """
+    mantenimiento = models.ForeignKey(Mantenimiento, on_delete=models.CASCADE, related_name='repuestos_utilizados')
+    tipo_consumible = models.ForeignKey(
+        TipoConsumible, on_delete=models.PROTECT, related_name='usos_en_mantenimiento',
+    )
+    bodega = models.ForeignKey(
+        Bodega, on_delete=models.PROTECT, null=True, blank=True, related_name='repuestos_utilizados',
+    )
+    cantidad = models.PositiveIntegerField(default=1)
+    costo_unitario = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    registrado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='repuestos_registrados',
+    )
+    registrado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'repuesto_utilizado'
+        ordering = ['mantenimiento', 'registrado_en', 'pk']
+        verbose_name = 'Repuesto utilizado'
+        verbose_name_plural = 'Repuestos utilizados'
+
+    def __str__(self):
+        return f'{self.tipo_consumible} x{self.cantidad} - Mantenimiento #{self.mantenimiento_id}'
+
+    @property
+    def costo_total(self):
+        return (self.costo_unitario or Decimal('0')) * self.cantidad
 
 
 class ActividadPlanificada(models.Model):

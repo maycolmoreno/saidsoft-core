@@ -188,6 +188,21 @@ def registrar_ingreso_stock(*, bodega, tipo_consumible, cantidad):
     return stock
 
 
+def registrar_salida_stock(*, bodega, tipo_consumible, cantidad):
+    """Descuenta stock sin destino (se consume, no se traslada) — usado por
+    apps.mantenimiento al registrar un repuesto tomado de bodega."""
+    if cantidad <= 0:
+        raise ValueError('La cantidad a descontar debe ser mayor a cero.')
+    stock, _ = StockBodega.objects.get_or_create(bodega=bodega, tipo_consumible=tipo_consumible)
+    if stock.cantidad < cantidad:
+        raise ValueError(
+            f'Stock insuficiente de {tipo_consumible.nombre} en {bodega.codigo} ({stock.cantidad} disponibles).',
+        )
+    stock.cantidad -= cantidad
+    stock.save(update_fields=['cantidad'])
+    return stock
+
+
 def recibir_orden_compra(*, orden_compra, novedad_recepcion, usuario):
     """Recepción simple de toda la OC de una vez, sin detalle por línea.
 

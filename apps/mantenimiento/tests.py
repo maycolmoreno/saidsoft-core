@@ -4,10 +4,15 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.activos.models import Activo, Colaborador
+from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoConsumible
 
-from .models import EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado, ResultadoTecnico
-from .services import cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf
+from .models import (
+    EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado, RepuestoUtilizado,
+    ResultadoTecnico,
+)
+from .services import (
+    cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf, registrar_repuesto_utilizado,
+)
 
 
 class CrearMantenimientoManualTests(TestCase):
@@ -94,6 +99,15 @@ class CerrarMantenimientoTests(TestCase):
         )
         self.equipo.refresh_from_db()
         self.assertFalse(self.equipo.baja_recomendada)
+
+    def test_guarda_tiempo_real_minutos(self):
+        mantenimiento = self._crear()
+        cerrar_mantenimiento(
+            mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.usuario,
+            tiempo_real_minutos=45,
+        )
+        mantenimiento.refresh_from_db()
+        self.assertEqual(mantenimiento.tiempo_real_minutos, 45)
 
     def test_cerrar_con_plan_preventivo_recalcula_proxima_fecha(self):
         tecnico = User.objects.create_user(username='tec2', password='x')
@@ -183,6 +197,81 @@ class GenerarInformePdfTaskTests(TestCase):
         self.mantenimiento.refresh_from_db()
         self.assertTrue(self.mantenimiento.informe_pdf.name)
         self.assertIn(str(self.mantenimiento.pk), resultado.get())
+
+    def tearDown(self):
+        self.mantenimiento.refresh_from_db()
+        if self.mantenimiento.informe_pdf:
+            self.mantenimiento.informe_pdf.delete(save=False)
+
+
+class RegistrarRepuestoUtilizadoTests(TestCase):
+    """Fase 5 IT Operations Platform: repuestos/costo en Mantenimiento."""
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_repuesto', password='x')
+        self.equipo = Activo.objects.create(codigo='CR-DSK-0200', tipo=Activo.Tipo.DESKTOP)
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.usuario, cliente=None, tipo_mantenimiento='correctivo',
+            estado_general=EstadoGeneralEquipo.NO_OPERATIVO, descripcion='Falla',
+            fecha_programada=timezone.now(), usuario=self.usuario,
+        )
+        self.bodega = Bodega.objects.create(codigo='BOD01')
+        self.tipo_consumible = TipoConsumible.objects.create(codigo='FUENTE', nombre='Fuente de poder')
+        StockBodega.objects.create(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=3)
+
+    def test_registrar_con_bodega_descuenta_stock_y_registra_evento(self):
+        repuesto = registrar_repuesto_utilizado(
+            mantenimiento=self.mantenimiento, tipo_consumible=self.tipo_consumible, cantidad=2,
+            bodega=self.bodega, costo_unitario=15, usuario=self.usuario,
+        )
+        self.assertEqual(repuesto.costo_total, 30)
+
+        stock = StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible)
+        self.assertEqual(stock.cantidad, 1)
+
+        self.assertTrue(
+            EventoMantenimiento.objects.filter(
+                mantenimiento=self.mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.REPUESTO_REGISTRADO,
+            ).exists(),
+        )
+
+    def test_registrar_sin_bodega_no_toca_stock(self):
+        registrar_repuesto_utilizado(
+            mantenimiento=self.mantenimiento, tipo_consumible=self.tipo_consumible, cantidad=1,
+            costo_unitario=5, usuario=self.usuario,
+        )
+        stock = StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible)
+        self.assertEqual(stock.cantidad, 3)
+
+    def test_stock_insuficiente_no_crea_repuesto(self):
+        with self.assertRaises(ValueError):
+            registrar_repuesto_utilizado(
+                mantenimiento=self.mantenimiento, tipo_consumible=self.tipo_consumible, cantidad=10,
+                bodega=self.bodega, usuario=self.usuario,
+            )
+        self.assertFalse(RepuestoUtilizado.objects.filter(mantenimiento=self.mantenimiento).exists())
+
+    def test_costo_total_repuestos_suma_todos_los_registrados(self):
+        registrar_repuesto_utilizado(
+            mantenimiento=self.mantenimiento, tipo_consumible=self.tipo_consumible, cantidad=1,
+            costo_unitario=10, usuario=self.usuario,
+        )
+        otro_tipo = TipoConsumible.objects.create(codigo='CABLE', nombre='Cable SATA')
+        registrar_repuesto_utilizado(
+            mantenimiento=self.mantenimiento, tipo_consumible=otro_tipo, cantidad=2,
+            costo_unitario=5, usuario=self.usuario,
+        )
+        self.assertEqual(self.mantenimiento.costo_total_repuestos, 20)
+
+    def test_informe_pdf_incluye_repuestos(self):
+        registrar_repuesto_utilizado(
+            mantenimiento=self.mantenimiento, tipo_consumible=self.tipo_consumible, cantidad=1,
+            costo_unitario=15, usuario=self.usuario,
+        )
+        generar_informe_pdf(mantenimiento=self.mantenimiento)
+
+        self.mantenimiento.refresh_from_db()
+        self.assertTrue(self.mantenimiento.informe_pdf.read().startswith(b'%PDF'))
 
     def tearDown(self):
         self.mantenimiento.refresh_from_db()

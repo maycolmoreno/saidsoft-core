@@ -31,6 +31,9 @@
         <tr><td class="etiqueta">Descripción</td><td>{{ mantenimiento.descripcion }}</td></tr>
         <tr><td class="etiqueta">Estado general</td><td>{{ mantenimiento.get_estado_general_display|default:"—" }}</td></tr>
         <tr><td class="etiqueta">Resultado técnico</td><td>{{ mantenimiento.get_resultado_tecnico_display|default:"—" }}</td></tr>
+        {% if mantenimiento.tiempo_real_minutos %}
+        <tr><td class="etiqueta">Tiempo real</td><td>{{ mantenimiento.tiempo_real_minutos }} min</td></tr>
+        {% endif %}
     </table>
 
     <h2>Equipos</h2>
@@ -50,6 +53,21 @@
         <li class="vacio">Sin ítems de checklist configurados.</li>
         {% endfor %}
     </ul>
+
+    <h2>Repuestos utilizados</h2>
+    <table class="datos">
+        {% for r in repuestos %}
+        <tr>
+            <td>{{ r.tipo_consumible.nombre }} x{{ r.cantidad }}</td>
+            <td>{% if r.costo_unitario %}${{ r.costo_total }}{% else %}—{% endif %}</td>
+        </tr>
+        {% empty %}
+        <tr><td class="vacio" colspan="2">Sin repuestos registrados.</td></tr>
+        {% endfor %}
+        {% if costo_total_repuestos %}
+        <tr><td><strong>Total repuestos</strong></td><td><strong>${{ costo_total_repuestos }}</strong></td></tr>
+        {% endif %}
+    </table>
 
     <h2>Evidencia fotográfica</h2>
     {% for img in imagenes %}

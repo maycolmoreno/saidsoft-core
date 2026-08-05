@@ -9,6 +9,7 @@ from apps.mantenimiento import services as mantenimiento_services
 from apps.mantenimiento.forms import (
     ActividadPlanificadaForm, CancelarMantenimientoForm, CerrarMantenimientoForm, CompletarActividadForm,
     FirmaMantenimientoForm, ImagenMantenimientoForm, MantenimientoManualForm, MantenimientoProgramadoForm,
+    RepuestoUtilizadoForm,
 )
 from apps.mantenimiento.models import (
     ActividadChecklist, ActividadPlanificada, Mantenimiento, MantenimientoProgramado, Notificacion,
@@ -78,9 +79,11 @@ def mantenimiento_detalle(request, pk):
         for ar in mantenimiento.actividades_realizadas.all()
     }
     checklist = [{'item': item, 'realizada': realizadas.get(item.pk, False)} for item in checklist_items]
+    repuestos = mantenimiento.repuestos_utilizados.select_related('tipo_consumible', 'bodega')
 
     return render(request, 'panel/mantenimiento_detalle.html', {
         'mantenimiento': mantenimiento, 'equipos': equipos, 'eventos': eventos, 'checklist': checklist,
+        'repuestos': repuestos, 'costo_total_repuestos': mantenimiento.costo_total_repuestos,
     })
 
 
@@ -127,7 +130,7 @@ def mantenimiento_cerrar(request, pk):
             try:
                 mantenimiento_services.cerrar_mantenimiento(
                     mantenimiento=mantenimiento, resultado_tecnico=form.cleaned_data['resultado_tecnico'],
-                    usuario=request.user,
+                    tiempo_real_minutos=form.cleaned_data['tiempo_real_minutos'], usuario=request.user,
                 )
             except ValueError as exc:
                 form.add_error(None, str(exc))
@@ -249,13 +252,38 @@ def mantenimiento_imagen_adjuntar(request, pk):
 
 
 @login_required
-def mantenimiento_orden_trabajo(request, pk):
-    """Orden de trabajo imprimible (Ctrl+P del navegador), sin generar PDF servidor.
+def mantenimiento_repuesto_agregar(request, pk):
+    mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
+    verificar_acceso(request.user, mantenimiento.unidad_negocio)
+    if request.method == 'POST':
+        form = RepuestoUtilizadoForm(request.POST)
+        if form.is_valid():
+            d = form.cleaned_data
+            try:
+                mantenimiento_services.registrar_repuesto_utilizado(
+                    mantenimiento=mantenimiento, tipo_consumible=d['tipo_consumible'], cantidad=d['cantidad'],
+                    bodega=d['bodega'], costo_unitario=d['costo_unitario'], usuario=request.user,
+                )
+            except ValueError as exc:
+                form.add_error(None, str(exc))
+            else:
+                registrar_evento(
+                    usuario=request.user, accion='mantenimiento.repuesto_agregar', objeto=mantenimiento, request=request,
+                )
+                messages.success(request, 'Repuesto registrado.')
+                return redirect('panel:mantenimiento_detalle', pk=pk)
+    else:
+        form = RepuestoUtilizadoForm()
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': f'Registrar repuesto en mantenimiento #{mantenimiento.pk}',
+        'volver_url': reverse('panel:mantenimiento_detalle', args=[pk]),
+    })
 
-    Sigue la convención de apps/panel/reportes.py: evitar dependencias de
-    generación de PDF; si se necesita un PDF real y almacenado con validez
-    legal, es una decisión de infraestructura aparte (fase 7).
-    """
+
+@login_required
+def mantenimiento_orden_trabajo(request, pk):
+    """Orden de trabajo imprimible (Ctrl+P del navegador) — vista rápida sin esperar a la
+    generación async del PDF (ver mantenimiento_generar_informe_pdf/informe_pdf)."""
     mantenimiento = get_object_or_404(
         Mantenimiento.objects.select_related('cliente', 'tecnico'), pk=pk,
     )
@@ -266,10 +294,12 @@ def mantenimiento_orden_trabajo(request, pk):
     checklist = [{'item': item, 'realizada': realizadas.get(item.pk, False)} for item in checklist_items]
     firmas = mantenimiento.firmas.select_related('firmado_por').order_by('tipo_firma')
     imagenes = mantenimiento.imagenes.all()
+    repuestos = mantenimiento.repuestos_utilizados.select_related('tipo_consumible', 'bodega')
 
     return render(request, 'panel/mantenimiento_orden_trabajo.html', {
         'mantenimiento': mantenimiento, 'equipos': equipos, 'checklist': checklist,
-        'firmas': firmas, 'imagenes': imagenes,
+        'firmas': firmas, 'imagenes': imagenes, 'repuestos': repuestos,
+        'costo_total_repuestos': mantenimiento.costo_total_repuestos,
     })
 
 
