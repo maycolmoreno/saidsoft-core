@@ -1,0 +1,24 @@
+# Nunca deben terminar dentro de la imagen: secretos, certificados privados y
+# estado local de desarrollo. Sin este archivo, `COPY . .` en deploy/Dockerfile
+# los mete igual aunque estén en .gitignore — .gitignore no protege el build
+# context de Docker (encontrado 31-jul-2026: COMANDO_HMAC_SECRET "funcionaba" en
+# una prueba local porque el .env de desarrollo terminó horneado en la imagen).
+.env
+deploy/.env
+# Solo la llave privada: cert.pem es público y web/worker lo necesitan DENTRO de la
+# imagen para verificar TLS contra EMQX (MQTT_CA_CERT=/app/deploy/certs/cert.pem en
+# docker-compose.yml) — excluirlo también rompía el worker en un crash-loop
+# (FileNotFoundError en tls_set), encontrado al levantar el stack real 31-jul-2026.
+deploy/certs/key.pem
+db.sqlite3
+db.sqlite3.bak*
+
+.venv/
+__pycache__/
+*.pyc
+*.log
+.git/
+.DS_Store
+/media/
+/staticfiles/
+/tools/

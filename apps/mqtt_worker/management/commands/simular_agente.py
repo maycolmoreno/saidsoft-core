@@ -1,10 +1,11 @@
-"""Simula el comportamiento de un agente C# real (Fase 3, aún no construido).
+"""Simula el comportamiento del agente real (`C:\\Proyectos\\saidsoft-agente`, .NET).
 
-Sirve para probar el flujo completo del backend sin depender del agente:
+El agente real ya existe y está operativo; este simulador se mantiene como
+herramienta de desarrollo para probar el flujo completo del backend sin instalarlo:
 1. Se enrola contra el worker (si aún no está registrado).
 2. Se suscribe a su(s) tópico(s) de despliegue.
 3. Al recibir uno, reporta cada paso del ciclo (descarga, hash, aplica, ok/error)
-   igual que lo haría el agente real en las Fases 3-4.
+   igual que lo haría el agente real.
 
 Uso:
     python manage.py simular_agente ML001-A

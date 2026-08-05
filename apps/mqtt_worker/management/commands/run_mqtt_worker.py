@@ -64,6 +64,12 @@ class Command(BaseCommand):
         client.on_connect = self._on_connect
         client.on_message = self._on_message
         client.on_disconnect = self._on_disconnect
+        # loop_forever() ya reintenta solo tras una desconexión, pero con el backoff
+        # por defecto de paho (hasta 120s entre intentos) — para un worker que sostiene
+        # el estado de 1.800 estaciones, un techo más bajo achica la ventana ciega tras
+        # una caída de red/broker. La resuscripción a los tópicos ocurre sola: _on_connect
+        # se vuelve a disparar en cada reconexión exitosa.
+        client.reconnect_delay_set(min_delay=1, max_delay=30)
 
         # SIGTERM es lo que envía `docker stop`/un redeploy. Sin este handler, el
         # proceso muere de golpe pudiendo dejar un mensaje a medio procesar; con él,

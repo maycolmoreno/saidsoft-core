@@ -1,8 +1,9 @@
 """Lógica de publicación de despliegues.
 
-Se invoca desde el panel (admin action hoy, vista HTMX en Fase 2) cuando un
-despliegue ya aprobado pasa a distribuirse. No corre en el worker MQTT de
-larga duración: esto es una acción puntual disparada por un humano.
+Se invoca desde la vista HTMX del panel (`apps/panel/views/despliegues.py::despliegue_publicar`,
+también disponible como acción del admin) cuando un despliegue ya aprobado pasa a
+distribuirse. No corre en el worker MQTT de larga duración: esto es una acción puntual
+disparada por un humano.
 """
 import json
 import logging

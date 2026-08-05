@@ -1,26 +1,38 @@
-# SAIDSOFT — núcleo (Fases 1, 2, 2b y 4)
+# SAIDSOFT — núcleo (RMM multi-cliente para CRESIO)
 
 Reemplazo de `projectDJango` (Django 1.8/Python 2.7) + `projectNodeJS` del sistema
 original (código de referencia en `C:\Proyectos\SAIDSOFT`, sin tocar), sobre
 Django 5.2 LTS / Python 3.14. Ver [PLAN_MODERNIZACION.md](PLAN_MODERNIZACION.md)
-para el panorama completo — esta es la copia viva del plan, se actualiza aquí.
+para el panorama completo (fases 0-5 del reemplazo original + fases R1-R6a de la
+extensión multi-tenant/RMM) — esta es la copia viva del plan, se actualiza aquí
+**cada vez que se cierra una fase** (ver `CLAUDE.md`).
 
 Este es un proyecto independiente: no comparte carpeta con el sistema viejo.
+
+Nació como el reemplazo del panel de una sola operación (despliegues de POS +
+inventario de activos IT para CRESIO), y se extendió a una plataforma multi-cliente
+tipo RMM/MSP: cada unidad de negocio de CRESIO (San Gregorio, MIA, 7DIAS — modelo
+`UnidadNegocio` en `apps/catalogo`) es un tenant aislado, con su propio catálogo de
+farmacias/estaciones, despliegues, scripts, alertas y reportes.
 
 ## Estructura
 
 ```
 config/                  settings (base/desarrollo/produccion), urls, wsgi/asgi
-apps/catalogo/           Grupo (TRX), Farmacia, Estación
+apps/catalogo/           UnidadNegocio (tenant), Grupo (TRX), Farmacia, Estación
 apps/despliegues/        Despliegue, ResultadoDespliegue, EventoDespliegue (línea de tiempo inmutable)
+apps/scripts/            Script (biblioteca RMM), EjecucionScript, ScriptProgramado (recurrente)
+apps/monitoreo/          MuestraMetrica (RAM/CPU/swap/latencia), ReglaAlerta, Alerta
 apps/auditoria/          EventoAuditoria (acciones del panel) + registrar_evento()
 apps/mqtt_worker/        worker MQTT (reemplaza projectNodeJS/index.js) + simulador de agente
-apps/activos/             inventario de activos CRESIO: Bodega, Colaborador, OrdenCompra,
-                          Activo (código CR-TIPO-NNNN), EventoActivo (historial inmutable) (Fase 2b)
-apps/monitoreo/           métricas de recursos de servidores (RAM/CPU/swap/latencia),
-                          migrado y unificado del sistema viejo (LogMemoria/LogCPU)
-apps/panel/               panel HTMX: dashboard, estaciones, despliegues, monitoreo,
-                          activos, auditoría, reportes (CSV)
+apps/activos/            inventario de activos CRESIO: Bodega, Colaborador, OrdenCompra,
+                          Activo (código CR-TIPO-NNNN), EventoActivo (historial inmutable)
+apps/mantenimiento/      mantenimientos correctivos/programados, checklist, firmas, visita técnica
+apps/cumplimiento/       actividades de cumplimiento (AD, ESET, checklists) por unidad de negocio
+apps/cuentas/            PerfilUsuario (RBAC por unidad de negocio) — apps/cuentas/services.py
+                          centraliza el scoping de tenant, lo usan todas las apps de arriba
+apps/panel/              panel HTMX: dashboard, estaciones, despliegues, scripts, monitoreo,
+                          alertas, activos, mantenimiento, cumplimiento, auditoría, reportes
 templates/panel/          plantillas del panel (Tailwind + HTMX)
 static_src/input.css      fuente de Tailwind (@source apunta a templates/ y apps/)
 static/css/app.css        CSS compilado (versionado, no requiere Node en el servidor)
@@ -42,11 +54,16 @@ source .venv/Scripts/activate        # Windows/git-bash
 pip install -r requirements-dev.txt  # incluye el broker MQTT embebido para pruebas locales
 cp .env.example .env                 # completar SECRET_KEY, etc.
 
-python manage.py migrate
-python manage.py seed_demo           # carga TRX001/ML001 y TRX004/MAM01
+python manage.py migrate             # siembra SG/MIA (UnidadNegocio) como parte de la migración de catalogo
+python manage.py seed_demo           # carga TRX001/ML001 (MIA) y TRX004/MAM01 (SG)
 python manage.py createsuperuser
+python manage.py seed_permisos       # grupos Django (Administrador, Técnico, Operador RMM, ...)
 python manage.py seed_activos        # carga bodegas, colaboradores, una OC y activos de ejemplo
+python manage.py seed_scripts_parcheo  # scripts winget compartidos (biblioteca RMM)
 ```
+
+Un usuario nuevo no ve nada de tenant hasta que se le asigne acceso: desde el admin,
+`PerfilUsuario.unidades_negocio` (o `acceso_todas_unidades=True` para equipo interno).
 
 Necesitas **tres procesos corriendo en paralelo**:
 
@@ -138,6 +155,37 @@ estado vive en `apps/activos/services.py`, reutilizada por panel y admin.
   `token`), para que el agente sepa a qué tópicos de despliegue suscribirse sin tener
   que consultar la base de datos directamente.
 
+## Multi-tenancy (unidades de negocio)
+
+Cada `Farmacia` pertenece a una `UnidadNegocio` (obligatoria) — el tenant. Un `Grupo`
+(canal TRX) **puede estar compartido** entre unidades de negocio a propósito (varias
+marcas de CRESIO corriendo el mismo canal de versión), así que el aislamiento nunca se
+apoya en el Grupo, siempre en la unidad de negocio de la farmacia/estación/colaborador.
+
+- **RBAC centralizado** en `apps/cuentas/services.py`: `unidades_negocio_visibles(user)`,
+  `verificar_acceso(user, unidad_negocio)` (403 si no tiene acceso; `None` = objeto
+  compartido, visible para todos), `scope_por_unidad_negocio[_activa]` (listados,
+  campo obligatorio) y `scope_opcional_por_unidad_negocio[_activa]` (listados, campo
+  opcional — ej. `Colaborador`/`Activo`, donde `unidad_negocio=None` significa
+  "compartido", no "excluido"). `PerfilUsuario.unidades_negocio` (M2M) +
+  `acceso_todas_unidades` (equipo interno/superusuarios) definen qué ve cada usuario.
+- **`Despliegue`/`EjecucionScript`/`ScriptProgramado`** tienen `unidad_negocio`
+  obligatoria — "toda la cadena" siempre significa la cadena de esa unidad, nunca de
+  otra, aunque el destino use un `Grupo` compartido.
+- **`Script`** (biblioteca RMM) puede ser compartido (`unidad_negocio=None`, ej. los
+  scripts de winget sembrados por `seed_scripts_parcheo`) o privado de un cliente.
+- **Selector de unidad activa**: en la barra superior del panel, si el usuario tiene
+  acceso a más de una unidad, puede enfocar los listados/dashboard en una sola —
+  puramente de presentación, no reemplaza el RBAC (`unidad_negocio_activa` en sesión).
+- **Alcance deliberado**: `activos`/`mantenimiento`/`cumplimiento` están conectados al
+  mismo RBAC (`Colaborador`/`Activo` con `unidad_negocio` opcional, heredada
+  automáticamente al asignar un activo a un colaborador). `Bodega`, `OrdenCompra` y los
+  catálogos (`Marca`, `CategoriaEquipo`, etc.) **no** se escopan — son infraestructura
+  de TI centralizada de CRESIO, compartida entre sus marcas, no de un cliente.
+- **Gap conocido**: el aislamiento es de aplicación/BD, no del broker MQTT — todos los
+  agentes hoy comparten una sola credencial (`deploy/bootstrap-emqx.sh`), sin ACLs por
+  tenant. Ver PLAN_MODERNIZACION.md §9.
+
 ## Monitoreo de servidores
 
 Migra y unifica el monitoreo del sistema viejo (`log_servidor_memoria` + `log_servidor_cpu`,
@@ -156,14 +204,70 @@ que eran dos tablas/tópicos) en una sola muestra por instante:
   reemplazando el `vaciar_logs` del sistema viejo (que borraba TODO cada domingo). En
   producción, esta tabla va sobre **TimescaleDB** con retención nativa.
 
-## Reportes exportables (CSV)
+## Motor de alertas
 
-En `/reportes/`, tres exportaciones a CSV (con BOM UTF-8 para que Excel muestre bien las
-tildes), en `apps/panel/reportes.py`:
-- **Cumplimiento de versión**: qué versión corre cada estación vs. la objetivo de su grupo
-  (filtrable por grupo).
+`ReglaAlerta` (umbral + duración + severidad, global o de un cliente) evaluada en
+tiempo real:
+- **Reglas de métrica** (`cpu_carga_pct`, `ram_usada_pct`, `latencia_ms`,
+  `temperatura_c`): se evalúan en `apps/mqtt_worker/services.py::manejar_metricas`
+  justo tras guardar cada `MuestraMetrica`. Anti-flapping: la condición debe sostenerse
+  `duracion_minutos` completos (todas las muestras no nulas de la ventana incumplen, y
+  hay historial que cubra toda la ventana) antes de abrir la `Alerta` — un pico
+  aislado no dispara nada.
+- **Regla `sin_heartbeat`**: se evalúa dentro de `marcar_estaciones_offline` (mismo
+  comando de cron que ya marcaba estaciones caídas).
+- **Resolución automática**: si la condición deja de cumplirse (nueva muestra normal, o
+  vuelve el heartbeat), la alerta abierta se resuelve sola.
+- **Notificación**: correo (`django.core.mail.send_mail`, backend configurado en
+  `config/settings/{desarrollo,produccion}.py`) a quienes tengan acceso a la unidad de
+  negocio de la estación, solo al **abrir** una alerta (no en cada muestra que la
+  sostiene).
+- Panel: `/alertas/` (reconocer/resolver manualmente) y `/monitoreo/reglas/` (CRUD de
+  reglas).
+
+## Scripts RMM y parcheo
+
+`apps/scripts` — biblioteca de scripts PowerShell que corren sobre el mismo canal de
+comandos MQTT/HMAC que usa `enviar_comando` (comando `ejecutar_script`, ya soportado
+por el agente desde antes de esta etapa — ver `EjecutorScript.cs` en `saidsoft-agente`).
+
+- **`Script`**: biblioteca reutilizable (o ad-hoc, "ejecutar sin guardar"), global o de
+  un cliente.
+- **`EjecucionScript`**: una corrida contra un destino (mismo shape que `Despliegue`:
+  cadena/grupos/farmacias/estaciones), con `ResultadoEjecucionScript` por estación
+  (exit code, stdout, stderr).
+- **`ScriptProgramado`**: política "correr este script cada N días" — mismo patrón que
+  `MantenimientoProgramado`, generado por el comando `generar_ejecuciones_programadas`
+  (cron). Es la base del **parcheo de terceros**: `python manage.py
+  seed_scripts_parcheo` crea dos scripts compartidos (`winget upgrade` de diagnóstico,
+  y `winget upgrade --all --silent` para aplicar) que cualquier cliente puede programar.
+- **`python manage.py cambiar_nodo_pos --unidad-negocio SG --grupo TRX002 --nodo trx002
+  --usuario admin`**: cambia el nodo TRX (clave `Bdd` del `.Config` de Zabyca) de todas
+  las estaciones aprobadas de un grupo en una sola pasada — arma el script ad-hoc,
+  registra la ejecución y la envía por MQTT, sin pasar por el panel a mano. Reemplaza
+  el proceso manual anterior (editar la línea a mano, re-comprimir el cliente y
+  reenviarlo por estación). Solo edita el archivo (con respaldo `.bak-<timestamp>`
+  automático); no reinicia el POS — ver `apps/scripts/management/commands/
+  cambiar_nodo_pos.py`.
+- **No cubre** parchar el SO (Windows Update nativo) — requiere código nuevo en el
+  agente, ver PLAN_MODERNIZACION.md §9.
+
+## Reportes exportables (CSV) y resumen por cliente
+
+En `/reportes/`, en `apps/panel/reportes.py` (todos salvo auditoría aceptan
+`unidad_negocio`/`unidades_negocio` para acotar a un cliente):
+- **Resumen por cliente** (`/reportes/cliente/`): página imprimible (no CSV — sigue la
+  convención de `mantenimiento_orden_trabajo`, sin generación de PDF en servidor) que
+  consolida cumplimiento de versión, despliegues del período, alertas e inventario de
+  activos de una sola unidad de negocio.
+- **Cumplimiento de versión**: qué versión corre cada estación vs. la objetivo de su
+  grupo (filtrable por grupo y por unidad de negocio).
 - **Resultado de un despliegue**: estado por estación + timestamps de recibido/aplicado/ok.
-- **Bitácora de auditoría**: acciones sobre el panel en un rango de fechas.
+- **Activos** y **Alertas**: inventario y alertas de un cliente en un rango de fechas.
+- **Bitácora de auditoría**: acciones sobre el panel en un rango de fechas —
+  deliberadamente **sin escopar por cliente** (el modelo es polimórfico, sin FK real al
+  objeto auditado; es una herramienta de cumplimiento interno, no algo que se le
+  entregue a un cliente).
 
 ## Producción (Docker + TimescaleDB + EMQX)
 
@@ -207,7 +311,12 @@ sesiones interactivas). Se resuelve con [MeshCentral](https://github.com/Ylianst
 autoalojado, **completamente aparte** del canal MQTT/HMAC existente — la sesión viaja
 navegador ↔ servidor MeshCentral ↔ MeshAgent, sin tocar `saidsoft-agente` ni el broker.
 
-**Levantar una instancia local de MeshCentral:**
+**En producción** (`deploy/docker-compose.yml`) ya es un servicio más del stack —
+`docker compose up` lo levanta junto con `db`/`emqx`/`web`/`worker`/`redis`/
+`celery_worker`/`celery_beat`, con su propio volumen (`meshcentral_data`) y puerto
+`8083:443` (dentro del rango 8080-8085 abierto en firewall). Ver `deploy/README-produccion.md`.
+
+**Levantar una instancia local para desarrollo/pruebas:**
 
 ```bash
 docker run -d --name meshcentral \
@@ -216,11 +325,14 @@ docker run -d --name meshcentral \
   ghcr.io/ylianst/meshcentral:latest
 ```
 
-1. Entrar a `https://localhost:443` — la primera cuenta que se crea queda como admin.
+1. Entrar a `https://localhost:443` (o `https://<host>:8083` en producción) — la primera
+   cuenta que se crea queda como admin. Esto NO se automatiza por Compose: MeshCentral
+   pide crear la cuenta desde la consola web la primera vez que alguien entra.
 2. Crear un único device group para todas las estaciones (ej. "Estaciones SAIDSOFT" bajo
    "Mis dispositivos") — no hace falta uno por farmacia.
 3. Copiar el Mesh ID del grupo (panel de detalles del grupo) a `MESHCENTRAL_MESH_ID` en `.env`.
-4. Reiniciar `python manage.py runserver` para que `MESHCENTRAL_CONFIG` tome el valor nuevo.
+4. Reiniciar `python manage.py runserver` (o `docker compose restart web worker` en
+   producción) para que `MESHCENTRAL_CONFIG` tome el valor nuevo.
 
 **Vincular una estación**: desde su ficha en el panel (botón "Instalar agente ahora"), se
 prellena un script ad-hoc de Scripts RMM que descarga e instala el agente de MeshCentral en

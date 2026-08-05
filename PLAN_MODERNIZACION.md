@@ -1,7 +1,16 @@
 # Plan de Modernización SAIDSOFT
 
-**Fecha:** 16 de julio de 2026
+**Fecha:** 16 de julio de 2026 · **Última actualización:** 31 de julio de 2026
 **Alcance:** ~600 farmacias · ~1.800 estaciones Windows · servidor propio (LAN/VPN)
+
+> **Estado (31-jul-2026):** las Fases 0-5 de este documento (núcleo, panel de
+> despliegues, activos, agente, integración POS, infraestructura de despliegue) están
+> completas en código. Sobre esa base se construyó una segunda etapa no prevista en el
+> plan original — convertir el sistema en multi-cliente (RMM tipo MSP) para las
+> unidades de negocio de CRESIO — documentada en la **sección 9**. La **sección 10**
+> es la auditoría de lo que falta cerrar antes de un rollout real (pruebas,
+> producción validada de verdad, empaquetado del agente). Este archivo se actualiza
+> junto con cada fase que se cierra — ver `CLAUDE.md` para la convención.
 
 ---
 
@@ -105,17 +114,22 @@ Flujos: Compra → Ingreso a bodega (etiquetado CR obligatorio) → Asignación 
 
 ## 7. Plan por fases
 
-| Fase | Contenido | Duración |
-|---|---|---|
-| **0. Preparación** | Backup BD, Git, rotar credenciales, variables de entorno, documentar tópicos | 1 sem |
-| **1. Núcleo** | Django 5.2/Py 3.12, modelo nuevo (grupos/farmacias/estaciones/despliegues/auditoría), worker MQTT Python (absorbe Node.js), Celery Beat reemplaza kronos | 2-3 sem |
-| **2. Panel despliegues** | HTMX + Tailwind, dashboard tiempo real (Channels), matriz de versiones por TRX, anillos y olas, aprobación cuatro ojos, reportes | 2-3 sem |
-| **2b. Módulo activos** | OC, bodegas, activos CR, consumibles, asignaciones, etiquetas, reportes CRESIO | 3-4 sem |
-| **3. Agente .NET 10** | Windows Service self-contained, MQTTnet, auto-enrolamiento por token, ciclo descarga/verifica/aplica/rollback, MSI para GPO, auto-actualización | 3-4 sem |
-| **4. Integración POS** | Librería Saidsoft.Client, heartbeat con versión/serie, vinculación activo↔estación, flujo cierre-actualiza-relanza | 2 sem |
-| **5. Despliegue** | docker-compose (Django+worker+PostgreSQL+EMQX/TLS), piloto 2-3 farmacias (incluir el Win10 más viejo), rollout por anillos, respaldos | 1-2 sem |
+| Fase | Contenido | Duración | Estado |
+|---|---|---|---|
+| **0. Preparación** | Backup BD, Git, rotar credenciales, variables de entorno, documentar tópicos | 1 sem | ✅ Hecho |
+| **1. Núcleo** | Django 5.2/Py 3.12, modelo nuevo (grupos/farmacias/estaciones/despliegues/auditoría), worker MQTT Python (absorbe Node.js) | 2-3 sem | ✅ Hecho — tareas periódicas vía Celery Beat (ver `config/celery.py` y servicios `celery_worker`/`celery_beat` en `docker-compose.yml`, agregados después como fundación async) |
+| **2. Panel despliegues** | HTMX + Tailwind, dashboard tiempo real, matriz de versiones por TRX, anillos y olas, aprobación cuatro ojos, reportes | 2-3 sem | ✅ Hecho — dashboard por polling HTMX, no Channels (suficiente a esta escala) |
+| **2b. Módulo activos** | OC, bodegas, activos CR, consumibles, asignaciones, etiquetas, reportes CRESIO | 3-4 sem | ✅ Hecho |
+| **3. Agente .NET 10** | Windows Service self-contained, MQTTnet, auto-enrolamiento por token, ciclo descarga/verifica/aplica/rollback, MSI para GPO, auto-actualización | 3-4 sem | 🟡 Agente funcional y probado manualmente (`C:\Proyectos\saidsoft-agente`); **falta el instalador MSI** — ver §10 |
+| **4. Integración POS** | Librería Saidsoft.Client, heartbeat con versión/serie, vinculación activo↔estación, flujo cierre-actualiza-relanza | 2 sem | ✅ Hecho |
+| **5. Despliegue** | docker-compose (Django+worker+PostgreSQL+EMQX/TLS), piloto 2-3 farmacias (incluir el Win10 más viejo), rollout por anillos, respaldos | 1-2 sem | 🟡 Stack escrito y validado sin Docker (config carga, YAML válido); **`docker compose up` nunca se corrió en un servidor real** — ver §10 |
 
-**Total: 16-20 semanas.** Prioridad acordada: Módulo A (despliegues) primero; Módulo B (activos) después de la Fase 2.
+**Total original: 16-20 semanas.** Prioridad acordada: Módulo A (despliegues) primero; Módulo B (activos) después de la Fase 2.
+
+Con las Fases 0-5 completas, el proyecto pasó a una segunda etapa no prevista en el
+plan original: convertirlo en una plataforma multi-cliente (RMM tipo MSP) para las
+unidades de negocio de CRESIO. Ver **sección 9** para esas fases y **sección 10** para
+lo que falta cerrar antes de un rollout real.
 
 ## 8. Riesgos y mitigaciones
 
@@ -126,3 +140,209 @@ Flujos: Compra → Ingreso a bodega (etiquetado CR obligatorio) → Asignación 
 | Win10 builds viejos fallan con el agente | Self-contained .NET 10; piloto incluye la máquina más antigua; mínimo build 1607 |
 | Windows 10 sin soporte (oct-2025) | El inventario de SO del heartbeat alimenta el plan de migración a W11 |
 | Instalar agente en 1.800 equipos | MSI + GPO/script, una sola vez; después se auto-actualiza por su propio canal |
+
+## 9. Extensión multi-tenant / RMM (fases R1-R6a)
+
+El sistema pasó de servir una sola operación a ser un RMM tipo MSP para las
+unidades de negocio de CRESIO (San Gregorio, MIA, 7DIAS — ver `UnidadNegocio` en
+`apps/catalogo/models.py`). Fases completas, en orden:
+
+| Fase | Contenido | Estado |
+|---|---|---|
+| **R1 — Multi-tenancy** | `UnidadNegocio` como raíz del tenant. `Farmacia.unidad_negocio` obligatoria; `Despliegue`/`EjecucionScript` con `unidad_negocio` obligatoria; RBAC centralizado en `apps/cuentas/services.py` (`scope_por_unidad_negocio`, `verificar_acceso`, variantes `_opcional`/`_activa`); selector de "unidad de negocio activa" en el panel | ✅ Hecho |
+| **R2 — Motor de alertas** | `ReglaAlerta`/`Alerta` en `apps/monitoreo`; evaluación en tiempo real desde `manejar_metricas` (mqtt_worker) + `marcar_estaciones_offline` (regla `sin_heartbeat`); notificación por correo al abrir una alerta | ✅ Hecho |
+| **R3 — Scripting remoto** | Ya existía antes de esta etapa (`apps/scripts`, comando `ejecutar_script` del agente) | ✅ Hecho (preexistente) |
+| **R4 — Parcheo de terceros + recurrencia** | `ScriptProgramado` (política "correr cada N días", mismo patrón que `MantenimientoProgramado`), scripts winget sembrados con `seed_scripts_parcheo`. No tocó el agente — ya soportaba `ejecutar_script` | ✅ Hecho |
+| **R5 — Acceso remoto (MeshCentral)** | Ya existía antes de esta etapa | ✅ Hecho (preexistente) |
+| **RBAC fast-follow** | `activos`/`mantenimiento`/`cumplimiento` conectados al RBAC de R1 (antes solo `@login_required`, sin escopar por cliente). `ColaboradorForm` ganó el campo `unidad_negocio`; `registrar_asignacion` lo hereda del colaborador al activo | ✅ Hecho |
+| **R6a — Reportes por cliente** | Resumen imprimible por unidad de negocio (`/reportes/cliente/`) + CSVs de activos/alertas + `reporte_cumplimiento` ahora escopado (antes mostraba todo sin filtrar) | ✅ Hecho |
+
+**Fuera de alcance de esta etapa, explícitamente diferido:**
+- **ACLs MQTT/EMQX por tenant** — hoy todos los agentes comparten una sola credencial
+  (`deploy/bootstrap-emqx.sh`), sin prefijo de unidad de negocio en los tópicos. El
+  aislamiento de R1 es solo a nivel de aplicación/BD, no del broker. Requiere decidir
+  el enfoque (prefijo de tópico vs. credencial por tenant + ACL `%u`) y casi seguro
+  tocar `saidsoft-agente` (repo aparte).
+- **Facturación por endpoint** (resto de R6) — conteo de estaciones activas por unidad
+  de negocio por período; falta definir qué cuenta como "endpoint activo" (decisión de
+  negocio, no técnica).
+- **API REST pública** (resto de R6) — exponer despliegues/estaciones/alertas vía DRF
+  con auth por token, escopada por `unidad_negocio`. Hoy solo existe API
+  (`apps.mantenimiento.api_urls`) para mantenimiento.
+- **Windows Update nativo** (resto de R4) — parchar el SO en sí, no apps de terceros.
+  Requiere código nuevo en el agente (API de Windows Update, comando MQTT nuevo,
+  tópico de reporte de cumplimiento).
+
+## 10. Auditoría de pendientes (31-jul-2026)
+
+Revisión de lo que falta cerrar antes de operar esto en producción real, más allá de
+features nuevas. Por prioridad de riesgo:
+
+**A. Cobertura de pruebas — ✅ Hecho (31-jul-2026)** para el lado Python; queda abierto
+solo el lado del agente .NET:
+- `apps/despliegues`: tests de `publicar_despliegue`, `evaluar_freno_automatico`,
+  `verificar_completado` (incluye el caso de fuga entre unidades de negocio que
+  comparten `Grupo`).
+- `apps/mqtt_worker`: tests de los 6 handlers (`manejar_enrolamiento`, `manejar_heartbeat`,
+  `manejar_estado_despliegue`, `manejar_info_equipo`, `manejar_estado_script`,
+  `manejar_metricas`) y del enrutamiento por tópico de `Command._on_message`
+  (`run_mqtt_worker.py`) — antes solo se probaba a mano contra un broker real.
+  Además, `client.reconnect_delay_set(min_delay=1, max_delay=30)` acota el backoff
+  entre reintentos (antes usaba el máximo por defecto de paho, 120s).
+- `apps/cuentas` y `apps/auditoria` ya tienen suite propia (antes solo se ejercitaban
+  indirectamente vía `apps/panel/tests.py`).
+- **`saidsoft-agente`: sigue en cero tests automatizados** (no hay proyecto xUnit/NUnit);
+  toda la validación de reconexión/rollback documentada en su README sigue siendo manual
+  — no se tocó en esta fase (repo aparte).
+
+**B. Producción nunca corrida de verdad — 🟢 mayormente cerrado, validado contra el
+stack real (31-jul-2026):** Docker Desktop resultó estar disponible en la máquina de
+desarrollo (el README decía lo contrario) — se levantó `docker compose up` de verdad
+por primera vez en la historia del proyecto (`db`+`emqx`+`web`+`worker`+`scheduler`),
+contra PostgreSQL 16 + TimescaleDB 2.17.2 y EMQX 5.8.3 reales, no simulados.
+
+- **✅ Hecho y verificado**: nuevo servicio `scheduler` (`deploy/scheduler.sh`) corre
+  `marcar_estaciones_offline`, `purgar_metricas` y `generar_ejecuciones_programadas`
+  dentro del stack. **Bug real encontrado y corregido**: en el primer arranque,
+  `scheduler` corrió su primer ciclo antes de que `web` terminara de migrar (no hay
+  dependencia entre ambos), y al fallar marcaba el día como "hecho" igual — no
+  reintentaba hasta el día siguiente. Ahora solo marca el día como hecho si las tareas
+  salieron bien; si fallan, reintenta en el siguiente ciclo (60s). Confirmado
+  funcionando limpio tras el fix.
+- **✅ Hecho**: `deploy/backup.sh` (pg_dump + media, retención de 14 días locales) —
+  no probado en esta sesión (necesita una BD con datos para tener sentido probarlo).
+- **✅ Hecho y verificado end-to-end contra EMQX real**: `bootstrap-emqx.sh` siembra
+  usuarios + ACLs por rol. **Dos hallazgos reales al probarlo**:
+  1. EMQX **no trae `built_in_database` habilitada por defecto** — trae una fuente
+     tipo `file` cuya última regla es literalmente `{allow, all}` (con un comentario
+     del propio EMQX diciendo "cambiar esto en producción"). `no_match: deny` solo
+     sirve una vez que `built_in_database` se declara explícitamente como fuente
+     (`EMQX_AUTHORIZATION__SOURCES__1__TYPE` en `docker-compose.yml`) — sin eso, la
+     regla `{allow, all}` de la fuente por defecto seguía ganando.
+  2. El puerto por defecto del script (18083) no coincidía con el mapeo real de
+     `docker-compose.yml` (8082) — corregido.
+  Con ambos fixes, se probó de punta a punta con un publisher/subscriber MQTT reales
+  sobre TLS: un tópico permitido entregó el mensaje, uno sin regla nunca llegó al
+  suscriptor (bloqueado por el `no_match: deny`), aunque el publisher igual recibe el
+  PUBACK (así es el protocolo MQTT — el ack no implica autorización, hay que
+  verificar con un suscriptor real, no con el ack). Sigue sin resolver la
+  segmentación por tenant (agente sigue siendo una credencial compartida, ver §9).
+- **❌ Intentado y revertido**: el hypertable de TimescaleDB sigue **sin activar**
+  (sin cambios respecto al intento anterior — ver detalle completo en
+  `deploy/README-produccion.md`). Confirmado además contra TimescaleDB real: el
+  mensaje de rechazo de `create_hypertable` es exactamente el esperado (`cannot
+  create a unique index without the column "timestamp"`), y el resto de las
+  migraciones (incluida toda la de R1-R6a) corre limpio en Postgres real por primera
+  vez. Decisión tomada con el usuario: dejarlo documentado, no urgente para el piloto.
+
+**C. Empaquetado del agente — 🟢 cerrado con decisión explícita (31-jul-2026):**
+- `deploy/instalar-agente.ps1` (en `saidsoft-agente`) copia el publish self-contained,
+  confía el CA de EMQX, registra el servicio de Windows (`New-Service` + reinicio
+  automático si el proceso muere) y lo arranca. **Decisión del usuario**: script en
+  vez de un `.msi` real (WiX) — mismo criterio de simplicidad que `scheduler.sh`/
+  `backup.sh`; se distribuye igual por GPO o RMM.
+- **Dos huecos reales encontrados y cerrados al revisar el script contra el código del
+  agente** (no estaban en el script original, que solo cubría la conexión MQTT):
+  1. No configuraba `ComandoHmacSecret` — sin él, el agente arranca y hace heartbeat
+     normal, pero descarta en silencio todo comando remoto (`reiniciar`,
+     `ejecutar_script`, `consultar_info`) por firma HMAC inválida, sin error visible
+     en el panel. Ahora es parámetro obligatorio (`-ComandoHmacSecret`, debe coincidir
+     con `COMANDO_HMAC_SECRET` de `deploy/.env`).
+  2. No configuraba el POS real — se quedaba con los defaults de `appsettings.json`
+     apuntando a `PosSimulado` (el POS de mentira de pruebas). Confirmado con el
+     usuario: el POS real es Farmamia Cia Ltda - Elipsys (`Zabyca.Pos.Desktop.exe`,
+     instalado en `C:\Program Files (x86)\Farmamia Cia Ltda - Elipsys\Cliente`), el
+     mismo para San Gregorio/MIA/7DIAS (lo que cambia por estación es el nodo TRX de
+     la config interna del propio POS, no la ruta de instalación). Ahora son
+     parámetros del script con esos valores como default.
+- **Bug de seguridad encontrado de paso, ya corregido**: no existía `.dockerignore` en
+  `saidsoft-core`, así que `COPY . .` en `deploy/Dockerfile` horneaba dentro de la
+  imagen `.env`, `deploy/.env` y `deploy/certs/*.pem` aunque estuvieran en
+  `.gitignore` (`.gitignore` no protege el build context de Docker). Esto además
+  explicaba por qué `COMANDO_HMAC_SECRET` "funcionaba" en la prueba en vivo de la
+  Fase B sin estar declarado en `docker-compose.yml`: el contenedor terminó leyendo
+  el `.env` de desarrollo horneado por accidente, no `deploy/.env`. Se agregó
+  `.dockerignore` y se declaró `COMANDO_HMAC_SECRET` explícitamente en
+  `docker-compose.yml` (`web` y `worker`) y en `deploy/.env.prod.example`.
+- **`deploy/empaquetar-pos.ps1` (nuevo, en `saidsoft-agente`)**: arma un `.zip` de lo
+  YA instalado en una estación, para probar el pipeline completo de despliegue
+  (descarga → hash → cierre POS → respaldo → aplicar → relanzar → `ok`) sin cambiar
+  nada funcional del POS real — un "piloto de humo" antes de arriesgar una
+  actualización de verdad. Probado de verdad contra una carpeta simulada (zip
+  generado y contenido inspeccionado).
+- **Nodos TRX resueltos por exclusión (dato del usuario, 31-jul-2026)**: el
+  `Zabyca.Pos.Desktop.exe.Config` del POS trae el nodo por estación
+  (`<add key="Bdd" value="trx002" />` / `hub_...`), distinto por grupo — el proceso
+  manual previo era editar esa línea, re-comprimir el cliente y enviar un zip por
+  grupo. Como el apply del agente es un overlay, `empaquetar-pos.ps1` excluye ese
+  archivo por defecto: cada estación conserva su nodo y un solo paquete sirve para
+  toda la cadena (con `-IncluirConfig` para el caso raro de cambio de esquema, que
+  entonces se apunta por grupo). Cambios de nodo deliberados: vía la ejecución de
+  scripts del panel (R3) dirigida al grupo, no re-desplegando el POS.
+- **`python manage.py cambiar_nodo_pos` (nuevo)**: automatiza en una sola pasada lo
+  que antes era manual — arma el script PowerShell (edita la clave `Bdd` del `.Config`
+  vía XPath `//add[@key='Bdd']`, con respaldo `.bak-<timestamp>` antes de escribir),
+  crea el `Script` ad-hoc y registra + envía la `EjecucionScript` al grupo, todo en un
+  solo comando. Valida el valor de `--nodo` contra `^[A-Za-z0-9_-]{1,50}$` (se inserta
+  directo en el script) antes de tocar la base. Deliberadamente NO reinicia el POS
+  (una estación puede tener una venta en curso) — el cambio toma efecto en el próximo
+  arranque. 9/9 tests de `apps/scripts` en verde, incluida la fuga entre grupos.
+- **Bug de encoding real encontrado y corregido en los dos `.ps1` de `deploy/`**:
+  Windows PowerShell 5.1 asume codificación ANSI si el script no trae BOM UTF-8; con
+  tildes o guion largo eso rompe el parseo completo del archivo con un error que no
+  apunta al carácter real (reproducido con un caso mínimo). Afectaba a
+  `instalar-agente.ps1` desde antes de esta sesión, no solo a lo agregado hoy. Ambos
+  scripts ahora se guardan con BOM.
+- **Sigue pendiente**: no existe todavía ningún paquete de despliegue real para
+  Zabyca/Elipsys (todo lo probado hasta hoy fue contra `PosSimulado`); antes de
+  publicar el primer despliegue real hay que verificar en una estación piloto que el
+  `.zip` subido al panel trae exactamente lo que el POS real necesita.
+
+**D. Deuda menor:**
+- Cargos migrados con `Departamento` placeholder *"Sin clasificar (migrado)"*
+  (`apps/activos/migrations/0010_migrar_cargo_texto_a_fk.py`) pendientes de
+  reasignación manual.
+
+**E. MeshCentral integrado al stack de producción — 🟢 cerrado (31-jul-2026):**
+- Antes corría aparte con un `docker run` suelto (fuera del ciclo de vida del resto del
+  stack); ahora es un servicio más de `deploy/docker-compose.yml` (`meshcentral_data`
+  propio, puerto `8083:443` dentro del rango ya abierto en firewall). `docker compose
+  up`/`down` lo levanta y apaga junto con todo lo demás.
+- **Bug real encontrado y corregido de paso**: `MESHCENTRAL_SERVER_URL`/
+  `MESHCENTRAL_MESH_ID` tienen default en `config/settings/base.py` (a diferencia de
+  `COMANDO_HMAC_SECRET`), así que si `docker-compose.yml` no las declara explícitamente
+  para `web`, un `deploy/.env` que sí las define de todos modos no llegaría al
+  contenedor — pero SIN fallar al arrancar, solo generando links rotos a `localhost` en
+  silencio. Mismo patrón de bug que el de `COMANDO_HMAC_SECRET` en Fase B/C, esta vez
+  detectado antes de que afectara algo real. Se declararon con el mismo default que
+  Django (`${VAR:-mismo-default-que-base.py}`) para que un `.env` incompleto se comporte
+  igual con o sin Compose de por medio.
+- **Sigue igual que antes (no es nuevo)**: la primera cuenta/admin y el device group se
+  siguen creando a mano desde la consola web la primera vez (MeshCentral no lo expone
+  por variable de entorno); el vínculo estación↔`node_id` sigue siendo manual (ver
+  "diferido a propósito" abajo); los `viewmode` de escritorio/terminal siguen sin
+  verificarse contra una instancia real.
+- **Stack completo levantado de nuevo con estos cambios (31-jul-2026) y se encontraron
+  dos bugs reales más, ambos corregidos y verificados**:
+  1. El `.dockerignore` de la Fase C (necesario para no hornear secretos en la imagen)
+     excluía `deploy/certs/*.pem` completo — pero `cert.pem` (público, no la llave) lo
+     necesitan `web`/`worker` DENTRO de la imagen (`MQTT_CA_CERT=/app/deploy/certs/
+     cert.pem`) para verificar TLS contra EMQX. El worker crasheaba en bucle
+     (`FileNotFoundError` en `tls_set`). Corregido: solo se excluye `key.pem`.
+  2. `scheduler` corre bajo `config.settings.produccion` igual que `web`/`worker`, así
+     que también necesita `COMANDO_HMAC_SECRET` (sin default) — se me había quedado
+     afuera al agregarlo a Fase C. `scheduler` tronaba en bucle (`ImproperlyConfigured`)
+     en sus tareas diarias. Corregido, agregado a su `environment` en
+     `docker-compose.yml`.
+  Con ambos fixes: los 6 servicios (`db`/`emqx`/`meshcentral`/`scheduler`/`web`/
+  `worker`) quedaron `Up` sin reinicios, `scheduler` corrió sus 3 tareas limpio, `worker`
+  conectó al broker, `web` y `meshcentral` respondieron 200. El volumen `deploy_emqx_data`
+  de la sesión anterior tenía credenciales desalineadas con el `deploy/.env` actual —
+  se eliminó (solo data de prueba) y se re-sembró con `bootstrap-emqx.sh`.
+
+**Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
+`Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
+definido todavía), verificación automática de cumplimiento (v1 es atestación manual
+por decisión, ver `apps/cumplimiento/services.py`), sincronización automática
+MeshCentral↔panel (vínculo manual de `node_id`), temperatura de CPU en monitoreo
+(siempre `null`, sin sensor confiable disponible).

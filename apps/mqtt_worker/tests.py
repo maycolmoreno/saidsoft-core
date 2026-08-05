@@ -5,18 +5,24 @@ from unittest.mock import MagicMock, patch
 
 from cryptography.fernet import Fernet
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
+from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
+from apps.monitoreo.models import MuestraMetrica
 from apps.mqtt_worker.management.commands.run_mqtt_worker import (
     TOPICO_ESTADO_DESPLIEGUE, TOPICO_ESTADO_INSTALACION, TOPICO_ESTADO_SCRIPT, TOPICO_HEARTBEAT, Command,
+    _codigo_desde_topico,
 )
 from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
 from apps.mqtt_worker.services import (
-    NOMBRE_WORKER_MQTT, manejar_estado_instalacion, manejar_info_equipo, registrar_latido_worker,
+    NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_instalacion,
+    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, registrar_latido_worker,
     registrar_mensaje_fallido,
 )
+from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript, Script, TipoScript
 
 BITLOCKER_KEY_TEST = Fernet.generate_key().decode()
 
@@ -217,8 +223,6 @@ class ManejarInfoEquipoBitlockerTests(TestCase):
 
 class ManejarEstadoInstalacionTests(TestCase):
     def setUp(self):
-        from django.core.files.uploadedfile import SimpleUploadedFile
-
         from apps.software.models import AplicacionCatalogo, DestinoTipo, SolicitudInstalacion, VersionAplicacion
 
         grupo = Grupo.objects.create(codigo='TRX001')
@@ -294,3 +298,253 @@ class ManejarEstadoInstalacionTests(TestCase):
         resultado = ResultadoInstalacion.objects.get(solicitud=self.solicitud, estacion=self.estacion)
         self.assertEqual(resultado.estado, ResultadoInstalacion.Estado.ERROR)
         self.assertEqual(resultado.detalle_error, 'msiexec devolvió código 1603')
+
+
+class ManejarEnrolamientoTests(TestCase):
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=self.grupo, unidad_negocio=self.sg)
+
+    def test_estacion_nueva_queda_pendiente_y_responde_farmacia_y_grupo(self):
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1', 'hostname': 'PC1'})
+        self.assertTrue(resp['aceptado'])
+        self.assertEqual(resp['farmacia'], 'ML001')
+        self.assertEqual(resp['grupo'], 'TRX001')
+        estacion = Estacion.objects.get(codigo='ML001-A')
+        self.assertEqual(estacion.estado_aprobacion, Estacion.EstadoAprobacion.PENDIENTE)
+        self.assertEqual(estacion.hardware_id, 'HW1')
+
+    def test_farmacia_inexistente_rechaza_y_no_crea_estacion(self):
+        resp = manejar_enrolamiento({'codigo': 'XXX999-A', 'hardware_id': 'HW1'})
+        self.assertFalse(resp['aceptado'])
+        self.assertFalse(Estacion.objects.filter(codigo='XXX999-A').exists())
+
+    def test_reenrolamiento_mismo_hardware_acepta_y_devuelve_el_token_existente(self):
+        estacion = Estacion.objects.create(codigo='ML001-A', farmacia=self.farmacia, hardware_id='HW1')
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+        self.assertTrue(resp['aceptado'])
+        self.assertEqual(resp['token'], estacion.token_enrolamiento)
+
+    def test_reenrolamiento_hardware_distinto_rechaza_posible_suplantacion(self):
+        Estacion.objects.create(codigo='ML001-A', farmacia=self.farmacia, hardware_id='HW1')
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW-OTRO'})
+        self.assertFalse(resp['aceptado'])
+
+    def test_trust_on_first_use_fija_hardware_id_si_no_tenia(self):
+        Estacion.objects.create(codigo='ML001-A', farmacia=self.farmacia)
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW-NUEVO'})
+        self.assertTrue(resp['aceptado'])
+        self.assertEqual(Estacion.objects.get(codigo='ML001-A').hardware_id, 'HW-NUEVO')
+
+
+class ManejarHeartbeatTests(TestCase):
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def test_heartbeat_valido_pone_online_y_actualiza_version(self):
+        manejar_heartbeat(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'version_pos': '4.2.1', 'version_agente': '1.0.0',
+        })
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.estado_conexion, Estacion.EstadoConexion.ONLINE)
+        self.assertEqual(self.estacion.version_pos, '4.2.1')
+        self.assertIsNotNone(self.estacion.ultimo_heartbeat)
+
+    def test_token_invalido_no_actualiza_nada(self):
+        manejar_heartbeat(self.estacion.codigo, {'token': 'malo', 'version_pos': '9.9.9'})
+        self.estacion.refresh_from_db()
+        self.assertNotEqual(self.estacion.version_pos, '9.9.9')
+
+    def test_estacion_no_aprobada_no_se_actualiza(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento, 'version_pos': '9.9.9'})
+        self.estacion.refresh_from_db()
+        self.assertNotEqual(self.estacion.version_pos, '9.9.9')
+        self.assertNotEqual(self.estacion.estado_conexion, Estacion.EstadoConexion.ONLINE)
+
+
+class ManejarEstadoDespliegueTests(TestCase):
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        usuario = User.objects.create_user(username='u', password='x')
+        self.despliegue = Despliegue.objects.create(
+            version='4.3.0', archivo=SimpleUploadedFile('pkg.zip', b'x'),
+            modo_aplicacion=Despliegue.ModoAplicacion.INMEDIATO, destino_tipo=Despliegue.DestinoTipo.ESTACIONES,
+            unidad_negocio=self.sg, estado=Despliegue.Estado.PUBLICANDO, umbral_error_pct=50,
+            creado_por=usuario,
+        )
+
+    def _reportar(self, paso, **extra):
+        manejar_estado_despliegue(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'despliegue_id': self.despliegue.id,
+            'paso': paso, **extra,
+        })
+
+    def test_ok_actualiza_version_pos_y_completa_el_resultado(self):
+        self._reportar(EventoDespliegue.Paso.OK, version_nueva='4.3.0')
+        resultado = ResultadoDespliegue.objects.get(despliegue=self.despliegue, estacion=self.estacion)
+        self.assertEqual(resultado.estado, ResultadoDespliegue.Estado.APLICADO)
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.version_pos, '4.3.0')
+        self.assertTrue(EventoDespliegue.objects.filter(resultado=resultado, paso=EventoDespliegue.Paso.OK).exists())
+
+    def test_ok_de_la_unica_estacion_completa_el_despliegue(self):
+        self._reportar(EventoDespliegue.Paso.OK, version_nueva='4.3.0')
+        self.despliegue.refresh_from_db()
+        self.assertEqual(self.despliegue.estado, Despliegue.Estado.COMPLETADO)
+
+    def test_error_guarda_detalle_y_dispara_el_freno_automatico(self):
+        self._reportar(EventoDespliegue.Paso.ERROR, detalle='falló la copia')
+        resultado = ResultadoDespliegue.objects.get(despliegue=self.despliegue, estacion=self.estacion)
+        self.assertEqual(resultado.estado, ResultadoDespliegue.Estado.ERROR)
+        self.assertEqual(resultado.detalle_error, 'falló la copia')
+        self.despliegue.refresh_from_db()
+        self.assertEqual(self.despliegue.estado, Despliegue.Estado.PAUSADO)  # 100% error >= umbral 50%
+
+    def test_paso_desconocido_no_crea_resultado(self):
+        self._reportar('paso_inventado')
+        self.assertFalse(ResultadoDespliegue.objects.filter(despliegue=self.despliegue).exists())
+
+    def test_estacion_no_aprobada_se_ignora(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        self._reportar(EventoDespliegue.Paso.RECIBIDO)
+        self.assertFalse(ResultadoDespliegue.objects.filter(despliegue=self.despliegue).exists())
+
+
+class ManejarInfoEquipoHardwareTests(TestCase):
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def test_actualiza_datos_de_hardware(self):
+        manejar_info_equipo(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'procesador': 'Intel i5', 'ram_total_mb': 16384,
+            'almacenamiento_total_gb': 512,
+        })
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.procesador, 'Intel i5')
+        self.assertEqual(self.estacion.ram_total_mb, 16384)
+        self.assertIsNotNone(self.estacion.info_equipo_fecha)
+
+
+class ManejarEstadoScriptTests(TestCase):
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        usuario = User.objects.create_user(username='u', password='x')
+        script = Script.objects.create(
+            nombre='test', tipo=TipoScript.POWERSHELL, contenido='echo hola', creado_por=usuario,
+        )
+        self.ejecucion = EjecucionScript.objects.create(
+            script=script, contenido_snapshot=script.contenido, unidad_negocio=sg,
+            destino_tipo=EjecucionScript.DestinoTipo.ESTACIONES, creado_por=usuario,
+        )
+        self.resultado = ResultadoEjecucionScript.objects.create(ejecucion=self.ejecucion, estacion=self.estacion)
+
+    def test_completado_guarda_salida_y_recalcula_estado_de_la_ejecucion(self):
+        manejar_estado_script(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'resultado_id': self.resultado.pk,
+            'estado': ResultadoEjecucionScript.Estado.COMPLETADO, 'exit_code': 0, 'stdout': 'ok',
+        })
+        self.resultado.refresh_from_db()
+        self.assertEqual(self.resultado.estado, ResultadoEjecucionScript.Estado.COMPLETADO)
+        self.assertEqual(self.resultado.exit_code, 0)
+        self.assertEqual(self.resultado.stdout, 'ok')
+        self.ejecucion.refresh_from_db()
+        self.assertEqual(self.ejecucion.estado, EjecucionScript.Estado.COMPLETADO)
+
+    def test_resultado_inexistente_no_lanza_excepcion(self):
+        manejar_estado_script(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'resultado_id': 999999,
+            'estado': ResultadoEjecucionScript.Estado.COMPLETADO,
+        })
+
+
+class ManejarMetricasTests(TestCase):
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            monitorear_recursos=True,
+        )
+
+    def test_crea_muestra_metrica(self):
+        manejar_metricas(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'cpu_carga_pct': 42.5, 'ram_total': 8192, 'ram_usada': 4096,
+        })
+        muestra = MuestraMetrica.objects.get(estacion=self.estacion)
+        self.assertEqual(muestra.cpu_carga_pct, 42.5)
+
+    def test_token_invalido_no_crea_nada(self):
+        manejar_metricas(self.estacion.codigo, {'token': 'malo', 'cpu_carga_pct': 99})
+        self.assertFalse(MuestraMetrica.objects.filter(estacion=self.estacion).exists())
+
+
+class CodigoDesdeTopicoTests(TestCase):
+    def test_extrae_el_codigo_de_estacion(self):
+        self.assertEqual(_codigo_desde_topico('/saidsof/agente/ML001-A/heartbeat/'), 'ML001-A')
+
+    def test_topico_corto_devuelve_vacio(self):
+        self.assertEqual(_codigo_desde_topico('/saidsof/'), '')
+
+
+class OnMessageDispatchTests(TestCase):
+    """Cubre el enrutamiento por tópico de Command._on_message (run_mqtt_worker.py)
+    con los handlers reales (sin mockear), incluida la respuesta de enrolamiento."""
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.command = Command()
+
+    def test_heartbeat_dispatcha_a_manejar_heartbeat(self):
+        msg = _msg('/saidsof/agente/ML001-A/heartbeat/', {
+            'token': self.estacion.token_enrolamiento, 'version_pos': '4.2.1',
+        })
+        self.command._on_message(MagicMock(), None, msg)
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.version_pos, '4.2.1')
+
+    def test_excepcion_del_handler_no_se_propaga(self):
+        # 'despliegue_id' ausente + paso válido: el handler intentará crear un
+        # ResultadoDespliegue con despliegue_id=None y fallará por FK — el catch-all
+        # de _on_message debe absorberlo, no tumbar el worker.
+        msg = _msg('/saidsof/agente/ML001-A/despliegue_estado/', {
+            'token': self.estacion.token_enrolamiento, 'paso': EventoDespliegue.Paso.RECIBIDO,
+        })
+        self.command._on_message(MagicMock(), None, msg)  # no debe lanzar
+
+    def test_enrolamiento_publica_respuesta_por_el_topico_correcto(self):
+        client = MagicMock()
+        msg = _msg('/saidsof/enrolamiento/solicitar/', {'codigo': 'ML001-B', 'hardware_id': 'HW2'})
+        self.command._on_message(client, None, msg)
+        client.publish.assert_called_once()
+        topico_publicado = client.publish.call_args[0][0]
+        self.assertEqual(topico_publicado, '/saidsof/enrolamiento/respuesta/ML001-B/')

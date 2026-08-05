@@ -40,6 +40,15 @@ services:
       EMQX_AUTHENTICATION__1__MECHANISM: password_based
       EMQX_AUTHENTICATION__1__BACKEND: built_in_database
       EMQX_AUTHENTICATION__1__ENABLE: "true"
+      # Autorización: declarar built_in_database como fuente reemplaza la fuente por
+      # defecto de EMQX (un archivo cuya última regla es `{allow, all}` — confirmado
+      # probando contra una instancia real; con esa fuente presente, no_match=deny no
+      # alcanza, porque SIEMPRE hay una regla que matchea antes de llegar a no_match).
+      # bootstrap-emqx.sh siembra las reglas por usuario en esta fuente.
+      EMQX_AUTHORIZATION__SOURCES__1__TYPE: built_in_database
+      EMQX_AUTHORIZATION__SOURCES__1__ENABLE: "true"
+      # Deniega lo que no tenga una regla explícita en built_in_database.
+      EMQX_AUTHORIZATION__NO_MATCH: "deny"
       # Listener MQTT sobre TLS (8883) usando los certs montados en ./certs
       EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
       EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/cert.pem
@@ -86,6 +95,12 @@ services:
       # Acceso remoto (MeshCentral) — opcional, ver servicio `meshcentral` más abajo.
       # Vacío por defecto: sin MESHCENTRAL_MESH_ID el botón de "instalar agente" y los
       # links de escritorio/terminal remotos no funcionan, pero el resto del panel sí.
+      # Mismos defaults que MESHCENTRAL_CONFIG en base.py — si deploy/.env no las define,
+      # docker compose igual pasaría "" al contenedor (no "ausente"), y env('X', default=Y)
+      # de django-environ NO aplica default a una var que SÍ existe pero está vacía. Sin
+      # este ":-<default>" acá, un .env incompleto rompería el default en silencio (a
+      # diferencia de COMANDO_HMAC_SECRET, que si falta hace tronar el arranque, esto no
+      # truena, solo genera links rotos). Solo las necesita `web`, no `worker`.
       MESHCENTRAL_SERVER_URL: ${MESHCENTRAL_SERVER_URL:-https://localhost:443}
       MESHCENTRAL_MESH_ID: ${MESHCENTRAL_MESH_ID:-}
       MESHCENTRAL_AGENT_ARCH_ID: ${MESHCENTRAL_AGENT_ARCH_ID:-4}

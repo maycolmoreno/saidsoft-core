@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth.models import User
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import TestCase
 from django.utils import timezone
 
@@ -83,3 +83,63 @@ class GenerarEjecucionesProgramadasTaskTests(TestCase):
 
         self.assertTrue(EjecucionScript.objects.filter(programado=programado).exists())
         self.assertIn('1 ejecución', resultado.get())
+
+
+class CambiarNodoPosTests(TestCase):
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX002')
+        farmacia = Farmacia.objects.create(codigo='ML002', grupo=self.grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML002-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='operador', password='x')
+
+    def _correr(self, **overrides):
+        opciones = {
+            'unidad_negocio': 'SG', 'grupo': 'TRX002', 'nodo': 'trx002', 'usuario': 'operador',
+        }
+        opciones.update(overrides)
+        call_command('cambiar_nodo_pos', **opciones)
+
+    def test_nodo_invalido_rechaza_sin_tocar_la_base(self):
+        with self.assertRaises(CommandError):
+            self._correr(nodo='trx002"; Remove-Item C:\\ -Recurse')
+        self.assertFalse(Script.objects.exists())
+
+    def test_unidad_negocio_inexistente(self):
+        with self.assertRaises(CommandError):
+            self._correr(unidad_negocio='NOEXISTE')
+
+    def test_grupo_inexistente(self):
+        with self.assertRaises(CommandError):
+            self._correr(grupo='NOEXISTE')
+
+    def test_usuario_inexistente(self):
+        with self.assertRaises(CommandError):
+            self._correr(usuario='noexiste')
+
+    def test_arma_y_envia_en_una_sola_pasada(self):
+        self._correr()
+
+        script = Script.objects.get(es_adhoc=True)
+        self.assertIn('trx002', script.contenido)
+        self.assertIn("SelectSingleNode(\"//add[@key='Bdd']\")", script.contenido)
+        self.assertEqual(script.unidad_negocio, self.sg)
+
+        ejecucion = EjecucionScript.objects.get(script=script)
+        self.assertEqual(ejecucion.destino_tipo, EjecucionScript.DestinoTipo.GRUPOS)
+        self.assertEqual(list(ejecucion.grupos.all()), [self.grupo])
+        self.assertEqual(ejecucion.resultados.count(), 1)
+        self.assertEqual(ejecucion.resultados.first().estacion, self.estacion)
+
+    def test_no_llega_a_estacion_de_otro_grupo(self):
+        otro_grupo = Grupo.objects.create(codigo='TRX003')
+        otra_farmacia = Farmacia.objects.create(codigo='ML003', grupo=otro_grupo, unidad_negocio=self.sg)
+        Estacion.objects.create(
+            codigo='ML003-A', farmacia=otra_farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self._correr()
+        ejecucion = EjecucionScript.objects.get()
+        self.assertEqual(ejecucion.resultados.count(), 1)
+        self.assertEqual(ejecucion.resultados.first().estacion.codigo, 'ML002-A')
