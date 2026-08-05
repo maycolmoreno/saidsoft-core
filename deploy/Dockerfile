@@ -23,6 +23,11 @@ RUN useradd --create-home appuser && chown -R appuser:appuser /app
 USER appuser
 
 COPY --chown=appuser:appuser deploy/entrypoint.sh /entrypoint.sh
+# Defensivo: el bit de ejecución se pierde fácil al editar en Windows (ver
+# .gitattributes) — asegurarlo acá también para que el build nunca dependa de
+# que el checkout lo haya preservado bien. chown ya deja a appuser como dueño,
+# así que no hace falta volver a root para esto.
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 8000
 ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,5 @@
+# Este proyecto se desarrolla en Windows pero los scripts .sh corren dentro de
+# contenedores Linux (ENTRYPOINT de Docker, bootstrap de EMQX, certs de dev) —
+# forzar LF siempre evita el clásico "exec: /entrypoint.sh: permission denied"
+# / "bad interpreter" por CRLF colado en el shebang.
+*.sh text eol=lf
