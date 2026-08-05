@@ -641,6 +641,22 @@ class ReporteCumplimientoMultiTenantTests(TestCase):
         self.assertContains(resp, '>TRX001<', count=1)
 
 
+class DashboardTests(TestCase):
+    def setUp(self):
+        usuario = User.objects.create_user(username='u_dashboard', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+
+    def test_dashboard_con_latido_de_worker_reciente_no_revienta(self):
+        from apps.mqtt_worker.models import WorkerHeartbeat
+        from apps.mqtt_worker.services import NOMBRE_WORKER_MQTT
+
+        WorkerHeartbeat.objects.create(nombre=NOMBRE_WORKER_MQTT, ultimo_latido=timezone.now())
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.context['worker_mqtt_activo'])
+
+
 class SoftwarePanelMultiTenantTests(TestCase):
     """Catálogo de software (Fase 2, panel HTMX): mismo criterio "compartida o del
     tenant" que ya usa Script, y misma verificación de acceso puntual que el resto
