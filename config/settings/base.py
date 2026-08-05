@@ -205,3 +205,30 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 60.0 * 60 * 24,  # diario
     },
 }
+
+# El handler "console" del LOGGING por defecto de Django viene filtrado por
+# require_debug_true: con DEBUG=False (producción) los 500 y los logger.exception()
+# de la app (ej. apps.mqtt_worker.services, apps.catalogo.services) no llegan a
+# ninguna parte salvo que haya ADMINS + email configurados. En un contenedor,
+# stdout/stderr ES el log (lo captura `docker compose logs`), así que acá se manda
+# todo ahí sin ese filtro.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+    },
+}
