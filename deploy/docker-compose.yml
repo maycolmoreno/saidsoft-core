@@ -46,6 +46,12 @@ services:
       EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /opt/emqx/etc/certs/key.pem
       # Desactiva el listener TCP sin cifrar: los agentes deben hablar solo por TLS.
       EMQX_LISTENERS__TCP__DEFAULT__ENABLE: "false"
+      # wss:default (websocket-TLS, 8084) viene habilitado por defecto en la imagen y no
+      # lo usa este proyecto — pero igual exige cert/key en la misma ruta montada por
+      # ./certs, y si el volumen está vacío (certs no generados aún) su fallo tumba TODO
+      # el nodo EMQX, no solo ese listener (visto en producción: crash loop completo por
+      # "no_cert" en wss mientras ssl:8883/ws:8083 sí arrancaban). Desactivarlo explícito.
+      EMQX_LISTENERS__WSS__DEFAULT__ENABLE: "false"
     volumes:
       - emqx_data:/opt/emqx/data
       - ./certs:/opt/emqx/etc/certs:ro          # cert.pem / key.pem para el listener TLS
