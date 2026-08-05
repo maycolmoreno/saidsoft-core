@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'apps.scripts',
     'apps.cumplimiento',
     'apps.software',
+    'apps.integraciones',
     'apps.panel',
 ]
 
