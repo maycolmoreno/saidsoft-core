@@ -6,7 +6,10 @@ set -e
 
 . "$(dirname "$0")/.env"
 
-EMQX_API="${EMQX_API:-http://localhost:18083/api/v5}"
+# El dashboard de EMQX corre en el puerto 18083 DENTRO del contenedor, pero
+# docker-compose.yml lo publica remapeado a 8082 en el host (rango 8080-8085
+# abierto en firewall, ver el comentario junto a "dashboard" en ese archivo).
+EMQX_API="${EMQX_API:-http://localhost:8082/api/v5}"
 
 # La API de EMQX 5.x no acepta Basic Auth con el usuario del dashboard en estos
 # endpoints; hay que loguearse primero y usar el token Bearer.
