@@ -111,30 +111,60 @@ No es urgente para el piloto (la tabla funciona igual sin hypertable, solo sin
 particionado/compresión nativa); sí conviene resolverlo antes del rollout completo a
 ~1.800 equipos, cuando el volumen de `muestra_metrica` empiece a pesar de verdad.
 
-## MeshCentral (acceso remoto) — opcional, no validado end-to-end
+## MeshCentral (acceso remoto) — pasos 1-5 validados end-to-end (6-ago-2026)
 
-El servicio `meshcentral` en `docker-compose.yml` es **nuevo y sin correr todavía**: se
-armó siguiendo la guía oficial (imagen `ghcr.io/ylianst/meshcentral`, variables
-`HOSTNAME`/`NODE_ENV`/`ALLOW_NEW_ACCOUNTS`, volúmenes `meshcentral-data`/`meshcentral-files`),
-pero nadie lo levantó contra un servidor real todavía. Antes de depender de él en
-producción:
+El paso 6 (ajustar los `VIEWMODE`) queda pendiente de verificar contra una consola real.
 
-1. Completar `MESHCENTRAL_HOSTNAME`/`MESHCENTRAL_SERVER_URL` en `deploy/.env` (mismo
-   dominio, con y sin esquema) y levantarlo: `docker compose -f deploy/docker-compose.yml up -d meshcentral`.
-2. Entrar a `https://<MESHCENTRAL_HOSTNAME>:8083` (o el puerto que exponga el proxy TLS)
-   con `MESHCENTRAL_ALLOW_NEW_ACCOUNTS=true` — la primera cuenta creada queda como admin.
-   **Volver `ALLOW_NEW_ACCOUNTS` a `false` y reiniciar el contenedor** apenas se crea esa cuenta.
-3. Crear un device group único (ej. "Estaciones SAIDSOFT"), copiar su Mesh ID a
-   `MESHCENTRAL_MESH_ID` en `deploy/.env` y reiniciar `web` (`docker compose -f deploy/docker-compose.yml up -d web`).
-4. Instalar el agente en una estación piloto desde el panel ("Instalar agente ahora")
-   y verificar que aparece en la consola de MeshCentral.
-5. Abrir el link `?node=<id>` una vez a mano, navegar a las pestañas de escritorio y
+El servicio `meshcentral` en `docker-compose.yml` usa `config.json` como fuente de
+verdad (no variables de entorno — ver por qué en el comentario del volumen en
+`docker-compose.yml`). Antes de levantarlo:
+
+```bash
+cp deploy/meshcentral/config.json.example deploy/meshcentral/config.json
+#    Editar deploy/meshcentral/config.json: "cert" con la IP o dominio público del
+#    servidor (mismo criterio que ALLOWED_HOSTS — sin esquema, sin puerto).
+```
+
+Pasos (probados de punta a punta contra un despliegue real, no solo compilados):
+
+1. Levantar: `docker compose -f deploy/docker-compose.yml up -d meshcentral`. La
+   primera vez genera certificados propios, tarda uno o dos minutos.
+2. Entrar a `https://<IP-o-dominio>:8083` (certificado self-signed — aceptar la
+   advertencia del navegador) y crear la primera cuenta: **queda como administrador
+   del sitio automáticamente**. Apenas la crees, poné `"NewAccounts": false` en
+   `config.json`, bajá y volvé a levantar `meshcentral` para que nadie más se registre.
+3. En la consola, crear un device group único (ej. "Estaciones SAIDSOFT"). Al agregar
+   un agente ("Add Agent" → cualquier link de descarga), el Mesh ID queda en la URL
+   (parámetro `meshid=`, una cadena larga) — copiarlo.
+4. Poner ese Mesh ID en `MESHCENTRAL_MESH_ID` de `deploy/.env` y reiniciar `web`
+   (`docker compose -f deploy/docker-compose.yml up -d web`).
+5. Instalar el agente en una estación piloto desde el panel ("Instalar agente ahora")
+   y verificar que aparece en el device group de la consola de MeshCentral.
+6. Abrir el link `?node=<id>` una vez a mano, navegar a las pestañas de escritorio y
    terminal, y ajustar `MESHCENTRAL_VIEWMODE_ESCRITORIO`/`_TERMINAL` en `deploy/.env`
    con los valores que MeshCentral use en su propia URL (los `.env.prod.example` traen
    `11`/`12` sin verificar).
-6. A partir de ~50 estaciones vinculadas, sumar MongoDB (`USE_MONGODB`/`MONGO_URL`,
+7. A partir de ~50 estaciones vinculadas, sumar MongoDB (`USE_MONGODB`/`MONGO_URL`,
    no incluido en este stack) — NeDB (archivo, el default) alcanza para el piloto pero
    no está pensado para la escala completa (~1.800 equipos) del plan.
+
+**Dos bugs reales encontrados en el primer piloto**, ya corregidos en
+`config.json.example` — mencionados acá porque son fáciles de reintroducir editando
+`config.json` a mano sin saber por qué existen:
+- `"agentTimeStampServer": false` — por defecto, MeshCentral firma los ejecutables del
+  agente contra un servidor de timestamping público (`timestamp.comodoca.com`). Si la
+  red del servidor no permite esa salida (común en redes de farmacia con salida
+  restringida), el arranque se cuelga indefinidamente a mitad del firmado — sin error,
+  sin timeout visible, `docker logs` simplemente deja de avanzar. Se ve con
+  `docker stats <container>` en `0.00% CPU` (bloqueado, no lento) y confirmando con
+  `docker exec <container> cat /proc/<pid>/net/tcp` una conexión saliente con
+  retransmisiones sin respuesta.
+- `"aliasPort": 8083` — sin esto, MeshCentral no sabe que Docker le remapea el puerto
+  443 interno al 8083 externo, y genera los links de instalación de agente
+  (`meshServer=wss://...`) apuntando al 443 interno. El instalador corre sin ningún
+  error y el servicio de Windows queda "Running", pero el agente nunca logra conectarse
+  de vuelta — hay que revisar `C:\Program Files\Mesh Agent\MeshAgent.msh` (línea
+  `MeshServer=`) para notar el puerto equivocado.
 
 Es un bolt-on completamente aparte del canal MQTT/HMAC del agente SAIDSOFT: si algo
 falla acá, no afecta despliegues, heartbeats ni Scripts RMM.

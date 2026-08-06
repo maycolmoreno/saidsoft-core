@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Ylianst/MeshCentral/master/meshcentral-config-schema.json",
+  "settings": {
+    "plugins": {
+      "enabled": false
+    },
+    "cert": "CAMBIAR_POR_LA_IP_O_DOMINIO_PUBLICO_DEL_SERVIDOR",
+    "agentTimeStampServer": false,
+    "port": 443,
+    "aliasPort": 8083,
+    "redirPort": 80,
+    "AgentPong": 300,
+    "tlsOffload": false,
+    "SelfUpdate": false,
+    "AllowFraming": false,
+    "WebRTC": false
+  },
+  "domains": {
+    "": {
+      "minify": false,
+      "NewAccounts": false,
+      "localSessionRecording": true,
+      "allowedOrigin": false
+    }
+  }
+}

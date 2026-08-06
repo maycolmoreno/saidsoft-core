@@ -220,19 +220,27 @@ services:
     image: ghcr.io/ylianst/meshcentral:latest
     restart: unless-stopped
     environment:
-      HOSTNAME: ${MESHCENTRAL_HOSTNAME}
       NODE_ENV: production
-      # "true" solo para crear la primera cuenta (admin) en el primer arranque; apagar
-      # después (ver paso en deploy/README-produccion.md) para que nadie más se registre.
-      ALLOW_NEW_ACCOUNTS: ${MESHCENTRAL_ALLOW_NEW_ACCOUNTS:-false}
       # NeDB (archivo) alcanza para el piloto; a partir de ~50 estaciones vinculadas,
       # sumar un servicio mongo y USE_MONGODB/MONGO_URL (no incluido: fuera de alcance
       # de este stack hasta que el piloto de MeshCentral esté validado).
     volumes:
       - meshcentral_data:/opt/meshcentral/meshcentral-data
       - meshcentral_files:/opt/meshcentral/meshcentral-files
+      # config.json real (gitignored, copiar desde config.json.example — ver
+      # deploy/README-produccion.md). No usamos HOSTNAME/ALLOW_NEW_ACCOUNTS por env var
+      # a propósito: el propio entrypoint de la imagen solo los lee la primerísima vez
+      # que NO existe un config.json ("Pre-existing config found, not recreating..." en
+      # cualquier arranque siguiente) — con este bind mount, config.json SIEMPRE
+      # preexiste desde el primer arranque, así que esas env vars nunca se leerían y
+      # solo generarían confusión. Todo se edita acá.
+      - ./meshcentral/config.json:/opt/meshcentral/meshcentral-data/config.json:ro
     ports:
       - "8083:443"   # remapeado a 8083 (rango 8080-8085 abierto en firewall); detrás de proxy TLS en prod real
+      # config.json.example ya trae aliasPort:8083 para que coincida con este remapeo —
+      # sin eso, MeshCentral genera los links de instalación de agente con el puerto
+      # interno (443) en vez del externo real, y ningún agente logra conectarse aunque
+      # el instalador corra sin error (encontrado en el primer piloto real, 6-ago-2026).
 
 volumes:
   db_data:
