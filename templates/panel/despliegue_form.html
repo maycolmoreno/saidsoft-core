@@ -39,21 +39,22 @@
         {{ form.destino_tipo }}
     </div>
 
-    <div class="grid grid-cols-3 gap-4">
-        <div>
+    <div>
+        <div data-destino-campo="grupos" hidden>
             <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Grupos</label>
             {{ form.grupos }}
         </div>
-        <div>
+        <div data-destino-campo="farmacias" hidden>
             <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Farmacias</label>
             {{ form.farmacias }}
         </div>
-        <div>
+        <div data-destino-campo="estaciones" hidden>
             <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Estaciones</label>
             {{ form.estaciones }}
         </div>
+        <p class="text-xs text-[var(--text-faint)]" data-destino-vacio>Elegí un destino arriba para ver a quién aplica.</p>
+        <p class="text-xs text-[var(--text-faint)]" data-destino-cadena hidden>Se aplica a toda la cadena de la unidad de negocio — no hace falta elegir nada más abajo.</p>
     </div>
-    <p class="text-xs text-[var(--text-faint)] -mt-3">Completa solo el campo que corresponda al destino elegido arriba.</p>
 
     <div>
         <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Umbral de error para freno automático (%)</label>
@@ -65,4 +66,28 @@
         <a href="{% url 'panel:despliegues_lista' %}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
     </div>
 </form>
+
+<script>
+(function () {
+    // Solo se ve el selector (Grupos/Farmacias/Estaciones) que corresponde al Destino
+    // elegido — antes se mostraban los 3 siempre, con solo un texto pidiendo llenar el
+    // correcto, lo que confundía sobre cuál aplicaba.
+    var select = document.getElementById('id_destino_tipo');
+    var campos = document.querySelectorAll('[data-destino-campo]');
+    var vacio = document.querySelector('[data-destino-vacio]');
+    var cadena = document.querySelector('[data-destino-cadena]');
+
+    function actualizar() {
+        var actual = select.value;
+        campos.forEach(function (campo) {
+            campo.hidden = campo.dataset.destinoCampo !== actual;
+        });
+        vacio.hidden = actual !== '';
+        cadena.hidden = actual !== 'cadena';
+    }
+
+    select.addEventListener('change', actualizar);
+    actualizar();
+})();
+</script>
 {% endblock %}
