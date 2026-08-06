@@ -155,9 +155,10 @@ MESHCENTRAL_CONFIG = {
     'AGENT_ARCH_ID': env.int('MESHCENTRAL_AGENT_ARCH_ID', default=4),  # 4 = agente Windows x64
     'INSTALL_FLAGS': env.int('MESHCENTRAL_INSTALL_FLAGS', default=2),  # 2 = solo servicio, sin UI
     # Valores de "viewmode" para saltar directo a escritorio/terminal en el link del
-    # dispositivo — confirmar contra la instancia real (ver README); si no aplican, el
-    # link cae de todos modos a la página general del dispositivo.
-    'VIEWMODE_ESCRITORIO': env('MESHCENTRAL_VIEWMODE_ESCRITORIO', default='11'),
+    # dispositivo. Verificados contra una instancia real (6-ago-2026): MeshCentral
+    # v1.2.4 usa viewmode=10 para escritorio (no 11, el valor sin confirmar que había
+    # antes) y viewmode=12 para terminal.
+    'VIEWMODE_ESCRITORIO': env('MESHCENTRAL_VIEWMODE_ESCRITORIO', default='10'),
     'VIEWMODE_TERMINAL': env('MESHCENTRAL_VIEWMODE_TERMINAL', default='12'),
 }
 

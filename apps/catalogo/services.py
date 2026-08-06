@@ -201,7 +201,12 @@ def _url_dispositivo_meshcentral(estacion, viewmode: str) -> str | None:
     if not estacion.meshcentral_node_id:
         return None
     conf = settings.MESHCENTRAL_CONFIG
-    return f"{conf['SERVER_URL']}/index.html?node={estacion.meshcentral_node_id}&viewmode={viewmode}"
+    # Verificado contra una instancia real (6-ago-2026): MeshCentral v1.2.4 arma sus
+    # propios links de escritorio/terminal como /login?viewmode=X&gotonode=Y — no
+    # /index.html?node=Y&viewmode=X (formato viejo/de otra versión, daba 404 en la
+    # práctica). "/login" funciona igual estando ya autenticado: redirige directo al
+    # dispositivo.
+    return f"{conf['SERVER_URL']}/login?viewmode={viewmode}&gotonode={estacion.meshcentral_node_id}"
 
 
 def url_escritorio_remoto_meshcentral(estacion) -> str | None:
@@ -248,7 +253,7 @@ def url_grabaciones_meshcentral(estacion) -> str | None:
     if not estacion.meshcentral_node_id:
         return None
     conf = settings.MESHCENTRAL_CONFIG
-    return f"{conf['SERVER_URL']}/index.html?node={estacion.meshcentral_node_id}"
+    return f"{conf['SERVER_URL']}/login?gotonode={estacion.meshcentral_node_id}"
 
 
 def calcular_matriz_cumplimiento(unidades_negocio, *, umbral_online_minutos=5):

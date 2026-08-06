@@ -86,11 +86,11 @@ class MeshCentralServiciosTests(TestCase):
         url_terminal = url_terminal_remoto_meshcentral(self.estacion)
         url_grabaciones = url_grabaciones_meshcentral(self.estacion)
 
-        self.assertIn('node=nodeid123', url_escritorio)
+        self.assertIn('gotonode=nodeid123', url_escritorio)
         self.assertIn('viewmode=11', url_escritorio)
-        self.assertIn('node=nodeid123', url_terminal)
+        self.assertIn('gotonode=nodeid123', url_terminal)
         self.assertIn('viewmode=12', url_terminal)
-        self.assertIn('node=nodeid123', url_grabaciones)
+        self.assertIn('gotonode=nodeid123', url_grabaciones)
 
 
 class MultiTenantAislamientoTests(TestCase):
