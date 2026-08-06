@@ -111,9 +111,7 @@ No es urgente para el piloto (la tabla funciona igual sin hypertable, solo sin
 particionado/compresión nativa); sí conviene resolverlo antes del rollout completo a
 ~1.800 equipos, cuando el volumen de `muestra_metrica` empiece a pesar de verdad.
 
-## MeshCentral (acceso remoto) — pasos 1-5 validados end-to-end (6-ago-2026)
-
-El paso 6 (ajustar los `VIEWMODE`) queda pendiente de verificar contra una consola real.
+## MeshCentral (acceso remoto) — validado end-to-end (6-ago-2026)
 
 El servicio `meshcentral` en `docker-compose.yml` usa `config.json` como fuente de
 verdad (no variables de entorno — ver por qué en el comentario del volumen en
@@ -139,11 +137,13 @@ Pasos (probados de punta a punta contra un despliegue real, no solo compilados):
 4. Poner ese Mesh ID en `MESHCENTRAL_MESH_ID` de `deploy/.env` y reiniciar `web`
    (`docker compose -f deploy/docker-compose.yml up -d web`).
 5. Instalar el agente en una estación piloto desde el panel ("Instalar agente ahora")
-   y verificar que aparece en el device group de la consola de MeshCentral.
-6. Abrir el link `?node=<id>` una vez a mano, navegar a las pestañas de escritorio y
-   terminal, y ajustar `MESHCENTRAL_VIEWMODE_ESCRITORIO`/`_TERMINAL` en `deploy/.env`
-   con los valores que MeshCentral use en su propia URL (los `.env.prod.example` traen
-   `11`/`12` sin verificar).
+   y verificar que aparece en el device group de la consola de MeshCentral. Copiar su
+   Node ID (visible en la URL al entrar a su ficha) y pegarlo en la sección "Acceso
+   remoto (MeshCentral)" del detalle de la estación en el panel, para vincularla.
+6. Probar "Abrir escritorio remoto"/"Abrir terminal remota" desde el panel — los
+   defaults de `MESHCENTRAL_VIEWMODE_ESCRITORIO`/`_TERMINAL` (`10`/`12`) ya están
+   verificados contra una instancia real, no deberían necesitar ajuste salvo que
+   cambien de versión de MeshCentral.
 7. A partir de ~50 estaciones vinculadas, sumar MongoDB (`USE_MONGODB`/`MONGO_URL`,
    no incluido en este stack) — NeDB (archivo, el default) alcanza para el piloto pero
    no está pensado para la escala completa (~1.800 equipos) del plan.
