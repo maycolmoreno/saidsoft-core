@@ -61,6 +61,78 @@ sh deploy/bootstrap-emqx.sh
 # 8. (Opcional) Acceso remoto — configurar MeshCentral, ver sección abajo.
 ```
 
+## Actualizar un despliegue existente
+
+```bash
+cd /ruta/al/proyecto
+git pull
+cd deploy
+sudo docker-compose down                              # NO usar -v: borra los volúmenes (db, emqx, etc.)
+sudo docker-compose --env-file .env up -d --build
+sudo docker-compose ps
+```
+
+`down` antes de `up` no es opcional si usás `docker-compose` v1 (ver más abajo) — evita
+el bug de "recrear" contenedores. Si solo cambió código Python (no `docker-compose.yml`
+ni las plantillas de `deploy/certs`/`deploy/meshcentral`), `--build` es suficiente sin
+tocar `certs`/`meshcentral/config.json`, que son archivos aparte del código y sobreviven
+al rebuild.
+
+## Problemas conocidos con `docker-compose` v1 (Ubuntu trae esta versión por defecto)
+
+`docker-compose` (el binario Python, v1.29.2, sin guion — distinto del plugin `docker
+compose` v2) está sin mantenimiento y tiene un bug conocido al **recrear** contenedores
+contra versiones nuevas de Docker Engine:
+
+```
+ERROR: for <servicio>  'ContainerConfig'
+...
+KeyError: 'ContainerConfig'
+```
+
+Pasa cada vez que corrés `up -d` y el contenedor de ese servicio **ya existe** (cambió
+una imagen, una variable de entorno, o un volumen). La solución que funcionó siempre en
+este despliegue: bajar el contenedor primero para que `up` solo tenga que *crearlo*, no
+*recrearlo* (el código de "recrear" es el que tiene el bug):
+
+```bash
+# Para todo el stack:
+sudo docker-compose down
+sudo docker-compose --env-file .env up -d --build
+
+# Para un solo servicio (más rápido si no cambió nada más):
+sudo docker-compose rm -sf <servicio>
+sudo docker-compose --env-file .env up -d <servicio>
+```
+
+Si un `down`/`rm` deja contenedores "huérfanos" con nombres raros (ej.
+`156311d1f0d7_deploy_web_1`, un hash en vez de `deploy_web_1`) — son restos de un
+intento de recreate que falló a mitad de camino, se pueden borrar con
+`sudo docker rm -f <nombre>` sin miedo, son solo contenedores parados.
+
+Otras diferencias de v1 encontradas en este despliegue: `docker-compose logs` exige las
+opciones **antes** del nombre del servicio (`logs --tail=50 web`, no
+`logs web --tail=50`); y no existe `docker compose` (v2, sin guion) instalado por
+default en Ubuntu — se puede sumar con `sudo apt-get install docker-compose-plugin` si
+se prefiere evitar todo esto (v2 no tiene este bug).
+
+## Sin proxy TLS todavía (piloto en LAN)
+
+`SECURE_SSL_REDIRECT`/`COOKIES_SOLO_HTTPS` (ambos `True` por defecto en
+`config/settings/produccion.py`) asumen que hay un proxy TLS real delante del panel. Sin
+uno (típico en un piloto dentro de la LAN, accediendo por IP), Django redirige
+`http://` → `https://` hacia un puerto donde nadie sirve HTTPS, y el navegador se queda
+esperando indefinidamente ("conexión caducada" o similar) — no es un problema de red ni
+de firewall, aunque lo parezca. Mientras no haya proxy TLS real, poné en `deploy/.env`:
+
+```
+SECURE_SSL_REDIRECT=False
+COOKIES_SOLO_HTTPS=False
+```
+
+Volver a `True` apenas haya HTTPS real delante — dejarlo en `False` permanentemente es
+un riesgo real (cookies de sesión viajando en texto plano).
+
 ## Servicios
 
 | Servicio | Imagen | Rol |
