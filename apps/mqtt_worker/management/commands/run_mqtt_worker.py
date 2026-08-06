@@ -8,6 +8,7 @@ Uso: python manage.py run_mqtt_worker
 import json
 import logging
 import signal
+import threading
 
 import paho.mqtt.client as mqtt
 from django.conf import settings
@@ -50,6 +51,7 @@ class Command(BaseCommand):
         super().__init__(*args, **kwargs)
         self._client = None
         self._ultimo_latido_guardado = None
+        self._detener = threading.Event()
 
     def handle(self, *args, **options):
         conf = settings.MQTT_CONFIG
@@ -77,13 +79,25 @@ class Command(BaseCommand):
         signal.signal(signal.SIGTERM, self._manejar_apagado)
         signal.signal(signal.SIGINT, self._manejar_apagado)
 
+        # Latido propio en un hilo aparte, independiente de que lleguen mensajes: antes
+        # solo se refrescaba desde _on_message, así que un worker sano pero sin tráfico
+        # (pocas estaciones conectadas, o ninguna todavía) se veía "sin señal" en el
+        # dashboard a los 90s (ver WORKER_MQTT_UMBRAL_SEGUNDOS en panel/views/dashboard.py)
+        # aunque siguiera conectado al broker sin problema.
+        threading.Thread(target=self._latido_periodico, daemon=True).start()
+
         self.stdout.write(self.style.NOTICE(f'Conectando a {conf["HOST"]}:{conf["PORT"]}...'))
         client.connect(conf['HOST'], conf['PORT'], keepalive=60)
         client.loop_forever()
         self.stdout.write(self.style.NOTICE('Worker MQTT detenido.'))
 
+    def _latido_periodico(self):
+        while not self._detener.wait(LATIDO_INTERVALO_SEGUNDOS):
+            registrar_latido_worker(NOMBRE_WORKER_MQTT)
+
     def _manejar_apagado(self, signum, frame):
         self.stdout.write(self.style.NOTICE('Señal de apagado recibida, desconectando del broker...'))
+        self._detener.set()
         if self._client is not None:
             self._client.disconnect()
 

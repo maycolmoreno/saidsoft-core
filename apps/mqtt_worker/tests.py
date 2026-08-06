@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -153,6 +154,37 @@ class ApagadoOrdenadoTests(TestCase):
         cmd = Command()
         cmd._client = None
         cmd._manejar_apagado(signum=15, frame=None)  # no debe lanzar
+
+
+class LatidoPeriodicoTests(TestCase):
+    """El latido del worker debe seguir refrescándose aunque no lleguen mensajes de
+    ninguna estación (ej. pocas o ninguna estación conectada todavía) — antes solo se
+    escribía desde _on_message, así que un worker sano se veía "sin señal" en el
+    dashboard a los 90s sin tráfico."""
+
+    def test_escribe_el_latido_periodicamente_sin_necesitar_mensajes(self):
+        cmd = Command()
+        with patch('apps.mqtt_worker.management.commands.run_mqtt_worker.LATIDO_INTERVALO_SEGUNDOS', 0.05), \
+                patch('apps.mqtt_worker.management.commands.run_mqtt_worker.registrar_latido_worker') as mock_registrar:
+            hilo = threading.Thread(target=cmd._latido_periodico, daemon=True)
+            hilo.start()
+            hilo.join(timeout=0.5)
+            cmd._detener.set()
+            hilo.join(timeout=1)
+
+        mock_registrar.assert_called_with(NOMBRE_WORKER_MQTT)
+        self.assertGreaterEqual(mock_registrar.call_count, 1)
+
+    def test_sigterm_detiene_el_hilo_de_latido(self):
+        cmd = Command()
+        with patch('apps.mqtt_worker.management.commands.run_mqtt_worker.LATIDO_INTERVALO_SEGUNDOS', 0.05), \
+                patch('apps.mqtt_worker.management.commands.run_mqtt_worker.registrar_latido_worker'):
+            hilo = threading.Thread(target=cmd._latido_periodico, daemon=True)
+            hilo.start()
+            cmd._manejar_apagado(signum=15, frame=None)
+            hilo.join(timeout=1)
+
+        self.assertFalse(hilo.is_alive())
 
 
 @override_settings(BITLOCKER_ENCRYPTION_KEY=BITLOCKER_KEY_TEST)
