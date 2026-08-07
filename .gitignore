@@ -22,3 +22,19 @@ db.sqlite3
 /agente-prueba/dist/
 /agente-prueba/*.spec
 /agente-prueba/identidad.json
+
+# deploy/docs/prueba-agente: prueba real contra producción del agente .NET.
+# instalar-agente.ps1, desplegar-agente-gpo.ps1, README.md, Instalar.bat y
+# config.ejemplo.txt SÍ se versionan (documentación/scripts sin secretos). Lo
+# de abajo no: certs (mismo criterio que deploy/certs/*.pem), identidad real
+# de la estación de prueba, config.txt con secretos reales en texto plano
+# (MqttPassword/ComandoHmacSecret), y el publish self-contained del agente
+# .NET (binarios de ~76MB cada uno — no pertenece al historial de este repo).
+/deploy/docs/cert.pem
+/deploy/docs/prueba-agente/cert.pem
+/deploy/docs/prueba-agente/agente_prueba.exe
+/deploy/docs/prueba-agente/identidad.json
+/deploy/docs/prueba-agente/paquete-instalacion/cert.pem
+/deploy/docs/prueba-agente/paquete-instalacion/config.txt
+/deploy/docs/prueba-agente/paquete-instalacion/Saidsoft.Agente.exe
+/deploy/docs/prueba-agente/paquete-instalacion/agente/
