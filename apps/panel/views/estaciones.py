@@ -41,14 +41,19 @@ def estaciones_lista(request):
 
 
 @login_required
-def estaciones_pendientes_partial(request):
+def estaciones_pendientes_partial(request, aviso=''):
     pendientes = scope_por_unidad_negocio(
         Estacion.objects.select_related('farmacia', 'farmacia__grupo').filter(
             estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
         ),
         request.user, 'farmacia__unidad_negocio',
     ).order_by('codigo')
-    return render(request, 'panel/estaciones_pendientes_partial.html', {'pendientes': pendientes})
+    # `aviso` se renderiza dentro del propio partial: las vistas de abajo devuelven
+    # este HTML por HTMX (sin recargar la página), así que un messages.error() no se
+    # vería hasta la próxima navegación completa.
+    return render(request, 'panel/estaciones_pendientes_partial.html', {
+        'pendientes': pendientes, 'aviso': aviso,
+    })
 
 
 @login_required
@@ -203,12 +208,25 @@ def estacion_bitlocker_ver_clave(request, pk):
 @require_POST
 def estaciones_aprobar_lote(request):
     ids = request.POST.getlist('estacion_ids')
+    if not ids:
+        # Antes esto no aprobaba nada y devolvía la tabla igual, sin decir por qué:
+        # indistinguible de "se aprobó y falló en silencio" para quien lo usa.
+        return estaciones_pendientes_partial(
+            request, aviso='No seleccionaste ninguna estación: marcá al menos una casilla antes de aprobar en lote.',
+        )
     estaciones = scope_por_unidad_negocio(
         Estacion.objects.filter(pk__in=ids, estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE),
         request.user, 'farmacia__unidad_negocio',
     )
+    aprobadas = 0
     for estacion in estaciones:
         estacion.estado_aprobacion = Estacion.EstadoAprobacion.APROBADA
         estacion.save(update_fields=['estado_aprobacion'])
         registrar_evento(usuario=request.user, accion='estacion.aprobar', objeto=estacion, request=request)
-    return estaciones_pendientes_partial(request)
+        aprobadas += 1
+    aviso = ''
+    if aprobadas < len(ids):
+        # Puede pasar si otro operador ya las aprobó, o si el filtro por unidad de
+        # negocio dejó afuera alguna de las que llegaron en el POST.
+        aviso = f'Se aprobaron {aprobadas} de {len(ids)} estaciones seleccionadas.'
+    return estaciones_pendientes_partial(request, aviso=aviso)

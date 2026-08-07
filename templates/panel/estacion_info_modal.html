@@ -1,4 +1,9 @@
-<div class="p-5 bg-[var(--card)] text-[var(--text)]" hx-trigger="every 2s [document.getElementById('modal-info').open]"
+{# El auto-refresco se apaga por completo mientras la clave de BitLocker está a la
+   vista: el poll re-renderiza el modal sin ella y la borraba de pantalla a los 2
+   segundos, obligando a pedirla de nuevo (y generando otro evento de auditoría por
+   cada intento). Se recupera al cerrar y volver a abrir el modal. #}
+<div class="p-5 bg-[var(--card)] text-[var(--text)]"
+     {% if not bitlocker_clave_revelada %}hx-trigger="every 2s [document.getElementById('modal-info').open]"{% endif %}
      hx-get="{% url 'panel:estacion_info_modal' estacion.pk %}"
      hx-target="#modal-info-content" hx-swap="innerHTML">
     <div class="flex items-center justify-between mb-4">
@@ -74,7 +79,11 @@
         <form hx-post="{% url 'panel:estacion_meshcentral_vincular' estacion.pk %}"
               hx-target="#modal-info-content" hx-swap="innerHTML" class="flex gap-2">
             {% csrf_token %}
+            {# hx-preserve: sin esto el refresco cada 2s reemplazaba este input mientras
+               se pega el Node ID (una cadena larga que se copia de la consola de
+               MeshCentral), dejándolo vacío antes de poder guardarlo. #}
             <input type="text" name="meshcentral_node_id" value="{{ estacion.meshcentral_node_id }}"
+                   id="meshcentral-node-id-{{ estacion.pk }}" hx-preserve="true"
                    placeholder="Node ID de MeshCentral"
                    class="flex-1 rounded-md px-2 py-1.5 text-xs bg-[var(--bg)] text-[var(--text)]"
                    style="border:1px solid var(--border);">

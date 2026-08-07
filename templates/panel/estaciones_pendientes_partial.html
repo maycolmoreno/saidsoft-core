@@ -1,3 +1,6 @@
+{% if aviso %}
+<p class="mb-3 text-sm px-3 py-2 rounded-md alert sev-warning">{{ aviso }}</p>
+{% endif %}
 {% if pendientes %}
 <div class="card mb-8" style="border-color:var(--warning-dim); overflow:hidden;">
     <div class="px-4 py-3 flex items-center justify-between text-sm font-medium" style="background:var(--warning-dim); color:var(--warning); border-bottom:1px solid var(--warning-dim);">
