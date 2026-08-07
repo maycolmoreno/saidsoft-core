@@ -435,6 +435,18 @@ mientras dura cada descarga. Alcanza para el piloto; a escala real (~1.800
 estaciones, aun con la distribución en cascada por caché de farmacia) esto necesita
 nginx sirviendo el volumen directo.
 
+**Quinto bug de la misma sesión, en el flujo de recuperación**: con el freno
+automático activado por el 404 del bug 4, "Reanudar" en el detalle del despliegue
+solo cambiaba el estado a `publicando` **sin volver a publicar nada por MQTT** — el
+operador reanudaba un despliegue que nunca reintentaba de verdad; solo avanzaba si
+el agente reconectaba por su cuenta y recogía el mensaje retenido original.
+Corregido con `reintentar_despliegue()` (`apps/despliegues/services.py`), que
+publica al tópico individual de cada estación pendiente en vez del tópico agregado
+de grupo/farmacia/cadena — así no le reenvía el paquete a las estaciones que ya lo
+aplicaron con éxito (les cerraría y reinstalaría el POS sin necesidad). Tests en
+`apps/despliegues/tests.py::ReintentarDespliegueTests` y
+`DespliegueReanudarVistaTests`.
+
 **I. Auditoría de bugs "ocultos" del panel a partir de los anteriores (6-ago-2026)
 — 🟢 corregidos:** los defectos de arriba tenían patrones repetibles, así que se
 auditó el panel entero buscando más casos de cada uno:
