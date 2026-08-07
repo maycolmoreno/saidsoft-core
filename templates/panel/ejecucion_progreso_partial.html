@@ -27,7 +27,7 @@
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.exit_code|default:"—" }}</td>
                 <td class="px-4 py-3">
                     {% if r.stdout or r.stderr %}
-                    <details>
+                    <details id="salida-{{ r.pk }}" hx-preserve="true">
                         <summary class="text-xs text-[var(--text-dim)] cursor-pointer hover:underline">Ver salida</summary>
                         {% if r.stdout %}<pre class="text-xs rounded p-2 mt-2 overflow-x-auto" style="background:#0E1626; color:#E7ECF3;">{{ r.stdout }}</pre>{% endif %}
                         {% if r.stderr %}<pre class="text-xs rounded p-2 mt-2 overflow-x-auto" style="background:#2A0E12; color:#FCA5A5;">{{ r.stderr }}</pre>{% endif %}
