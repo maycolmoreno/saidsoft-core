@@ -42,7 +42,9 @@ def _payload(solicitud: SolicitudInstalacion) -> dict:
         'aplicacion': va.aplicacion.nombre,
         'version': va.version,
         'accion': solicitud.accion,
-        'url': settings.ARCHIVOS_BASE_URL + va.instalador.url,
+        # rstrip('/') por el mismo motivo que en apps/despliegues/services.py: con
+        # barra final quedaba '//media/...' y el agente recibía un 404.
+        'url': settings.ARCHIVOS_BASE_URL.rstrip('/') + va.instalador.url,
         'sha256': va.sha256,
         'comando_instalacion_silenciosa': va.comando_instalacion_silenciosa,
         'comando_desinstalacion': va.comando_desinstalacion,

@@ -1,8 +1,12 @@
+import importlib
+import json
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.urls import clear_url_caches, resolve
+from django.views.static import serve
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
@@ -162,3 +166,54 @@ class VerificarCompletadoTests(_BaseDespliegueTests):
         self.assertFalse(verificar_completado(despliegue))
         despliegue.refresh_from_db()
         self.assertEqual(despliegue.estado, Despliegue.Estado.PUBLICANDO)
+
+
+class UrlDescargaAgenteTests(_BaseDespliegueTests):
+    """La URL que se le manda al agente para descargar el paquete.
+
+    Los dos casos de abajo salieron del primer despliegue real del piloto: el agente
+    reportaba "No se pudo descargar/verificar el paquete de ninguna fuente" sin más
+    detalle, y el 404 subyacente no se veía en ninguna parte del panel.
+    """
+
+    def _url_publicada(self, despliegue):
+        despliegue.estaciones.set([self._crear_estacion('ML001-A')])
+        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+            publicar_despliegue(despliegue)
+        return json.loads(mock_multiple.call_args.args[0][0]['payload'])['url']
+
+    @override_settings(ARCHIVOS_BASE_URL='http://10.0.0.1:8080')
+    def test_url_absoluta_bien_formada(self):
+        url = self._url_publicada(self._crear_despliegue())
+        self.assertTrue(url.startswith('http://10.0.0.1:8080/media/'), url)
+        self.assertNotIn('//media/', url)
+
+    @override_settings(ARCHIVOS_BASE_URL='http://10.0.0.1:8080/')
+    def test_barra_final_en_archivos_base_url_no_produce_doble_barra(self):
+        # Con '//media/...' el patrón de URL no matchea y el agente recibe un 404.
+        url = self._url_publicada(self._crear_despliegue())
+        self.assertNotIn('//media/', url)
+        self.assertTrue(url.startswith('http://10.0.0.1:8080/media/'), url)
+
+
+class MediaServidoEnProduccionTests(TestCase):
+    def test_media_se_sirve_con_debug_false(self):
+        """static() devuelve [] con DEBUG=False: sin una ruta explícita nadie servía
+        /media/ en producción y todas las descargas de los agentes daban 404.
+
+        Hay que recargar el URLconf dentro del override: las rutas se arman una sola
+        vez al importar config.urls, y la suite corre con DEBUG=True (donde static()
+        SÍ agrega la ruta) — sin recargar, este test pasaría aunque el bug siguiera.
+        """
+        import config.urls
+        try:
+            with override_settings(DEBUG=False):
+                importlib.reload(config.urls)
+                clear_url_caches()
+                coincidencia = resolve('/media/despliegues/x.zip')
+                self.assertEqual(coincidencia.func, serve)
+                self.assertEqual(coincidencia.kwargs['path'], 'despliegues/x.zip')
+        finally:
+            # Restaurar el URLconf con el DEBUG real para no afectar al resto de la suite.
+            importlib.reload(config.urls)
+            clear_url_caches()

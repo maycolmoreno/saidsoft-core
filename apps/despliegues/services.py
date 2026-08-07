@@ -39,7 +39,11 @@ def _payload(despliegue: Despliegue) -> dict:
     return {
         'despliegue_id': despliegue.id,
         'version': despliegue.version,
-        'url': settings.ARCHIVOS_BASE_URL + despliegue.archivo.url,
+        # rstrip('/'): archivo.url ya empieza con '/', así que un ARCHIVOS_BASE_URL
+        # con barra final daba '//media/...' — que no matchea el patrón de URL y el
+        # agente recibía un 404 con el mismo mensaje opaco que cualquier otro fallo
+        # de descarga ("no se pudo descargar de ninguna fuente").
+        'url': settings.ARCHIVOS_BASE_URL.rstrip('/') + despliegue.archivo.url,
         'sha256': despliegue.sha256,
         'modo_aplicacion': despliegue.modo_aplicacion,
         'ventana_fecha_hora': (
