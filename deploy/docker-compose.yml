@@ -71,7 +71,13 @@ services:
   web:
     <<: *app-build
     restart: unless-stopped
-    command: ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]
+    # --timeout 600 (no 120): subir el .zip de un despliegue desde una farmacia entra
+    # por la VPN (~50-126ms RTT, MSS 1394) y 32MB pueden tardar varios minutos; con
+    # 120s gunicorn mataba al worker a mitad de la subida sin error visible para el
+    # operador (diagnosticado con tcpdump contra el piloto real, 6-ago-2026).
+    # --access-logfile -: sin access log, ese mismo diagnóstico fue a ciegas — los
+    # requests que llegan (o no) tienen que verse en `docker-compose logs web`.
+    command: ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "600", "--access-logfile", "-"]
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.produccion
       RUN_MIGRATIONS: "1"
