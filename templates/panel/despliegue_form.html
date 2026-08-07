@@ -6,6 +6,16 @@
 <form method="post" enctype="multipart/form-data" class="card p-6 max-w-2xl space-y-5">
     {% csrf_token %}
 
+    {% for error in form.non_field_errors %}
+    <p class="text-sm px-3 py-2 rounded-md" style="background:var(--critical-dim, rgba(220,38,38,.12)); color:var(--critical);">{{ error }}</p>
+    {% endfor %}
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Cliente (unidad de negocio)</label>
+        {{ form.unidad_negocio }}
+        {% for error in form.unidad_negocio.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    </div>
+
     <div>
         <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Versión</label>
         {{ form.version }}
@@ -27,30 +37,36 @@
         <div>
             <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Modo de aplicación</label>
             {{ form.modo_aplicacion }}
+            {% for error in form.modo_aplicacion.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
         </div>
         <div>
             <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Ventana (si aplica)</label>
             {{ form.ventana_fecha_hora }}
+            {% for error in form.ventana_fecha_hora.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
         </div>
     </div>
 
     <div>
         <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Destino</label>
         {{ form.destino_tipo }}
+        {% for error in form.destino_tipo.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
     </div>
 
     <div>
         <div data-destino-campo="grupos" hidden>
             <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Grupos</label>
             {{ form.grupos }}
+            {% for error in form.grupos.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
         </div>
         <div data-destino-campo="farmacias" hidden>
             <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Farmacias</label>
             {{ form.farmacias }}
+            {% for error in form.farmacias.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
         </div>
         <div data-destino-campo="estaciones" hidden>
             <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Estaciones</label>
             {{ form.estaciones }}
+            {% for error in form.estaciones.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
         </div>
         <p class="text-xs text-[var(--text-faint)]" data-destino-vacio>Elegí un destino arriba para ver a quién aplica.</p>
         <p class="text-xs text-[var(--text-faint)]" data-destino-cadena hidden>Se aplica a toda la cadena de la unidad de negocio — no hace falta elegir nada más abajo.</p>
@@ -59,6 +75,7 @@
     <div>
         <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Umbral de error para freno automático (%)</label>
         {{ form.umbral_error_pct }}
+        {% for error in form.umbral_error_pct.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
     </div>
 
     <div class="flex items-center gap-3 pt-2">
