@@ -302,7 +302,22 @@ confirmar el flujo completo (grabar → listar en "Recordings" → reproducir).
   scheduler previo a Celery al levantar el stack real 31-jul-2026).
 - **`ARCHIVOS_BASE_URL`** debe ser la URL pública del panel (los agentes descargan de
   `/media/despliegues/...`). Con la distribución en cascada, la mayoría descargará del
-  caché de su farmacia, pero el central debe ser alcanzable como fallback.
+  caché de su farmacia, pero el central debe ser alcanzable como fallback. **Sin barra
+  final** (`http://ip:8080`, no `http://ip:8080/`): el código ya la recorta, pero el
+  valor correcto evita confusiones al leer la config.
+- **Volumen de media con dueño equivocado (despliegues creados antes del 6-ago-2026)**:
+  `deploy/Dockerfile` ahora crea `/app/media` con dueño `appuser`, pero un volumen
+  `media_data` que ya existía conserva el dueño `root` con el que Docker lo creó, y
+  subir un paquete falla con `PermissionError: '/app/media/despliegues'` (HTTP 500).
+  Se arregla una sola vez, sin recrear el volumen:
+  ```bash
+  sudo docker exec -u root deploy_web_1 chown appuser:appuser /app/media
+  ```
+- **Subidas grandes por VPN**: `web` corre con `--timeout 600` justamente porque subir
+  un `.zip` de decenas de MB desde una farmacia tarda varios minutos; con el default
+  anterior (120s) gunicorn mataba al worker a mitad de la subida y el navegador quedaba
+  "cargando" sin error. Si aparece algo así, `docker-compose logs web` ahora tiene el
+  access log de gunicorn (`--access-logfile -`) para ver el código de respuesta real.
 - **ACLs de EMQX**: `bootstrap-emqx.sh` las siembra automáticamente y quedó verificado
   end-to-end contra una instancia real (creación de las 3 reglas confirmada vía la API
   de EMQX, y una prueba real de publish/subscribe con `paho-mqtt` mostró que un tópico

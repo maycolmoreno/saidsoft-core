@@ -398,6 +398,74 @@ soportaba el TLS del piloto (6-ago-2026, ML016-A):**
   fix cierra el tema para todo el parque de ~600 farmacias (ver fila correspondiente en
   §8).
 
+**H. Primer despliegue real del piloto: cuatro bugs apilados, todos de la misma
+familia "falla en silencio" (6-ago-2026, ML016-A) — 🟢 corregidos:**
+
+Subir un `.zip` de 32 MB desde una farmacia y publicarlo a una estación destapó
+cuatro defectos independientes, cada uno tapando al siguiente. Ninguno mostraba un
+error accionable: la página quedaba "cargando", o el formulario volvía idéntico, o
+el agente reportaba un mensaje genérico.
+
+1. **`gunicorn --timeout 120`** mataba al worker a mitad de la subida (la VPN de la
+   farmacia da ~50-126ms de RTT y MSS 1394; 32 MB tardan varios minutos). Subido a
+   600s en `docker-compose.yml`. Se agregó `--access-logfile -`: el diagnóstico se
+   hizo con `tcpdump` porque los requests no se veían en `docker-compose logs web`.
+2. **El formulario de despliegue nunca renderizaba `unidad_negocio`** (obligatorio
+   desde R1) y solo mostraba los errores de `version`/`archivo`. Un usuario con
+   acceso a varias unidades no podía crear despliegues: el POST volvía con "este
+   campo es obligatorio" sobre un campo inexistente en pantalla, y ese error tampoco
+   se imprimía. Corregido en `templates/panel/despliegue_form.html` (campo + errores
+   de todos los campos + `non_field_errors`).
+3. **`/app/media` era de root dentro del contenedor** (el volumen `media_data` toma
+   el dueño del punto de montaje de la imagen la primera vez que se monta vacío, y
+   el directorio no existía en la imagen) → `PermissionError` al guardar el `.zip`.
+   Corregido en `deploy/Dockerfile`; en un despliegue ya existente hay que correr
+   una vez `docker exec -u root deploy_web_1 chown appuser:appuser /app/media`.
+4. **Nadie servía `/media/` en producción**: `static()` devuelve `[]` con
+   `DEBUG=False`, así que todas las descargas de agentes daban 404 — el agente lo
+   reportaba como "No se pudo descargar/verificar el paquete de ninguna fuente", sin
+   distinguirlo de un problema de red o de hash. Corregido en `config/urls.py` con
+   una ruta explícita a `django.views.static.serve`, más `rstrip('/')` en
+   `ARCHIVOS_BASE_URL` (`apps/despliegues/services.py`, `apps/software/services.py`):
+   una barra final producía `//media/...`, que no matchea el patrón y daba el mismo
+   404 opaco. Hay tests de regresión para los dos casos en `apps/despliegues/tests.py`.
+
+**Pendiente relacionado**: servir media con Django ocupa un worker de gunicorn
+mientras dura cada descarga. Alcanza para el piloto; a escala real (~1.800
+estaciones, aun con la distribución en cascada por caché de farmacia) esto necesita
+nginx sirviendo el volumen directo.
+
+**I. Auditoría de bugs "ocultos" del panel a partir de los anteriores (6-ago-2026)
+— 🟢 corregidos:** los defectos de arriba tenían patrones repetibles, así que se
+auditó el panel entero buscando más casos de cada uno:
+
+- **`hx-post` sin token CSRF** (Django responde 403 y htmx no actualiza nada, así
+  que el clic "no hace nada"): afectaba a aprobar/rechazar estación, aprobar en lote
+  y "Actualizar ahora" del modal de estación. Eran los únicos `hx-post` fuera de un
+  `<form>` con `{% csrf_token %}`; todos corregidos con `hx-headers`.
+- **Polling que pisa estado de la UI**: los partials con `hx-trigger="every Ns"`
+  reemplazan el nodo completo, borrando lo que el operador estaba haciendo. Casos
+  encontrados y corregidos: el `<details>` de "Ver salida" en ejecuciones de scripts
+  (`hx-preserve`), las casillas de aprobación en lote de estaciones (el refresco de
+  15s ahora se pausa mientras haya alguna marcada — si no, la selección se borraba y
+  "Aprobar seleccionadas" enviaba una lista vacía), el input del Node ID de
+  MeshCentral (`hx-preserve`; el refresco de 2s lo vaciaba mientras se pegaba el ID,
+  probable causa de que la vinculación nunca prosperara) y la clave de recuperación
+  de BitLocker (el refresco de 2s la borraba de pantalla y obligaba a pedirla de
+  nuevo, generando un evento de auditoría por intento — ahora el polling se apaga
+  mientras la clave está visible).
+- **Acciones que no dicen nada cuando no hacen nada**: `estaciones_aprobar_lote` con
+  cero seleccionadas devolvía la misma tabla sin aviso (indistinguible de un fallo
+  silencioso); ahora avisa, y también cuando aprueba menos de las seleccionadas.
+- **Errores de campo invisibles** (mismo patrón que el bug 2 de §10-H): el formulario
+  de firma de mantenimiento solo imprimía `non_field_errors`, así que "Falta capturar
+  la firma" (un error de campo) no se veía nunca. Corregido. El resto de los
+  formularios usa `panel/accion_form.html`, que itera `{% for field in form %}` y
+  siempre muestra todos los errores — no tenían el problema.
+- **Latente, corregido de paso**: `DespliegueForm.__init__` usaba
+  `Farmacia.objects.none()` como fallback del queryset de `unidad_negocio` (modelo
+  equivocado); no explotaba solo porque está vacío y las vistas siempre pasan `user`.
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual
