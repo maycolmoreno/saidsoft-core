@@ -195,6 +195,10 @@ def generar_comando_instalacion_meshcentral(estacion) -> str:
         # Invoke-WebRequest rechaza la descarga con "no se puede establecer una relación
         # de confianza para el canal seguro SSL/TLS". Válido en Windows PowerShell 5.1
         # (no depende de -SkipCertificateCheck, que recién existe en PowerShell 7+).
+        # Windows PowerShell 5.1 no siempre negocia TLS 1.2 por default en esta versión
+        # de .NET Framework — sin fijarlo, MeshCentral (Node.js moderno) corta la
+        # conexión con "error inesperado de envío" al no encontrar un protocolo en común.
+        '[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; '
         '[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}; '
         '$ruta = Join-Path $env:TEMP "meshagent.exe"; '
         f'Invoke-WebRequest -Uri "{url_instalador}" -OutFile $ruta -UseBasicParsing; '
