@@ -120,7 +120,9 @@
             Cerrar
         </button>
         {% if estacion.estado_conexion == 'online' %}
-        <button hx-post="{% url 'panel:estacion_info_solicitar' estacion.pk %}" hx-target="#modal-info-content" hx-swap="innerHTML"
+        <button hx-post="{% url 'panel:estacion_info_solicitar' estacion.pk %}"
+                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                hx-target="#modal-info-content" hx-swap="innerHTML"
                 class="btn primary">
             Actualizar ahora
         </button>

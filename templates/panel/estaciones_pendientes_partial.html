@@ -3,6 +3,7 @@
     <div class="px-4 py-3 flex items-center justify-between text-sm font-medium" style="background:var(--warning-dim); color:var(--warning); border-bottom:1px solid var(--warning-dim);">
         <span>{{ pendientes|length }} estación(es) pendientes de aprobación de enrolamiento</span>
         <button hx-post="{% url 'panel:estaciones_aprobar_lote' %}"
+                hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
                 hx-include="[name='estacion_ids']:checked"
                 hx-target="#pendientes-wrap" hx-swap="innerHTML"
                 hx-confirm="¿Aprobar todas las estaciones seleccionadas?"
@@ -32,11 +33,13 @@
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.so_nombre }} {{ e.so_build }}</td>
                 <td class="px-4 py-3 text-right space-x-2">
                     <button hx-post="{% url 'panel:estacion_aprobar' e.pk %}"
+                            hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
                             hx-target="#pendientes-wrap" hx-swap="innerHTML"
                             class="btn primary" style="background:var(--good); font-size:12px; padding:6px 12px;">
                         Aprobar
                     </button>
                     <button hx-post="{% url 'panel:estacion_rechazar' e.pk %}"
+                            hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
                             hx-target="#pendientes-wrap" hx-swap="innerHTML"
                             hx-confirm="¿Rechazar el enrolamiento de {{ e.codigo }}?"
                             class="btn secondary">
