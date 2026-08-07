@@ -303,6 +303,35 @@ contra PostgreSQL 16 + TimescaleDB 2.17.2 y EMQX 5.8.3 reales, no simulados.
   (`apps/activos/migrations/0010_migrar_cargo_texto_a_fk.py`) pendientes de
   reasignación manual.
 
+**E. 🔴 Bug real encontrado en el agente .NET: no reconecta al MQTT configurado
+(6-ago-2026, piloto ML016-A):**
+- Instalado con el paquete de un clic (`deploy/docs/prueba-agente/paquete-instalacion/`)
+  contra el piloto real (`10.111.6.20:8081`). Enroló y quedó aprobado (`identidad.json`
+  en la estación muestra `Aprobada: true` con token), pero **nunca volvió a conectar
+  después de la primera sesión** — sin heartbeats sostenidos ni respuesta a
+  `consultar_info` (por eso el modal de la estación en el panel queda con
+  procesador/RAM/almacenamiento/BitLocker/número de serie vacíos indefinidamente).
+- Diagnosticado descartando las causas obvias directamente en la estación: un solo
+  proceso `Saidsoft.Agente.exe` corriendo (no hay un proceso viejo sin configurar de
+  fondo), un solo servicio `SaidsoftAgente` (`Running`/`Automatic`), y
+  `C:\Program Files\Saidsoft\Agente\appsettings.Production.json` con el `MqttHost`/
+  `MqttPuerto` correctos (`10.111.6.20`/`8081`) — el archivo que escribe
+  `instalar-agente.ps1` está bien.
+- El Visor de eventos (Application) de la estación muestra en cambio decenas de
+  reintentos consecutivos (`ConectarConReintentosAsync`, categoría
+  `Saidsoft.Agente.Mqtt.ClienteMqttSaidsoft`) fallando contra
+  `'Unspecified/localhost:1883'` — el host/puerto configurados no llegan a esa ruta de
+  reconexión, que cae al default de MQTTnet. Conclusión: la conexión inicial sí lee
+  `appsettings.Production.json` (por eso pudo enrolar), pero el código de
+  reconexión arma el `MqttClientOptions` sin pasarle el host/puerto configurados —
+  bug de código en `saidsoft-agente` (repo aparte, no vive en esta máquina), no un
+  problema de configuración ni del panel/worker de `saidsoft-core`.
+- **Sin esto arreglado, ninguna estación real sobrevive más allá de su primera
+  sesión de conexión** — bloqueante para el rollout de las ~600 farmacias, no solo
+  para completar la info de hardware de ML016-A. Corregir `ConectarConReintentosAsync`
+  (o el método equivalente) para que reutilice el `MqttHost`/`MqttPuerto` configurados
+  en cada reintento, no solo en la conexión inicial.
+
 **E. MeshCentral integrado al stack de producción — 🟢 cerrado (31-jul-2026):**
 - Antes corría aparte con un `docker run` suelto (fuera del ciclo de vida del resto del
   stack); ahora es un servicio más de `deploy/docker-compose.yml` (`meshcentral_data`

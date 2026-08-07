@@ -190,6 +190,12 @@ def generar_comando_instalacion_meshcentral(estacion) -> str:
         f"&meshid={conf['MESH_ID']}&installflags={conf['INSTALL_FLAGS']}"
     )
     return (
+        # MeshCentral usa un certificado autofirmado en el piloto (mismo criterio que la
+        # advertencia que se acepta en el navegador al entrar a la consola) — sin esto,
+        # Invoke-WebRequest rechaza la descarga con "no se puede establecer una relación
+        # de confianza para el canal seguro SSL/TLS". Válido en Windows PowerShell 5.1
+        # (no depende de -SkipCertificateCheck, que recién existe en PowerShell 7+).
+        '[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}; '
         '$ruta = Join-Path $env:TEMP "meshagent.exe"; '
         f'Invoke-WebRequest -Uri "{url_instalador}" -OutFile $ruta -UseBasicParsing; '
         'Start-Process -FilePath $ruta -Wait; '
