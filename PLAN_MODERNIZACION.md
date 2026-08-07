@@ -138,6 +138,7 @@ lo que falta cerrar antes de un rollout real.
 | Actualización mala llega a 600 farmacias | Anillos + freno automático por umbral de error + rollback local |
 | VPN saturada por descargas masivas | Olas escalonadas + throttling; rol caché en -ADM previsto como plan B |
 | Win10 builds viejos fallan con el agente | Self-contained .NET 10; piloto incluye la máquina más antigua; mínimo build 1607 |
+| Win10 viejo sin TLS 1.2 forzado rompe scripts RMM ad-hoc (Invoke-WebRequest) | TLS 1.2 forzado explícito en `generar_comando_instalacion_meshcentral` (ver §10-G); falta validar contra una estación Windows 10 real sin parchar |
 | Windows 10 sin soporte (oct-2025) | El inventario de SO del heartbeat alimenta el plan de migración a W11 |
 | Instalar agente en 1.800 equipos | MSI + GPO/script, una sola vez; después se auto-actualiza por su propio canal |
 
@@ -303,35 +304,6 @@ contra PostgreSQL 16 + TimescaleDB 2.17.2 y EMQX 5.8.3 reales, no simulados.
   (`apps/activos/migrations/0010_migrar_cargo_texto_a_fk.py`) pendientes de
   reasignación manual.
 
-**E. 🔴 Bug real encontrado en el agente .NET: no reconecta al MQTT configurado
-(6-ago-2026, piloto ML016-A):**
-- Instalado con el paquete de un clic (`deploy/docs/prueba-agente/paquete-instalacion/`)
-  contra el piloto real (`10.111.6.20:8081`). Enroló y quedó aprobado (`identidad.json`
-  en la estación muestra `Aprobada: true` con token), pero **nunca volvió a conectar
-  después de la primera sesión** — sin heartbeats sostenidos ni respuesta a
-  `consultar_info` (por eso el modal de la estación en el panel queda con
-  procesador/RAM/almacenamiento/BitLocker/número de serie vacíos indefinidamente).
-- Diagnosticado descartando las causas obvias directamente en la estación: un solo
-  proceso `Saidsoft.Agente.exe` corriendo (no hay un proceso viejo sin configurar de
-  fondo), un solo servicio `SaidsoftAgente` (`Running`/`Automatic`), y
-  `C:\Program Files\Saidsoft\Agente\appsettings.Production.json` con el `MqttHost`/
-  `MqttPuerto` correctos (`10.111.6.20`/`8081`) — el archivo que escribe
-  `instalar-agente.ps1` está bien.
-- El Visor de eventos (Application) de la estación muestra en cambio decenas de
-  reintentos consecutivos (`ConectarConReintentosAsync`, categoría
-  `Saidsoft.Agente.Mqtt.ClienteMqttSaidsoft`) fallando contra
-  `'Unspecified/localhost:1883'` — el host/puerto configurados no llegan a esa ruta de
-  reconexión, que cae al default de MQTTnet. Conclusión: la conexión inicial sí lee
-  `appsettings.Production.json` (por eso pudo enrolar), pero el código de
-  reconexión arma el `MqttClientOptions` sin pasarle el host/puerto configurados —
-  bug de código en `saidsoft-agente` (repo aparte, no vive en esta máquina), no un
-  problema de configuración ni del panel/worker de `saidsoft-core`.
-- **Sin esto arreglado, ninguna estación real sobrevive más allá de su primera
-  sesión de conexión** — bloqueante para el rollout de las ~600 farmacias, no solo
-  para completar la info de hardware de ML016-A. Corregir `ConectarConReintentosAsync`
-  (o el método equivalente) para que reutilice el `MqttHost`/`MqttPuerto` configurados
-  en cada reintento, no solo en la conexión inicial.
-
 **E. MeshCentral integrado al stack de producción — 🟢 cerrado (31-jul-2026):**
 - Antes corría aparte con un `docker run` suelto (fuera del ciclo de vida del resto del
   stack); ahora es un servicio más de `deploy/docker-compose.yml` (`meshcentral_data`
@@ -368,6 +340,63 @@ contra PostgreSQL 16 + TimescaleDB 2.17.2 y EMQX 5.8.3 reales, no simulados.
   conectó al broker, `web` y `meshcentral` respondieron 200. El volumen `deploy_emqx_data`
   de la sesión anterior tenía credenciales desalineadas con el `deploy/.env` actual —
   se eliminó (solo data de prueba) y se re-sembró con `bootstrap-emqx.sh`.
+
+**F. 🔴 Bug real encontrado en el agente .NET: no reconecta al MQTT configurado
+(6-ago-2026, piloto ML016-A):**
+- Instalado con el paquete de un clic (`deploy/docs/prueba-agente/paquete-instalacion/`)
+  contra el piloto real (`10.111.6.20:8081`). Enroló y quedó aprobado (`identidad.json`
+  en la estación muestra `Aprobada: true` con token), pero **nunca volvió a conectar
+  después de la primera sesión** — sin heartbeats sostenidos ni respuesta a
+  `consultar_info` (por eso el modal de la estación en el panel queda con
+  procesador/RAM/almacenamiento/BitLocker/número de serie vacíos indefinidamente).
+- Diagnosticado descartando las causas obvias directamente en la estación: un solo
+  proceso `Saidsoft.Agente.exe` corriendo (no hay un proceso viejo sin configurar de
+  fondo), un solo servicio `SaidsoftAgente` (`Running`/`Automatic`), y
+  `C:\Program Files\Saidsoft\Agente\appsettings.Production.json` con el `MqttHost`/
+  `MqttPuerto` correctos (`10.111.6.20`/`8081`) — el archivo que escribe
+  `instalar-agente.ps1` está bien.
+- El Visor de eventos (Application) de la estación muestra en cambio decenas de
+  reintentos consecutivos (`ConectarConReintentosAsync`, categoría
+  `Saidsoft.Agente.Mqtt.ClienteMqttSaidsoft`) fallando contra
+  `'Unspecified/localhost:1883'` — el host/puerto configurados no llegan a esa ruta de
+  reconexión, que cae al default de MQTTnet. Conclusión: la conexión inicial sí lee
+  `appsettings.Production.json` (por eso pudo enrolar), pero el código de
+  reconexión arma el `MqttClientOptions` sin pasarle el host/puerto configurados —
+  bug de código en `saidsoft-agente` (repo aparte, no vive en esta máquina), no un
+  problema de configuración ni del panel/worker de `saidsoft-core`.
+- **Sin esto arreglado, ninguna estación real sobrevive más allá de su primera
+  sesión de conexión** — bloqueante para el rollout de las ~600 farmacias, no solo
+  para completar la info de hardware de ML016-A. Corregir `ConectarConReintentosAsync`
+  (o el método equivalente) para que reutilice el `MqttHost`/`MqttPuerto` configurados
+  en cada reintento, no solo en la conexión inicial.
+
+**G. Bug real encontrado y corregido: script de instalación de MeshCentral no
+soportaba el TLS del piloto (6-ago-2026, ML016-A):**
+- `generar_comando_instalacion_meshcentral` (`apps/catalogo/services.py`) arma un
+  one-liner de PowerShell que corre `Invoke-WebRequest` contra la consola de
+  MeshCentral (certificado autofirmado en el piloto). Sin más, Windows PowerShell 5.1
+  lo rechazaba en dos pasos sucesivos, cada uno encontrado al probar contra la
+  estación real:
+  1. "No se puede establecer una relación de confianza para el canal seguro
+     SSL/TLS" — el certificado autofirmado no está en el almacén de confianza de la
+     estación. Corregido con
+     `[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}`
+     antes de la descarga (no depende de `-SkipCertificateCheck`, que recién existe en
+     PowerShell 7+, para no romper en Windows 10 con solo PowerShell 5.1).
+  2. Ya sin el error de certificado, "error inesperado de envío" al conectar — Windows
+     PowerShell 5.1 no negocia TLS 1.2 por default en muchas instalaciones de .NET
+     Framework, y MeshCentral (Node.js moderno) no ofrece nada más viejo. Corregido con
+     `[System.Net.ServicePointManager]::SecurityProtocol = [...]::Tls12` antes de la
+     descarga.
+- **Sin verificar todavía**: si esto alcanza en una estación Windows 10 realmente vieja
+  y sin parchar (no solo sin TLS 1.2 forzado, sino potencialmente sin los cipher suites
+  modernos que un Node.js reciente prefiere, o con un .NET Framework tan viejo que
+  `SecurityProtocolType.Tls12` exista pero SChannel no lo tenga habilitado a nivel de
+  SO). El piso documentado (build 1607) trae TLS 1.2 a nivel de SO, pero eso no
+  garantiza que el handshake completo funcione sin parches acumulativos razonablemente
+  recientes. Validar contra la estación más vieja disponible antes de asumir que este
+  fix cierra el tema para todo el parque de ~600 farmacias (ver fila correspondiente en
+  §8).
 
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
