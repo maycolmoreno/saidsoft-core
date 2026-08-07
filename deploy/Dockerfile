@@ -18,8 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Usuario no-root
-RUN useradd --create-home appuser && chown -R appuser:appuser /app
+# Usuario no-root. mkdir /app/media ANTES del chown: el volumen media_data se
+# inicializa con el dueño de este directorio la primera vez que se monta vacío —
+# sin esto Docker crea el punto de montaje como root y appuser no puede guardar
+# los .zip de despliegues (PermissionError encontrado en el piloto real, 6-ago-2026).
+RUN useradd --create-home appuser && mkdir -p /app/media && chown -R appuser:appuser /app
 USER appuser
 
 COPY --chown=appuser:appuser deploy/entrypoint.sh /entrypoint.sh
