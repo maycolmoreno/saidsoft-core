@@ -12,6 +12,7 @@
 
     <label class="block text-sm text-[var(--text-dim)] mb-1">{{ form.tipo_firma.label }}</label>
     {{ form.tipo_firma }}
+    {% for error in form.tipo_firma.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
 
     <div class="mt-4 mb-2 text-sm text-[var(--text-dim)]">Firma</div>
     {# La firma queda tinta oscura sobre blanco a propósito, sin importar el tema: es un artefacto real que se imprime/archiva, no una superficie de la UI. #}
@@ -20,6 +21,9 @@
         <button type="button" id="firma-limpiar" class="text-xs hover:underline text-[var(--text-faint)]">Limpiar</button>
     </div>
     {{ form.firma_base64 }}
+    {# "Falta capturar la firma" es un error de campo, no non_field: sin esto el
+       formulario volvía idéntico y sin explicación al rechazar una firma vacía. #}
+    {% for error in form.firma_base64.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
 
     <div class="mt-6 flex gap-3">
         <button type="submit" class="btn primary">Guardar firma</button>

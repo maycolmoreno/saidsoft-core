@@ -1,6 +1,6 @@
 from django import forms
 
-from apps.catalogo.models import Estacion, Farmacia
+from apps.catalogo.models import Estacion, Farmacia, UnidadNegocio
 from apps.catalogo.services import validar_destino_unidad_negocio
 from apps.despliegues.models import Despliegue
 
@@ -33,7 +33,10 @@ class DespliegueForm(forms.ModelForm):
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
         from apps.cuentas.services import unidades_negocio_visibles
-        visibles = unidades_negocio_visibles(user) if user is not None else Farmacia.objects.none()
+        # El fallback era Farmacia.objects.none() — queryset del modelo equivocado para
+        # un campo que apunta a UnidadNegocio (y para el filtro unidad_negocio__in de
+        # abajo). No explotaba solo porque está vacío y las vistas siempre pasan `user`.
+        visibles = unidades_negocio_visibles(user) if user is not None else UnidadNegocio.objects.none()
         self.fields['unidad_negocio'].queryset = visibles
         if visibles.count() == 1:
             self.fields['unidad_negocio'].initial = visibles.first()
