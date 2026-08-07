@@ -7,7 +7,7 @@ from django.views.decorators.http import require_POST
 from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
-from apps.despliegues.services import publicar_despliegue
+from apps.despliegues.services import publicar_despliegue, reintentar_despliegue
 
 from ..forms import DespliegueForm, PromoverDespliegueForm
 
@@ -182,12 +182,34 @@ def despliegue_pausar(request, pk):
 def despliegue_reanudar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
     verificar_acceso(request.user, despliegue.unidad_negocio)
-    if despliegue.estado == Despliegue.Estado.PAUSADO:
-        despliegue.estado = Despliegue.Estado.PUBLICANDO
-        # Reanudar es una decisión consciente del operador: marca que ya vio los errores,
-        # para que el próximo reporte de error no lo vuelva a frenar en un bucle.
-        despliegue.freno_omitido = True
-        despliegue.save(update_fields=['estado', 'freno_omitido'])
-        registrar_evento(usuario=request.user, accion='despliegue.reanudar', objeto=despliegue, request=request)
-        messages.success(request, 'Despliegue reanudado. No se volverá a frenar automáticamente por errores.')
+    if despliegue.estado != Despliegue.Estado.PAUSADO:
+        return redirect('panel:despliegue_detalle', pk=pk)
+
+    # Antes esto solo cambiaba el estado a PUBLICANDO sin reenviar nada por MQTT —
+    # "reanudar" no reintentaba de verdad, había que reiniciar el agente a mano para
+    # que reconectara y recogiera el mensaje retenido de la publicación original.
+    resultado = reintentar_despliegue(despliegue)
+    if not resultado.exitoso:
+        messages.error(
+            request,
+            'No se pudo reenviar el paquete: falló la conexión con el broker MQTT. '
+            'El despliegue sigue pausado — reintentá "Reanudar" cuando el broker esté disponible.',
+        )
+        return redirect('panel:despliegue_detalle', pk=pk)
+
+    despliegue.estado = Despliegue.Estado.PUBLICANDO
+    # Reanudar es una decisión consciente del operador: marca que ya vio los errores,
+    # para que el próximo reporte de error no lo vuelva a frenar en un bucle.
+    despliegue.freno_omitido = True
+    despliegue.save(update_fields=['estado', 'freno_omitido'])
+    registrar_evento(
+        usuario=request.user, accion='despliegue.reanudar', objeto=despliegue,
+        detalle={'estaciones_reintentadas': resultado.total_estaciones}, request=request,
+    )
+    if resultado.total_estaciones:
+        messages.success(
+            request, f'Despliegue reanudado y reenviado a {resultado.total_estaciones} estación(es) pendiente(s).',
+        )
+    else:
+        messages.success(request, 'Despliegue reanudado. No quedaban estaciones pendientes de reintentar.')
     return redirect('panel:despliegue_detalle', pk=pk)

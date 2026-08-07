@@ -9,9 +9,10 @@ from django.urls import clear_url_caches, resolve
 from django.views.static import serve
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
+from apps.cuentas.models import PerfilUsuario
 
 from .models import Despliegue, EventoDespliegue, ResultadoDespliegue
-from .services import evaluar_freno_automatico, publicar_despliegue, verificar_completado
+from .services import evaluar_freno_automatico, publicar_despliegue, reintentar_despliegue, verificar_completado
 
 
 class _BaseDespliegueTests(TestCase):
@@ -217,3 +218,106 @@ class MediaServidoEnProduccionTests(TestCase):
             # Restaurar el URLconf con el DEBUG real para no afectar al resto de la suite.
             importlib.reload(config.urls)
             clear_url_caches()
+
+
+class ReintentarDespliegueTests(_BaseDespliegueTests):
+    """`despliegue_reanudar` antes solo cambiaba el estado a PUBLICANDO sin reenviar
+    nada por MQTT — el operador "reanudaba" un despliegue que nunca reintentaba de
+    verdad (encontrado en el primer despliegue real del piloto, 6-ago-2026)."""
+
+    def test_republica_solo_a_estaciones_no_aplicadas(self):
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PAUSADO)
+        ok = self._crear_estacion('ML001-OK')
+        error = self._crear_estacion('ML001-ERROR')
+        pendiente = self._crear_estacion('ML001-PEND')
+        despliegue.estaciones.set([ok, error, pendiente])
+        self._resultado(despliegue, ok, ResultadoDespliegue.Estado.APLICADO)
+        self._resultado(despliegue, error, ResultadoDespliegue.Estado.ERROR)
+        self._resultado(despliegue, pendiente, ResultadoDespliegue.Estado.PENDIENTE)
+
+        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+            resultado = reintentar_despliegue(despliegue)
+
+        self.assertTrue(resultado.exitoso)
+        self.assertEqual(resultado.total_estaciones, 2)  # error + pendiente, no la aplicada
+
+        mensajes = mock_multiple.call_args.args[0]
+        topicos = {m['topic'] for m in mensajes}
+        # Tópico individual por estación, no el agregado de grupo/farmacia/cadena: así
+        # no se le reenvía el paquete a ML001-OK, que ya lo aplicó con éxito.
+        self.assertEqual(topicos, {'/saidsof/agente/ML001-ERROR/despliegue/', '/saidsof/agente/ML001-PEND/despliegue/'})
+
+        # La que ya había fallado vuelve a PENDIENTE (para no arrastrar el error viejo
+        # al próximo cálculo del freno automático); la ya aplicada queda intacta.
+        self.assertEqual(
+            despliegue.resultados.get(estacion=error).estado, ResultadoDespliegue.Estado.PENDIENTE,
+        )
+        self.assertEqual(
+            despliegue.resultados.get(estacion=ok).estado, ResultadoDespliegue.Estado.APLICADO,
+        )
+
+    def test_nada_pendiente_no_publica(self):
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PAUSADO)
+        ok = self._crear_estacion('ML001-OK')
+        despliegue.estaciones.set([ok])
+        self._resultado(despliegue, ok, ResultadoDespliegue.Estado.APLICADO)
+
+        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+            resultado = reintentar_despliegue(despliegue)
+
+        mock_multiple.assert_not_called()
+        self.assertTrue(resultado.exitoso)
+        self.assertEqual(resultado.total_estaciones, 0)
+
+    def test_broker_caido_no_resetea_estados(self):
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PAUSADO)
+        error = self._crear_estacion('ML001-ERROR')
+        despliegue.estaciones.set([error])
+        self._resultado(despliegue, error, ResultadoDespliegue.Estado.ERROR)
+
+        with patch('apps.despliegues.services.mqtt_publish.multiple', side_effect=OSError):
+            resultado = reintentar_despliegue(despliegue)
+
+        self.assertFalse(resultado.exitoso)
+        # Si el publish falló, el estado de error se conserva tal cual — no hay que
+        # mostrar "pendiente" para algo que en realidad nunca se reenvió.
+        self.assertEqual(
+            despliegue.resultados.get(estacion=error).estado, ResultadoDespliegue.Estado.ERROR,
+        )
+
+
+class DespliegueReanudarVistaTests(_BaseDespliegueTests):
+    def setUp(self):
+        super().setUp()
+        self.aprobador = User.objects.create_user(username='aprobador', password='x')
+        PerfilUsuario.objects.create(usuario=self.aprobador, acceso_todas_unidades=True)
+
+    def test_reanudar_republica_y_marca_freno_omitido(self):
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PAUSADO)
+        estacion = self._crear_estacion('ML001-A')
+        despliegue.estaciones.set([estacion])
+        self._resultado(despliegue, estacion, ResultadoDespliegue.Estado.ERROR)
+
+        self.client.force_login(self.aprobador)
+        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+            response = self.client.post(f'/despliegues/{despliegue.pk}/reanudar/')
+
+        self.assertEqual(response.status_code, 302)
+        mock_multiple.assert_called_once()
+        despliegue.refresh_from_db()
+        self.assertEqual(despliegue.estado, Despliegue.Estado.PUBLICANDO)
+        self.assertTrue(despliegue.freno_omitido)
+
+    def test_reanudar_con_broker_caido_mantiene_pausado(self):
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PAUSADO)
+        estacion = self._crear_estacion('ML001-A')
+        despliegue.estaciones.set([estacion])
+        self._resultado(despliegue, estacion, ResultadoDespliegue.Estado.ERROR)
+
+        self.client.force_login(self.aprobador)
+        with patch('apps.despliegues.services.mqtt_publish.multiple', side_effect=OSError):
+            self.client.post(f'/despliegues/{despliegue.pk}/reanudar/')
+
+        despliegue.refresh_from_db()
+        self.assertEqual(despliegue.estado, Despliegue.Estado.PAUSADO)
+        self.assertFalse(despliegue.freno_omitido)

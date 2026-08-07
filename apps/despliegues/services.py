@@ -117,6 +117,70 @@ def publicar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     return ResultadoPublicacion(total_estaciones=len(estaciones), exitoso=True)
 
 
+def reintentar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
+    """Re-publica el paquete solo a las estaciones que todavía no lo aplicaron.
+
+    Se invoca desde `despliegue_reanudar`, que antes solo cambiaba el estado a
+    PUBLICANDO sin reenviar nada por MQTT — el operador "reanudaba" un despliegue
+    que en realidad nunca reintentaba (encontrado en el primer despliegue real del
+    piloto, ML016-A, 6-ago-2026).
+
+    A propósito NO reutiliza `publicar_despliegue` con los tópicos agregados
+    (`_topicos_para`, grupo/farmacia/cadena): eso reenviaría el paquete también a
+    las estaciones que ya lo aplicaron con éxito, disparando ahí un cierre y
+    reinstalación del POS innecesarios. En cambio publica al tópico individual de
+    cada estación pendiente (`/saidsof/agente/{codigo}/despliegue/`) — el mismo que
+    usa el destino ESTACIONES, al que todo agente está suscrito sin importar cómo
+    se publicó el despliegue originalmente.
+    """
+    pendientes = list(
+        despliegue.resultados.exclude(estado=ResultadoDespliegue.Estado.APLICADO).select_related('estacion'),
+    )
+    if not pendientes:
+        return ResultadoPublicacion(total_estaciones=0, exitoso=True)
+
+    payload = json.dumps(_payload(despliegue))
+    mensajes = [
+        {'topic': f'/saidsof/agente/{r.estacion.codigo}/despliegue/', 'payload': payload, 'retain': True}
+        for r in pendientes
+    ]
+
+    mqtt_conf = settings.MQTT_CONFIG
+    auth = None
+    if mqtt_conf['USERNAME']:
+        auth = {'username': mqtt_conf['USERNAME'], 'password': mqtt_conf['PASSWORD']}
+    tls = None
+    if mqtt_conf['USE_TLS']:
+        tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
+
+    try:
+        mqtt_publish.multiple(
+            mensajes,
+            hostname=mqtt_conf['HOST'],
+            port=mqtt_conf['PORT'],
+            auth=auth,
+            tls=tls,
+            client_id=mqtt_conf['CLIENT_ID_PANEL'],
+        )
+    except Exception:
+        logger.exception(
+            'No se pudo republicar el despliegue %s (%d estación(es) pendientes)',
+            despliegue.id, len(pendientes),
+        )
+        return ResultadoPublicacion(total_estaciones=len(pendientes), exitoso=False)
+
+    # Vuelven a PENDIENTE para que el próximo freno automático (evaluar_freno_automatico)
+    # no las cuente contra el reintento con el % de error de la ronda anterior.
+    ResultadoDespliegue.objects.filter(pk__in=[r.pk for r in pendientes]).update(
+        estado=ResultadoDespliegue.Estado.PENDIENTE,
+    )
+    EventoDespliegue.objects.bulk_create([
+        EventoDespliegue(resultado=r, paso=EventoDespliegue.Paso.PUBLICADO, detalle='Republicado (reintento manual)')
+        for r in pendientes
+    ])
+    return ResultadoPublicacion(total_estaciones=len(pendientes), exitoso=True)
+
+
 def evaluar_freno_automatico(despliegue: Despliegue) -> bool:
     """Si el % de estaciones en error supera el umbral configurado, pausa el despliegue.
 
