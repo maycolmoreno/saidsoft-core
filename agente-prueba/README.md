@@ -144,5 +144,11 @@ Tras el primer enrolamiento, la estación queda **pendiente de aprobación** en
 `/estaciones/` del panel (o pendiente_aprobacion en el admin) — hay que aprobarla ahí
 antes de que el resto de los flujos (scripts, software) empiecen a funcionar.
 
-`identidad.json` y `agente_prueba.log` quedan junto al `.exe`, en la carpeta desde
-donde se ejecuta.
+**Dónde quedan `identidad.json` y `agente_prueba.log`**: en modo consola
+(`agente_prueba.exe`), junto al `.exe`, en la carpeta desde donde se ejecuta. Corriendo
+como servicio (`Saidsoft.Agente.exe`), en cambio, van a `C:\ProgramData\Saidsoft\` — NO
+en la carpeta de instalación (`C:\Program Files\Saidsoft\Agente\`, donde solo viven el
+`.exe`, `cert.pem` y `config.json`, estáticos). Escribir en tiempo de ejecución dentro
+de Program Files da `PermissionError` incluso corriendo como Administrador — Windows la
+protege por diseño; ProgramData es el lugar pensado para esto, y es el mismo directorio
+que ya usaba el agente C# original para su propio `identidad.json`.

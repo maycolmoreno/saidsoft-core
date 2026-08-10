@@ -83,10 +83,16 @@ exe_servicio = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    # True (no windowed): así "Saidsoft.Agente.exe install/start/stop/remove" corrido a
-    # mano desde una consola de Administrador muestra su salida. El SCM igual lo arranca
-    # sin ventana visible cuando lo inicia como servicio — console=True no le agrega una.
-    console=True,
+    # False (windowed), no True: un exe de subsistema consola intenta interactuar con
+    # una consola al arrancar, y la Sesión 0 (donde corre cualquier servicio de
+    # Windows, sin escritorio) no tiene ninguna — el proceso nunca llega a levantar
+    # (SCM error 1053 "no respondió a tiempo", sin excepción ni evento de crash en
+    # ningún lado, reproducido tanto con LocalSystem como con una cuenta de servicio
+    # dedicada — descarta que fuera un tema de permisos/cuenta). Corriendo
+    # "install/start/stop/debug" a mano desde una consola de Administrador, Windows sigue
+    # mostrando la salida igual (un proceso windowed heredado desde una consola existente
+    # puede escribir a ella).
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

@@ -554,22 +554,80 @@ piloto, completándolo con lo único que le faltaba para tener paridad funcional
    corriendo `Saidsoft.Agente.exe debug` (modo primer plano de pywin32, sin instalar
    nada) contra un broker inexistente — antes del fix el hilo moría con traceback, con
    el fix sigue reintentando sin cortar el proceso.
+5. **Bug encontrado en la primera instalación real (ML016-A)**: el servicio se
+   registraba bien (`sc.exe qc` mostraba el `BINARY_PATH_NAME` correctamente citado —
+   no era el típico problema de espacio sin comillas en "Program Files") pero fallaba
+   al arrancar: *"El servicio no respondió a tiempo a la solicitud de inicio o de
+   control"*. Reproducido corriendo `Saidsoft.Agente.exe debug` directo en la estación:
+   `PermissionError` al intentar abrir `agente_prueba.log` dentro de
+   `C:\Program Files\Saidsoft\Agente\` — esa carpeta no está pensada para escritura en
+   tiempo de ejecución, ni corriendo como Administrador. Corregido: `identidad.json` y
+   el log ahora se escriben en `C:\ProgramData\Saidsoft\` (mismo directorio que ya
+   usaba el agente C# original para su identidad), separado de la carpeta de
+   instalación (que queda con `.exe`/`cert.pem`/`config.json`, estáticos).
+6. **Segundo bug encontrado reinstalando en ML016-A con el fix del bug 5**: mismo
+   síntoma exacto (*"El servicio no respondió a tiempo..."*), causa distinta.
+   `sc.exe qc`/Visor de eventos no daban más detalle que el error genérico 1053; se
+   volvió a reproducir con `Saidsoft.Agente.exe debug` en la estación — esta vez
+   `json.load` fallaba con *"Unexpected UTF-8 BOM (decode using utf-8-sig)"* al leer
+   `config.json`. Causa: `instalar-servicio.ps1` lo escribe con
+   `Set-Content -Encoding utf8`, que en Windows PowerShell 5.1 (no Core/pwsh) siempre
+   antepone un BOM — el lector en `servicio_windows.py` abría el archivo con
+   `encoding='utf-8'` a secas, que no lo tolera. No se reprodujo en esta máquina de
+   desarrollo en el primer intento porque acá se usa PowerShell 7 (pwsh), cuyo
+   `-Encoding utf8` NO agrega BOM — la discrepancia de versión de PowerShell entre la
+   máquina de build/pruebas y la estación real tapó el bug hasta instalarlo de verdad.
+   Corregido leyendo con `encoding='utf-8-sig'` (tolera archivos con o sin BOM), y
+   validado localmente forzando un BOM real (`EF BB BF`) a mano para replicar
+   exactamente el archivo que produce la estación.
+7. **Tercer bug — la causa raíz real del 1053, encontrada reproduciendo el servicio
+   completo en la máquina de dev**: aun con los fixes 5 y 6, el servicio seguía sin
+   arrancar (mismo 1053), con una firma muy específica: el proceso **nunca aparecía**
+   en la lista de procesos, ni un instante, sin excepción, sin log, sin evento de
+   crash — pero `debug`/`install`/`stop` desde consola funcionaban perfecto. Se
+   descartaron por prueba directa: permisos de cuenta (falló igual con `LocalSystem`
+   y con una cuenta de servicio dedicada), la carpeta Temp del perfil de SYSTEM
+   (existía/creada, sin cambio), antivirus (Defender sin detecciones) y el subsistema
+   de consola del exe (`console=False`, sin cambio). La causa real: el `__main__` de
+   `servicio_windows.py` llamaba solo a `win32serviceutil.HandleCommandLine(...)`.
+   Cuando el SCM lanza el binario de un servicio lo hace **sin argumentos**, y
+   `HandleCommandLine` con argv vacío imprime el texto de uso y **sale
+   inmediatamente** — el proceso moría en milisegundos (por eso nunca se veía) y el
+   SCM esperaba 30s una conexión que nunca iba a llegar. En el setup normal de
+   pywin32 el binario registrado es `PythonService.exe`, que sí se conecta al
+   dispatcher; empaquetado con PyInstaller, nuestro exe ES el binario del servicio y
+   debe hacerlo él mismo. Corregido: con `len(sys.argv) == 1` va a
+   `servicemanager.Initialize()` + `PrepareToHostSingle` +
+   `StartServiceCtrlDispatcher()`; con argumentos, sigue en `HandleCommandLine`.
+   Gotcha adicional del camino: una cuenta de servicio creada por línea de comandos
+   no recibe el derecho "Iniciar sesión como servicio" (error 1069 en el Visor de
+   eventos, mucho más claro que el 1053) — `services.msc` lo otorga solo, `sc.exe
+   config`/pywin32 no. No hizo falta: `LocalSystem` funciona bien (la teoría de una
+   política corporativa bloqueando SYSTEM quedó descartada), y es lo que usa
+   `instalar-servicio.ps1` por defecto.
 
-**Validado en este entorno**: el `.spec` compila los dos ejecutables (incluida la
-detección automática de los hooks de pywin32 por `pyinstaller-hooks-contrib`);
-`Saidsoft.Agente.exe` sin argumentos muestra el uso estándar de pywin32
-(`install|start|stop|remove|debug`); `Saidsoft.Agente.exe debug` con un `config.json`
-de prueba llega hasta el intento de conexión MQTT real (falla por falta de broker en
-esta máquina, como se espera) sin crashear. **No validado**: el ciclo completo de un
-despliegue de POS contra un POS real (cerrar → respaldar → aplicar → relanzar →
-verificar/rollback) — recomendado un ensayo con un POS de juguete antes de confiar el
-rollback automático en una farmacia real. Tampoco se instaló todavía como servicio en
-ninguna estación real (`instalar-servicio.ps1` sin correr fuera de esta máquina).
+**Validado en este entorno (máquina de dev, con permiso del usuario, servicio real
+instalado y luego desinstalado)**: `instalar-servicio.ps1` + `Start-Service` dejan el
+servicio **Running** bajo `LocalSystem`, con el proceso vivo, el log escribiéndose en
+`C:\ProgramData\Saidsoft\` y el loop MQTT reintentando (no hay broker local, como se
+espera). También validado: los dos ejecutables compilan, `debug` corre en primer
+plano, y el `config.json` con BOM real de Windows PowerShell 5.1 se lee bien.
+**Validado en ML016-A**: `instalar-servicio.ps1` registra el servicio correctamente
+(reemplazando al agente C# previo); los bugs 5 y 6 se encontraron ahí, el 7 se
+reprodujo y corrigió en la máquina de dev. **No validado todavía**: el servicio
+corriendo en ML016-A con el fix 7 (falta reinstalar con el binario nuevo), y el ciclo
+completo de un despliegue de POS contra un POS real (cerrar → respaldar → aplicar →
+relanzar → verificar/rollback) — recomendado un ensayo con un POS de juguete antes de
+confiar el rollback automático en una farmacia real.
 
-**Pendiente**: instalar en ML016-A con `instalar-servicio.ps1`, aprobar la
-re-enrolación en el panel si hiciera falta (mismo `hardware_id`, debería reconectar
-con el token existente sin re-aprobación), y reintentar el despliegue #3 que quedó en
-error por el bug J.
+**Pendiente**: reinstalar en ML016-A con el `Saidsoft.Agente.exe` recompilado (fix del
+bug 7), confirmar que el servicio queda `Running`, aprobar la re-enrolación en el panel
+si hiciera falta (mismo `hardware_id`, debería reconectar con el token existente sin
+re-aprobación), y reintentar el despliegue #3 que quedó en error por el bug J.
+Revertir también el `ServicesPipeTimeout=120000` que se probó en ML016-A durante el
+diagnóstico (no era la causa; `Remove-ItemProperty -Path
+"HKLM:\SYSTEM\CurrentControlSet\Control" -Name ServicesPipeTimeout` + reinicio, o
+dejarlo si no molesta — solo alarga el timeout de arranque de todos los servicios).
 
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
