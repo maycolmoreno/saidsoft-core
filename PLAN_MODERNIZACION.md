@@ -643,11 +643,30 @@ real o un ejecutable de prueba en `pos_comando_iniciar` (recomendado antes de co
 el rollback automático en una farmacia real con el POS de verdad instalado), y el fix
 del bug 8 reinstalado en ML016-A (se corrigió después de este intento).
 
-**Pendiente**: decidir si ML016-A pasa a tener el POS real instalado, o se
-reconfigura `pos_comando_iniciar`/`pos_nombre_proceso` a un ejecutable de prueba (ej.
-notepad) para validar el ciclo `aplicado → pos_relanzado → ok` sin depender del POS
-real. Reinstalar con el fix del bug 8. Revertir el `ServicesPipeTimeout=120000` que se
-probó en ML016-A durante el diagnóstico (no era la causa; `Remove-ItemProperty -Path
+Con el POS real instalado en ML016-A (una carpeta con `Zabyca.Pos.Desktop.exe`
+copiada a mano, sin instalador) y el fix del bug 8, el despliegue reportó
+`Confirmado OK` — pero al revisar la estación, la carpeta del POS había quedado
+intacta: apareció una **subcarpeta nueva** (`Cliente\Cliente\...`) al lado, sin pisar
+los archivos reales.
+
+9. **`_extraer_paquete` no contaba con que el `.zip` trajera su propia carpeta raíz
+   envolvente**: `zf.extractall(destino)` extrae tal cual viene el archivo — si el
+   `.zip` tiene todo debajo de una carpeta (ej. `Cliente/Zabyca.Pos.Desktop.exe` en
+   vez del ejecutable suelto en la raíz del zip), el resultado es una subcarpeta
+   nueva dentro de `pos_carpeta_instalacion`, no un reemplazo de los archivos reales
+   — y como no tira ninguna excepción, el despliegue "tiene éxito" sin haber
+   actualizado nada. Corregido: si todo el contenido del zip cuelga de una única
+   carpeta raíz común, se extrae salteando ese primer nivel para que caiga directo en
+   `pos_carpeta_instalacion`; si el zip ya viene plano (sin envoltorio), se comporta
+   igual que antes. Probado localmente con ambos casos (zip anidado y zip plano)
+   antes de recompilar.
+
+**Pendiente**: reinstalar en ML016-A con el fix del bug 9 (falta recompilar y volver
+a copiar), borrar a mano la subcarpeta `Cliente\Cliente\` que quedó del intento
+anterior, y reintentar el despliegue una vez más — este debería ser el que por fin
+llegue a `Confirmado OK` con los archivos realmente actualizados. Revertir el
+`ServicesPipeTimeout=120000` que se probó en ML016-A durante el diagnóstico del bug 7
+(no era la causa; `Remove-ItemProperty -Path
 "HKLM:\SYSTEM\CurrentControlSet\Control" -Name ServicesPipeTimeout` + reinicio, o
 dejarlo si no molesta — solo alarga el timeout de arranque de todos los servicios).
 

@@ -507,7 +507,37 @@ class AgentePrueba:
     def _extraer_paquete(self, ruta_zip: str, destino: str) -> None:
         os.makedirs(destino, exist_ok=True)
         with zipfile.ZipFile(ruta_zip) as zf:
-            zf.extractall(destino)
+            nombres = [n for n in zf.namelist() if n]
+            primeros = {n.split('/', 1)[0] for n in nombres}
+            # Si TODO el contenido cuelga de una única carpeta raíz (ej.
+            # "Cliente/Zabyca.Pos.Desktop.exe" en vez del ejecutable suelto en la raíz
+            # del zip), extraer tal cual crea esa carpeta como una subcarpeta NUEVA
+            # dentro de pos_carpeta_instalacion, sin tocar los archivos reales del POS
+            # — encontrado en el primer despliegue real contra el POS instalado: el
+            # panel confirmó "OK" pero la carpeta del POS quedó intacta, con una
+            # subcarpeta de más al lado. Si el zip viene así, se extrae saltando ese
+            # primer nivel para que el contenido caiga directo en destino.
+            prefijo = None
+            if len(primeros) == 1:
+                candidato = next(iter(primeros))
+                if all(n == candidato or n.startswith(candidato + '/') for n in nombres):
+                    prefijo = candidato + '/'
+            if prefijo is None:
+                zf.extractall(destino)
+                return
+            for info in zf.infolist():
+                if info.filename in (prefijo, prefijo.rstrip('/')):
+                    continue
+                nombre_relativo = info.filename[len(prefijo):]
+                if not nombre_relativo:
+                    continue
+                destino_final = os.path.join(destino, nombre_relativo)
+                if info.is_dir():
+                    os.makedirs(destino_final, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(destino_final), exist_ok=True)
+                with zf.open(info) as origen, open(destino_final, 'wb') as f:
+                    shutil.copyfileobj(origen, f)
 
     def _aplicar_despliegue(self, despliegue_id, ruta_paquete, payload):
         carpeta_pos = self.args.pos_carpeta_instalacion
