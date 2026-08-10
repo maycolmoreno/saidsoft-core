@@ -17,10 +17,13 @@ db.sqlite3
 /deploy/meshcentral/config.json
 
 # Agente de prueba: artefactos de build de PyInstaller e identidad de la estación
-# de prueba (no tiene sentido versionar un token/hardware_id de una máquina puntual)
+# de prueba (no tiene sentido versionar un token/hardware_id de una máquina puntual).
+# agente_prueba.spec SÍ se versiona (a partir del 10-ago-2026 dejó de ser un archivo
+# autogenerado descartable: define a mano los dos ejecutables — consola y servicio — y
+# los hiddenimports de pywin32 que necesita el segundo; build.ps1 ya no lo regenera
+# desde cero, lo usa tal cual con `pyinstaller agente_prueba.spec`).
 /agente-prueba/build/
 /agente-prueba/dist/
-/agente-prueba/*.spec
 /agente-prueba/identidad.json
 
 # deploy/docs/prueba-agente: prueba real contra producción del agente .NET.

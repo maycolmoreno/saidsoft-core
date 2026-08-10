@@ -478,6 +478,99 @@ auditó el panel entero buscando más casos de cada uno:
   `Farmacia.objects.none()` como fallback del queryset de `unidad_negocio` (modelo
   equivocado); no explotaba solo porque está vacío y las vistas siempre pasan `user`.
 
+**J. Segundo despliegue real del piloto: verificación de hash siempre fallaba por
+mayúsculas/minúsculas (10-ago-2026, ML016-A) — 🟡 diagnosticado, fix pendiente en
+`saidsoft-agente` (repo aparte, no vive acá):**
+
+Con el fix del bug H.4 ya desplegado en producción (`/media/` sirviendo bien), volver a
+publicar a ML016-A seguía dando el mismo mensaje genérico "No se pudo
+descargar/verificar el paquete de ninguna fuente" — sin ningún request nuevo en
+`docker-compose logs web`, lo que hacía sospechar de red otra vez. Se descartó paso a
+paso: `Test-NetConnection` al puerto del panel OK, `Invoke-WebRequest` a la URL exacta
+del `.zip` OK (mismo tamaño en bytes que el original: 32714043). El problema apareció
+al comparar el SHA-256: el servidor guarda/envía el hash en minúsculas
+(`hashlib.hexdigest()` de Python siempre es lowercase), y el agente casi con certeza lo
+calcula con `Convert.ToHexString()` de .NET, que devuelve **mayúsculas** por defecto.
+Los dos hashes eran el mismo valor, solo con distinto casing — la descarga nunca fue el
+problema, la comparación de string sí (`==` en vez de
+`StringComparison.OrdinalIgnoreCase`). Mismo patrón que H.4: dos causas raíz
+completamente distintas (404 de red vs. mismatch de casing) cayendo en el mismo mensaje
+opaco del lado del agente, sin loguear nada localmente (ni archivo ni Visor de
+eventos) que distinga una de otra.
+
+**No corregible desde este repo**: la comparación vive en `saidsoft-agente` (C#), que
+no está clonado en este entorno. Pendiente: normalizar el hash calculado a minúsculas
+(o usar `StringComparison.OrdinalIgnoreCase`) en el método que verifica el paquete tras
+la descarga, recompilar (`dotnet publish`) y reinstalar en las estaciones con
+`instalar-agente.ps1` / el paquete de `deploy/docs/prueba-agente/paquete-instalacion/`.
+
+**Superado por K**: no se logró ubicar la máquina de build del agente C# (ver K). El
+piloto sigue con este bug hasta que ML016-A se migre al reemplazo en Python, que ya
+nace con la comparación insensible a mayúsculas/minúsculas corregida.
+
+**K. Reemplazo del agente C# perdido por una extensión en Python del "agente de
+prueba" (10-ago-2026) — 🟢 hecho, pendiente de instalar en ML016-A y validar
+despliegue de POS de punta a punta contra un POS real:**
+
+Al intentar corregir el bug J, no se pudo ubicar ninguna máquina con el código fuente
+de `saidsoft-agente` (C#) — ni en este entorno, ni en la ruta de compilación que
+delataba un stack trace de un log previo (`C:\Proyectos\saidsoft-agente\...`), ni en
+ninguna PC que el usuario reconociera. Con el repo fuente efectivamente perdido, la
+opción de "corregir una línea y recompilar" no estaba disponible.
+
+En vez de reconstruir el agente C# desde cero, se decidió promover
+`agente-prueba/agente_prueba.py` (documentado hasta entonces como herramienta de
+prueba, no de producción — ver `agente-prueba/README.md`) a agente de producción del
+piloto, completándolo con lo único que le faltaba para tener paridad funcional:
+
+1. **Despliegues de POS**: descarga, verificación de SHA-256 (insensible a
+   mayúsculas/minúsculas desde el día uno — corrige el bug J de origen), aplicación
+   según `modo_aplicacion` (inmediato / ventana programada / al cierre del POS),
+   respaldo completo de la carpeta del POS antes de sobrescribir, relanzamiento y
+   rollback automático si el POS no vuelve a quedar corriendo (chequeo de liveness por
+   `tasklist`). Reporta la misma línea de tiempo de eventos que ya esperaba el
+   servidor (`EventoDespliegue.Paso`) — no hizo falta tocar `saidsoft-core` para esto.
+2. **Descarga con caché de farmacia**: si el despliegue trae `usar_cache=true`, intenta
+   primero `cache_url_base` (recibido en el enrolamiento) antes de caer al central —
+   mismo contrato que ya usaba el catálogo de software. Sigue sin implementarse que
+   una estación *actúe* de caché para otras (`es_cache_farmacia`); eso queda fuera de
+   alcance, como antes.
+3. **Servicio de Windows**: `agente-prueba/servicio_windows.py` (pywin32) +
+   `agente-prueba/instalar-servicio.ps1`, con la misma política de reinicio automático
+   que tenía el agente C# (`sc.exe failure ... restart/30000/restart/60000/
+   restart/120000`) y el mismo nombre de servicio (`SaidsoftAgente`) — lo reemplaza en
+   el lugar. Antes el "agente de prueba" solo corría como consola manual.
+   `agente_prueba.spec` pasó de ser un archivo autogenerado descartable a versionado a
+   propósito (define los dos ejecutables — consola y servicio — más los
+   `hiddenimports` de pywin32 que necesita el segundo; ver comentario en el archivo y
+   `.gitignore`).
+4. **Bug encontrado al probar el servicio compilado** (no relacionado al bug J):
+   `correr()` usaba `client.connect()` (bloqueante) antes de `loop_forever()` — si el
+   primer intento de conexión fallaba (broker caído o red no lista al bootear como
+   servicio), la excepción moría en el hilo del agente en silencio y el servicio de
+   Windows quedaba "Running" sin hacer nada, sin reintentar nunca. Corregido con
+   `connect_async()` + `loop_forever(retry_first_connection=True)`, que sí reintenta
+   desde el primer intento igual que reintenta reconexiones posteriores. Se detectó
+   corriendo `Saidsoft.Agente.exe debug` (modo primer plano de pywin32, sin instalar
+   nada) contra un broker inexistente — antes del fix el hilo moría con traceback, con
+   el fix sigue reintentando sin cortar el proceso.
+
+**Validado en este entorno**: el `.spec` compila los dos ejecutables (incluida la
+detección automática de los hooks de pywin32 por `pyinstaller-hooks-contrib`);
+`Saidsoft.Agente.exe` sin argumentos muestra el uso estándar de pywin32
+(`install|start|stop|remove|debug`); `Saidsoft.Agente.exe debug` con un `config.json`
+de prueba llega hasta el intento de conexión MQTT real (falla por falta de broker en
+esta máquina, como se espera) sin crashear. **No validado**: el ciclo completo de un
+despliegue de POS contra un POS real (cerrar → respaldar → aplicar → relanzar →
+verificar/rollback) — recomendado un ensayo con un POS de juguete antes de confiar el
+rollback automático en una farmacia real. Tampoco se instaló todavía como servicio en
+ninguna estación real (`instalar-servicio.ps1` sin correr fuera de esta máquina).
+
+**Pendiente**: instalar en ML016-A con `instalar-servicio.ps1`, aprobar la
+re-enrolación en el panel si hiciera falta (mismo `hardware_id`, debería reconectar
+con el token existente sin re-aprobación), y reintentar el despliegue #3 que quedó en
+error por el bug J.
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual

@@ -1,20 +1,28 @@
-# Agente de prueba SAIDSOFT
+# Agente SAIDSOFT (Python)
 
-Implementación de referencia liviana del protocolo MQTT que habla el agente real
-(`saidsoft-agente`, C#). **No es el agente de producción** — es una herramienta de
-prueba para validar el flujo servidor↔estación contra una estación Windows de verdad,
-sin depender del simulador Django (`python manage.py simular_agente`, que solo corre
-en el propio servidor y no sirve para probar en una caja física/VM separada).
+Reemplazo en Python del agente real perdido (`saidsoft-agente`, C#). Empezó el
+3-ago-2026 como "agente de prueba": una implementación de referencia liviana del
+protocolo MQTT, pensada para validar el flujo servidor↔estación contra una estación
+Windows de verdad sin depender del simulador Django (`python manage.py
+simular_agente`, que solo corre en el propio servidor). El código fuente del agente
+C# original no existía en este repositorio ni en esta máquina — vivía en otro
+proyecto, en la máquina de quien lo desarrolló originalmente.
 
-El agente real (`saidsoft-agente`) no existe en este repositorio ni en esta máquina —
-vive en otro proyecto, en la máquina de quien lo desarrolló originalmente. Este agente
-de prueba se construyó justamente porque no había nada para instalar y probar.
+El 10-ago-2026, durante el primer despliegue de POS real del piloto (ML016-A), se
+encontró un bug en el agente C# (comparación de SHA-256 sensible a
+mayúsculas/minúsculas — ver `PLAN_MODERNIZACION.md` §10-J) que no se pudo corregir
+porque **no se logró ubicar la máquina de build** con el código fuente original. En
+vez de perseguirla, se decidió promover este agente de prueba a agente de producción
+del piloto, completando lo que le faltaba (despliegues de POS, y la posibilidad de
+correr como servicio de Windows). Ver `PLAN_MODERNIZACION.md` §10-K para el detalle
+completo de esa decisión.
 
 ## Qué cubre
 
 - **Enrolamiento**: se presenta con `hardware_id` (MachineGuid real de Windows),
   `numero_serie` (BIOS real, vía PowerShell/CIM), hostname y SO reales. Guarda el
-  token recibido en `identidad.json` — no vuelve a enrolarse en arranques siguientes.
+  token recibido (y `cache_url_base`, si el servidor le asigna un caché de farmacia)
+  en `identidad.json` — no vuelve a enrolarse en arranques siguientes.
 - **Heartbeat** periódico.
 - **Scripts (RMM)**: valida la firma HMAC-SHA256 del comando `ejecutar_script`
   (mismo algoritmo que `apps.catalogo.services.firmar_payload` del servidor — ver
@@ -23,12 +31,25 @@ de prueba se construyó justamente porque no había nada para instalar y probar.
 - **Catálogo de software**: descarga el instalador, verifica SHA-256, corre
   `comando_instalacion_silenciosa` (o `comando_desinstalacion` si `accion=desinstalar`)
   y reporta cada paso.
+- **Despliegues de POS**: descarga el paquete, verifica SHA-256 (comparación
+  insensible a mayúsculas/minúsculas — el bug que forzó este reemplazo), aplica según
+  `modo_aplicacion` (`inmediato` / `ventana` programada / al `cierre_pos` del POS),
+  respalda la carpeta del POS antes de sobrescribirla, relanza el POS y hace rollback
+  automático si no vuelve a quedar corriendo. Reporta cada paso de la línea de tiempo
+  (`recibido` → `descargado` → `hash_verificado` → `pos_cerrado` → `aplicado` →
+  `pos_relanzado` → `ok`/`error`/`rollback`). Requiere `--pos-carpeta-instalacion`,
+  `--pos-nombre-proceso` y `--pos-comando-iniciar` configurados; sin eso, reporta
+  error inmediato si llega un despliegue.
+- Si un despliegue o una instalación de software trae `usar_cache=true`, intenta
+  descargar primero del caché de farmacia (`cache_url_base` recibido en el
+  enrolamiento) antes de caer al central — best effort, sin bloquear si el caché no
+  responde.
 
 ## Qué NO cubre (fuera de alcance a propósito)
 
-- Despliegues de POS (`/saidsof/despliegue/...`) — no se pidió para esta prueba.
-- Servir de caché de farmacia (`es_cache_farmacia`) — un solo agente de prueba no
-  tiene a quién servirle.
+- Servir de caché de farmacia (`es_cache_farmacia`): este agente puede *usar* un
+  caché de farmacia al descargar (ver arriba), pero no expone un servidor HTTP local
+  para que otras estaciones descarguen de él — sería un componente aparte.
 - Comandos `reiniciar`/`consultar_info` — se loguean como "no implementado" si llegan.
 
 ## Límite real de compatibilidad con Windows 10 viejo — sin verificar
@@ -41,37 +62,50 @@ corra en una máquina Windows 10 vieja sin parchar (podría faltarle el Universa
 Runtime si nunca se actualizó lo suficiente). No tengo forma de confirmarlo desde este
 entorno porque no hay ninguna estación Windows 10 vieja disponible para probar.
 
-**Conclusión**: este agente de prueba sirve para validar el protocolo/lógica del
-servidor contra una estación Windows razonablemente actualizada — no es un proxy
-confiable para responder "¿el agente corre en mi Windows 10 más viejo?". Esa pregunta
-solo la responde correr esto (o, mejor, el agente .NET real cuando exista) en esa
-máquina específica.
+**Conclusión**: para un Windows 10 realmente viejo sin parchar, esta sigue siendo una
+pregunta abierta — solo la responde correr esto en esa máquina específica.
 
 ## Probado de verdad, no solo compilado
 
-Se validó contra el stack local completo (broker `amqtt` + panel + worker corriendo en
-este mismo entorno): enrolamiento real con hardware real detectado, aprobación desde el
-panel, un script PowerShell real ejecutado con salida real capturada de vuelta en
-`ResultadoEjecucionScript.stdout`, y una instalación de software real (descarga desde
-el servidor Django, hash verificado, comando ejecutado) que dejó un archivo real en el
-disco de esta máquina — no es una demo de humo, corrió el ciclo completo.
+Validado contra el stack local completo (broker `amqtt` + panel + worker): enrolamiento
+real con hardware real detectado, aprobación desde el panel, un script PowerShell real
+ejecutado con salida real capturada en `ResultadoEjecucionScript.stdout`, y una
+instalación de software real (descarga, hash verificado, comando ejecutado) que dejó un
+archivo real en disco.
+
+**Despliegues de POS (10-ago-2026)**: la lógica de descarga/hash/aplicar/rollback se
+probó por partes — construcción del agente desde `config.json`, detección de proceso
+vivo (`tasklist`), cálculo y comparación de SHA-256 case-insensitive, y el ciclo
+completo `install`/`debug`/reconexión del *servicio* de Windows compilado (ver más
+abajo) — pero **no** de punta a punta contra un POS real aplicando un paquete real
+todavía. Antes de confiar el rollback automático en una farmacia real, conviene un
+ensayo con un "POS" de juguete (una carpeta con un .exe cualquiera) para ver el ciclo
+cerrar cerrar→respaldar→aplicar→relanzar→verificar sin sorpresas.
 
 ## Compilar
 
 ```powershell
 ..\.venv\Scripts\python.exe -m pip install -r requirements.txt   # una vez
+..\.venv\Scripts\python.exe ..\.venv\Scripts\pywin32_postinstall.py -install   # una vez
 .\build.ps1
 ```
 
-Genera `dist\agente_prueba.exe` (standalone, ~9 MB, no necesita Python en la estación
-destino). `dist/` y `build/` no se versionan (ver `.gitignore`).
+Genera dos ejecutables en `dist\` (standalone, no necesitan Python en la estación
+destino) — `dist/` y `build/` no se versionan, pero `agente_prueba.spec` sí (ver
+`.gitignore`, ya no es descartable: define ambos ejecutables y los hiddenimports de
+pywin32):
 
-## Usar
+- **`agente_prueba.exe`** — modo consola manual, para pruebas puntuales.
+- **`Saidsoft.Agente.exe`** — el mismo agente envuelto como servicio de Windows
+  (`servicio_windows.py`), para producción.
 
-Copiar `dist\agente_prueba.exe` a la estación de prueba y correr desde una consola:
+## Usar en modo consola (pruebas)
 
 ```
-agente_prueba.exe --codigo ML001-B --host <ip-del-servidor> --puerto 1883 --hmac-secret <COMANDO_HMAC_SECRET>
+agente_prueba.exe --codigo ML001-B --host <ip-del-servidor> --puerto 1883 --hmac-secret <COMANDO_HMAC_SECRET> ^
+    --pos-carpeta-instalacion "C:\Program Files (x86)\Farmamia Cia Ltda - Elipsys\Cliente" ^
+    --pos-nombre-proceso Zabyca.Pos.Desktop ^
+    --pos-comando-iniciar "C:\Program Files (x86)\Farmamia Cia Ltda - Elipsys\Cliente\Zabyca.Pos.Desktop.exe"
 ```
 
 Opciones (`agente_prueba.exe --help` para el detalle):
@@ -84,6 +118,27 @@ Opciones (`agente_prueba.exe --help` para el detalle):
 | `--tls` / `--ca-cert` | desactivado | Para apuntar a producción (EMQX con TLS) |
 | `--hmac-secret` | vacío | `COMANDO_HMAC_SECRET` del servidor — sin esto, los scripts se rechazan por firma inválida |
 | `--intervalo-heartbeat` | `60` | Segundos entre heartbeats |
+| `--pos-carpeta-instalacion` / `--pos-nombre-proceso` / `--pos-comando-iniciar` | vacío | Requeridos para despliegues de POS — ver `.SYNOPSIS` de `instalar-servicio.ps1` |
+| `--espera-liveness-segundos` | `15` | Segundos tras relanzar el POS antes de chequear si sigue vivo (si no, dispara rollback) |
+
+## Instalar como servicio de Windows (producción)
+
+```powershell
+.\instalar-servicio.ps1 -PublishFolder .\dist -CentralHost 10.111.6.20 `
+    -MqttPassword "el-password-real" -CaCertPath .\dist\cert.pem `
+    -ComandoHmacSecret "el-secreto-compartido-con-el-panel"
+```
+
+Registra `Saidsoft.Agente.exe` como el servicio de Windows `SaidsoftAgente` (arranque
+automático, reinicio solo si crashea — `sc.exe failure` con la misma política que
+usaba el agente C# original), leyendo la config de `config.json` en vez de argv. Ver
+`.SYNOPSIS`/`.PARAMETER` de `instalar-servicio.ps1` (`Get-Help .\instalar-servicio.ps1
+-Full`) para el resto de los parámetros. Usa el mismo nombre de servicio que el agente
+C# original — lo reemplaza en el lugar, no convive con él.
+
+Para depurar sin instalar nada: `Saidsoft.Agente.exe debug` lo corre en primer plano en
+la consola actual (necesita `config.json` junto al `.exe`), útil para ver los logs de
+enrolamiento/conexión en vivo antes de instalarlo como servicio.
 
 Tras el primer enrolamiento, la estación queda **pendiente de aprobación** en
 `/estaciones/` del panel (o pendiente_aprobacion en el admin) — hay que aprobarla ahí

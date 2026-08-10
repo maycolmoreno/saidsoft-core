@@ -1,22 +1,35 @@
-"""Agente de prueba SAIDSOFT — implementación de referencia liviana del protocolo MQTT
-que habla el agente real (saidsoft-agente, C#, repo aparte que no existe en este entorno).
+r"""Agente SAIDSOFT — reemplazo en Python del agente real perdido (saidsoft-agente, C#,
+repo aparte cuyo código fuente no se pudo recuperar; ver PLAN_MODERNIZACION.md §10-K).
 
-Pensado para copiarse a una estación Windows real (como .exe standalone, ver build.ps1)
-y validar el flujo servidor↔agente sin depender del simulador Django, que solo corre en
-el propio servidor.
+Empezó como "agente de prueba" (implementación de referencia liviana del protocolo
+MQTT) pensado para copiarse a una estación Windows real (como .exe standalone, ver
+build.ps1) y validar el flujo servidor↔agente sin depender del simulador Django. El
+10-ago-2026, al no poder ubicarse la máquina de build del agente C# original para
+corregirle un bug (comparación de SHA-256 sensible a mayúsculas/minúsculas que hacía
+fallar todo despliegue de POS), se decidió promoverlo a agente de producción del
+piloto, agregándole lo que le faltaba: despliegues de POS y la posibilidad de correr
+como servicio de Windows (ver servicio_windows.py).
 
-Cubre: enrolamiento, heartbeat, ejecución de scripts (RMM) y solicitudes de instalación
-de software del catálogo. NO cubre despliegues de POS (fuera del alcance pedido) ni
-sirve de caché de farmacia (es_cache_farmacia) — un solo agente de prueba no necesita
-servir paquetes a nadie más.
+Cubre: enrolamiento, heartbeat, ejecución de scripts (RMM), instalación de software del
+catálogo y despliegues de POS (descargar/verificar/aplicar/rollback, los tres modos de
+aplicación). NO sirve de caché de farmacia (es_cache_farmacia) — no expone un servidor
+HTTP local para que otras estaciones descarguen de él; si `usar_cache` viene activo en
+un despliegue, sí intenta descargar primero del caché de su propia farmacia (best
+effort, cae al central si falla).
 
-Uso:
-    agente_prueba.exe --codigo ML001-B --host 127.0.0.1 --puerto 1883 --hmac-secret <secreto>
+Uso (modo consola, para pruebas):
+    agente_prueba.exe --codigo ML001-B --host 127.0.0.1 --puerto 1883 --hmac-secret <secreto> \
+        --pos-carpeta-instalacion "C:\Program Files (x86)\Farmamia Cia Ltda - Elipsys\Cliente" \
+        --pos-nombre-proceso Zabyca.Pos.Desktop \
+        --pos-comando-iniciar "C:\Program Files (x86)\Farmamia Cia Ltda - Elipsys\Cliente\Zabyca.Pos.Desktop.exe"
+
+Para producción, ver servicio_windows.py e instalar-servicio.ps1 (corre como servicio
+de Windows con auto-reinicio, en vez de consola manual).
 
 Guarda su identidad (hardware_id fijado la primera vez, token recibido en el
-enrolamiento, farmacia/grupo) en identidad.json junto al ejecutable — no vuelve a
-enrolarse en cada arranque si ya tiene un token guardado, igual que se documenta que
-hace el agente real.
+enrolamiento, farmacia/grupo, cache_url_base) en identidad.json junto al ejecutable —
+no vuelve a enrolarse en cada arranque si ya tiene un token guardado, igual que se
+documenta que hace el agente real.
 """
 import argparse
 import hashlib
@@ -25,19 +38,34 @@ import json
 import logging
 import os
 import platform
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
+import zipfile
+from datetime import datetime
 
 import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
 VERSION_AGENTE_PRUEBA = 'agente-prueba-0.1'
+
+
+def _configurar_logging_archivo(ruta_log: str = ARCHIVO_LOG):
+    """Solo archivo, sin StreamHandler(stdout) — usado por servicio_windows.py, que no
+    tiene consola a la que escribir (un servicio de Windows lanzado por el SCM no
+    hereda una)."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[logging.FileHandler(ruta_log, encoding='utf-8')],
+    )
 
 
 def _configurar_logging():
@@ -116,10 +144,14 @@ class AgentePrueba:
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/comando/')
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/software/')
         client.subscribe('/saidsof/software/global/')
+        client.subscribe(f'/saidsof/agente/{self.args.codigo}/despliegue/')
+        client.subscribe('/saidsof/despliegue/global/')
         if self.identidad.get('farmacia'):
             client.subscribe(f"/saidsof/software/farmacia/{self.identidad['farmacia']}/")
+            client.subscribe(f"/saidsof/despliegue/farmacia/{self.identidad['farmacia']}/")
         if self.identidad.get('grupo'):
             client.subscribe(f"/saidsof/software/grupo/{self.identidad['grupo']}/")
+            client.subscribe(f"/saidsof/despliegue/grupo/{self.identidad['grupo']}/")
 
         if self._token():
             logging.info('Ya tengo identidad guardada (token existente) — no vuelvo a enrolarme.')
@@ -159,6 +191,8 @@ class AgentePrueba:
                 self._manejar_comando(payload)
             elif msg.topic.startswith('/saidsof/software/') or msg.topic.endswith('/software/'):
                 self._manejar_software(payload)
+            elif msg.topic.startswith('/saidsof/despliegue/') or msg.topic.endswith('/despliegue/'):
+                self._manejar_despliegue(payload)
             else:
                 logging.debug('Mensaje en tópico no manejado: %s', msg.topic)
         except Exception:
@@ -171,6 +205,7 @@ class AgentePrueba:
         self.identidad['token'] = payload['token']
         self.identidad['farmacia'] = payload.get('farmacia')
         self.identidad['grupo'] = payload.get('grupo')
+        self.identidad['cache_url_base'] = payload.get('cache_url_base')
         self._guardar_identidad()
         logging.info(
             'Enrolado. estado_aprobacion=%s farmacia=%s grupo=%s '
@@ -179,8 +214,10 @@ class AgentePrueba:
         )
         if payload.get('farmacia'):
             self.client.subscribe(f"/saidsof/software/farmacia/{payload['farmacia']}/")
+            self.client.subscribe(f"/saidsof/despliegue/farmacia/{payload['farmacia']}/")
         if payload.get('grupo'):
             self.client.subscribe(f"/saidsof/software/grupo/{payload['grupo']}/")
+            self.client.subscribe(f"/saidsof/despliegue/grupo/{payload['grupo']}/")
 
     def _publicar(self, topico, payload):
         self.client.publish(topico, json.dumps(payload))
@@ -272,11 +309,14 @@ class AgentePrueba:
         self._reportar_instalacion(solicitud_id, 'recibido')
         ruta = None
         try:
-            ruta = self._descargar(payload['url'])
+            ruta = self._descargar(payload['url'], usar_cache=payload.get('usar_cache', False))
             self._reportar_instalacion(solicitud_id, 'descargado')
 
             hash_local = self._sha256_de(ruta)
-            if hash_local != payload['sha256']:
+            # Comparación insensible a mayúsculas/minúsculas: hashlib.hexdigest() de
+            # Python es siempre lowercase, pero no todo emisor del hash lo garantiza
+            # (ver PLAN_MODERNIZACION.md §10-J, mismo bug encontrado en el agente C#).
+            if hash_local.lower() != payload['sha256'].lower():
                 self._reportar_instalacion(
                     solicitud_id, 'error',
                     detalle=f"SHA-256 no coincide (esperado {payload['sha256']}, obtenido {hash_local})",
@@ -312,8 +352,23 @@ class AgentePrueba:
                 detalle=f'El comando devolvió código {resultado.returncode}: {resultado.stderr[-2000:]}',
             )
 
-    def _descargar(self, url: str) -> str:
+    def _descargar(self, url: str, usar_cache: bool = False) -> str:
+        """Descarga a un archivo temporal. Si `usar_cache` y hay un caché de farmacia
+        conocido (`cache_url_base`, recibido en el enrolamiento), lo intenta primero —
+        best effort: cualquier falla (caché apagado, no tiene el paquete, red LAN caída)
+        cae al central sin propagar el error. El caché se asume que replica la misma
+        ruta relativa que el central (`/media/despliegues/...`); no hay todavía una
+        estación real actuando de caché contra la que confirmar este contrato."""
         ruta = os.path.join(tempfile.gettempdir(), os.path.basename(url) or 'paquete.bin')
+        if usar_cache and self.identidad.get('cache_url_base'):
+            ruta_relativa = urllib.parse.urlparse(url).path
+            url_cache = self.identidad['cache_url_base'].rstrip('/') + ruta_relativa
+            try:
+                urllib.request.urlretrieve(url_cache, ruta)
+                logging.info('Descargado del caché de farmacia: %s', url_cache)
+                return ruta
+            except Exception as exc:
+                logging.warning('Caché de farmacia no disponible (%s: %s), cae al central.', url_cache, exc)
         urllib.request.urlretrieve(url, ruta)
         return ruta
 
@@ -331,12 +386,229 @@ class AgentePrueba:
         })
         logging.info('Instalación #%s -> %s%s', solicitud_id, paso, f' ({detalle})' if detalle else '')
 
+    # --- despliegues de POS ---
+    def _manejar_despliegue(self, payload):
+        despliegue_id = payload['despliegue_id']
+        if not (self.args.pos_carpeta_instalacion and self.args.pos_nombre_proceso
+                and self.args.pos_comando_iniciar):
+            self._reportar_despliegue(
+                despliegue_id, 'error',
+                detalle='Este agente no tiene configurado el POS '
+                        '(--pos-carpeta-instalacion/--pos-nombre-proceso/--pos-comando-iniciar).',
+            )
+            return
+        self._reportar_despliegue(despliegue_id, 'recibido')
+        # En un hilo aparte: puede quedar esperando horas (modo "ventana" o "cierre_pos")
+        # y no puede bloquear el loop de MQTT (heartbeat, otros comandos) mientras tanto.
+        threading.Thread(target=self._procesar_despliegue, args=(payload,), daemon=True).start()
+
+    def _procesar_despliegue(self, payload):
+        despliegue_id = payload['despliegue_id']
+        ruta_paquete = None
+        try:
+            ruta_paquete = self._descargar(payload['url'], usar_cache=payload.get('usar_cache', False))
+            self._reportar_despliegue(despliegue_id, 'descargado')
+
+            hash_local = self._sha256_de(ruta_paquete)
+            hash_esperado = payload['sha256']
+            # Comparación insensible a mayúsculas/minúsculas — ver PLAN_MODERNIZACION.md
+            # §10-J: el bug que dejó el agente C# original varado en este mismo paso.
+            if hash_local.lower() != hash_esperado.lower():
+                self._reportar_despliegue(
+                    despliegue_id, 'error',
+                    detalle=f'SHA-256 no coincide (esperado {hash_esperado}, obtenido {hash_local})',
+                )
+                return
+            self._reportar_despliegue(despliegue_id, 'hash_verificado')
+
+            modo = payload.get('modo_aplicacion', 'inmediato')
+            if modo == 'ventana' and payload.get('ventana_fecha_hora'):
+                self._esperar_ventana(payload['ventana_fecha_hora'])
+            elif modo == 'cierre_pos':
+                self._esperar_cierre_pos()
+            # 'inmediato' (o ventana sin fecha, defensivo): aplica ya.
+
+            self._aplicar_despliegue(despliegue_id, ruta_paquete, payload)
+        except Exception as exc:
+            logging.exception('Error procesando despliegue #%s', despliegue_id)
+            self._reportar_despliegue(despliegue_id, 'error', detalle=str(exc))
+        finally:
+            if ruta_paquete:
+                try:
+                    os.unlink(ruta_paquete)
+                except OSError:
+                    pass
+
+    def _esperar_ventana(self, iso_fecha_hora: str) -> None:
+        try:
+            objetivo = datetime.fromisoformat(iso_fecha_hora)
+        except ValueError:
+            logging.warning('ventana_fecha_hora inválida (%s), aplico ya.', iso_fecha_hora)
+            return
+        ahora = datetime.now(objetivo.tzinfo) if objetivo.tzinfo else datetime.now()
+        espera = (objetivo - ahora).total_seconds()
+        if espera > 0:
+            logging.info('Esperando %.0fs hasta la ventana programada (%s)', espera, iso_fecha_hora)
+            time.sleep(espera)
+
+    def _esperar_cierre_pos(self) -> None:
+        logging.info('Esperando a que el POS se cierre por su cuenta para aplicar...')
+        while self._pos_corriendo():
+            time.sleep(10)
+
+    def _pos_corriendo(self) -> bool:
+        try:
+            salida = subprocess.check_output(
+                ['tasklist', '/FI', f'IMAGENAME eq {self.args.pos_nombre_proceso}.exe', '/NH'],
+                text=True, timeout=10,
+            )
+        except Exception:
+            return False
+        return self.args.pos_nombre_proceso.lower() in salida.lower()
+
+    def _detener_pos(self, timeout_segundos: int = 30) -> None:
+        if not self._pos_corriendo():
+            return
+        subprocess.run(
+            ['taskkill', '/IM', f'{self.args.pos_nombre_proceso}.exe', '/F'],
+            capture_output=True, timeout=15,
+        )
+        limite = time.time() + timeout_segundos
+        while self._pos_corriendo() and time.time() < limite:
+            time.sleep(1)
+
+    def _iniciar_pos(self) -> None:
+        subprocess.Popen(
+            [self.args.pos_comando_iniciar],
+            cwd=os.path.dirname(self.args.pos_comando_iniciar) or None,
+        )
+
+    def _version_pos_actual(self) -> str:
+        """Best-effort: versión de archivo del ejecutable del POS antes de tocarlo.
+        Si falla (no existe, sin permisos) devuelve '' — no es crítico para aplicar."""
+        try:
+            salida = subprocess.check_output(
+                ['powershell', '-NoProfile', '-Command',
+                 f"(Get-Item -LiteralPath '{self.args.pos_comando_iniciar}').VersionInfo.ProductVersion"],
+                timeout=10, text=True,
+            )
+            return salida.strip()
+        except Exception:
+            return ''
+
+    def _respaldar_carpeta(self, origen: str, destino: str) -> None:
+        if os.path.isdir(origen):
+            shutil.copytree(origen, destino, dirs_exist_ok=True)
+
+    def _restaurar_carpeta(self, backup_dir: str, destino: str) -> None:
+        if os.path.isdir(backup_dir):
+            shutil.copytree(backup_dir, destino, dirs_exist_ok=True)
+
+    def _extraer_paquete(self, ruta_zip: str, destino: str) -> None:
+        os.makedirs(destino, exist_ok=True)
+        with zipfile.ZipFile(ruta_zip) as zf:
+            zf.extractall(destino)
+
+    def _aplicar_despliegue(self, despliegue_id, ruta_paquete, payload):
+        carpeta_pos = self.args.pos_carpeta_instalacion
+        version_previa = self._version_pos_actual()
+
+        self._detener_pos()
+        self._reportar_despliegue(despliegue_id, 'pos_cerrado', version_previa=version_previa)
+
+        # Respaldo completo de la carpeta del POS antes de tocar nada — es lo único que
+        # permite un rollback real si el POS no vuelve a levantar. Puede pesar bastante
+        # en disco (carpeta del POS completa, no solo lo que cambia el paquete); para el
+        # piloto (una estación, un despliegue a la vez) alcanza sin necesidad de un
+        # esquema más fino de backup incremental.
+        backup_dir = tempfile.mkdtemp(prefix='saidsoft_backup_')
+        try:
+            self._respaldar_carpeta(carpeta_pos, backup_dir)
+            self._extraer_paquete(ruta_paquete, carpeta_pos)
+            self._reportar_despliegue(despliegue_id, 'aplicado')
+
+            self._iniciar_pos()
+            self._reportar_despliegue(despliegue_id, 'pos_relanzado')
+
+            time.sleep(self.args.espera_liveness_segundos)
+            if self._pos_corriendo():
+                self._reportar_despliegue(despliegue_id, 'ok', version_nueva=payload.get('version', ''))
+                shutil.rmtree(backup_dir, ignore_errors=True)
+            else:
+                self._rollback(
+                    despliegue_id, carpeta_pos, backup_dir,
+                    'El POS no quedó corriendo tras aplicar el despliegue',
+                )
+        except Exception as exc:
+            logging.exception('Error aplicando despliegue #%s, se intenta rollback', despliegue_id)
+            self._rollback(despliegue_id, carpeta_pos, backup_dir, str(exc))
+
+    def _rollback(self, despliegue_id, carpeta_pos, backup_dir, motivo):
+        try:
+            self._detener_pos()
+            self._restaurar_carpeta(backup_dir, carpeta_pos)
+            self._iniciar_pos()
+        finally:
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        self._reportar_despliegue(despliegue_id, 'rollback', detalle=motivo)
+
+    def _reportar_despliegue(self, despliegue_id, paso, detalle='', version_previa=None, version_nueva=None):
+        cuerpo = {'token': self._token(), 'despliegue_id': despliegue_id, 'paso': paso, 'detalle': detalle}
+        if version_previa is not None:
+            cuerpo['version_previa'] = version_previa
+        if version_nueva is not None:
+            cuerpo['version_nueva'] = version_nueva
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/despliegue_estado/', cuerpo)
+        logging.info('Despliegue #%s -> %s%s', despliegue_id, paso, f' ({detalle})' if detalle else '')
+
     # --- arranque ---
     def correr(self):
-        logging.info('Agente de prueba %s arrancando para la estación %s', VERSION_AGENTE_PRUEBA, self.args.codigo)
-        self.client.connect(self.args.host, self.args.puerto, keepalive=60)
+        logging.info('Agente %s arrancando para la estación %s', VERSION_AGENTE_PRUEBA, self.args.codigo)
+        # connect_async() (no bloquea, no lanza si el broker todavía no responde) +
+        # loop_forever(retry_first_connection=True): con connect() simple, si el primer
+        # intento fallaba (broker caído o red no lista al bootear como servicio de
+        # Windows), la excepción mataba este hilo en silencio y el servicio quedaba
+        # "Running" sin hacer nada — encontrado corriendo el .exe de servicio compilado
+        # en modo debug sin broker disponible. Así, loop_forever reintenta solo desde el
+        # primer intento, igual que hace con reconexiones posteriores.
+        self.client.connect_async(self.args.host, self.args.puerto, keepalive=60)
         threading.Thread(target=self.bucle_heartbeat, daemon=True).start()
-        self.client.loop_forever()
+        self.client.loop_forever(retry_first_connection=True)
+
+    def detener(self):
+        """Corta `loop_forever()` de forma prolija — lo usa servicio_windows.py al parar
+        el servicio (SvcStop). Un disconnect() intencional hace que loop_forever()
+        retorne en vez de seguir reintentando conectar."""
+        logging.info('Deteniendo el agente...')
+        self.client.disconnect()
+
+
+# (campo, default) — comparte la lista de opciones entre la CLI (argparse, abajo) y
+# servicio_windows.py, que arma el mismo objeto de args a partir de config.json en vez
+# de parsear argv (un servicio de Windows no recibe argumentos de línea de comandos
+# cómodamente).
+CAMPOS_CONFIG = [
+    ('codigo', None),
+    ('host', '127.0.0.1'),
+    ('puerto', 1883),
+    ('usuario', ''),
+    ('password', ''),
+    ('tls', False),
+    ('ca_cert', ''),
+    ('hmac_secret', ''),
+    ('intervalo_heartbeat', 60),
+    ('pos_carpeta_instalacion', ''),
+    ('pos_nombre_proceso', ''),
+    ('pos_comando_iniciar', ''),
+    ('espera_liveness_segundos', 15),
+]
+
+
+def args_desde_config(config: dict) -> argparse.Namespace:
+    valores = {campo: config.get(campo, default) for campo, default in CAMPOS_CONFIG}
+    if not valores['codigo']:
+        raise ValueError('config.json debe tener "codigo"')
+    return argparse.Namespace(**valores)
 
 
 def main():
@@ -353,6 +625,23 @@ def main():
         help='COMANDO_HMAC_SECRET del servidor — obligatorio para validar comandos de scripts (ejecutar_script).',
     )
     parser.add_argument('--intervalo-heartbeat', type=int, default=60, help='Segundos entre heartbeats (default 60)')
+    parser.add_argument(
+        '--pos-carpeta-instalacion', default='',
+        help='Carpeta donde vive el POS real, ej. "C:\\Program Files (x86)\\Farmamia Cia Ltda - Elipsys\\Cliente". '
+             'Vacío = los despliegues de POS que lleguen se reportan como error (agente sin POS configurado).',
+    )
+    parser.add_argument(
+        '--pos-nombre-proceso', default='',
+        help='Nombre del proceso del POS SIN ".exe" (para detectar si sigue vivo tras aplicar/relanzar).',
+    )
+    parser.add_argument(
+        '--pos-comando-iniciar', default='',
+        help='Ruta completa al .exe del POS que se relanza tras aplicar un despliegue.',
+    )
+    parser.add_argument(
+        '--espera-liveness-segundos', type=int, default=15,
+        help='Segundos a esperar tras relanzar el POS antes de chequear si sigue vivo (default 15).',
+    )
     args = parser.parse_args()
 
     _configurar_logging()
