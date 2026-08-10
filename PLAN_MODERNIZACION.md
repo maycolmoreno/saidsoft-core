@@ -612,20 +612,42 @@ servicio **Running** bajo `LocalSystem`, con el proceso vivo, el log escribiénd
 `C:\ProgramData\Saidsoft\` y el loop MQTT reintentando (no hay broker local, como se
 espera). También validado: los dos ejecutables compilan, `debug` corre en primer
 plano, y el `config.json` con BOM real de Windows PowerShell 5.1 se lee bien.
-**Validado en ML016-A**: `instalar-servicio.ps1` registra el servicio correctamente
-(reemplazando al agente C# previo); los bugs 5 y 6 se encontraron ahí, el 7 se
-reprodujo y corrigió en la máquina de dev. **No validado todavía**: el servicio
-corriendo en ML016-A con el fix 7 (falta reinstalar con el binario nuevo), y el ciclo
-completo de un despliegue de POS contra un POS real (cerrar → respaldar → aplicar →
-relanzar → verificar/rollback) — recomendado un ensayo con un POS de juguete antes de
-confiar el rollback automático en una farmacia real.
+**Validado en ML016-A**: con el fix del bug 7, `instalar-servicio.ps1` deja el servicio
+**Running** de verdad ahí también, reemplazando al agente C# previo. Reintentando el
+despliegue #3 (ahora versión de prueba "7.7.7.7") desde el panel, el ciclo llegó hasta
+`Descargado` → `Hash verificado` → `POS cerrado` → `Archivos aplicados` — la lógica de
+descarga/hash/backup/aplicar funciona de punta a punta contra un despliegue real. Se
+frenó en relanzar el POS con `[WinError 2] El sistema no puede encontrar el archivo
+especificado`: **no es un bug, ML016-A todavía no tiene el POS real instalado**
+(`instalar-servicio.ps1` ya lo había advertido). Depurando ese frenazo se encontró un
+bug real:
 
-**Pendiente**: reinstalar en ML016-A con el `Saidsoft.Agente.exe` recompilado (fix del
-bug 7), confirmar que el servicio queda `Running`, aprobar la re-enrolación en el panel
-si hiciera falta (mismo `hardware_id`, debería reconectar con el token existente sin
-re-aprobación), y reintentar el despliegue #3 que quedó en error por el bug J.
-Revertir también el `ServicesPipeTimeout=120000` que se probó en ML016-A durante el
-diagnóstico (no era la causa; `Remove-ItemProperty -Path
+8. **El rollback no reportaba `rollback` si fallaba al relanzar el POS**: `_rollback()`
+   respalda, restaura los archivos y vuelve a llamar `_iniciar_pos()` para relanzar —
+   pero si ESE segundo intento también fallaba (mismo motivo que el original: el POS
+   no existe ahí), la excepción se escapaba de `_rollback()` sin llegar nunca a la
+   línea que reporta el paso `rollback`, subía hasta `_procesar_despliegue()` y
+   terminaba como un `error` genérico — indistinguible de "no se aplicó nada".
+   Encontrado exactamente así en ML016-A. Corregido envolviendo el segundo
+   `_iniciar_pos()` en su propio `try/except`: si falla, se loguea aparte pero el
+   rollback de archivos igual se reporta con el motivo original.
+
+**Otro hallazgo, de configuración, no de código**: `ARCHIVOS_BASE_URL` en
+`deploy/.env` del servidor estaba `http://10.111.6.20`, **sin el puerto `:8080`** —
+por eso el agente recibía 404 al construir la URL de descarga (el navegador/`curl`
+manual siempre se probó con `:8080` a mano, por eso nunca se notó). Corregido en el
+`.env` del servidor; no requirió cambios de código.
+
+**No validado todavía**: el ciclo completo llegando a `Confirmado OK` contra un POS
+real o un ejecutable de prueba en `pos_comando_iniciar` (recomendado antes de confiar
+el rollback automático en una farmacia real con el POS de verdad instalado), y el fix
+del bug 8 reinstalado en ML016-A (se corrigió después de este intento).
+
+**Pendiente**: decidir si ML016-A pasa a tener el POS real instalado, o se
+reconfigura `pos_comando_iniciar`/`pos_nombre_proceso` a un ejecutable de prueba (ej.
+notepad) para validar el ciclo `aplicado → pos_relanzado → ok` sin depender del POS
+real. Reinstalar con el fix del bug 8. Revertir el `ServicesPipeTimeout=120000` que se
+probó en ML016-A durante el diagnóstico (no era la causa; `Remove-ItemProperty -Path
 "HKLM:\SYSTEM\CurrentControlSet\Control" -Name ServicesPipeTimeout` + reinicio, o
 dejarlo si no molesta — solo alarga el timeout de arranque de todos los servicios).
 

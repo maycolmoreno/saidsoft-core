@@ -547,7 +547,20 @@ class AgentePrueba:
         try:
             self._detener_pos()
             self._restaurar_carpeta(backup_dir, carpeta_pos)
-            self._iniciar_pos()
+            try:
+                self._iniciar_pos()
+            except Exception:
+                # Que no se pueda relanzar el POS (ej. ruta mal configurada) no debe
+                # tapar que el rollback de archivos sí se completó — sin este except,
+                # la excepción se escapaba de _rollback() entero, nunca se reportaba
+                # el paso 'rollback', y el despliegue terminaba con un 'error' genérico
+                # que no distinguía "no se pudo aplicar" de "se aplicó mal, pero ya se
+                # restauró" (encontrado en el primer despliegue de POS real del piloto,
+                # ML016-A, con el POS todavía sin instalar en la estación).
+                logging.exception(
+                    'Rollback del despliegue #%s: archivos restaurados, pero no se pudo relanzar el POS',
+                    despliegue_id,
+                )
         finally:
             shutil.rmtree(backup_dir, ignore_errors=True)
         self._reportar_despliegue(despliegue_id, 'rollback', detalle=motivo)
