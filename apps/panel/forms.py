@@ -24,9 +24,9 @@ class DespliegueForm(forms.ModelForm):
             'modo_aplicacion': forms.Select(attrs={'class': INPUT_CLASS}),
             'ventana_fecha_hora': forms.DateTimeInput(attrs={'class': INPUT_CLASS, 'type': 'datetime-local'}),
             'destino_tipo': forms.Select(attrs={'class': INPUT_CLASS}),
-            'grupos': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
-            'farmacias': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
-            'estaciones': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+            'grupos': forms.CheckboxSelectMultiple,
+            'farmacias': forms.CheckboxSelectMultiple,
+            'estaciones': forms.CheckboxSelectMultiple,
             'umbral_error_pct': forms.NumberInput(attrs={'class': INPUT_CLASS, 'step': '0.5'}),
         }
 

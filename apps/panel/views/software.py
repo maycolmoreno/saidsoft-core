@@ -100,7 +100,7 @@ def solicitud_instalacion_crear(request):
             return redirect('panel:solicitud_instalacion_detalle', pk=solicitud.pk)
     else:
         form = SolicitudInstalacionForm(user=request.user)
-    return render(request, 'panel/accion_form.html', {
+    return render(request, 'panel/solicitud_instalacion_form.html', {
         'form': form, 'titulo': 'Nueva solicitud de instalación',
         'subtitulo': 'No se envía nada todavía — queda en borrador hasta que la publiques desde su ficha.',
         'volver_url': reverse('panel:solicitudes_instalacion_lista'),

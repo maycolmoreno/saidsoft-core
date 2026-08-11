@@ -1,9 +1,10 @@
 {% extends "panel/base.html" %}
-{% block title %}Nuevo despliegue · SAIDSOFT{% endblock %}
+{% block title %}{{ titulo }} · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold mb-6">Nuevo despliegue</h1>
+<h1 class="text-xl font-semibold mb-1">{{ titulo }}</h1>
+{% if subtitulo %}<p class="text-sm text-[var(--text-faint)] mb-6">{{ subtitulo }}</p>{% endif %}
 
-<form method="post" enctype="multipart/form-data" class="card p-6 max-w-2xl space-y-5">
+<form method="post" class="card p-6 max-w-2xl space-y-5">
     {% csrf_token %}
 
     {% for error in form.non_field_errors %}
@@ -16,33 +17,16 @@
         {% for error in form.unidad_negocio.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
     </div>
 
-    <div>
-        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Versión</label>
-        {{ form.version }}
-        {% for error in form.version.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-    </div>
-
-    <div>
-        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Archivo (.zip)</label>
-        {{ form.archivo }}
-        {% for error in form.archivo.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-    </div>
-
-    <div>
-        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Descripción</label>
-        {{ form.descripcion }}
-    </div>
-
     <div class="grid grid-cols-2 gap-4">
         <div>
-            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Modo de aplicación</label>
-            {{ form.modo_aplicacion }}
-            {% for error in form.modo_aplicacion.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Aplicación / versión</label>
+            {{ form.version_aplicacion }}
+            {% for error in form.version_aplicacion.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
         </div>
         <div>
-            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Ventana (si aplica)</label>
-            {{ form.ventana_fecha_hora }}
-            {% for error in form.ventana_fecha_hora.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Acción</label>
+            {{ form.accion }}
+            {% for error in form.accion.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
         </div>
     </div>
 
@@ -81,23 +65,17 @@
         <p class="text-xs text-[var(--text-faint)]" data-destino-cadena hidden>Se aplica a toda la cadena de la unidad de negocio — no hace falta elegir nada más abajo.</p>
     </div>
 
-    <div>
-        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Umbral de error para freno automático (%)</label>
-        {{ form.umbral_error_pct }}
-        {% for error in form.umbral_error_pct.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-    </div>
-
     <div class="flex items-center gap-3 pt-2">
-        <button type="submit" class="btn primary" style="padding:10px 20px;">Crear despliegue</button>
-        <a href="{% url 'panel:despliegues_lista' %}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
+        <button type="submit" class="btn primary" style="padding:10px 20px;">Crear solicitud</button>
+        <a href="{{ volver_url }}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
     </div>
 </form>
 
 <script>
 (function () {
-    // Solo se ve el selector (Grupos/Farmacias/Estaciones) que corresponde al Destino
-    // elegido — antes se mostraban los 3 siempre, con solo un texto pidiendo llenar el
-    // correcto, lo que confundía sobre cuál aplicaba.
+    // Mismo patrón que despliegue_form.html: solo se ve el checklist (Grupos/
+    // Farmacias/Estaciones) que corresponde al Destino elegido, y cada uno tiene un
+    // filtro de texto porque puede haber cientos de opciones.
     var select = document.getElementById('id_destino_tipo');
     var campos = document.querySelectorAll('[data-destino-campo]');
     var vacio = document.querySelector('[data-destino-vacio]');
@@ -115,10 +93,6 @@
     select.addEventListener('change', actualizar);
     actualizar();
 
-    // Filtro de texto sobre el checklist — sin esto, farmacias/estaciones (hasta
-    // ~1.800 en la cadena completa) sería una lista de checkboxes imposible de usar.
-    // Oculta con display:none, no con disabled: un checkbox tildado que el filtro
-    // esconde de vista sigue mandándose igual al enviar el formulario.
     document.querySelectorAll('[data-checklist-buscar]').forEach(function (input) {
         var lista = input.nextElementSibling;
         input.addEventListener('input', function () {

@@ -58,13 +58,13 @@ class SolicitudInstalacionForm(forms.Form):
     unidad_negocio = forms.ModelChoiceField(queryset=None, widget=forms.Select(attrs={'class': INPUT_CLASS}))
     destino_tipo = forms.ChoiceField(choices=DestinoTipo.choices, widget=forms.Select(attrs={'class': INPUT_CLASS}))
     grupos = forms.ModelMultipleChoiceField(
-        queryset=None, required=False, widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+        queryset=None, required=False, widget=forms.CheckboxSelectMultiple,
     )
     farmacias = forms.ModelMultipleChoiceField(
-        queryset=None, required=False, widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+        queryset=None, required=False, widget=forms.CheckboxSelectMultiple,
     )
     estaciones = forms.ModelMultipleChoiceField(
-        queryset=None, required=False, widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+        queryset=None, required=False, widget=forms.CheckboxSelectMultiple,
     )
 
     def __init__(self, *args, user=None, **kwargs):
