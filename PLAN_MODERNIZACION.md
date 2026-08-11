@@ -509,8 +509,8 @@ piloto sigue con este bug hasta que ML016-A se migre al reemplazo en Python, que
 nace con la comparación insensible a mayúsculas/minúsculas corregida.
 
 **K. Reemplazo del agente C# perdido por una extensión en Python del "agente de
-prueba" (10-ago-2026) — 🟢 hecho, pendiente de instalar en ML016-A y validar
-despliegue de POS de punta a punta contra un POS real:**
+prueba" (10-ago-2026) — 🟢 hecho y validado de punta a punta en ML016-A contra el POS
+real (descarga → hash → backup → aplicar → relanzar → `Confirmado OK`):**
 
 Al intentar corregir el bug J, no se pudo ubicar ninguna máquina con el código fuente
 de `saidsoft-agente` (C#) — ni en este entorno, ni en la ruta de compilación que
@@ -661,17 +661,20 @@ los archivos reales.
    igual que antes. Probado localmente con ambos casos (zip anidado y zip plano)
    antes de recompilar.
 
-**Pendiente**: reinstalar en ML016-A con el fix del bug 9 (falta recompilar y volver
-a copiar), borrar a mano la subcarpeta `Cliente\Cliente\` que quedó del intento
-anterior, y reintentar el despliegue una vez más — este debería ser el que por fin
-llegue a `Confirmado OK` con los archivos realmente actualizados. Revertir el
-`ServicesPipeTimeout=120000` que se probó en ML016-A durante el diagnóstico del bug 7
-(no era la causa; `Remove-ItemProperty -Path
-"HKLM:\SYSTEM\CurrentControlSet\Control" -Name ServicesPipeTimeout` + reinicio, o
-dejarlo si no molesta — solo alarga el timeout de arranque de todos los servicios).
+**Validado**: reinstalado en ML016-A con el fix del bug 9, subcarpeta `Cliente\
+Cliente\` limpiada a mano, despliegue reintentado — llegó a `Confirmado OK` con los
+archivos del POS real actualizados de verdad (sin subcarpeta anidada). El circuito
+completo de despliegue de POS (servidor → agente Python como servicio de Windows →
+POS real) queda cerrado y probado de punta a punta por primera vez en el piloto.
+
+**Pendiente, no bloqueante**: revertir el `ServicesPipeTimeout=120000` que se probó
+en ML016-A durante el diagnóstico del bug 7 (no era la causa; `Remove-ItemProperty
+-Path "HKLM:\SYSTEM\CurrentControlSet\Control" -Name ServicesPipeTimeout` + reinicio,
+o dejarlo si no molesta — solo alarga el timeout de arranque de todos los servicios).
 
 **L. El catálogo de software nunca pudo publicar nada por MQTT — ACLs de EMQX
-incompletas (10-ago-2026) — 🟢 corregido, pendiente aplicar en el servidor:**
+incompletas (10-ago-2026) — 🟢 corregido y validado de punta a punta (actualización
+real de Firefox en ML016-A, descarga → hash → instalación silenciosa → confirmado):**
 
 Probando el catálogo de software por primera vez contra una estación real (actualizar
 Firefox en ML016-A), la `SolicitudInstalacion` se publicaba sin error visible en el
@@ -713,13 +716,14 @@ URL. Corregido agregándolo al body. Verificado armando el JSON con un `curl` de
 mentira (sin pegarle a la red real) y confirmando que cada payload parsea bien y
 lleva ambos campos.
 
-**Pendiente**: en el servidor, `git pull` + `sh bootstrap-emqx.sh` (desde `deploy/`,
-sin repetir el prefijo `deploy/` si ya estás parado ahí) para aplicar las reglas
-nuevas con el script corregido — no hace falta reiniciar contenedores, las ACLs se
-actualizan en caliente vía la API de EMQX. Después, crear una solicitud de
-instalación nueva de Firefox contra ML016-A (la anterior a las 21:43 quedó con
-destino "Toda la cadena" por error de selección, y de todos modos su publish ya se
-descartó por el bug de ACL — no se puede reenviar, hay que crear una desde cero).
+**Validado**: `bootstrap-emqx.sh` corrido en el servidor real con los tres fixes
+aplicados (ACLs de software + endpoint idempotente + `username` en el body) — las
+tres credenciales (`saidsof_agente`, `saidsof_worker`, `saidsof_panel`) quedaron
+definidas sin error. Una solicitud de instalación de Firefox nueva, bien dirigida a
+ML016-A, llegó de punta a punta: recibido → descargado → hash_verificado →
+instalando → instalado, y la versión nueva quedó confirmada en la estación (tras
+cerrar y reabrir Firefox, que estaba corriendo durante la instalación silenciosa).
+
 **Pendiente de verificar en general**: si hay más tópicos que quedaron sin ACL desde
 que se agregaron software/scripts (esta sesión encontró el gap en software porque se
 probó por primera vez hoy; scripts sí tenía sus reglas completas desde antes — no se
