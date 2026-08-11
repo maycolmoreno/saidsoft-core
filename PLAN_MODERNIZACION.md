@@ -693,19 +693,32 @@ documentado (fuente `file` con `{allow,all}`), pero en la dirección opuesta: ac
 regla que faltaba era la que debía *permitir*.
 
 Corregido agregando las reglas faltantes a `bootstrap-emqx.sh` (publish de software
-para `panel`, subscribe de `software_estado` para `worker`). El endpoint de EMQX que
-siembra las ACLs (`POST .../authorization/sources/built_in_database/rules/users`) es
-un import que reemplaza la lista de reglas por usuario — volver a correr el script es
-seguro, no duplica ni dos veces cuenta usuarios (ya maneja el 409 "ya existía").
+para `panel`, subscribe de `software_estado` para `worker`).
 
-**Pendiente**: en el servidor, `git pull` + `sh deploy/bootstrap-emqx.sh` para aplicar
-las reglas nuevas (no hace falta reiniciar contenedores, las ACLs se actualizan en
-caliente vía la API de EMQX). Después, reintentar la solicitud de instalación de
-Firefox contra ML016-A (o crear una nueva si la anterior quedó con destino
-equivocado). **Pendiente de verificar en general**: si hay más tópicos que quedaron
-sin ACL desde que se agregaron software/scripts (esta sesión encontró el gap en
-software porque se probó por primera vez hoy; scripts sí tenía sus reglas completas
-desde antes — no se auditaron sistemáticamente todos los tópicos del protocolo contra
+**Segundo bug, encontrado al aplicar el fix anterior contra el EMQX real**: el
+endpoint que usaba el script para sembrar ACLs
+(`POST .../authorization/sources/built_in_database/rules/users`) **no es idempotente**
+— es un import de una sola vez; si el usuario ya tenía reglas cargadas (como acá,
+porque el script ya se había corrido antes), devuelve `409 ALREADY_EXISTS` y no
+actualiza nada. El comentario original en el script decía lo contrario (que era
+seguro re-correrlo); era una suposición nunca puesta a prueba, hasta que hubo un
+motivo real para correrlo dos veces. Corregido reemplazando el `POST` masivo por un
+`PUT` a `.../rules/users/{username}` (uno por usuario) — ese endpoint sí es un "set"
+real: crea si no existe, reemplaza si ya había reglas. Verificado armando el JSON con
+un `curl` de mentira (sin pegarle a la red) y confirmando que cada payload parsea
+bien.
+
+**Pendiente**: en el servidor, `git pull` + `sh bootstrap-emqx.sh` (desde `deploy/`,
+sin repetir el prefijo `deploy/` si ya estás parado ahí) para aplicar las reglas
+nuevas con el script corregido — no hace falta reiniciar contenedores, las ACLs se
+actualizan en caliente vía la API de EMQX. Después, crear una solicitud de
+instalación nueva de Firefox contra ML016-A (la anterior a las 21:43 quedó con
+destino "Toda la cadena" por error de selección, y de todos modos su publish ya se
+descartó por el bug de ACL — no se puede reenviar, hay que crear una desde cero).
+**Pendiente de verificar en general**: si hay más tópicos que quedaron sin ACL desde
+que se agregaron software/scripts (esta sesión encontró el gap en software porque se
+probó por primera vez hoy; scripts sí tenía sus reglas completas desde antes — no se
+auditaron sistemáticamente todos los tópicos del protocolo contra
 las ACLs sembradas, esto fue reactivo a un síntoma puntual).
 
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,

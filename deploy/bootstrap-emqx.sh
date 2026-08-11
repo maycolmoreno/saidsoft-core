@@ -55,60 +55,58 @@ crear_usuario "$MQTT_USERNAME_AGENTE" "$MQTT_PASSWORD_AGENTE"
 
 echo
 echo "Definiendo ACLs por tópico..."
-payload_file=$(mktemp)
-cat > "$payload_file" <<JSON
-[
-  {
-    "username": "$MQTT_USERNAME_AGENTE",
-    "rules": [
-      {"topic": "/saidsof/#", "permission": "allow", "action": "all"}
-    ]
-  },
-  {
-    "username": "$MQTT_USERNAME_WORKER",
-    "rules": [
-      {"topic": "/saidsof/enrolamiento/solicitar/", "permission": "allow", "action": "subscribe"},
-      {"topic": "/saidsof/agente/+/heartbeat/", "permission": "allow", "action": "subscribe"},
-      {"topic": "/saidsof/agente/+/despliegue_estado/", "permission": "allow", "action": "subscribe"},
-      {"topic": "/saidsof/agente/+/software_estado/", "permission": "allow", "action": "subscribe"},
-      {"topic": "/saidsof/agente/+/metricas/", "permission": "allow", "action": "subscribe"},
-      {"topic": "/saidsof/agente/+/info_equipo/", "permission": "allow", "action": "subscribe"},
-      {"topic": "/saidsof/agente/+/script_estado/", "permission": "allow", "action": "subscribe"},
-      {"topic": "/saidsof/enrolamiento/respuesta/+/", "permission": "allow", "action": "publish"}
-    ]
-  },
-  {
-    "username": "$MQTT_USERNAME_PANEL",
-    "rules": [
-      {"topic": "/saidsof/despliegue/global/", "permission": "allow", "action": "publish"},
-      {"topic": "/saidsof/despliegue/grupo/+/", "permission": "allow", "action": "publish"},
-      {"topic": "/saidsof/despliegue/farmacia/+/", "permission": "allow", "action": "publish"},
-      {"topic": "/saidsof/agente/+/despliegue/", "permission": "allow", "action": "publish"},
-      {"topic": "/saidsof/software/global/", "permission": "allow", "action": "publish"},
-      {"topic": "/saidsof/software/grupo/+/", "permission": "allow", "action": "publish"},
-      {"topic": "/saidsof/software/farmacia/+/", "permission": "allow", "action": "publish"},
-      {"topic": "/saidsof/agente/+/software/", "permission": "allow", "action": "publish"},
-      {"topic": "/saidsof/agente/+/comando/", "permission": "allow", "action": "publish"}
-    ]
-  }
-]
-JSON
 
-resp_body=$(mktemp)
-resp=$(curl -s -o "$resp_body" -w "%{http_code}" -X POST \
-    "$EMQX_API/authorization/sources/built_in_database/rules/users" \
-    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-    --data-binary "@$payload_file")
-case "$resp" in
-    200|201|204) echo "  ACLs definidas." ;;
-    *)
-        echo "  ERROR (HTTP $resp) definiendo ACLs:" >&2
-        cat "$resp_body" >&2
-        rm -f "$payload_file" "$resp_body"
-        exit 1
-        ;;
-esac
-rm -f "$payload_file" "$resp_body"
+# PUT a .../rules/users/{username} (no el POST bulk a .../rules/users): el bulk POST
+# es de importación única — si el usuario ya tiene reglas cargadas (ej. correr este
+# script una segunda vez para agregar tópicos nuevos, como pasó al sumar el catálogo
+# de software) devuelve 409 ALREADY_EXISTS y no actualiza nada. El PUT por-usuario es
+# un "set" real (crea si no existe, reemplaza si ya existía) — encontrado corriendo
+# este script una segunda vez contra una instancia EMQX real, 10-ago-2026.
+definir_acl() {
+    user="$1"; reglas_json="$2"
+    resp_body=$(mktemp)
+    resp=$(curl -s -o "$resp_body" -w "%{http_code}" -X PUT \
+        "$EMQX_API/authorization/sources/built_in_database/rules/users/$user" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -d "{\"rules\": $reglas_json}")
+    case "$resp" in
+        200|201|204) echo "  ACLs de $user definidas." ;;
+        *)
+            echo "  ERROR (HTTP $resp) definiendo ACLs de $user:" >&2
+            cat "$resp_body" >&2
+            rm -f "$resp_body"
+            exit 1
+            ;;
+    esac
+    rm -f "$resp_body"
+}
+
+definir_acl "$MQTT_USERNAME_AGENTE" '[
+    {"topic": "/saidsof/#", "permission": "allow", "action": "all"}
+]'
+
+definir_acl "$MQTT_USERNAME_WORKER" '[
+    {"topic": "/saidsof/enrolamiento/solicitar/", "permission": "allow", "action": "subscribe"},
+    {"topic": "/saidsof/agente/+/heartbeat/", "permission": "allow", "action": "subscribe"},
+    {"topic": "/saidsof/agente/+/despliegue_estado/", "permission": "allow", "action": "subscribe"},
+    {"topic": "/saidsof/agente/+/software_estado/", "permission": "allow", "action": "subscribe"},
+    {"topic": "/saidsof/agente/+/metricas/", "permission": "allow", "action": "subscribe"},
+    {"topic": "/saidsof/agente/+/info_equipo/", "permission": "allow", "action": "subscribe"},
+    {"topic": "/saidsof/agente/+/script_estado/", "permission": "allow", "action": "subscribe"},
+    {"topic": "/saidsof/enrolamiento/respuesta/+/", "permission": "allow", "action": "publish"}
+]'
+
+definir_acl "$MQTT_USERNAME_PANEL" '[
+    {"topic": "/saidsof/despliegue/global/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/despliegue/grupo/+/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/despliegue/farmacia/+/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/agente/+/despliegue/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/software/global/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/software/grupo/+/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/software/farmacia/+/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/agente/+/software/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/agente/+/comando/", "permission": "allow", "action": "publish"}
+]'
 
 echo
 echo "IMPORTANTE: en el agente .NET, MqttUsuario/MqttPassword deben ser las del agente,"
