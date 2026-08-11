@@ -70,6 +70,7 @@ cat > "$payload_file" <<JSON
       {"topic": "/saidsof/enrolamiento/solicitar/", "permission": "allow", "action": "subscribe"},
       {"topic": "/saidsof/agente/+/heartbeat/", "permission": "allow", "action": "subscribe"},
       {"topic": "/saidsof/agente/+/despliegue_estado/", "permission": "allow", "action": "subscribe"},
+      {"topic": "/saidsof/agente/+/software_estado/", "permission": "allow", "action": "subscribe"},
       {"topic": "/saidsof/agente/+/metricas/", "permission": "allow", "action": "subscribe"},
       {"topic": "/saidsof/agente/+/info_equipo/", "permission": "allow", "action": "subscribe"},
       {"topic": "/saidsof/agente/+/script_estado/", "permission": "allow", "action": "subscribe"},
@@ -83,6 +84,10 @@ cat > "$payload_file" <<JSON
       {"topic": "/saidsof/despliegue/grupo/+/", "permission": "allow", "action": "publish"},
       {"topic": "/saidsof/despliegue/farmacia/+/", "permission": "allow", "action": "publish"},
       {"topic": "/saidsof/agente/+/despliegue/", "permission": "allow", "action": "publish"},
+      {"topic": "/saidsof/software/global/", "permission": "allow", "action": "publish"},
+      {"topic": "/saidsof/software/grupo/+/", "permission": "allow", "action": "publish"},
+      {"topic": "/saidsof/software/farmacia/+/", "permission": "allow", "action": "publish"},
+      {"topic": "/saidsof/agente/+/software/", "permission": "allow", "action": "publish"},
       {"topic": "/saidsof/agente/+/comando/", "permission": "allow", "action": "publish"}
     ]
   }

@@ -670,6 +670,44 @@ llegue a `Confirmado OK` con los archivos realmente actualizados. Revertir el
 "HKLM:\SYSTEM\CurrentControlSet\Control" -Name ServicesPipeTimeout` + reinicio, o
 dejarlo si no molesta — solo alarga el timeout de arranque de todos los servicios).
 
+**L. El catálogo de software nunca pudo publicar nada por MQTT — ACLs de EMQX
+incompletas (10-ago-2026) — 🟢 corregido, pendiente aplicar en el servidor:**
+
+Probando el catálogo de software por primera vez contra una estación real (actualizar
+Firefox en ML016-A), la `SolicitudInstalacion` se publicaba sin error visible en el
+panel pero el agente nunca la recibía — se quedaba en `Pendiente` para siempre, sin
+ningún evento posterior. El agente estaba conectado y mandando heartbeats con
+normalidad (descartaba problema de red/agente); los despliegues de POS sí funcionaban
+por el mismo broker.
+
+Causa: `deploy/bootstrap-emqx.sh` (que siembra las ACLs por tópico en EMQX) nunca se
+actualizó cuando se agregó el catálogo de software — el usuario `panel` tenía permiso
+de `publish` para los tópicos de `/saidsof/despliegue/...` y `/saidsof/agente/+/
+comando/`, pero no para `/saidsof/software/...` ni `/saidsof/agente/+/software/`; el
+`worker` tampoco tenía permiso de `subscribe` para `/saidsof/agente/+/
+software_estado/`. Con `EMQX_AUTHORIZATION__NO_MATCH=deny` (ver comentario en el
+propio script), cualquier tópico sin regla explícita se descarta en silencio — ni el
+publisher ni el broker devuelven un error visible, por eso el mensaje simplemente
+desaparecía sin dejar rastro en ningún lado. Mismo patrón que el gotcha de EMQX ya
+documentado (fuente `file` con `{allow,all}`), pero en la dirección opuesta: acá la
+regla que faltaba era la que debía *permitir*.
+
+Corregido agregando las reglas faltantes a `bootstrap-emqx.sh` (publish de software
+para `panel`, subscribe de `software_estado` para `worker`). El endpoint de EMQX que
+siembra las ACLs (`POST .../authorization/sources/built_in_database/rules/users`) es
+un import que reemplaza la lista de reglas por usuario — volver a correr el script es
+seguro, no duplica ni dos veces cuenta usuarios (ya maneja el 409 "ya existía").
+
+**Pendiente**: en el servidor, `git pull` + `sh deploy/bootstrap-emqx.sh` para aplicar
+las reglas nuevas (no hace falta reiniciar contenedores, las ACLs se actualizan en
+caliente vía la API de EMQX). Después, reintentar la solicitud de instalación de
+Firefox contra ML016-A (o crear una nueva si la anterior quedó con destino
+equivocado). **Pendiente de verificar en general**: si hay más tópicos que quedaron
+sin ACL desde que se agregaron software/scripts (esta sesión encontró el gap en
+software porque se probó por primera vez hoy; scripts sí tenía sus reglas completas
+desde antes — no se auditaron sistemáticamente todos los tópicos del protocolo contra
+las ACLs sembradas, esto fue reactivo a un síntoma puntual).
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual
