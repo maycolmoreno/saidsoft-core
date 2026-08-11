@@ -704,9 +704,14 @@ actualiza nada. El comentario original en el script decía lo contrario (que era
 seguro re-correrlo); era una suposición nunca puesta a prueba, hasta que hubo un
 motivo real para correrlo dos veces. Corregido reemplazando el `POST` masivo por un
 `PUT` a `.../rules/users/{username}` (uno por usuario) — ese endpoint sí es un "set"
-real: crea si no existe, reemplaza si ya había reglas. Verificado armando el JSON con
-un `curl` de mentira (sin pegarle a la red) y confirmando que cada payload parsea
-bien.
+real: crea si no existe, reemplaza si ya había reglas.
+
+**Tercer bug, mismo diagnóstico en caliente**: el `PUT` por sí solo no alcanzaba —
+EMQX devolvía `400 BAD_REQUEST` (`required_field: root.username`) porque el body
+necesita `"username"` explícito además de `"rules"`, no alcanza con que vaya en la
+URL. Corregido agregándolo al body. Verificado armando el JSON con un `curl` de
+mentira (sin pegarle a la red real) y confirmando que cada payload parsea bien y
+lleva ambos campos.
 
 **Pendiente**: en el servidor, `git pull` + `sh bootstrap-emqx.sh` (desde `deploy/`,
 sin repetir el prefijo `deploy/` si ya estás parado ahí) para aplicar las reglas

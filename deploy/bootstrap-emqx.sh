@@ -65,10 +65,13 @@ echo "Definiendo ACLs por tópico..."
 definir_acl() {
     user="$1"; reglas_json="$2"
     resp_body=$(mktemp)
+    # El body necesita "username" además de las "rules" — no alcanza con que vaya en
+    # la URL; sin él, EMQX responde 400 BAD_REQUEST "required_field: root.username"
+    # (encontrado corriendo esto contra un EMQX real, 10-ago-2026).
     resp=$(curl -s -o "$resp_body" -w "%{http_code}" -X PUT \
         "$EMQX_API/authorization/sources/built_in_database/rules/users/$user" \
         -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-        -d "{\"rules\": $reglas_json}")
+        -d "{\"username\": \"$user\", \"rules\": $reglas_json}")
     case "$resp" in
         200|201|204) echo "  ACLs de $user definidas." ;;
         *)
