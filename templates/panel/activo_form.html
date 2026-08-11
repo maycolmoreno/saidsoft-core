@@ -1,0 +1,127 @@
+{% extends "panel/base.html" %}
+{% block title %}{{ titulo }} · SAIDSOFT{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold mb-1">{{ titulo }}</h1>
+{% if subtitulo %}<p class="text-sm text-[var(--text-faint)] mb-6">{{ subtitulo }}</p>{% endif %}
+
+<form method="post" class="card p-6 max-w-2xl space-y-5">
+    {% csrf_token %}
+
+    {% for error in form.non_field_errors %}
+    <p class="text-sm px-3 py-2 rounded-md" style="background:var(--critical-dim, rgba(220,38,38,.12)); color:var(--critical);">{{ error }}</p>
+    {% endfor %}
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.tipo.label }}</label>
+        {{ form.tipo }}
+        {% for error in form.tipo.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+        <div>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.marca.label }}</label>
+            {{ form.marca }}
+            {% for error in form.marca.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.categoria.label }}</label>
+            {{ form.categoria }}
+            {% for error in form.categoria.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+        <div>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.modelo.label }}</label>
+            {{ form.modelo }}
+            {% for error in form.modelo.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.numero_serie.label }}</label>
+            {{ form.numero_serie }}
+            {% for error in form.numero_serie.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+    </div>
+
+    <div data-tipo-computo hidden>
+        <p class="text-xs font-medium text-[var(--text-faint)] mb-2">Specs de cómputo</p>
+        <div class="grid grid-cols-3 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.procesador.label }}</label>
+                {{ form.procesador }}
+                {% for error in form.procesador.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.ram_gb.label }}</label>
+                {{ form.ram_gb }}
+                {% for error in form.ram_gb.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.almacenamiento_gb.label }}</label>
+                {{ form.almacenamiento_gb }}
+                {% for error in form.almacenamiento_gb.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+        <div>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.codigo_sap.label }}</label>
+            {{ form.codigo_sap }}
+            {% for error in form.codigo_sap.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.condicion_al_recibir.label }}</label>
+            {{ form.condicion_al_recibir }}
+            {% for error in form.condicion_al_recibir.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+        <div>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.fecha_compra.label }}</label>
+            {{ form.fecha_compra }}
+            {% for error in form.fecha_compra.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.vencimiento_garantia.label }}</label>
+            {{ form.vencimiento_garantia }}
+            {% for error in form.vencimiento_garantia.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+    </div>
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.orden_compra.label }}</label>
+        {{ form.orden_compra }}
+        {% for error in form.orden_compra.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    </div>
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.bodega.label }}</label>
+        {{ form.bodega }}
+        {% for error in form.bodega.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    </div>
+
+    <div class="flex items-center gap-3 pt-2">
+        <button type="submit" class="btn primary" style="padding:10px 20px;">Registrar activo</button>
+        <a href="{{ volver_url }}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
+    </div>
+</form>
+
+<script>
+(function () {
+    // Procesador/RAM/Almacenamiento solo aplican a equipos de cómputo — antes se
+    // mostraban siempre, aunque el tipo fuera Impresora, UPS, Cámara, etc.
+    var TIPOS_COMPUTO = ['LAP', 'DSK', 'SRV', 'TAB'];
+    var select = document.getElementById('id_tipo');
+    var bloque = document.querySelector('[data-tipo-computo]');
+
+    function actualizar() {
+        bloque.hidden = TIPOS_COMPUTO.indexOf(select.value) === -1;
+    }
+
+    select.addEventListener('change', actualizar);
+    actualizar();
+})();
+</script>
+{% endblock %}

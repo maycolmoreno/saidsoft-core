@@ -270,7 +270,7 @@ def activo_crear(request):
         if oc_id:
             initial['orden_compra'] = oc_id
         form = ActivoIngresoForm(initial=initial)
-    return render(request, 'panel/accion_form.html', {
+    return render(request, 'panel/activo_form.html', {
         'form': form, 'titulo': 'Registrar ingreso de activo',
         'subtitulo': 'Genera el código CR-TIPO-NNNN automáticamente y lo deja "En bodega".',
         'volver_url': reverse('panel:activos_lista'),
