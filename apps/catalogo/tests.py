@@ -241,3 +241,10 @@ class ImportarFarmaciasTests(TestCase):
 
         self.assertFalse(Farmacia.objects.filter(codigo='ZQ001').exists())
         self.assertIn('prefijo de código sin mapeo', salida)
+
+    def test_provincia_se_combina_con_ciudad_en_ubicacion(self):
+        csv_contenido = 'Provincia,Ciudad,Id de,NODO\nEl Oro,Pasaje,MP001,trx001\n'
+
+        self._correr(csv_contenido)
+
+        self.assertEqual(Farmacia.objects.get(codigo='MP001').ubicacion, 'Pasaje, El Oro')

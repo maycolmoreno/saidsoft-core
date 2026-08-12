@@ -201,11 +201,13 @@ python manage.py importar_farmacias sitios.csv --actualizar  # además, sobreesc
 ```
 
 El comando (`apps/catalogo/management/commands/importar_farmacias.py`) detecta las
-columnas de código/ciudad/nodo por coincidencia parcial del encabezado (no importan
-mayúsculas ni el nombre exacto), y usa el nodo de red como código de `Grupo` (se crea
-solo si no existe — un canal de POS no tiene implicancias de seguridad). La
-`UnidadNegocio` **no** se adivina libremente: se deduce de la primera letra del código
-de farmacia con un mapeo fijo del negocio (`M`→MIA, `G`→SG, dígito→7DIAS — ver
+columnas de código/ciudad/provincia/nodo por coincidencia parcial del encabezado (no
+importan mayúsculas ni el nombre exacto; columnas como "Segmento de Red", "Tipo de
+Enlace" o "Login" se ignoran), y usa el nodo de red como código de `Grupo` (se crea
+solo si no existe — un canal de POS no tiene implicancias de seguridad). Si hay
+columna de provincia, la ubicación queda como "Ciudad, Provincia". La `UnidadNegocio`
+**no** se adivina libremente: se deduce de la primera letra del código de farmacia con
+un mapeo fijo del negocio (`M`→MIA, `G`→SG, dígito→7DIAS — ver
 `PREFIJOS_UNIDAD_NEGOCIO` en el comando) y, si esa unidad todavía no existe en
 SAIDSOFT, la fila se reporta como error en vez de crear un tenant nuevo sin querer.
 

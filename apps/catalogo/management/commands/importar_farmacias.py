@@ -29,9 +29,11 @@ El CSV debe tener encabezados (no importa el orden ni mayúsculas/minúsculas); 
 detectan por coincidencia parcial:
     - código de farmacia: cualquier encabezado que contenga "id" o "codigo"/"código"
     - ciudad/ubicación:    cualquier encabezado que contenga "ciudad" o "ubicacion"
+    - provincia:           cualquier encabezado que contenga "provincia" (opcional)
     - nodo/grupo:          cualquier encabezado que contenga "nodo" o "grupo"
-Columnas como "Tipo de Enlace" o "Backup" se ignoran: no tienen dónde ir en el modelo
-Farmacia.
+Si hay columna de provincia, la ubicación queda como "Ciudad, Provincia". Columnas
+como "Segmento de Red", "Tipo de Enlace", "Login" o "Backup" se ignoran: no tienen
+dónde ir en el modelo Farmacia.
 """
 import csv
 import unicodedata
@@ -94,13 +96,17 @@ class Command(BaseCommand):
 
             col_codigo = _encontrar_columna(lector.fieldnames, 'id', 'codigo', 'código')
             col_ciudad = _encontrar_columna(lector.fieldnames, 'ciudad', 'ubicacion', 'ubicación')
+            col_provincia = _encontrar_columna(lector.fieldnames, 'provincia')
             col_nodo = _encontrar_columna(lector.fieldnames, 'nodo', 'grupo')
             if not col_codigo or not col_nodo:
                 raise CommandError(
                     f'No se detectaron las columnas necesarias en {lector.fieldnames!r}. '
                     'Hace falta al menos una columna de código (id/código) y una de nodo/grupo.',
                 )
-            self.stdout.write(f'Columnas detectadas: código={col_codigo!r}, ciudad={col_ciudad!r}, nodo={col_nodo!r}')
+            self.stdout.write(
+                f'Columnas detectadas: código={col_codigo!r}, ciudad={col_ciudad!r}, '
+                f'provincia={col_provincia!r}, nodo={col_nodo!r}',
+            )
 
             grupos_cache = {g.codigo: g for g in Grupo.objects.all()}
             unidades_cache = {u.codigo: u for u in UnidadNegocio.objects.all()}
@@ -114,6 +120,8 @@ class Command(BaseCommand):
                     if not codigo:
                         continue
                     ciudad = (fila.get(col_ciudad) or '').strip() if col_ciudad else ''
+                    provincia = (fila.get(col_provincia) or '').strip() if col_provincia else ''
+                    ubicacion = f'{ciudad}, {provincia}' if ciudad and provincia else (ciudad or provincia)
                     nodo = (fila.get(col_nodo) or '').strip().upper()
 
                     if not nodo:
@@ -147,7 +155,7 @@ class Command(BaseCommand):
                     existente = Farmacia.objects.filter(codigo=codigo).first()
                     if existente:
                         if actualizar:
-                            existente.ubicacion = ciudad
+                            existente.ubicacion = ubicacion
                             existente.grupo = grupo
                             existente.unidad_negocio = unidad
                             if not dry_run:
@@ -159,7 +167,7 @@ class Command(BaseCommand):
 
                     if not dry_run:
                         Farmacia.objects.create(
-                            codigo=codigo, ubicacion=ciudad, grupo=grupo, unidad_negocio=unidad,
+                            codigo=codigo, ubicacion=ubicacion, grupo=grupo, unidad_negocio=unidad,
                         )
                     creadas.append(codigo)
 

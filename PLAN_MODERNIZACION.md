@@ -877,11 +877,15 @@ aislamiento multi-tenant, ver README "Multi-tenancy") — esa fila se reporta co
 error, a diferencia del Grupo (solo un canal de versión de POS, sin riesgo). Soporta
 `--dry-run` (previsualizar sin escribir) y `--actualizar` (sobreescribir
 ubicación/grupo de las que ya existen; por defecto se omiten intactas — reentrante,
-se puede correr el mismo CSV varias veces sin duplicar). 5 tests en
+se puede correr el mismo CSV varias veces sin duplicar). **Ampliado el mismo día**
+al ver una hoja más completa del inventario real (columnas Provincia/Segmento de
+Red/Login además de las anteriores): se suma detección opcional de columna
+Provincia, combinada con Ciudad en la ubicación (`"Pasaje, El Oro"`); Segmento de
+Red/Login se ignoran igual que Tipo de Enlace/Backup. 6 tests en
 `apps/catalogo/tests.py::ImportarFarmaciasTests` cubren: creación con deducción de
-unidad/grupo, re-corrida idempotente, `--actualizar`, `--dry-run`, y prefijo de
-código sin mapeo conocido (falla explícito, no adivina). Documentado en README.md
-§"Multi-tenancy".
+unidad/grupo, re-corrida idempotente, `--actualizar`, `--dry-run`, prefijo de
+código sin mapeo conocido (falla explícito, no adivina), y combinación
+ciudad+provincia. Documentado en README.md §"Multi-tenancy".
 
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
