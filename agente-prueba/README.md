@@ -136,18 +136,33 @@ Opciones (`agente_prueba.exe --help` para el detalle):
 
 ## Instalar como servicio de Windows (producción)
 
+### Opción A: paquete de un clic (recomendado para varias estaciones)
+
+Armá una carpeta con `Saidsoft.Agente.exe` (de `dist\`), `cert.pem` (de
+`deploy/certs/cert.pem` del servidor), `instalar-servicio.ps1` e `Instalar.bat`, más
+`config.txt` (copiá `config.ejemplo.txt` y completá `CentralHost`/`MqttPassword`/
+`ComandoHmacSecret` reales — **`config.txt` nunca se versiona**, tiene secretos en
+texto plano). Copiá esa carpeta a la estación y doble clic en `Instalar.bat`: se
+autoeleva a Administrador, valida que estén los 4 archivos + `config.txt`, y corre
+`instalar-servicio.ps1` con los valores de `config.txt` — sin escribir el comando de
+PowerShell a mano. El mismo `config.txt` sirve para instalar en tantas estaciones
+como haga falta (mismas credenciales de servidor para todas).
+
+### Opción B: PowerShell directo
+
 ```powershell
 .\instalar-servicio.ps1 -PublishFolder .\dist -CentralHost 10.111.6.20 `
     -MqttPassword "el-password-real" -CaCertPath .\dist\cert.pem `
     -ComandoHmacSecret "el-secreto-compartido-con-el-panel"
 ```
 
-Registra `Saidsoft.Agente.exe` como el servicio de Windows `SaidsoftAgente` (arranque
-automático, reinicio solo si crashea — `sc.exe failure` con la misma política que
-usaba el agente C# original), leyendo la config de `config.json` en vez de argv. Ver
-`.SYNOPSIS`/`.PARAMETER` de `instalar-servicio.ps1` (`Get-Help .\instalar-servicio.ps1
--Full`) para el resto de los parámetros. Usa el mismo nombre de servicio que el agente
-C# original — lo reemplaza en el lugar, no convive con él.
+Cualquiera de las dos opciones registra `Saidsoft.Agente.exe` como el servicio de
+Windows `SaidsoftAgente` (arranque automático, reinicio solo si crashea — `sc.exe
+failure` con la misma política que usaba el agente C# original), leyendo la config de
+`config.json` en vez de argv. Ver `.SYNOPSIS`/`.PARAMETER` de `instalar-servicio.ps1`
+(`Get-Help .\instalar-servicio.ps1 -Full`) para el resto de los parámetros. Usa el
+mismo nombre de servicio que el agente C# original — lo reemplaza en el lugar, no
+convive con él.
 
 Para depurar sin instalar nada: `Saidsoft.Agente.exe debug` lo corre en primer plano en
 la consola actual (necesita `config.json` junto al `.exe`), útil para ver los logs de

@@ -730,6 +730,52 @@ probó por primera vez hoy; scripts sí tenía sus reglas completas desde antes 
 auditaron sistemáticamente todos los tópicos del protocolo contra
 las ACLs sembradas, esto fue reactivo a un síntoma puntual).
 
+**M. Comandos `consultar_info`/`reiniciar` implementados en el agente, y paquete de
+instalación "un clic" (11-ago-2026) — 🟢 hecho:**
+
+Instalando una segunda estación real (ML006-A, primer despliegue en Windows 10 22H2 —
+sin problemas de compatibilidad, es una build reciente y parchada), se notó que el
+botón "Actualizar ahora" del panel no hacía nada: el agente Python solo tenía
+implementado `ejecutar_script`, el resto de los comandos caían al log "no
+implementado" (`consultar_info` y `reiniciar`, heredado del alcance original de
+"agente de prueba"). Ambos quedaron implementados con el mismo esquema de firma HMAC
+que ya usaba `ejecutar_script`:
+
+- **`consultar_info`**: un solo script de PowerShell arma hostname/procesador/RAM/
+  almacenamiento (vía CIM) + BitLocker del volumen `C:` como JSON, que el agente
+  parsea y publica a `/saidsof/agente/{codigo}/info_equipo/`. Si BitLocker no está
+  disponible, esos campos quedan vacíos sin romper el resto. Verificado corriendo el
+  script real en esta máquina (devolvió hardware real) y comparando la firma HMAC que
+  arma el agente contra `apps.catalogo.services.firmar_payload` del servidor (mismo
+  `COMANDO_HMAC_SECRET`) — coinciden.
+- **`reiniciar`**: reinicia el equipo Windows completo (no el servicio del agente) con
+  `shutdown /r /t 10`, fire-and-forget, sin canal de confirmación de vuelta — coherente
+  con que el botón del panel ya avisa "esto interrumpe cualquier venta en curso". No se
+  ejecutó el shutdown real en ninguna máquina de prueba (por motivos obvios).
+
+**Paquete "un clic"** (`agente-prueba/Instalar.bat` + `config.ejemplo.txt`), mismo
+patrón que ya existía para el agente C# (`deploy/docs/prueba-agente/paquete-
+instalacion/`), para no tener que escribir el comando de `instalar-servicio.ps1` a
+mano en cada estación nueva. Encontrados y corregidos dos bugs reales probándolo:
+
+1. **`setlocal enabledelayedexpansion` (copiado del patrón viejo) hacía perder
+   cualquier `!` dentro de `MqttPassword`/`ComandoHmacSecret` al leer `config.txt`**
+   — silencioso, sin error. El script no usa `!variable!` en ningún lado, así que la
+   delayed expansion no hacía falta; sacarla lo resuelve. Las contraseñas que genera
+   este proyecto sí pueden traer `!` (ver la del `svc_saidsoft` de más arriba en este
+   mismo documento), así que era un bug real, no teórico.
+2. **Una tilde o raya larga en un comentario `rem` rompe el parseo de `cmd.exe`** —
+   problema de codepage: el archivo se escribe en UTF-8 pero `cmd.exe` lo lee con la
+   página de códigos OEM/ANSI activa, y los bytes multibyte de un caracter acentuado
+   corrompen el `rem` de esa línea (y a veces de líneas vecinas), haciendo que
+   fragmentos del comentario se intenten ejecutar como comandos — aunque el script
+   igual termina funcionando bien después. Corregido quitando toda tilde/raya larga de
+   `Instalar.bat` (queda en ASCII puro). Verificado reproduciendo el problema aislado
+   (una línea con "—" o con "ñ" alcanza para romperlo) y confirmando que, sin
+   caracteres no-ASCII, el archivo corre limpio de punta a punta con un
+   `instalar-servicio.ps1` de mentira que solo imprime los parámetros recibidos
+   (incluyendo secretos con `!`/`$`/`#`, que llegaron intactos).
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual

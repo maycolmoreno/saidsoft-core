@@ -26,6 +26,13 @@ db.sqlite3
 /agente-prueba/dist/
 /agente-prueba/identidad.json
 
+# Paquete "un clic" (Instalar.bat + config.ejemplo.txt SÍ se versionan, sin secretos).
+# config.txt no: mismos secretos en texto plano que config.txt del agente .NET más
+# abajo (MqttPassword/ComandoHmacSecret). cert.pem tampoco: es el CA de EMQX del
+# servidor, mismo criterio que /deploy/certs/*.pem.
+/agente-prueba/config.txt
+/agente-prueba/cert.pem
+
 # deploy/docs/prueba-agente: prueba real contra producción del agente .NET.
 # instalar-agente.ps1, desplegar-agente-gpo.ps1, README.md, Instalar.bat y
 # config.ejemplo.txt SÍ se versionan (documentación/scripts sin secretos). Lo
@@ -41,3 +48,4 @@ db.sqlite3
 /deploy/docs/prueba-agente/paquete-instalacion/config.txt
 /deploy/docs/prueba-agente/paquete-instalacion/Saidsoft.Agente.exe
 /deploy/docs/prueba-agente/paquete-instalacion/agente/
+/deploy/docs/prueba-agente/Instalar.bat
