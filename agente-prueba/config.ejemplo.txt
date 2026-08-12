@@ -1,4 +1,4 @@
 CentralHost=10.111.6.20
 MqttPuerto=8081
-MqttPassword=
-ComandoHmacSecret=
+MqttPassword=e9irHPazfjmZkPBMe7o-mLuTIrFIxX72
+ComandoHmacSecret=1gcQFSeijPrK7ESkDk2CM-eUgCZSoDGPUSlBF5wxU7tUmwiUO8uU5kaqC3nOSVit4E4
