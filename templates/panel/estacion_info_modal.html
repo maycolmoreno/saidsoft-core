@@ -20,30 +20,64 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
     </div>
     {% endif %}
 
-    <dl class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-        <div><dt class="text-[var(--text-faint)] text-xs">Hostname</dt><dd>{{ estacion.hostname|default:"—" }}</dd></div>
-        <div><dt class="text-[var(--text-faint)] text-xs">Número de serie</dt><dd>{{ estacion.numero_serie|default:"—" }}</dd></div>
-        <div><dt class="text-[var(--text-faint)] text-xs">Sistema operativo</dt><dd>{{ estacion.so_nombre|default:"—" }}</dd></div>
-        <div><dt class="text-[var(--text-faint)] text-xs">Versión de SO</dt><dd>{{ estacion.so_build|default:"—" }}</dd></div>
-        <div><dt class="text-[var(--text-faint)] text-xs">Procesador</dt><dd>{{ estacion.procesador|default:"—" }}</dd></div>
-        <div><dt class="text-[var(--text-faint)] text-xs">RAM</dt>
-            <dd>{% if estacion.ram_total_mb %}{{ estacion.ram_total_mb }} MB{% else %}—{% endif %}</dd></div>
-        <div><dt class="text-[var(--text-faint)] text-xs">Almacenamiento</dt>
-            <dd>{% if estacion.almacenamiento_total_gb %}{{ estacion.almacenamiento_total_gb }} GB{% else %}—{% endif %}</dd></div>
-        <div><dt class="text-[var(--text-faint)] text-xs">BitLocker</dt>
-            <dd>
-                {% if estacion.bitlocker_habilitado is None %}—
-                {% elif estacion.bitlocker_habilitado %}<span class="pill good">Habilitado</span> {{ estacion.bitlocker_metodo_proteccion|default:"" }}
-                {% else %}<span class="pill critical">No habilitado</span>
+    <div class="field-grid">
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg></span>
+            <div class="field-body"><div class="field-label">Hostname</div><div class="field-value">{{ estacion.hostname|default:"—" }}</div></div>
+        </div>
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 4v16"/><path d="M8 4v16"/><path d="M12 4v16"/><path d="M17 4v16"/><path d="M21 4v16"/></svg></span>
+            <div class="field-body"><div class="field-label">Número de serie</div><div class="field-value mono num">{{ estacion.numero_serie|default:"—" }}</div></div>
+        </div>
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/></svg></span>
+            <div class="field-body"><div class="field-label">Sistema operativo</div><div class="field-value">{{ estacion.so_nombre|default:"—" }}</div></div>
+        </div>
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></span>
+            <div class="field-body"><div class="field-label">Versión de SO</div><div class="field-value mono num">{{ estacion.so_build|default:"—" }}</div></div>
+        </div>
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="1"/><path d="M7 2v3M12 2v3M17 2v3M7 19v3M12 19v3M17 19v3M2 7h3M2 12h3M2 17h3M19 7h3M19 12h3M19 17h3"/></svg></span>
+            <div class="field-body"><div class="field-label">Procesador</div><div class="field-value">{{ estacion.procesador|default:"—" }}</div></div>
+        </div>
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="9" rx="1"/><path d="M8 8V5M12 8V5M16 8V5M8 17v2M12 17v2M16 17v2"/></svg></span>
+            <div class="field-body"><div class="field-label">RAM</div><div class="field-value mono num">{% if estacion.ram_total_mb %}{{ estacion.ram_total_mb }} MB{% else %}—{% endif %}</div></div>
+        </div>
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/></svg></span>
+            <div class="field-body"><div class="field-label">Almacenamiento</div><div class="field-value mono num">{% if estacion.almacenamiento_total_gb %}{{ estacion.almacenamiento_total_gb }} GB{% else %}—{% endif %}</div></div>
+        </div>
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
+            <div class="field-body"><div class="field-label">Última actualización</div><div class="field-value">{{ estacion.info_equipo_fecha|default:"nunca" }}</div></div>
+        </div>
+    </div>
+
+    {% if estacion.bitlocker_habilitado is not None %}
+    <div class="section-divider">
+        <div class="security-block {% if estacion.bitlocker_habilitado %}tone-good{% else %}tone-critical{% endif %}">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+            <div class="field-body">
+                <div class="field-label">BitLocker</div>
+                {% if estacion.bitlocker_habilitado %}
+                <div class="field-value"><span class="pill good">Habilitado</span> {{ estacion.bitlocker_metodo_proteccion|default:"" }}</div>
+                {% else %}
+                <div class="field-value"><span class="pill critical">No habilitado</span></div>
                 {% endif %}
-            </dd></div>
-        <div><dt class="text-[var(--text-faint)] text-xs">Última actualización</dt><dd>{{ estacion.info_equipo_fecha|default:"nunca" }}</dd></div>
-    </dl>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     {% if perms.catalogo.acceso_remoto_estacion %}
-    <div class="mt-5 pt-4" style="border-top:1px solid var(--border-soft);">
-        <div class="flex items-center justify-between mb-2">
-            <h3 class="text-xs font-semibold uppercase tracking-wide text-[var(--text-faint)]">Acceso remoto (MeshCentral)</h3>
+    <div class="section-divider">
+        <div class="section-head">
+            <span class="label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7 7l1.5-1.5a5 5 0 0 0-7-7"/><path d="M14 11a5 5 0 0 0-7-7L5.5 5.5a5 5 0 0 0 7 7"/></svg>
+                <h3>Acceso remoto (MeshCentral)</h3>
+            </span>
             {% if estacion.meshcentral_node_id %}
             <span class="pill good">Vinculado</span>
             {% else %}
@@ -97,8 +131,13 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
     {% endif %}
 
     {% if perms.catalogo.supervision_auditoria_estacion and estacion.meshcentral_node_id %}
-    <div class="mt-5 pt-4" style="border-top:1px solid var(--border-soft);">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-[var(--text-faint)] mb-2">Auditoría (grabación de sesión)</h3>
+    <div class="section-divider">
+        <div class="section-head">
+            <span class="label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3Z"/></svg>
+                <h3>Auditoría (grabación de sesión)</h3>
+            </span>
+        </div>
         <p class="text-xs text-[var(--text-dim)] mb-2">
             Revisión posterior de la atención al cliente, no en vivo. Requiere que la grabación
             esté habilitada para este equipo en el servidor MeshCentral (ver deploy/README-produccion.md).
@@ -111,8 +150,13 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
     {% endif %}
 
     {% if perms.catalogo.ver_clave_bitlocker and estacion.bitlocker_habilitado %}
-    <div class="mt-5 pt-4" style="border-top:1px solid var(--border-soft);">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-[var(--text-faint)] mb-2">Clave de recuperación BitLocker</h3>
+    <div class="section-divider">
+        <div class="section-head">
+            <span class="label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="7" cy="15" r="4"/><path d="M9.5 12.5 20 2"/><path d="M17 5l3 3"/><path d="M14 8l3 3"/></svg>
+                <h3>Clave de recuperación BitLocker</h3>
+            </span>
+        </div>
         {% if bitlocker_clave_revelada %}
         <p class="mb-1 text-xs px-3 py-2 rounded-md alert sev-critical">Sensible — con esta clave se descifra el disco. No la compartas fuera de este panel.</p>
         <code class="block text-sm px-3 py-2 rounded-md mb-2 break-all" style="background:var(--overlay-hover);">{{ bitlocker_clave_revelada }}</code>

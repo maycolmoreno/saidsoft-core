@@ -183,6 +183,48 @@
 dialog#modal-info{ background:var(--card); border:1px solid var(--border); color:var(--text); }
 dialog#modal-info::backdrop{ background:var(--overlay-hover); }
 
+/* ---------- Field (icono + etiqueta + valor) ----------
+   Para listas de datos técnicos (ej. ficha de hardware de una estación): mismo
+   lenguaje que el KPI (icono en caja + etiqueta tenue + valor), pero en fila
+   compacta en vez de tarjeta — son datos informativos, no indicadores con umbral,
+   así que el icono queda neutro (--text-faint), no coloreado por tono. */
+.field-grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px 20px; }
+.field{ display:flex; align-items:flex-start; gap:10px; min-width:0; }
+.field-icon{
+  width:26px; height:26px; border-radius:7px; flex:none;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--overlay-hover); color:var(--text-faint);
+}
+.field-icon svg{ width:13px; height:13px; }
+.field-body{ min-width:0; }
+.field-label{ font-size:10.5px; color:var(--text-faint); line-height:1.3; }
+.field-value{ font-size:13px; color:var(--text); font-weight:500; line-height:1.35; overflow-wrap:break-word; }
+
+/* ---------- Encabezado + divisor de sección ----------
+   Reemplaza el patrón repetido de "mt-5 pt-4 + border-top inline" que había en
+   estacion_info_modal.html — mismo look que .nav-label (eyebrow tenue mayúscula)
+   pero con icono, para secciones dentro de una ficha (MeshCentral, auditoría, etc). */
+.section-divider{ margin-top:22px; padding-top:16px; border-top:1px solid var(--border-soft); }
+.section-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; }
+.section-head .label{ display:flex; align-items:center; gap:7px; }
+.section-head svg{ width:14px; height:14px; color:var(--text-faint); flex:none; }
+.section-head h3{ margin:0; font-size:10.5px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:var(--text-faint); }
+
+/* ---------- Bloque de seguridad (BitLocker) ----------
+   Le da a la clave de recuperación el mismo peso visual que ya tienen los .kpi
+   por tono (good/critical), en vez de que compita con el resto de la ficha como
+   un campo más — es el dato más sensible del modal, se nota al mirarlo. */
+.security-block{
+  border-radius:var(--radius-md); padding:14px; border:1px solid var(--border-soft);
+  background:var(--overlay-faint); display:flex; gap:12px; align-items:flex-start;
+}
+.security-block .field-icon{ width:32px; height:32px; border-radius:9px; }
+.security-block .field-icon svg{ width:16px; height:16px; }
+.security-block.tone-good{ border-color:var(--good-dim); }
+.security-block.tone-good .field-icon{ background:var(--good-dim); color:var(--good); }
+.security-block.tone-critical{ border-color:var(--critical-dim); }
+.security-block.tone-critical .field-icon{ background:var(--critical-dim); color:var(--critical); }
+
 @media (max-width:1180px){
   .shell{ grid-template-columns:76px 1fr; }
   .sidebar{ align-items:center; }
