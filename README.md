@@ -191,26 +191,32 @@ apoya en el Grupo, siempre en la unidad de negocio de la farmacia/estación/cola
 Cuando llega un listado de sitios de red (ciudad, código de sitio, nodo TRX — el
 formato típico que maneja el equipo de infraestructura, ej. una exportación de Excel
 con columnas "Ciudad" / "Id de ..." / "NODO"), no hace falta darlas de alta una por
-una desde el admin:
+una. Dos formas de hacerlo, misma lógica (`apps.catalogo.services.
+importar_farmacias_desde_csv`) por debajo:
 
-```bash
-python manage.py importar_farmacias sitios.csv --dry-run   # previsualizar antes de escribir
-python manage.py importar_farmacias sitios.csv             # crear de verdad
-python manage.py importar_farmacias sitios.csv --actualizar  # además, sobreescribe
-    # ubicación/grupo de las que ya existían (por defecto se omiten sin tocar)
-```
+- **Desde el admin** (sin acceso SSH): botón "Importar CSV" en
+  `/admin/catalogo/farmacia/`, junto a "Añadir farmacia". Subís el archivo, tildás
+  "Solo previsualizar" para ver qué haría antes de escribir nada, y volvés a enviar
+  sin el tilde para aplicarlo de verdad (requiere permiso de alta sobre `Farmacia`).
+- **Por comando** (SSH/docker exec):
+  ```bash
+  python manage.py importar_farmacias sitios.csv --dry-run   # previsualizar antes de escribir
+  python manage.py importar_farmacias sitios.csv             # crear de verdad
+  python manage.py importar_farmacias sitios.csv --actualizar  # además, sobreescribe
+      # los datos de las que ya existían (por defecto se omiten sin tocar)
+  ```
 
-El comando (`apps/catalogo/management/commands/importar_farmacias.py`) detecta las
-columnas de código/ciudad/provincia/nodo/segmento de red/tipo de enlace/backup por
-coincidencia parcial del encabezado (no importan mayúsculas ni el nombre exacto), y
-usa el nodo de red como código de `Grupo` (se crea solo si no existe — un canal de
-POS no tiene implicancias de seguridad). Si hay columna de provincia, la ubicación
-queda como "Ciudad, Provincia". "Login" (usuario del circuito ante el proveedor de
-internet) se ignora — es dato del proveedor, no de SAIDSOFT. La `UnidadNegocio`
-**no** se adivina libremente: se deduce de la primera letra del código de farmacia con
-un mapeo fijo del negocio (`M`→MIA, `G`→SG, dígito→7DIAS — ver
-`PREFIJOS_UNIDAD_NEGOCIO` en el comando) y, si esa unidad todavía no existe en
-SAIDSOFT, la fila se reporta como error en vez de crear un tenant nuevo sin querer.
+Ambos caminos detectan las columnas de código/ciudad/provincia/nodo/segmento de
+red/tipo de enlace/backup por coincidencia parcial del encabezado (no importan
+mayúsculas ni el nombre exacto), y usan el nodo de red como código de `Grupo` (se
+crea solo si no existe — un canal de POS no tiene implicancias de seguridad). Si hay
+columna de provincia, la ubicación queda como "Ciudad, Provincia". "Login" (usuario
+del circuito ante el proveedor de internet) se ignora — es dato del proveedor, no de
+SAIDSOFT. La `UnidadNegocio` **no** se adivina libremente: se deduce de la primera
+letra del código de farmacia con un mapeo fijo del negocio (`M`→MIA, `G`→SG,
+dígito→7DIAS — ver `PREFIJOS_UNIDAD_NEGOCIO_FARMACIA` en
+`apps/catalogo/services.py`) y, si esa unidad todavía no existe en SAIDSOFT, la fila
+se reporta como error en vez de crear un tenant nuevo sin querer.
 
 `Farmacia` guarda además `segmento_red`, `tipo_enlace` y `tiene_backup` (columnas
 "Segmento de Red"/"Tipo de Enlace"/"Backup" del mismo inventario) — son datos de

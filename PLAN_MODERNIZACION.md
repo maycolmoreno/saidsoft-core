@@ -894,8 +894,21 @@ cualquier otro valor no vacío como con backup). 7 tests en
 `apps/catalogo/tests.py::ImportarFarmaciasTests` cubren: creación con deducción de
 unidad/grupo, re-corrida idempotente, `--actualizar`, `--dry-run`, prefijo de
 código sin mapeo conocido (falla explícito, no adivina), combinación
-ciudad+provincia, y captura de segmento de red/tipo de enlace/backup. Documentado
-en README.md §"Multi-tenancy".
+ciudad+provincia, y captura de segmento de red/tipo de enlace/backup. **Tercer
+agregado, mismo día**: el usuario buscaba un botón "Importar" en la pantalla del
+admin y no había ninguno — el import solo existía como comando de SSH, inaccesible
+para quien no tiene acceso al servidor. Se refactorizó la lógica del comando a
+`apps.catalogo.services.importar_farmacias_desde_csv` (mismo shape de resultado,
+reusable) y se agregó un botón "Importar CSV" en `/admin/catalogo/farmacia/` (junto
+a "Añadir farmacia", vía `FarmaciaAdmin.get_urls()` + `change_list_template`) que
+sube un CSV, previsualiza (mismo `--dry-run`) y aplica, protegido por el permiso de
+alta sobre `Farmacia`. El comando de management quedó como wrapper delgado sobre el
+mismo servicio (mismo patrón que `marcar_estaciones_offline.py`) — dos formas de
+disparar la misma lógica, sin duplicarla. 5 tests nuevos en
+`FarmaciaAdminImportarViewTests` (formulario, 403 sin permiso, dry-run no escribe,
+creación real redirige al listado, error sin archivo). Verificado visualmente
+(botón en el listado, formulario, y resultado de una previsualización con error de
+prefijo desconocido). Documentado en README.md §"Multi-tenancy".
 
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH

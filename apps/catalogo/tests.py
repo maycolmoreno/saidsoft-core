@@ -265,3 +265,68 @@ class ImportarFarmaciasTests(TestCase):
 
         # Backup vacío -> sin enlace de respaldo.
         self.assertFalse(Farmacia.objects.get(codigo='MPDL1').tiene_backup)
+
+
+class FarmaciaAdminImportarViewTests(TestCase):
+    """El botón "Importar CSV" del admin (/admin/catalogo/farmacia/importar/) usa el
+    mismo apps.catalogo.services.importar_farmacias_desde_csv que el comando de
+    management — surgió porque el usuario buscaba un botón de importar en el admin
+    y no había ninguno, solo el comando por SSH."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.staff = User.objects.create_user(username='staff_import', password='x', is_staff=True)
+        self.staff.user_permissions.add(*self._permisos_farmacia())
+        self.sin_permiso = User.objects.create_user(username='sin_permiso_import', password='x', is_staff=True)
+
+    @staticmethod
+    def _permisos_farmacia():
+        from django.contrib.auth.models import Permission
+        return Permission.objects.filter(content_type__app_label='catalogo', content_type__model='farmacia')
+
+    def _url(self):
+        from django.urls import reverse
+        return reverse('admin:catalogo_farmacia_importar')
+
+    def _archivo(self, contenido):
+        return io.BytesIO(contenido.encode('utf-8'))
+
+    def test_get_muestra_el_formulario(self):
+        self.client.force_login(self.staff)
+        resp = self.client.get(self._url())
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Importar farmacias desde CSV')
+
+    def test_sin_permiso_de_alta_da_403(self):
+        self.client.force_login(self.sin_permiso)
+        resp = self.client.get(self._url())
+        self.assertEqual(resp.status_code, 403)
+
+    def test_post_con_dry_run_no_escribe_y_muestra_previsualizacion(self):
+        self.client.force_login(self.staff)
+        archivo = self._archivo('Ciudad,Id de,NODO\nAmbato,MAM01,trx001\n')
+
+        resp = self.client.post(self._url(), {'archivo': archivo, 'dry_run': 'on'})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Previsualización')
+        self.assertFalse(Farmacia.objects.filter(codigo='MAM01').exists())
+
+    def test_post_sin_dry_run_crea_y_redirige_al_listado(self):
+        from django.urls import reverse
+        self.client.force_login(self.staff)
+        archivo = self._archivo('Ciudad,Id de,NODO\nAmbato,MAM01,trx001\n')
+
+        resp = self.client.post(self._url(), {'archivo': archivo})
+
+        self.assertRedirects(resp, reverse('admin:catalogo_farmacia_changelist'))
+        self.assertTrue(Farmacia.objects.filter(codigo='MAM01').exists())
+
+    def test_post_sin_archivo_muestra_error(self):
+        self.client.force_login(self.staff)
+
+        resp = self.client.post(self._url(), {'dry_run': 'on'})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Elegí un archivo CSV')

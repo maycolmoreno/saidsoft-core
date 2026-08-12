@@ -1,0 +1,90 @@
+{% extends "admin/base_site.html" %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">Inicio</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; <a href="{% url 'admin:catalogo_farmacia_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+&rsaquo; Importar CSV
+</div>
+{% endblock %}
+
+{% block content %}
+<p>
+    Subí un CSV exportado del inventario de red (Excel &rarr; Guardar como &rarr;
+    CSV UTF-8 delimitado por comas). Las columnas se detectan por nombre, sin
+    importar mayúsculas ni el orden: código (encabezado con "id" o "código"),
+    ciudad/ubicación, provincia (opcional), nodo/grupo, segmento de red (opcional),
+    tipo de enlace (opcional) y backup (opcional). La unidad de negocio se deduce
+    del código (M&rarr;MIA, G&rarr;SG, dígito&rarr;7DIAS) — si esa unidad no existe
+    todavía en SAIDSOFT, esa fila queda afuera con un error explícito en vez de
+    crear un tenant nuevo por accidente.
+</p>
+
+{% if error %}
+<ul class="messagelist">
+    <li class="error">{{ error }}</li>
+</ul>
+{% endif %}
+
+{% if resultado %}
+<div class="module" style="margin-bottom: 20px;">
+    <h2>{% if dry_run %}Previsualización (no se escribió nada todavía){% else %}Resultado{% endif %}</h2>
+    <div class="form-row">
+        <p><strong>Columnas detectadas:</strong>
+            {% for etiqueta, columna in resultado.columnas.items %}{{ etiqueta }}={{ columna|default:"—" }}{% if not forloop.last %}, {% endif %}{% endfor %}
+        </p>
+        {% if resultado.grupos_nuevos %}
+        <p><strong>{{ resultado.grupos_nuevos|length }} grupo(s) nuevo(s):</strong> {{ resultado.grupos_nuevos|join:", " }}</p>
+        {% endif %}
+        <p><strong>{{ resultado.creadas|length }} farmacia(s) {% if dry_run %}se crearían{% else %}creada(s){% endif %}:</strong>
+            {{ resultado.creadas|join:", "|default:"—" }}</p>
+        {% if actualizar %}
+        <p><strong>{{ resultado.actualizadas|length }} farmacia(s) {% if dry_run %}se actualizarían{% else %}actualizada(s){% endif %}:</strong>
+            {{ resultado.actualizadas|join:", "|default:"—" }}</p>
+        {% else %}
+        <p><strong>{{ resultado.omitidas|length }} farmacia(s) ya existían (omitidas):</strong>
+            {{ resultado.omitidas|join:", "|default:"—" }}</p>
+        {% endif %}
+        {% if resultado.errores %}
+        <p style="color: var(--error-fg, #ba2121);"><strong>{{ resultado.errores|length }} fila(s) con error:</strong></p>
+        <ul>
+            {% for err in resultado.errores %}<li style="color: var(--error-fg, #ba2121);">{{ err }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <fieldset class="module aligned">
+        <div class="form-row">
+            <div>
+                <label for="id_archivo" class="required">Archivo CSV:</label>
+                <input type="file" name="archivo" id="id_archivo" accept=".csv,text/csv" required>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="checkbox-row">
+                <label for="id_dry_run">
+                    <input type="checkbox" name="dry_run" id="id_dry_run" {% if dry_run %}checked{% endif %}>
+                    Solo previsualizar (no escribe nada todavía)
+                </label>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="checkbox-row">
+                <label for="id_actualizar">
+                    <input type="checkbox" name="actualizar" id="id_actualizar" {% if actualizar %}checked{% endif %}>
+                    Si una farmacia ya existe, actualizar sus datos desde el CSV (si no, se omite intacta)
+                </label>
+            </div>
+        </div>
+    </fieldset>
+    <div class="submit-row">
+        <input type="submit" value="Importar" class="default">
+        <a href="{% url 'admin:catalogo_farmacia_changelist' %}" class="button cancel-link">Cancelar</a>
+    </div>
+</form>
+{% endblock %}

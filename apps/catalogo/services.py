@@ -307,3 +307,171 @@ def calcular_matriz_cumplimiento(unidades_negocio, *, umbral_online_minutos=5):
     for g in grupos:
         g.pct_conforme = round(100 * g.conformes / g.total_estaciones) if g.total_estaciones else None
     return grupos
+
+
+# --- Alta masiva de farmacias desde un CSV de inventario de red ---------------------
+#
+# Reusada por el comando `importar_farmacias` (SSH/docker exec) y por la vista de
+# importación del admin (`FarmaciaAdmin.importar_view`, /admin/catalogo/farmacia/
+# importar/) — misma lógica, dos formas de disparar el mismo import.
+
+PREFIJOS_UNIDAD_NEGOCIO_FARMACIA = {
+    'M': 'MIA',
+    'G': 'SG',
+}
+
+_NEGATIVOS_BACKUP = {'', 'no', 'inactivo', 'false', '0', 'n'}
+
+
+def _unidad_negocio_por_prefijo(codigo):
+    if codigo[:1].isdigit():
+        return '7DIAS'
+    return PREFIJOS_UNIDAD_NEGOCIO_FARMACIA.get(codigo[:1])
+
+
+def _normalizar_encabezado(texto):
+    import unicodedata
+    sin_acentos = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('ascii')
+    return sin_acentos.strip().lower()
+
+
+def _encontrar_columna(fieldnames, *pistas):
+    for nombre in fieldnames:
+        normalizado = _normalizar_encabezado(nombre)
+        if any(pista in normalizado for pista in pistas):
+            return nombre
+    return None
+
+
+def _fila_tiene_backup(valor):
+    return _normalizar_encabezado(valor) not in _NEGATIVOS_BACKUP
+
+
+class ResultadoImportacionFarmacias:
+    """Resultado de `importar_farmacias_desde_csv` — mismo shape para el comando de
+    management y para la vista de admin, cada uno lo presenta a su manera."""
+
+    def __init__(self):
+        self.columnas = {}
+        self.creadas = []
+        self.actualizadas = []
+        self.omitidas = []
+        self.errores = []
+        self.grupos_nuevos = []
+
+
+def importar_farmacias_desde_csv(archivo_texto, *, dry_run=False, actualizar=False):
+    """Crea/actualiza `Farmacia` desde un CSV de inventario de red (ver docstring de
+    `apps.catalogo.management.commands.importar_farmacias` para el detalle completo del
+    mapeo de columnas y de la deducción de unidad de negocio por prefijo de código).
+
+    `archivo_texto` es cualquier iterable de líneas de texto (un archivo abierto en
+    modo texto, o un `io.StringIO`) — quien llama decide de dónde viene (disco o un
+    archivo subido por HTTP) y cómo lo decodifica.
+    """
+    import csv
+
+    from django.db import transaction
+
+    from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
+
+    resultado = ResultadoImportacionFarmacias()
+
+    lector = csv.DictReader(archivo_texto)
+    if not lector.fieldnames:
+        raise ValueError('El CSV no tiene encabezados.')
+
+    col_codigo = _encontrar_columna(lector.fieldnames, 'id', 'codigo', 'código')
+    col_ciudad = _encontrar_columna(lector.fieldnames, 'ciudad', 'ubicacion', 'ubicación')
+    col_provincia = _encontrar_columna(lector.fieldnames, 'provincia')
+    col_nodo = _encontrar_columna(lector.fieldnames, 'nodo', 'grupo')
+    col_segmento = _encontrar_columna(lector.fieldnames, 'segmento')
+    col_tipo_enlace = _encontrar_columna(lector.fieldnames, 'enlace')
+    col_backup = _encontrar_columna(lector.fieldnames, 'backup')
+    if not col_codigo or not col_nodo:
+        raise ValueError(
+            f'No se detectaron las columnas necesarias en {lector.fieldnames!r}. '
+            'Hace falta al menos una columna de código (id/código) y una de nodo/grupo.',
+        )
+    resultado.columnas = {
+        'código': col_codigo, 'ciudad': col_ciudad, 'provincia': col_provincia, 'nodo': col_nodo,
+        'segmento': col_segmento, 'tipo_enlace': col_tipo_enlace, 'backup': col_backup,
+    }
+
+    grupos_cache = {g.codigo: g for g in Grupo.objects.all()}
+    unidades_cache = {u.codigo: u for u in UnidadNegocio.objects.all()}
+
+    with transaction.atomic():
+        sp = transaction.savepoint()
+        for fila_num, fila in enumerate(lector, start=2):
+            codigo = (fila.get(col_codigo) or '').strip().upper()
+            if not codigo:
+                continue
+            ciudad = (fila.get(col_ciudad) or '').strip() if col_ciudad else ''
+            provincia = (fila.get(col_provincia) or '').strip() if col_provincia else ''
+            ubicacion = f'{ciudad}, {provincia}' if ciudad and provincia else (ciudad or provincia)
+            segmento_red = (fila.get(col_segmento) or '').strip() if col_segmento else ''
+            tipo_enlace = (fila.get(col_tipo_enlace) or '').strip() if col_tipo_enlace else ''
+            tiene_backup = _fila_tiene_backup(fila.get(col_backup) or '') if col_backup else False
+            nodo = (fila.get(col_nodo) or '').strip().upper()
+
+            if not nodo:
+                resultado.errores.append(f'fila {fila_num} ({codigo}): sin valor de nodo/grupo.')
+                continue
+
+            codigo_unidad = _unidad_negocio_por_prefijo(codigo)
+            if not codigo_unidad:
+                resultado.errores.append(
+                    f'fila {fila_num} ({codigo}): prefijo de código sin mapeo a unidad de '
+                    'negocio conocido (M->MIA, G->SG, dígito->7DIAS).',
+                )
+                continue
+            unidad = unidades_cache.get(codigo_unidad)
+            if unidad is None:
+                resultado.errores.append(
+                    f'fila {fila_num} ({codigo}): la unidad de negocio {codigo_unidad} no existe '
+                    'todavía en SAIDSOFT — hay que crearla primero (Admin > Catálogo > Unidades '
+                    'de negocio) antes de poder importar esta fila.',
+                )
+                continue
+
+            grupo = grupos_cache.get(nodo)
+            if grupo is None:
+                grupo = Grupo(codigo=nodo)
+                if not dry_run:
+                    grupo.save()
+                grupos_cache[nodo] = grupo
+                resultado.grupos_nuevos.append(nodo)
+
+            existente = Farmacia.objects.filter(codigo=codigo).first()
+            if existente:
+                if actualizar:
+                    existente.ubicacion = ubicacion
+                    existente.grupo = grupo
+                    existente.unidad_negocio = unidad
+                    existente.segmento_red = segmento_red
+                    existente.tipo_enlace = tipo_enlace
+                    existente.tiene_backup = tiene_backup
+                    if not dry_run:
+                        existente.save(update_fields=[
+                            'ubicacion', 'grupo', 'unidad_negocio',
+                            'segmento_red', 'tipo_enlace', 'tiene_backup',
+                        ])
+                    resultado.actualizadas.append(codigo)
+                else:
+                    resultado.omitidas.append(codigo)
+                continue
+
+            if not dry_run:
+                Farmacia.objects.create(
+                    codigo=codigo, ubicacion=ubicacion, grupo=grupo, unidad_negocio=unidad,
+                    segmento_red=segmento_red, tipo_enlace=tipo_enlace, tiene_backup=tiene_backup,
+                )
+            resultado.creadas.append(codigo)
+
+        if dry_run:
+            transaction.savepoint_rollback(sp)
+        else:
+            transaction.savepoint_commit(sp)
+
+    return resultado
