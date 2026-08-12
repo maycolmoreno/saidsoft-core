@@ -242,6 +242,17 @@ class ImportarFarmaciasTests(TestCase):
         self.assertFalse(Farmacia.objects.filter(codigo='ZQ001').exists())
         self.assertIn('prefijo de código sin mapeo', salida)
 
+    def test_nodo_mas_largo_que_el_campo_se_reporta_como_error_sin_reventar(self):
+        # Grupo.codigo tiene max_length=10 — un NODO más largo tiraba un DataError sin
+        # manejar (500 crudo en el admin, encontrado en producción 12-ago-2026).
+        csv_contenido = 'Ciudad,Id de,NODO\nAmbato,MAM01,un_nodo_con_nombre_demasiado_largo\n'
+
+        salida = self._correr(csv_contenido)
+
+        self.assertFalse(Farmacia.objects.filter(codigo='MAM01').exists())
+        self.assertFalse(Grupo.objects.filter(codigo__startswith='UN_NODO').exists())
+        self.assertIn('caracteres (máximo', salida)
+
     def test_provincia_se_combina_con_ciudad_en_ubicacion(self):
         csv_contenido = 'Provincia,Ciudad,Id de,NODO\nEl Oro,Pasaje,MP001,trx001\n'
 

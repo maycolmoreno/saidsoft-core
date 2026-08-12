@@ -419,6 +419,28 @@ def importar_farmacias_desde_csv(archivo_texto, *, dry_run=False, actualizar=Fal
                 resultado.errores.append(f'fila {fila_num} ({codigo}): sin valor de nodo/grupo.')
                 continue
 
+            # Validar largo ANTES de tocar la base — un valor que no entra en la
+            # columna (ej. un NODO más largo que Grupo.codigo, max_length=10) tiraba
+            # un DataError sin manejar en pleno grupo.save()/Farmacia.save(), que
+            # devolvía un 500 crudo en vez de reportarse como error de esta fila
+            # (encontrado en producción, 12-ago-2026, con un NODO real más largo de
+            # lo esperado).
+            campos_con_largo_maximo = {
+                'código': (codigo, Farmacia._meta.get_field('codigo').max_length),
+                'nodo/grupo': (nodo, Grupo._meta.get_field('codigo').max_length),
+                'ubicación': (ubicacion, Farmacia._meta.get_field('ubicacion').max_length),
+                'segmento de red': (segmento_red, Farmacia._meta.get_field('segmento_red').max_length),
+                'tipo de enlace': (tipo_enlace, Farmacia._meta.get_field('tipo_enlace').max_length),
+            }
+            demasiado_largos = [
+                f'{etiqueta} "{valor}" tiene {len(valor)} caracteres (máximo {maximo})'
+                for etiqueta, (valor, maximo) in campos_con_largo_maximo.items()
+                if len(valor) > maximo
+            ]
+            if demasiado_largos:
+                resultado.errores.append(f'fila {fila_num} ({codigo}): ' + '; '.join(demasiado_largos))
+                continue
+
             codigo_unidad = _unidad_negocio_por_prefijo(codigo)
             if not codigo_unidad:
                 resultado.errores.append(

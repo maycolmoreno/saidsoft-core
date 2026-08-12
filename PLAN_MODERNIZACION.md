@@ -910,6 +910,28 @@ creación real redirige al listado, error sin archivo). Verificado visualmente
 (botón en el listado, formulario, y resultado de una previsualización con error de
 prefijo desconocido). Documentado en README.md §"Multi-tenancy".
 
+**S. Bug real en producción: importar_farmacias tiraba 500 en vez de reportar un
+error de fila (12-ago-2026) — 🟢 corregido:** primer uso real del botón "Importar
+CSV" contra el servidor de producción — `Server Error (500)` en
+`/admin/catalogo/farmacia/importar/`. El traceback (`docker-compose logs --tail=80
+web`, ya que `docker-compose logs web --tail=80` no funciona en v1 — orden de
+opciones) mostró `django.db.utils.DataError: value too long for type character
+varying(10)` reventando dentro de `grupo.save()`: un valor de columna NODO real más
+largo que `Grupo.codigo` (`max_length=10`) llegaba sin validar hasta el INSERT, y
+Postgres lo rechazaba con una excepción sin capturar — 500 crudo en vez de un error
+de fila prolijo. Causa raíz más general: el importador nunca validaba longitudes
+contra los `max_length` reales de los campos antes de escribir (ni en modo real ni
+en `--dry-run`, así que la previsualización tampoco lo detectaba de antemano). Fix
+en `importar_farmacias_desde_csv`: valida código/nodo/ubicación/segmento de
+red/tipo de enlace contra el `max_length` de su campo antes de tocar la base,
+reportando la fila como error con el detalle (valor, largo, máximo permitido) en
+vez de escribir y dejar que la base tire la excepción. Nuevo test
+`test_nodo_mas_largo_que_el_campo_se_reporta_como_error_sin_reventar`. Pendiente:
+no se conoce todavía el valor real de NODO que disparó el error (el usuario no lo
+tenía a mano) — si vuelve a aparecer en el reporte de errores del importador, decidir
+ahí si conviene ampliar `Grupo.codigo` más allá de 10 caracteres en vez de solo
+reportarlo.
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual
