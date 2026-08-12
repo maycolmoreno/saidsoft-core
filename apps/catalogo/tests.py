@@ -248,3 +248,20 @@ class ImportarFarmaciasTests(TestCase):
         self._correr(csv_contenido)
 
         self.assertEqual(Farmacia.objects.get(codigo='MP001').ubicacion, 'Pasaje, El Oro')
+
+    def test_captura_segmento_red_tipo_enlace_y_backup(self):
+        csv_contenido = (
+            'Ciudad,Id de,Segmento de Red,Tipo de Enlace,Login,Backup,NODO\n'
+            'Pasaje,MP001,10.110.1.96/27,TELCONET,farmamia-mp001,ACTIVO,trx001\n'
+            'Pindal,MPDL1,10.101.22.192/27,TELCONET,farmamia-mpdl1,,trx001\n'
+        )
+
+        self._correr(csv_contenido)
+
+        mp001 = Farmacia.objects.get(codigo='MP001')
+        self.assertEqual(mp001.segmento_red, '10.110.1.96/27')
+        self.assertEqual(mp001.tipo_enlace, 'TELCONET')
+        self.assertTrue(mp001.tiene_backup)
+
+        # Backup vacío -> sin enlace de respaldo.
+        self.assertFalse(Farmacia.objects.get(codigo='MPDL1').tiene_backup)

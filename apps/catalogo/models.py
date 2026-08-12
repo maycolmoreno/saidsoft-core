@@ -80,6 +80,21 @@ class Farmacia(models.Model):
         help_text='Fecha real de apertura del local (distinta de fecha_registro, que es '
                   'cuándo se creó el registro en SAIDSOFT).',
     )
+    segmento_red = models.CharField(
+        max_length=30, blank=True,
+        help_text='Subred asignada al enlace de la farmacia (ej. 10.110.1.96/27), del '
+                  'inventario de red del proveedor — sirve para diagnosticar conectividad '
+                  'sin volver al Excel original.',
+    )
+    tipo_enlace = models.CharField(
+        max_length=30, blank=True,
+        help_text='Proveedor/tecnología del enlace principal (ej. TELCONET, PUNTO NET).',
+    )
+    tiene_backup = models.BooleanField(
+        default=False,
+        help_text='Si el sitio tiene enlace de respaldo — sin uno, una caída del enlace '
+                  'principal deja a la farmacia sin conectividad (punto único de falla).',
+    )
 
     class Meta:
         db_table = 'farmacia'

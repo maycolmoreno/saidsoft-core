@@ -31,9 +31,14 @@ detectan por coincidencia parcial:
     - ciudad/ubicación:    cualquier encabezado que contenga "ciudad" o "ubicacion"
     - provincia:           cualquier encabezado que contenga "provincia" (opcional)
     - nodo/grupo:          cualquier encabezado que contenga "nodo" o "grupo"
-Si hay columna de provincia, la ubicación queda como "Ciudad, Provincia". Columnas
-como "Segmento de Red", "Tipo de Enlace", "Login" o "Backup" se ignoran: no tienen
-dónde ir en el modelo Farmacia.
+    - segmento de red:     cualquier encabezado que contenga "segmento" (opcional)
+    - tipo de enlace:      cualquier encabezado que contenga "enlace" (opcional)
+    - backup:              cualquier encabezado que contenga "backup" (opcional; valores
+                            tipo "NO"/"INACTIVO"/vacío/"0" se leen como sin backup,
+                            cualquier otra cosa no vacía (ej. "ACTIVO") como con backup)
+Si hay columna de provincia, la ubicación queda como "Ciudad, Provincia". "Login" (el
+usuario del circuito ante el proveedor de internet) se ignora: es dato del proveedor,
+no de SAIDSOFT.
 """
 import csv
 import unicodedata
@@ -68,6 +73,13 @@ def _encontrar_columna(fieldnames, *pistas):
     return None
 
 
+NEGATIVOS_BACKUP = {'', 'no', 'inactivo', 'false', '0', 'n'}
+
+
+def _tiene_backup(valor):
+    return _normalizar(valor) not in NEGATIVOS_BACKUP
+
+
 class Command(BaseCommand):
     help = 'Crea farmacias en lote desde un CSV (código, ciudad/ubicación, nodo/grupo).'
 
@@ -98,6 +110,9 @@ class Command(BaseCommand):
             col_ciudad = _encontrar_columna(lector.fieldnames, 'ciudad', 'ubicacion', 'ubicación')
             col_provincia = _encontrar_columna(lector.fieldnames, 'provincia')
             col_nodo = _encontrar_columna(lector.fieldnames, 'nodo', 'grupo')
+            col_segmento = _encontrar_columna(lector.fieldnames, 'segmento')
+            col_tipo_enlace = _encontrar_columna(lector.fieldnames, 'enlace')
+            col_backup = _encontrar_columna(lector.fieldnames, 'backup')
             if not col_codigo or not col_nodo:
                 raise CommandError(
                     f'No se detectaron las columnas necesarias en {lector.fieldnames!r}. '
@@ -105,7 +120,8 @@ class Command(BaseCommand):
                 )
             self.stdout.write(
                 f'Columnas detectadas: código={col_codigo!r}, ciudad={col_ciudad!r}, '
-                f'provincia={col_provincia!r}, nodo={col_nodo!r}',
+                f'provincia={col_provincia!r}, nodo={col_nodo!r}, segmento={col_segmento!r}, '
+                f'tipo_enlace={col_tipo_enlace!r}, backup={col_backup!r}',
             )
 
             grupos_cache = {g.codigo: g for g in Grupo.objects.all()}
@@ -122,6 +138,9 @@ class Command(BaseCommand):
                     ciudad = (fila.get(col_ciudad) or '').strip() if col_ciudad else ''
                     provincia = (fila.get(col_provincia) or '').strip() if col_provincia else ''
                     ubicacion = f'{ciudad}, {provincia}' if ciudad and provincia else (ciudad or provincia)
+                    segmento_red = (fila.get(col_segmento) or '').strip() if col_segmento else ''
+                    tipo_enlace = (fila.get(col_tipo_enlace) or '').strip() if col_tipo_enlace else ''
+                    tiene_backup = _tiene_backup(fila.get(col_backup) or '') if col_backup else False
                     nodo = (fila.get(col_nodo) or '').strip().upper()
 
                     if not nodo:
@@ -158,8 +177,14 @@ class Command(BaseCommand):
                             existente.ubicacion = ubicacion
                             existente.grupo = grupo
                             existente.unidad_negocio = unidad
+                            existente.segmento_red = segmento_red
+                            existente.tipo_enlace = tipo_enlace
+                            existente.tiene_backup = tiene_backup
                             if not dry_run:
-                                existente.save(update_fields=['ubicacion', 'grupo', 'unidad_negocio'])
+                                existente.save(update_fields=[
+                                    'ubicacion', 'grupo', 'unidad_negocio',
+                                    'segmento_red', 'tipo_enlace', 'tiene_backup',
+                                ])
                             actualizadas.append(codigo)
                         else:
                             omitidas.append(codigo)
@@ -168,6 +193,7 @@ class Command(BaseCommand):
                     if not dry_run:
                         Farmacia.objects.create(
                             codigo=codigo, ubicacion=ubicacion, grupo=grupo, unidad_negocio=unidad,
+                            segmento_red=segmento_red, tipo_enlace=tipo_enlace, tiene_backup=tiene_backup,
                         )
                     creadas.append(codigo)
 

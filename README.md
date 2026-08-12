@@ -201,15 +201,23 @@ python manage.py importar_farmacias sitios.csv --actualizar  # además, sobreesc
 ```
 
 El comando (`apps/catalogo/management/commands/importar_farmacias.py`) detecta las
-columnas de código/ciudad/provincia/nodo por coincidencia parcial del encabezado (no
-importan mayúsculas ni el nombre exacto; columnas como "Segmento de Red", "Tipo de
-Enlace" o "Login" se ignoran), y usa el nodo de red como código de `Grupo` (se crea
-solo si no existe — un canal de POS no tiene implicancias de seguridad). Si hay
-columna de provincia, la ubicación queda como "Ciudad, Provincia". La `UnidadNegocio`
+columnas de código/ciudad/provincia/nodo/segmento de red/tipo de enlace/backup por
+coincidencia parcial del encabezado (no importan mayúsculas ni el nombre exacto), y
+usa el nodo de red como código de `Grupo` (se crea solo si no existe — un canal de
+POS no tiene implicancias de seguridad). Si hay columna de provincia, la ubicación
+queda como "Ciudad, Provincia". "Login" (usuario del circuito ante el proveedor de
+internet) se ignora — es dato del proveedor, no de SAIDSOFT. La `UnidadNegocio`
 **no** se adivina libremente: se deduce de la primera letra del código de farmacia con
 un mapeo fijo del negocio (`M`→MIA, `G`→SG, dígito→7DIAS — ver
 `PREFIJOS_UNIDAD_NEGOCIO` en el comando) y, si esa unidad todavía no existe en
 SAIDSOFT, la fila se reporta como error en vez de crear un tenant nuevo sin querer.
+
+`Farmacia` guarda además `segmento_red`, `tipo_enlace` y `tiene_backup` (columnas
+"Segmento de Red"/"Tipo de Enlace"/"Backup" del mismo inventario) — son datos de
+infraestructura de red por sitio que antes solo existían en el Excel del equipo de
+infraestructura; tenerlos en SAIDSOFT deja diagnosticar problemas de conectividad
+(o priorizar qué farmacias no tienen enlace de respaldo) sin volver a esa planilla.
+Visibles/filtrables desde `/admin/catalogo/farmacia/`.
 
 ## Monitoreo de servidores
 

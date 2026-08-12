@@ -30,11 +30,11 @@ class GrupoAdmin(admin.ModelAdmin):
 @admin.register(Farmacia)
 class FarmaciaAdmin(admin.ModelAdmin):
     list_display = (
-        'codigo', 'nombre', 'grupo', 'unidad_negocio', 'ubicacion', 'activa',
-        'fecha_apertura', 'total_estaciones',
+        'codigo', 'nombre', 'grupo', 'unidad_negocio', 'ubicacion', 'tipo_enlace',
+        'tiene_backup', 'activa', 'fecha_apertura', 'total_estaciones',
     )
-    search_fields = ('codigo', 'nombre')
-    list_filter = ('grupo', 'unidad_negocio', 'activa')
+    search_fields = ('codigo', 'nombre', 'segmento_red')
+    list_filter = ('grupo', 'unidad_negocio', 'activa', 'tipo_enlace', 'tiene_backup')
     autocomplete_fields = ('grupo', 'unidad_negocio')
 
     def get_queryset(self, request):

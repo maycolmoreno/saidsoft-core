@@ -879,13 +879,23 @@ error, a diferencia del Grupo (solo un canal de versión de POS, sin riesgo). So
 ubicación/grupo de las que ya existen; por defecto se omiten intactas — reentrante,
 se puede correr el mismo CSV varias veces sin duplicar). **Ampliado el mismo día**
 al ver una hoja más completa del inventario real (columnas Provincia/Segmento de
-Red/Login además de las anteriores): se suma detección opcional de columna
-Provincia, combinada con Ciudad en la ubicación (`"Pasaje, El Oro"`); Segmento de
-Red/Login se ignoran igual que Tipo de Enlace/Backup. 6 tests en
+Red/Tipo de Enlace/Login/Backup además de las anteriores): se suma detección
+opcional de columna Provincia, combinada con Ciudad en la ubicación
+(`"Pasaje, El Oro"`); "Login" (usuario del circuito ante el proveedor de internet)
+se ignora por ser dato del proveedor, no de SAIDSOFT. **Segundo agregado, mismo
+día**: el usuario notó que Segmento de Red/Tipo de Enlace/Backup sí son datos de
+infraestructura útiles para un proyecto de IT Ops (diagnosticar conectividad sin
+volver al Excel; priorizar farmacias sin enlace de respaldo como punto único de
+falla) — se agregaron como campos nuevos del modelo `Farmacia` (`segmento_red`,
+`tipo_enlace`, `tiene_backup`, migración `0012_farmacia_segmento_red_...`), visibles
+y filtrables en `FarmaciaAdmin`, y el importador los captura si esas columnas están
+presentes (`tiene_backup` interpreta vacío/"NO"/"INACTIVO"/"0" como sin backup,
+cualquier otro valor no vacío como con backup). 7 tests en
 `apps/catalogo/tests.py::ImportarFarmaciasTests` cubren: creación con deducción de
 unidad/grupo, re-corrida idempotente, `--actualizar`, `--dry-run`, prefijo de
-código sin mapeo conocido (falla explícito, no adivina), y combinación
-ciudad+provincia. Documentado en README.md §"Multi-tenancy".
+código sin mapeo conocido (falla explícito, no adivina), combinación
+ciudad+provincia, y captura de segmento de red/tipo de enlace/backup. Documentado
+en README.md §"Multi-tenancy".
 
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
