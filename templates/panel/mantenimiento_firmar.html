@@ -21,8 +21,10 @@
         <button type="button" id="firma-limpiar" class="text-xs hover:underline text-[var(--text-faint)]">Limpiar</button>
     </div>
     {{ form.firma_base64 }}
-    {# "Falta capturar la firma" es un error de campo, no non_field: sin esto el
-       formulario volvía idéntico y sin explicación al rechazar una firma vacía. #}
+    {% comment %}
+    "Falta capturar la firma" es un error de campo, no non_field: sin esto el
+    formulario volvía idéntico y sin explicación al rechazar una firma vacía.
+    {% endcomment %}
     {% for error in form.firma_base64.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
 
     <div class="mt-6 flex gap-3">

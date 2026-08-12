@@ -37,9 +37,11 @@
     Elige un cliente arriba para generar su resumen.
 </div>
 {% else %}
-{# Documento imprimible: se mantiene deliberadamente blanco/negro sin importar el tema
-   de la app (mismo criterio que la orden de trabajo de mantenimiento) — es un
-   artefacto que se imprime/entrega, no parte de la UI del panel. #}
+{% comment %}
+Documento imprimible: se mantiene deliberadamente blanco/negro sin importar el tema
+de la app (mismo criterio que la orden de trabajo de mantenimiento) — es un
+artefacto que se imprime/entrega, no parte de la UI del panel.
+{% endcomment %}
 <div class="rounded-lg p-6 max-w-3xl" style="background:#fff; color:#0f172a; border:1px solid #e2e8f0;">
     <h2 class="text-lg font-semibold mb-1">Resumen de servicio — {{ unidad.nombre|default:unidad.codigo }}</h2>
     <p class="text-sm mb-6" style="color:#64748b;">Período: {{ desde|date:"d/m/Y" }} — {{ hasta|date:"d/m/Y" }}</p>

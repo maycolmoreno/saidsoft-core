@@ -6,8 +6,10 @@
     <button onclick="window.print()" class="btn primary">Imprimir</button>
 </div>
 
-{# Documento imprimible: se mantiene deliberadamente blanco/negro sin importar el tema
-   de la app (mismo criterio que la firma) — es un artefacto que se imprime/archiva. #}
+{% comment %}
+Documento imprimible: se mantiene deliberadamente blanco/negro sin importar el tema
+de la app (mismo criterio que la firma) — es un artefacto que se imprime/archiva.
+{% endcomment %}
 <div class="rounded-lg p-6 max-w-3xl" style="background:#fff; color:#0f172a; border:1px solid #e2e8f0;">
     <h2 class="text-lg font-semibold mb-1">Orden de trabajo #{{ mantenimiento.pk }}</h2>
     <p class="text-sm mb-4" style="color:#64748b;">{{ mantenimiento.get_tipo_origen_display }} · {{ mantenimiento.fecha_programada|date:"d/m/Y H:i" }}</p>

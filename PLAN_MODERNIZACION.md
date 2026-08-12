@@ -776,6 +776,39 @@ mano en cada estación nueva. Encontrados y corregidos dos bugs reales probándo
    `instalar-servicio.ps1` de mentira que solo imprime los parámetros recibidos
    (incluyendo secretos con `!`/`$`/`#`, que llegaron intactos).
 
+**N. Exposición accidental de `MQTT_PASSWORD_AGENTE`/`COMANDO_HMAC_SECRET` en un
+commit público (11-ago-2026) — 🟢 rotados:** al completar el `config.ejemplo.txt` de
+la plantilla del paquete de un clic (§10-M), quedaron pegados ahí los valores reales
+en vez de en `config.txt` (que sí está en `.gitignore`) — y como
+`saidsoft-core` es un repo **público**, el commit los dejó visibles en el historial de
+GitHub. Corregido el archivo de inmediato, pero como el historial de un repo público
+no se puede considerar "borrado" con reescribirlo (GitHub cachea, puede haber clones),
+se rotaron los dos secretos de verdad: valores nuevos generados, aplicados en
+`deploy/.env`, en EMQX (contraseña del usuario `saidsof_agente`) y reinstalados en
+las dos estaciones activas (ML016-A, ML006-A). De paso se encontró y corrigió que
+`bootstrap-emqx.sh` tampoco sabía *actualizar* la contraseña de un usuario MQTT ya
+existente (el `POST` de creación con `409 ALREADY_EXISTS` no hacía nada más) — ahora
+hace `PUT` a `/users/{user_id}` en ese caso. **Lección**: `config.ejemplo.txt` es la
+plantilla versionada — nunca debe llevar valores reales, ni siquiera "para probar
+rápido"; los reales van solo en `config.txt`, gitignoreado.
+
+**O. Comentarios `{# ... #}` multilínea se renderizaban como texto visible en el panel
+(11-ago-2026) — 🟢 corregido:** el usuario reportó ver texto de comentarios de
+desarrollo (explicaciones de por qué existe tal `hx-preserve` o tal pausa de polling)
+como contenido visible arriba de la tabla de `/estaciones/` y en el modal de info de
+estación. El código fuente parecía correcto a simple vista (`{# comentario #}`, la
+sintaxis válida de Django) y el archivo desplegado en el contenedor coincidía exacto
+con el repo — descartando problemas de despliegue. La causa real: **Django no permite
+que un comentario `{# #}` ocupe más de una línea** (documentado, fácil de no saber);
+si lo hace, el parser no lo reconoce como comentario y el texto completo —incluidos
+los delimitadores— se imprime tal cual. Los seis casos del proyecto que usaban esta
+sintaxis multilínea (introducidos en distintos commits a lo largo del desarrollo,
+todos con la misma buena intención de documentar el "por qué" de un workaround)
+quedaron convertidos a `{% comment %}...{% endcomment %}`, que sí soporta varias
+líneas. Verificado con un test que confirma que el texto ya no aparece en
+`/estaciones/`, más la suite completa. **A tener en cuenta a futuro**: cualquier
+comentario Django de más de una línea debe ir en `{% comment %}`, nunca en `{# #}`.
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual

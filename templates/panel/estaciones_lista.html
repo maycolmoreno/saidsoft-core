@@ -3,10 +3,12 @@
 {% block content %}
 <h1 class="text-xl font-semibold mb-6">Estaciones</h1>
 
-{# El refresco cada 15s reemplaza toda la tabla de pendientes, así que se pausa
-   mientras haya casillas marcadas: si no, el operador tilda varias estaciones para
-   aprobarlas en lote, el poll le borra la selección sin aviso, y "Aprobar
-   seleccionadas" termina enviando una lista vacía. #}
+{% comment %}
+El refresco cada 15s reemplaza toda la tabla de pendientes, así que se pausa
+mientras haya casillas marcadas: si no, el operador tilda varias estaciones para
+aprobarlas en lote, el poll le borra la selección sin aviso, y "Aprobar
+seleccionadas" termina enviando una lista vacía.
+{% endcomment %}
 <div id="pendientes-wrap" hx-get="{% url 'panel:estaciones_pendientes_partial' %}"
      hx-trigger="load, every 15s [!document.querySelector('.chk-pendiente:checked')]"
      hx-swap="innerHTML"></div>
