@@ -37,10 +37,10 @@ sh deploy/certs/generar-certs-dev.sh        # self-signed para arrancar…
 #    y distribuir el CA a los agentes.
 
 # 3. Levantar el stack (migraciones y collectstatic corren solos en el arranque del web)
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+docker-compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
 
 # 4. Crear el superusuario del panel
-docker compose -f deploy/docker-compose.yml exec web python manage.py createsuperuser
+docker-compose -f deploy/docker-compose.yml exec web python manage.py createsuperuser
 
 # 5. Sembrar usuarios MQTT y definir ACLs en EMQX (siembra usuarios y reglas por
 #    tópico en un solo paso; docker-compose.yml ya fija no_match=deny)
@@ -51,8 +51,8 @@ sh deploy/bootstrap-emqx.sh
 #    config/settings/base.py — marcar estaciones offline (cada minuto), purgar métricas
 #    viejas, generar ejecuciones/mantenimientos programados vencidos (diario).
 #    Los comandos manuales se conservan por si hace falta correrlos a mano:
-#    docker compose -f deploy/docker-compose.yml exec web python manage.py marcar_estaciones_offline
-#    docker compose -f deploy/docker-compose.yml exec web python manage.py purgar_metricas --dias 30
+#    docker-compose -f deploy/docker-compose.yml exec web python manage.py marcar_estaciones_offline
+#    docker-compose -f deploy/docker-compose.yml exec web python manage.py purgar_metricas --dias 30
 
 # 7. Backups: sí van por cron del host (necesitan orquestar `docker compose` desde
 #    afuera del stack) — agregar al crontab:
@@ -112,9 +112,36 @@ intento de recreate que falló a mitad de camino, se pueden borrar con
 
 Otras diferencias de v1 encontradas en este despliegue: `docker-compose logs` exige las
 opciones **antes** del nombre del servicio (`logs --tail=50 web`, no
-`logs web --tail=50`); y no existe `docker compose` (v2, sin guion) instalado por
-default en Ubuntu — se puede sumar con `sudo apt-get install docker-compose-plugin` si
-se prefiere evitar todo esto (v2 no tiene este bug).
+`logs web --tail=50`).
+
+### 🔴 NUNCA usar `docker compose` (v2, con espacio) en este servidor
+
+A pesar de lo que decía antes esta sección, el plugin `docker compose` v2 **sí está
+instalado** en el NUC de producción (junto al binario legado `docker-compose` v1, el
+que de verdad corre el stack). Son dos herramientas independientes con **namespaces de
+imagen y contenedor distintos** — mismo `docker-compose.yml`, resultados completamente
+separados:
+
+| | `docker-compose` (v1, guion) | `docker compose` (v2, espacio) |
+|---|---|---|
+| Contenedores | `deploy_web_1` (guion bajo) | `deploy-web-1` (guion) |
+| Imágenes | `deploy_web:latest` | `deploy-web:latest` |
+| Caché de build | propio | propio, no comparte nada con v1 |
+
+**Esto causó un incidente real (11-ago-2026):** en algún momento se corrió `docker
+compose build ...` (v2) pensando que actualizaba el stack en vivo. Como el stack en vivo
+lo administra `docker-compose` (v1) — son los contenedores `deploy_web_1` los que tienen
+el puerto 8080 publicado —, esa reconstrucción v2 generó una imagen `deploy-web` (guion)
+que nadie usa, y el contenedor real (`deploy_web_1`) siguió sirviendo código viejo.
+Visto desde afuera parecía "el rebuild no hace nada" (un supuesto bug de caché de
+Docker); la causa real era simplemente estar mirando el stack equivocado.
+
+**Regla fija: todos los comandos de este proyecto usan `docker-compose`, sin espacio,
+con guion.** Si algún día se decide migrar a v2 de una vez (v2 no tiene el bug de
+"recrear" de más arriba), hay que primero `docker-compose down` el stack v1 completo y
+recién ahí levantar con v2 — nunca mezclar los dos comandos contra el mismo despliegue.
+Para confirmar cuál está sirviendo tráfico ahora: `docker ps` — si los nombres tienen
+guion bajo (`deploy_web_1`), es v1.
 
 ## Sin proxy TLS todavía (piloto en LAN)
 

@@ -838,6 +838,30 @@ formularios que comparten el patrón `destino_tipo` + `grupos`/`farmacias`/
   `render_to_string` suelto — este último no pasa por `AuthenticationMiddleware` y
   termina renderizando el `{% block content_anon %}` vacío de `base.html`).
 
+**Q. El "bug de caché de Docker" que quedó pendiente de §10-O/P en realidad eran dos
+binarios `docker compose` distintos peleándose por el mismo `docker-compose.yml`
+(11-ago-2026) — 🟢 causa raíz encontrada y documentada:** tras el fix de §P, un rebuild
+en el NUC de producción parecía no tomar el código nuevo (`docker exec deploy_web_1
+grep ...` seguía dando 0 con el commit correcto ya en el checkout del host). Se
+descartó despliegue incompleto (`git log`/`git status` limpios) y se armó un
+diagnóstico: `docker images` mostró **dos familias de imágenes para los mismos
+servicios** — `deploy_web`/`deploy_worker`/... (guion bajo, 11-ago, recién construidas)
+y `deploy-web`/`deploy-worker`/... (guion, 6-ago, viejas). Causa real: el NUC tiene
+instalados **tanto `docker-compose` v1 (el binario legado, sin espacio) como el plugin
+`docker compose` v2 (con espacio)** — `deploy/README-produccion.md` decía que v2 "no
+está instalado por default" (cierto cuando se escribió esa nota, dejó de serlo en algún
+momento) y mezclaba ejemplos de ambos comandos en distintas secciones. Los contenedores
+que sirven tráfico real (`deploy_web_1`, con el puerto 8080 publicado) los administra
+v1; en algún momento se corrió un `docker compose build`/`up` (v2) siguiendo la sección
+de instalación inicial del README, que construyó/gestionó un stack paralelo con
+namespace de imagen y contenedor distinto (`deploy-web-1`, guion) — completamente
+invisible para quien mira `deploy_web_1`. No era caché stale, eran dos stacks
+coexistiendo. Fix: `deploy/README-produccion.md` reescrito para usar `docker-compose`
+(v1, sin espacio) de forma consistente en **todos** los comandos de ejemplo, con una
+sección nueva "NUNCA usar `docker compose` v2" explicando el porqué. **Pendiente de
+limpieza no urgente**: borrar las imágenes `deploy-*` (guion) huérfanas del NUC con
+`docker rmi` para que dejen de aparecer en `docker images` y confundir a futuro.
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual
