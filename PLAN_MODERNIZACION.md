@@ -809,6 +809,35 @@ líneas. Verificado con un test que confirma que el texto ya no aparece en
 `/estaciones/`, más la suite completa. **A tener en cuenta a futuro**: cualquier
 comentario Django de más de una línea debe ir en `{% comment %}`, nunca en `{# #}`.
 
+**P. Formularios de destino (despliegue/solicitud de instalación/promoción de anillo)
+rediseñados con checklist real + mostrar/ocultar por tipo de destino (11-ago-2026) —
+🟢 cerrado:** el usuario reportó que `/solicitudes-instalacion/nueva/` (y por
+extensión los otros dos formularios con el mismo patrón de destino) eran "muy
+básicos": al elegir "Toda la cadena" seguían mostrándose los campos de
+grupos/farmacias/estaciones (sin sentido, ya que ese destino no los usa), y elegir
+farmacias o estaciones específicas usaba un `<select multiple>` nativo (mala
+usabilidad con listas largas, sin buscador). Se aplicó el mismo arreglo a los tres
+formularios que comparten el patrón `destino_tipo` + `grupos`/`farmacias`/
+`estaciones`:
+- `DespliegueForm`, `SolicitudInstalacionForm` (`apps/software/forms.py`) y
+  `PromoverDespliegueForm` — los tres widgets pasaron de `SelectMultiple`/
+  `forms.SelectMultiple(size=6)` a `forms.CheckboxSelectMultiple`.
+- Plantillas dedicadas (`despliegue_form.html`, `solicitud_instalacion_form.html`
+  nueva, `despliegue_promover_form.html` nueva) con JS que oculta/muestra el bloque
+  de grupos/farmacias/estaciones según `destino_tipo` (nada se muestra para
+  "cadena"), y un buscador de texto por checklist (`data-checklist-buscar` filtra las
+  `<label>` del checklist por coincidencia de texto).
+- De paso, `activo_crear` (`apps/panel/views/activos.py`) y
+  `solicitud_instalacion_crear` dejaron de usar el `accion_form.html` genérico y
+  pasaron a plantillas propias; `activo_form.html` nueva además solo muestra
+  Procesador/RAM/Almacenamiento cuando `tipo` es de cómputo (`LAP`/`DSK`/`SRV`/`TAB`),
+  corrigiendo que esos campos aparecieran también para Impresora/UPS/etc.
+- Verificado con la suite completa de `apps.panel`/`apps.despliegues`/`apps.software`
+  y, para cada formulario, una captura headless (Edge `--headless --screenshot`) del
+  HTML renderizado vía el `Client` de pruebas (login real + vista real, no
+  `render_to_string` suelto — este último no pasa por `AuthenticationMiddleware` y
+  termina renderizando el `{% block content_anon %}` vacío de `base.html`).
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual

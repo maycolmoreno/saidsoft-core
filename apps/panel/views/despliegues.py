@@ -89,7 +89,7 @@ def despliegue_promover(request, pk):
     else:
         form = PromoverDespliegueForm(unidad_negocio=origen.unidad_negocio)
 
-    return render(request, 'panel/accion_form.html', {
+    return render(request, 'panel/despliegue_promover_form.html', {
         'form': form, 'titulo': f'Promover v{origen.version} al siguiente anillo',
         'subtitulo': f'Mismo paquete y versión que el despliegue #{origen.pk}; solo cambia a quién llega.',
         'volver_url': reverse('panel:despliegue_detalle', args=[pk]),

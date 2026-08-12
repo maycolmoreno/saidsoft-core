@@ -71,9 +71,9 @@ class PromoverDespliegueForm(forms.ModelForm):
         fields = ['destino_tipo', 'grupos', 'farmacias', 'estaciones', 'umbral_error_pct']
         widgets = {
             'destino_tipo': forms.Select(attrs={'class': INPUT_CLASS}),
-            'grupos': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
-            'farmacias': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
-            'estaciones': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+            'grupos': forms.CheckboxSelectMultiple,
+            'farmacias': forms.CheckboxSelectMultiple,
+            'estaciones': forms.CheckboxSelectMultiple,
             'umbral_error_pct': forms.NumberInput(attrs={'class': INPUT_CLASS, 'step': '0.5'}),
         }
 
