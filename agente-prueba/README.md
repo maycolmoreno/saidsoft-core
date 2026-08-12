@@ -52,6 +52,11 @@ completo de esa decisión.
   o sin privilegios suficientes), esos campos quedan vacíos sin romper el resto de la
   consulta. Dispara este comando el botón "Actualizar ahora" en la ficha de la
   estación del panel.
+- **`reiniciar`**: valida la firma HMAC y reinicia el **equipo Windows completo** (no
+  solo el servicio del agente) con `shutdown /r /t 10` — 10 segundos de margen, no
+  inmediato. Es fire-and-forget: el servidor no espera ninguna confirmación de vuelta
+  (no hay tópico de "reinicio aplicado"), coherente con que el botón del panel avisa
+  "esto interrumpe cualquier venta en curso en esa caja" antes de confirmar.
 
 ## Qué NO cubre (fuera de alcance a propósito)
 

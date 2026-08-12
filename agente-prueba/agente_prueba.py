@@ -246,6 +246,8 @@ class AgentePrueba:
             self._verificar_y_ejecutar_script(payload)
         elif comando == 'consultar_info':
             self._verificar_y_consultar_info(payload)
+        elif comando == 'reiniciar':
+            self._verificar_y_reiniciar(payload)
         else:
             logging.info('Comando "%s" recibido — no implementado en este agente de prueba.', comando)
 
@@ -367,6 +369,23 @@ try {
         except Exception:
             logging.exception('No se pudo consultar la info del equipo (CIM/BitLocker)')
             return {}
+
+    # --- reiniciar (equipo completo, no solo el servicio) ---
+    def _verificar_y_reiniciar(self, payload):
+        # Mismo esquema de firma que consultar_info/ejecutar_script. Este comando
+        # reinicia el equipo Windows completo (no el servicio del agente) — el botón
+        # del panel avisa "interrumpe cualquier venta en curso en esa caja", y es
+        # fire-and-forget: el servidor no espera ninguna confirmación de vuelta.
+        firma_esperada = firmar(self.args.hmac_secret, comando='reiniciar')
+        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
+            logging.error('Firma HMAC inválida en comando reiniciar — se ignora (posible suplantación).')
+            return
+
+        logging.warning('Reinicio del equipo solicitado desde el panel — reiniciando en 10s.')
+        subprocess.run(
+            ['shutdown', '/r', '/t', '10', '/c', 'Reinicio solicitado desde el panel SAIDSOFT'],
+            capture_output=True,
+        )
 
     # --- software (catálogo) ---
     def _manejar_software(self, payload):
