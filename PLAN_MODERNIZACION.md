@@ -862,6 +862,27 @@ sección nueva "NUNCA usar `docker compose` v2" explicando el porqué. **Pendien
 limpieza no urgente**: borrar las imágenes `deploy-*` (guion) huérfanas del NUC con
 `docker rmi` para que dejen de aparecer en `docker images` y confundir a futuro.
 
+**R. Alta masiva de farmacias desde CSV (11-ago-2026) — 🟢 cerrado:** el usuario
+necesitaba dar de alta ~29 farmacias de una vez; el pedido inicial sonaba a un rango
+secuencial simple (ML001..ML029), pero el archivo real que maneja es un inventario de
+red por sitio (columnas Ciudad/Id de sitio/Tipo de Enlace/Backup/NODO, códigos
+irregulares por ciudad como MALU1, MB001, MBAL1) — un comando de "rango" no alcanzaba.
+Se armó `python manage.py importar_farmacias <csv>` (`apps/catalogo/management/
+commands/importar_farmacias.py`): detecta columnas de código/ciudad/nodo por
+coincidencia parcial de encabezado, usa el nodo de red como código de `Grupo`
+(autocreado si no existe) y deduce la `UnidadNegocio` de la primera letra del código
+con un mapeo confirmado con el usuario (`M`→MIA, `G`→SG, dígito→7DIAS). Decisión
+explícita: la unidad de negocio **no** se autocrea si falta (es el límite de
+aislamiento multi-tenant, ver README "Multi-tenancy") — esa fila se reporta como
+error, a diferencia del Grupo (solo un canal de versión de POS, sin riesgo). Soporta
+`--dry-run` (previsualizar sin escribir) y `--actualizar` (sobreescribir
+ubicación/grupo de las que ya existen; por defecto se omiten intactas — reentrante,
+se puede correr el mismo CSV varias veces sin duplicar). 5 tests en
+`apps/catalogo/tests.py::ImportarFarmaciasTests` cubren: creación con deducción de
+unidad/grupo, re-corrida idempotente, `--actualizar`, `--dry-run`, y prefijo de
+código sin mapeo conocido (falla explícito, no adivina). Documentado en README.md
+§"Multi-tenancy".
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual

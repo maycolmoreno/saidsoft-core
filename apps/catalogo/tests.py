@@ -1,5 +1,9 @@
+import io
+import tempfile
+
 from cryptography.fernet import Fernet
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from apps.catalogo import crypto
@@ -159,3 +163,81 @@ class MarcarEstacionesOfflineTaskTests(TestCase):
         estacion.refresh_from_db()
         self.assertEqual(estacion.estado_conexion, Estacion.EstadoConexion.OFFLINE)
         self.assertIn('1 estación', resultado.get())
+
+
+class ImportarFarmaciasTests(TestCase):
+    def setUp(self):
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+
+    def _correr(self, contenido_csv, **opciones):
+        salida = io.StringIO()
+        with tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False, newline='') as tmp:
+            tmp.write(contenido_csv)
+            ruta = tmp.name
+        call_command('importar_farmacias', ruta, stdout=salida, **opciones)
+        return salida.getvalue()
+
+    def test_crea_farmacias_deduciendo_unidad_y_grupo_por_prefijo(self):
+        csv_contenido = (
+            'Ciudad,Id de sitio,Tipo de Enlace,Backup,NODO\n'
+            'Ambato,MAM01,PUNTO NET,NO,trx001\n'
+            'Puerto Bolivar,GP005,TELCONET,NO,trx002\n'
+            'Loja,7DM02,TELCONET,NO,hub_111_6\n'
+        )
+        salida = self._correr(csv_contenido)
+
+        # 7DIAS no existe todavía como UnidadNegocio en este test — esa fila queda
+        # afuera, así que solo se crean las 2 que sí tienen unidad de negocio válida.
+        self.assertIn('2 farmacia(s) creada(s)', salida)
+        mam01 = Farmacia.objects.get(codigo='MAM01')
+        self.assertEqual(mam01.unidad_negocio, self.mia)
+        self.assertEqual(mam01.grupo.codigo, 'TRX001')
+        self.assertEqual(mam01.ubicacion, 'Ambato')
+
+        gp005 = Farmacia.objects.get(codigo='GP005')
+        self.assertEqual(gp005.unidad_negocio, self.sg)
+
+        # 7DIAS no existe todavía como UnidadNegocio en este test — esa fila debe
+        # reportarse como error, no crear un tenant nuevo por accidente.
+        self.assertFalse(Farmacia.objects.filter(codigo='7DM02').exists())
+        self.assertIn('7DIAS no existe', salida)
+
+    def test_re_correr_sin_actualizar_omite_las_que_ya_existen(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        Farmacia.objects.create(codigo='MAM01', grupo=grupo, unidad_negocio=self.mia, ubicacion='Vieja')
+        csv_contenido = 'Ciudad,Id de sitio,NODO\nAmbato,MAM01,trx001\n'
+
+        salida = self._correr(csv_contenido)
+
+        self.assertIn('0 farmacia(s) creada(s)', salida)
+        self.assertIn('1 farmacia(s) ya existían, omitida(s): MAM01', salida)
+        self.assertEqual(Farmacia.objects.get(codigo='MAM01').ubicacion, 'Vieja')
+
+    def test_actualizar_sobreescribe_ubicacion_y_grupo(self):
+        grupo_viejo = Grupo.objects.create(codigo='TRX001')
+        Farmacia.objects.create(codigo='MAM01', grupo=grupo_viejo, unidad_negocio=self.mia, ubicacion='Vieja')
+        csv_contenido = 'Ciudad,Id de sitio,NODO\nAmbato Centro,MAM01,trx002\n'
+
+        self._correr(csv_contenido, actualizar=True)
+
+        mam01 = Farmacia.objects.get(codigo='MAM01')
+        self.assertEqual(mam01.ubicacion, 'Ambato Centro')
+        self.assertEqual(mam01.grupo.codigo, 'TRX002')
+
+    def test_dry_run_no_escribe_nada(self):
+        csv_contenido = 'Ciudad,Id de sitio,NODO\nAmbato,MAM01,trx001\n'
+
+        salida = self._correr(csv_contenido, dry_run=True)
+
+        self.assertIn('[DRY RUN] 1 farmacia(s) creada(s)', salida)
+        self.assertFalse(Farmacia.objects.filter(codigo='MAM01').exists())
+        self.assertFalse(Grupo.objects.filter(codigo='TRX001').exists())
+
+    def test_prefijo_desconocido_se_reporta_como_error_sin_adivinar(self):
+        csv_contenido = 'Ciudad,Id de sitio,NODO\nQuito,ZQ001,trx001\n'
+
+        salida = self._correr(csv_contenido)
+
+        self.assertFalse(Farmacia.objects.filter(codigo='ZQ001').exists())
+        self.assertIn('prefijo de código sin mapeo', salida)
