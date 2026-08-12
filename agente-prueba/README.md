@@ -44,13 +44,21 @@ completo de esa decisión.
   descargar primero del caché de farmacia (`cache_url_base` recibido en el
   enrolamiento) antes de caer al central — best effort, sin bloquear si el caché no
   responde.
+- **`consultar_info`**: valida la firma HMAC (mismo esquema que `ejecutar_script`) y
+  reporta hostname/número de serie/SO/procesador/RAM/almacenamiento vía CIM, más
+  BitLocker del volumen `C:` (habilitado, método de protección, y la clave de
+  recuperación + su ID si el protector es de tipo `RecoveryPassword`) — un solo script
+  de PowerShell que arma todo en JSON. Si BitLocker no está disponible (Windows Home,
+  o sin privilegios suficientes), esos campos quedan vacíos sin romper el resto de la
+  consulta. Dispara este comando el botón "Actualizar ahora" en la ficha de la
+  estación del panel.
 
 ## Qué NO cubre (fuera de alcance a propósito)
 
 - Servir de caché de farmacia (`es_cache_farmacia`): este agente puede *usar* un
   caché de farmacia al descargar (ver arriba), pero no expone un servidor HTTP local
   para que otras estaciones descarguen de él — sería un componente aparte.
-- Comandos `reiniciar`/`consultar_info` — se loguean como "no implementado" si llegan.
+- Comando `reiniciar` — se loguea como "no implementado" si llega.
 
 ## Límite real de compatibilidad con Windows 10 viejo — sin verificar
 

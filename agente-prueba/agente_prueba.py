@@ -244,6 +244,8 @@ class AgentePrueba:
         comando = payload.get('comando')
         if comando == 'ejecutar_script':
             self._verificar_y_ejecutar_script(payload)
+        elif comando == 'consultar_info':
+            self._verificar_y_consultar_info(payload)
         else:
             logging.info('Comando "%s" recibido — no implementado en este agente de prueba.', comando)
 
@@ -295,6 +297,76 @@ class AgentePrueba:
             'exit_code': exit_code, 'stdout': stdout, 'stderr': stderr,
         })
         logging.info('Script #%s -> %s', resultado_id, estado)
+
+    # --- consultar_info (hardware/BitLocker bajo demanda) ---
+    def _verificar_y_consultar_info(self, payload):
+        # Mismo esquema de firma que ejecutar_script — aunque este comando solo lee
+        # info (no ejecuta nada), igual conviene no responder a un "consultar_info"
+        # forjado por cualquiera que pueda publicar en el tópico.
+        firma_esperada = firmar(self.args.hmac_secret, comando='consultar_info')
+        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
+            logging.error('Firma HMAC inválida en comando consultar_info — se ignora (posible suplantación).')
+            return
+
+        info = self._consultar_info_equipo()
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/info_equipo/', {
+            'token': self._token(),
+            'hostname': socket.gethostname(),
+            'numero_serie': leer_numero_serie(),
+            'so_nombre': f'Windows {platform.win32_ver()[0]}',
+            'so_build': platform.win32_ver()[1],
+            **info,
+        })
+        logging.info('Info del equipo reportada.')
+
+    def _consultar_info_equipo(self) -> dict:
+        """Procesador/RAM/almacenamiento vía CIM y BitLocker del volumen C: — un solo
+        script de PowerShell que arma todo en JSON, en vez de varias llamadas sueltas
+        parseando texto (más frágil). BitLocker puede no estar disponible (Windows
+        Home, o el cmdlet ausente) — con -ErrorAction Stop + try/catch, esa sección
+        simplemente queda vacía en vez de tirar abajo el resto de la consulta."""
+        script = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$proc = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
+$ramBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+$disco = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+$discoGB = if ($disco) { [math]::Round($disco.Size / 1GB) } else { $null }
+
+$habilitado = $null
+$metodo = ''
+$claveRecuperacion = ''
+$idProtector = ''
+try {
+    $bitlocker = Get-BitLockerVolume -MountPoint C: -ErrorAction Stop
+    $habilitado = ($bitlocker.ProtectionStatus -eq 'On')
+    $protectores = $bitlocker.KeyProtector
+    $noRecovery = $protectores | Where-Object { $_.KeyProtectorType -ne 'RecoveryPassword' } | Select-Object -First 1
+    if ($noRecovery) { $metodo = $noRecovery.KeyProtectorType.ToLower() }
+    $recovery = $protectores | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' } | Select-Object -First 1
+    if ($recovery) {
+        $claveRecuperacion = $recovery.RecoveryPassword
+        $idProtector = $recovery.KeyProtectorId
+    }
+} catch {}
+
+[PSCustomObject]@{
+    procesador = $proc
+    ram_total_mb = if ($ramBytes) { [math]::Round($ramBytes / 1MB) } else { $null }
+    almacenamiento_total_gb = $discoGB
+    bitlocker_habilitado = $habilitado
+    bitlocker_metodo_proteccion = $metodo
+    bitlocker_clave_recuperacion = $claveRecuperacion
+    bitlocker_id_protector = $idProtector
+} | ConvertTo-Json -Compress
+"""
+        try:
+            salida = subprocess.check_output(
+                ['powershell', '-NoProfile', '-Command', script], timeout=20, text=True,
+            )
+            return json.loads(salida)
+        except Exception:
+            logging.exception('No se pudo consultar la info del equipo (CIM/BitLocker)')
+            return {}
 
     # --- software (catálogo) ---
     def _manejar_software(self, payload):
