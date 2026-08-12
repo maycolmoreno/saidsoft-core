@@ -44,7 +44,21 @@ crear_usuario() {
         -d "{\"user_id\":\"$user\",\"password\":\"$pass\"}")
     case "$resp" in
         200|201) ;;
-        409) echo "  (ya existía)" ;;
+        409)
+            # Si ya existe, el POST de creación no actualiza nada — hay que hacer PUT
+            # a /users/{user_id} para rotar la contraseña. Sin esto, correr este script
+            # de nuevo después de cambiar una contraseña en .env deja a EMQX con la
+            # vieja (encontrado rotando MQTT_PASSWORD_AGENTE/COMANDO_HMAC_SECRET tras
+            # una exposición accidental en el repo, 11-ago-2026).
+            resp_put=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+                "$EMQX_API/authentication/password_based:built_in_database/users/$user" \
+                -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+                -d "{\"user_id\":\"$user\",\"password\":\"$pass\"}")
+            case "$resp_put" in
+                200|201|204) echo "  (ya existía, contraseña actualizada)" ;;
+                *) echo "  ERROR (HTTP $resp_put) actualizando contraseña de $user" >&2 ;;
+            esac
+            ;;
         *) echo "  ERROR (HTTP $resp) creando $user" >&2 ;;
     esac
 }
