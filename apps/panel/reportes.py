@@ -17,6 +17,7 @@ from apps.auditoria.models import EventoAuditoria
 from apps.catalogo.models import Estacion
 from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa
 from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
+from apps.facturacion.services import estaciones_facturables
 from apps.monitoreo.models import Alerta
 
 
@@ -179,6 +180,23 @@ def reporte_alertas(salida, unidad_negocio, desde=None, hasta=None):
     _escribir(salida, [
         'regla', 'severidad', 'estacion', 'valor', 'estado', 'abierta_en', 'resuelta_en',
     ], filas)
+
+
+def reporte_facturacion(salida, unidad_negocio, anio: int, mes: int):
+    """Endpoints facturables de una unidad de negocio en un período (año-mes): toda
+    estación que tuvo al menos un heartbeat ese mes calendario. Ver docstring de
+    apps.facturacion.models.ActividadMensualEstacion sobre el criterio y por qué no se
+    puede reconstruir para meses previos a que se activó este registro."""
+    filas = [
+        [
+            e.farmacia.grupo.codigo,
+            e.farmacia.codigo,
+            e.codigo,
+            e.hostname or '',
+        ]
+        for e in estaciones_facturables(unidad_negocio, anio, mes).select_related('farmacia', 'farmacia__grupo')
+    ]
+    _escribir(salida, ['grupo', 'farmacia', 'estacion', 'hostname'], filas)
 
 
 def nombre_archivo(prefijo: str) -> str:

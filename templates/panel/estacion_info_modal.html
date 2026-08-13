@@ -19,6 +19,11 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
         Actualización solicitada — esta ventana se refresca sola cuando el equipo responda (unos segundos si está en línea).
     </div>
     {% endif %}
+    {% if solicitado_wu %}
+    <div class="mb-4 text-xs px-3 py-2 rounded-md alert sev-info">
+        Escaneo de Windows Update solicitado — puede tardar unos minutos en responder.
+    </div>
+    {% endif %}
 
     <div class="field-grid">
         <div class="field">
@@ -70,6 +75,54 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
         </div>
     </div>
     {% endif %}
+
+    <div class="section-divider">
+        <div class="section-head">
+            <span class="label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6"/><path d="M2.5 22v-6h6"/><path d="M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>
+                <h3>Actualizaciones de Windows</h3>
+            </span>
+            {% if estacion.windows_update_ultima_verificacion %}
+                {% if estacion.windows_update_pendientes %}
+                <span class="pill critical">{{ estacion.windows_update_pendientes }} pendiente{{ estacion.windows_update_pendientes|pluralize }}</span>
+                {% else %}
+                <span class="pill good">Al día</span>
+                {% endif %}
+            {% else %}
+            <span class="pill neutral">Nunca escaneada</span>
+            {% endif %}
+        </div>
+
+        {% if estacion.windows_update_ultima_verificacion %}
+        <p class="text-xs text-[var(--text-faint)] mb-2">Último escaneo: {{ estacion.windows_update_ultima_verificacion }}</p>
+        {% if estacion.windows_update_requiere_reinicio %}
+        <p class="mb-2 text-xs px-3 py-2 rounded-md alert sev-warning">El equipo tiene un reinicio pendiente.</p>
+        {% endif %}
+        {% if estacion.windows_update_detalle %}
+        <ul class="text-xs mb-2 space-y-1">
+            {% for u in estacion.windows_update_detalle %}
+            <li>{{ u.titulo }}{% if u.kb %} <span class="text-[var(--text-faint)]">({{ u.kb }})</span>{% endif %}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        {% else %}
+        <p class="text-xs text-[var(--text-dim)] mb-2">
+            Todavía no se escaneó esta estación. Solo detecta actualizaciones pendientes —
+            no instala ni reinicia nada.
+        </p>
+        {% endif %}
+
+        {% if estacion.estado_aprobacion == 'aprobada' and estacion.estado_conexion == 'online' %}
+        <form hx-post="{% url 'panel:estacion_windows_update_solicitar' estacion.pk %}"
+              hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+              hx-target="#modal-info-content" hx-swap="innerHTML">
+            {% csrf_token %}
+            <button type="submit" class="btn secondary">Escanear ahora</button>
+        </form>
+        {% else %}
+        <p class="text-xs text-[var(--text-faint)]">La estación debe estar aprobada y en línea para escanear.</p>
+        {% endif %}
+    </div>
 
     {% if perms.catalogo.acceso_remoto_estacion %}
     <div class="section-divider">

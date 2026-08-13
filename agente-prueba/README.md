@@ -22,7 +22,12 @@ completo de esa decisión.
 - **Enrolamiento**: se presenta con `hardware_id` (MachineGuid real de Windows),
   `numero_serie` (BIOS real, vía PowerShell/CIM), hostname y SO reales. Guarda el
   token recibido (y `cache_url_base`, si el servidor le asigna un caché de farmacia)
-  en `identidad.json` — no vuelve a enrolarse en arranques siguientes.
+  en `identidad.json` — no vuelve a enrolarse en arranques siguientes. Si el servidor
+  tiene `EMQX_ADMIN_CONFIG` configurado (`apps.mqtt_worker.emqx_admin`), la respuesta
+  también trae `mqtt_username`/`mqtt_password` propios de la estación — se guardan en
+  `identidad.json` y el agente reconecta con ellos de inmediato, dejando de usar la
+  credencial MQTT compartida (`--usuario`/`--password`) para siempre (hasta que se
+  borre `identidad.json` y se fuerce un re-enrolamiento).
 - **Heartbeat** periódico.
 - **Scripts (RMM)**: valida la firma HMAC-SHA256 del comando `ejecutar_script`
   (mismo algoritmo que `apps.catalogo.services.firmar_payload` del servidor — ver
@@ -57,6 +62,16 @@ completo de esa decisión.
   inmediato. Es fire-and-forget: el servidor no espera ninguna confirmación de vuelta
   (no hay tópico de "reinicio aplicado"), coherente con que el botón del panel avisa
   "esto interrumpe cualquier venta en curso en esa caja" antes de confirmar.
+- **`escanear_actualizaciones`** (Windows Update nativo, v1): valida la firma HMAC y
+  escanea actualizaciones de Windows pendientes vía la API COM de Windows Update Agent
+  (`Microsoft.Update.Session` → `CreateUpdateSearcher().Search(...)`) — **solo lectura,
+  nunca descarga ni instala nada**. Reporta la cantidad de pendientes, su detalle
+  (título + KB) y si el equipo ya tiene un reinicio pendiente
+  (`Microsoft.Update.SystemInfo().RebootRequired`) al tópico
+  `/saidsof/agente/{codigo}/windows_update/`. Corre en un hilo aparte (puede tardar
+  varios minutos) para no bloquear heartbeat/otros comandos. Dispara este comando el
+  botón "Escanear ahora" de la sección "Actualizaciones de Windows" en la ficha de la
+  estación del panel.
 
 ## Qué NO cubre (fuera de alcance a propósito)
 

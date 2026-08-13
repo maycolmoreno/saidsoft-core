@@ -288,8 +288,10 @@ por el agente desde antes de esta etapa — ver `EjecutorScript.cs` en `saidsoft
   reenviarlo por estación). Solo edita el archivo (con respaldo `.bak-<timestamp>`
   automático); no reinicia el POS — ver `apps/scripts/management/commands/
   cambiar_nodo_pos.py`.
-- **No cubre** parchar el SO (Windows Update nativo) — requiere código nuevo en el
-  agente, ver PLAN_MODERNIZACION.md §9.
+- **Windows Update nativo** (parchar el SO en sí, no apps de terceros): v1 es solo
+  escaneo/reporte — comando `escanear_actualizaciones` (botón "Escanear ahora" en la
+  ficha de la estación), nunca instala ni reinicia solo. Ver
+  `agente-prueba/README.md` y `apps.mqtt_worker.services.manejar_windows_update`.
 
 ## Reportes exportables (CSV) y resumen por cliente
 

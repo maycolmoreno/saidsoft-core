@@ -20,6 +20,10 @@ urlpatterns = [
     path('estaciones/<int:pk>/reiniciar/', views.estacion_reiniciar, name='estacion_reiniciar'),
     path('estaciones/<int:pk>/info/', views.estacion_info_modal, name='estacion_info_modal'),
     path('estaciones/<int:pk>/info/solicitar/', views.estacion_info_solicitar, name='estacion_info_solicitar'),
+    path(
+        'estaciones/<int:pk>/windows-update/solicitar/', views.estacion_windows_update_solicitar,
+        name='estacion_windows_update_solicitar',
+    ),
     path('estaciones/<int:pk>/meshcentral/vincular/', views.estacion_meshcentral_vincular, name='estacion_meshcentral_vincular'),
     path('estaciones/<int:pk>/meshcentral/escritorio/', views.estacion_meshcentral_escritorio, name='estacion_meshcentral_escritorio'),
     path('estaciones/<int:pk>/meshcentral/terminal/', views.estacion_meshcentral_terminal, name='estacion_meshcentral_terminal'),
@@ -55,6 +59,7 @@ urlpatterns = [
     path('reportes/auditoria.csv', views.reporte_auditoria_csv, name='reporte_auditoria_csv'),
     path('reportes/activos.csv', views.reporte_activos_csv, name='reporte_activos_csv'),
     path('reportes/alertas.csv', views.reporte_alertas_csv, name='reporte_alertas_csv'),
+    path('reportes/facturacion.csv', views.reporte_facturacion_csv, name='reporte_facturacion_csv'),
 
     # Módulo de Activos
     path('colaboradores/', views.colaboradores_lista, name='colaboradores_lista'),

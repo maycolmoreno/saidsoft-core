@@ -1,6 +1,7 @@
 import csv
 import io
 from datetime import date
+from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 from django.contrib.auth.models import Permission, User
@@ -219,6 +220,44 @@ class EstacionBitlockerClaveTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertNotContains(resp, '111111-222222-333333')
         self.assertFalse(EventoAuditoria.objects.filter(accion='estacion.bitlocker_clave_ver').exists())
+
+
+class EstacionWindowsUpdateSolicitarTests(TestCase):
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        self.usuario = User.objects.create_user(username='u', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def test_envia_el_comando_y_audita(self):
+        with patch('apps.panel.views.estaciones.enviar_comando', return_value=True) as mock_enviar:
+            resp = self.client.post(reverse('panel:estacion_windows_update_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_called_once_with(self.estacion, 'escanear_actualizaciones')
+        self.assertTrue(EventoAuditoria.objects.filter(accion='estacion.escanear_actualizaciones').exists())
+
+    def test_estacion_no_aprobada_no_envia_ni_audita(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        with patch('apps.panel.views.estaciones.enviar_comando', return_value=True) as mock_enviar:
+            resp = self.client.post(reverse('panel:estacion_windows_update_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_not_called()
+        self.assertFalse(EventoAuditoria.objects.filter(accion='estacion.escanear_actualizaciones').exists())
+
+    def test_fallo_de_publish_no_audita(self):
+        with patch('apps.panel.views.estaciones.enviar_comando', return_value=False):
+            resp = self.client.post(reverse('panel:estacion_windows_update_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(EventoAuditoria.objects.filter(accion='estacion.escanear_actualizaciones').exists())
 
 
 class CumplimientoViewsTests(TestCase):

@@ -14,6 +14,7 @@ from apps.catalogo import crypto
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia
 from apps.despliegues.models import EventoDespliegue, ResultadoDespliegue
 from apps.despliegues.services import evaluar_freno_automatico, verificar_completado
+from apps.mqtt_worker.emqx_admin import aprovisionar_credencial_estacion
 from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,12 @@ def _cache_url_base_para(estacion) -> str | None:
 
 
 def _respuesta_aceptado(estacion) -> dict:
+    # Credencial MQTT propia de la estación (aislamiento a nivel de broker, no solo de
+    # aplicación) — None si EMQX_ADMIN_CONFIG no está configurado o la llamada a EMQX
+    # falla; el agente sigue funcionando con la credencial compartida en ese caso (ver
+    # docstring de apps.mqtt_worker.emqx_admin).
+    credencial_mqtt = aprovisionar_credencial_estacion(estacion)
+    mqtt_username, mqtt_password = credencial_mqtt if credencial_mqtt else (None, None)
     return {
         'aceptado': True,
         'token': estacion.token_enrolamiento,
@@ -75,6 +82,8 @@ def _respuesta_aceptado(estacion) -> dict:
         'monitorear_recursos': estacion.monitorear_recursos,
         'soy_cache': estacion.es_cache_farmacia,
         'cache_url_base': _cache_url_base_para(estacion),
+        'mqtt_username': mqtt_username,
+        'mqtt_password': mqtt_password,
     }
 
 
@@ -156,6 +165,9 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
     estacion.ultimo_heartbeat = timezone.now()
     estacion.save()
 
+    from apps.facturacion.services import registrar_actividad_mensual
+    registrar_actividad_mensual(estacion)
+
 
 def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
     close_old_connections()
@@ -189,6 +201,9 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
             estacion.estado_conexion = Estacion.EstadoConexion.ONLINE
             estacion.ultimo_heartbeat = timezone.now()
             estacion.save(update_fields=['version_pos', 'estado_conexion', 'ultimo_heartbeat'])
+
+            from apps.facturacion.services import registrar_actividad_mensual
+            registrar_actividad_mensual(estacion)
 
     nuevo_estado = _PASO_A_ESTADO.get(paso)
     if nuevo_estado:
@@ -314,6 +329,40 @@ def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:
                 'id_protector': payload.get('bitlocker_id_protector', ''),
             },
         )
+
+
+def manejar_windows_update(codigo_estacion: str, payload: dict) -> None:
+    """Guarda el resultado de un escaneo puntual de Windows Update (comando
+    "escanear_actualizaciones") — v1 es solo escaneo/reporte, no instala nada.
+
+    Si el agente reportó `error` (el escaneo falló de su lado, ej. WUA no disponible),
+    solo se actualiza la fecha de verificación — se deja el último resultado conocido
+    (pendientes/requiere_reinicio/detalle) como estaba, en vez de borrarlo con datos
+    vacíos que se verían como "sin pendientes" sin serlo.
+    """
+    close_old_connections()
+    try:
+        estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
+    except Estacion.DoesNotExist:
+        logger.warning('Reporte de Windows Update con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    estacion.windows_update_ultima_verificacion = timezone.now()
+    if payload.get('error'):
+        logger.warning('Escaneo de Windows Update falló en %s: %s', codigo_estacion, payload['error'])
+        estacion.save(update_fields=['windows_update_ultima_verificacion'])
+        return
+
+    pendientes = payload.get('pendientes') or []
+    estacion.windows_update_pendientes = len(pendientes)
+    estacion.windows_update_requiere_reinicio = bool(payload.get('requiere_reinicio'))
+    estacion.windows_update_detalle = pendientes
+    estacion.save(update_fields=[
+        'windows_update_ultima_verificacion', 'windows_update_pendientes',
+        'windows_update_requiere_reinicio', 'windows_update_detalle',
+    ])
 
 
 def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:

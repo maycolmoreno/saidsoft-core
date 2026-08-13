@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'apps.cumplimiento',
     'apps.software',
     'apps.integraciones',
+    'apps.facturacion',
     'apps.panel',
 ]
 
@@ -119,6 +120,19 @@ MQTT_CONFIG = {
     'CA_CERT': env('MQTT_CA_CERT', default=''),
     'CLIENT_ID_PANEL': env('MQTT_CLIENT_ID_PANEL', default='saidsoft-panel'),
     'CLIENT_ID_WORKER': env('MQTT_CLIENT_ID_WORKER', default='saidsoft-worker'),
+}
+
+# API administrativa de EMQX (API Key, no el login del dashboard) — usada por
+# apps.mqtt_worker.emqx_admin para darle a cada estación su propia credencial MQTT en el
+# enrolamiento, en vez de la única credencial compartida por las ~1.800 estaciones. Vacío
+# a propósito por defecto: mientras no se complete (correr el paso nuevo de
+# deploy/bootstrap-emqx.sh y pegar la API key acá), el aprovisionamiento por estación
+# queda desactivado sin romper el enrolamiento — sigue funcionando con la credencial
+# compartida, igual que antes de que existiera este mecanismo.
+EMQX_ADMIN_CONFIG = {
+    'URL': env('EMQX_API_URL', default=''),
+    'API_KEY': env('EMQX_API_KEY', default=''),
+    'API_SECRET': env('EMQX_API_SECRET', default=''),
 }
 
 # Secreto compartido con el agente para firmar (HMAC-SHA256) el canal de comandos

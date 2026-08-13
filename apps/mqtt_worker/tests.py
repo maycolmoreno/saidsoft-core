@@ -12,16 +12,18 @@ from django.utils import timezone
 
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
+from apps.facturacion.models import ActividadMensualEstacion
 from apps.monitoreo.models import MuestraMetrica
 from apps.mqtt_worker.management.commands.run_mqtt_worker import (
     TOPICO_ESTADO_DESPLIEGUE, TOPICO_ESTADO_INSTALACION, TOPICO_ESTADO_SCRIPT, TOPICO_HEARTBEAT, Command,
     _codigo_desde_topico,
 )
+from apps.mqtt_worker.emqx_admin import aprovisionar_credencial_estacion
 from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
 from apps.mqtt_worker.services import (
     NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_instalacion,
-    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, registrar_latido_worker,
-    registrar_mensaje_fallido,
+    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_windows_update,
+    registrar_latido_worker, registrar_mensaje_fallido,
 )
 from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript, Script, TipoScript
 
@@ -369,6 +371,29 @@ class ManejarEnrolamientoTests(TestCase):
         self.assertTrue(resp['aceptado'])
         self.assertEqual(Estacion.objects.get(codigo='ML001-A').hardware_id, 'HW-NUEVO')
 
+    def test_sin_emqx_admin_configurado_responde_con_campos_mqtt_en_none(self):
+        # EMQX_ADMIN_CONFIG vacío es el default (desarrollo/tests): el enrolamiento debe
+        # seguir aceptando a la estación con la credencial compartida, sin romperse.
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+        self.assertTrue(resp['aceptado'])
+        self.assertIsNone(resp['mqtt_username'])
+        self.assertIsNone(resp['mqtt_password'])
+
+    def test_con_emqx_admin_disponible_responde_con_credencial_propia(self):
+        with patch(
+            'apps.mqtt_worker.services.aprovisionar_credencial_estacion',
+            return_value=('ML001-A', 'password-generado'),
+        ):
+            resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+        self.assertEqual(resp['mqtt_username'], 'ML001-A')
+        self.assertEqual(resp['mqtt_password'], 'password-generado')
+
+    def test_falla_de_emqx_admin_no_bloquea_el_enrolamiento(self):
+        with patch('apps.mqtt_worker.services.aprovisionar_credencial_estacion', return_value=None):
+            resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+        self.assertTrue(resp['aceptado'])
+        self.assertIsNone(resp['mqtt_username'])
+
 
 class ManejarHeartbeatTests(TestCase):
     def setUp(self):
@@ -388,10 +413,28 @@ class ManejarHeartbeatTests(TestCase):
         self.assertEqual(self.estacion.version_pos, '4.2.1')
         self.assertIsNotNone(self.estacion.ultimo_heartbeat)
 
+    def test_heartbeat_valido_registra_actividad_mensual_de_facturacion(self):
+        ahora = timezone.now()
+        manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento})
+        self.assertTrue(
+            ActividadMensualEstacion.objects.filter(
+                estacion=self.estacion, anio=ahora.year, mes=ahora.month,
+            ).exists(),
+        )
+
+    def test_heartbeats_repetidos_en_el_mismo_mes_no_duplican_actividad(self):
+        manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento})
+        manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento})
+        self.assertEqual(ActividadMensualEstacion.objects.filter(estacion=self.estacion).count(), 1)
+
     def test_token_invalido_no_actualiza_nada(self):
         manejar_heartbeat(self.estacion.codigo, {'token': 'malo', 'version_pos': '9.9.9'})
         self.estacion.refresh_from_db()
         self.assertNotEqual(self.estacion.version_pos, '9.9.9')
+
+    def test_token_invalido_no_registra_actividad_de_facturacion(self):
+        manejar_heartbeat(self.estacion.codigo, {'token': 'malo'})
+        self.assertFalse(ActividadMensualEstacion.objects.filter(estacion=self.estacion).exists())
 
     def test_estacion_no_aprobada_no_se_actualiza(self):
         self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
@@ -431,6 +474,15 @@ class ManejarEstadoDespliegueTests(TestCase):
         self.estacion.refresh_from_db()
         self.assertEqual(self.estacion.version_pos, '4.3.0')
         self.assertTrue(EventoDespliegue.objects.filter(resultado=resultado, paso=EventoDespliegue.Paso.OK).exists())
+
+    def test_ok_registra_actividad_mensual_de_facturacion(self):
+        ahora = timezone.now()
+        self._reportar(EventoDespliegue.Paso.OK, version_nueva='4.3.0')
+        self.assertTrue(
+            ActividadMensualEstacion.objects.filter(
+                estacion=self.estacion, anio=ahora.year, mes=ahora.month,
+            ).exists(),
+        )
 
     def test_ok_de_la_unica_estacion_completa_el_despliegue(self):
         self._reportar(EventoDespliegue.Paso.OK, version_nueva='4.3.0')
@@ -474,6 +526,63 @@ class ManejarInfoEquipoHardwareTests(TestCase):
         self.assertEqual(self.estacion.procesador, 'Intel i5')
         self.assertEqual(self.estacion.ram_total_mb, 16384)
         self.assertIsNotNone(self.estacion.info_equipo_fecha)
+
+
+class ManejarWindowsUpdateTests(TestCase):
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def test_guarda_pendientes_y_requiere_reinicio(self):
+        manejar_windows_update(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'pendientes': [{'titulo': 'Actualización de seguridad', 'kb': 'KB123456'}],
+            'requiere_reinicio': True,
+        })
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.windows_update_pendientes, 1)
+        self.assertTrue(self.estacion.windows_update_requiere_reinicio)
+        self.assertEqual(self.estacion.windows_update_detalle, [{'titulo': 'Actualización de seguridad', 'kb': 'KB123456'}])
+        self.assertIsNotNone(self.estacion.windows_update_ultima_verificacion)
+
+    def test_sin_pendientes_guarda_cero(self):
+        manejar_windows_update(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'pendientes': [], 'requiere_reinicio': False,
+        })
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.windows_update_pendientes, 0)
+        self.assertFalse(self.estacion.windows_update_requiere_reinicio)
+
+    def test_error_del_agente_solo_actualiza_la_fecha(self):
+        manejar_windows_update(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'pendientes': [{'titulo': 'x', 'kb': ''}], 'requiere_reinicio': True,
+        })
+        manejar_windows_update(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'error': 'WUA no disponible',
+        })
+        self.estacion.refresh_from_db()
+        # El resultado del escaneo anterior se conserva — un error no lo borra.
+        self.assertEqual(self.estacion.windows_update_pendientes, 1)
+        self.assertTrue(self.estacion.windows_update_requiere_reinicio)
+
+    def test_token_invalido_no_actualiza_nada(self):
+        manejar_windows_update(self.estacion.codigo, {'token': 'malo', 'pendientes': [], 'requiere_reinicio': False})
+        self.estacion.refresh_from_db()
+        self.assertIsNone(self.estacion.windows_update_ultima_verificacion)
+
+    def test_estacion_no_aprobada_se_ignora(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        manejar_windows_update(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'pendientes': [], 'requiere_reinicio': False,
+        })
+        self.estacion.refresh_from_db()
+        self.assertIsNone(self.estacion.windows_update_ultima_verificacion)
 
 
 class ManejarEstadoScriptTests(TestCase):
@@ -580,3 +689,46 @@ class OnMessageDispatchTests(TestCase):
         client.publish.assert_called_once()
         topico_publicado = client.publish.call_args[0][0]
         self.assertEqual(topico_publicado, '/saidsof/enrolamiento/respuesta/ML001-B/')
+
+
+class AprovisionarCredencialEstacionTests(TestCase):
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+
+    def test_sin_config_devuelve_none_sin_llamar_a_emqx(self):
+        with patch('apps.mqtt_worker.emqx_admin.urllib.request.urlopen') as mock_urlopen:
+            resultado = aprovisionar_credencial_estacion(self.estacion)
+        self.assertIsNone(resultado)
+        mock_urlopen.assert_not_called()
+
+    @override_settings(EMQX_ADMIN_CONFIG={'URL': 'http://emqx:18083/api/v5', 'API_KEY': 'k', 'API_SECRET': 's'})
+    def test_exito_crea_usuario_y_acl_y_devuelve_credenciales(self):
+        respuestas = iter([201, 204])  # crear usuario (POST), definir ACL (PUT)
+        with patch('apps.mqtt_worker.emqx_admin._peticion', side_effect=lambda *a, **k: next(respuestas)):
+            resultado = aprovisionar_credencial_estacion(self.estacion)
+        self.assertIsNotNone(resultado)
+        username, password = resultado
+        self.assertEqual(username, 'ML001-A')
+        self.assertTrue(password)
+
+    @override_settings(EMQX_ADMIN_CONFIG={'URL': 'http://emqx:18083/api/v5', 'API_KEY': 'k', 'API_SECRET': 's'})
+    def test_usuario_ya_existente_rota_password_con_put(self):
+        respuestas = iter([409, 200, 204])  # POST->409, PUT rotar password, PUT ACL
+        with patch('apps.mqtt_worker.emqx_admin._peticion', side_effect=lambda *a, **k: next(respuestas)):
+            resultado = aprovisionar_credencial_estacion(self.estacion)
+        self.assertIsNotNone(resultado)
+
+    @override_settings(EMQX_ADMIN_CONFIG={'URL': 'http://emqx:18083/api/v5', 'API_KEY': 'k', 'API_SECRET': 's'})
+    def test_falla_http_de_emqx_devuelve_none_sin_lanzar(self):
+        with patch('apps.mqtt_worker.emqx_admin._peticion', return_value=500):
+            resultado = aprovisionar_credencial_estacion(self.estacion)
+        self.assertIsNone(resultado)
+
+    @override_settings(EMQX_ADMIN_CONFIG={'URL': 'http://emqx:18083/api/v5', 'API_KEY': 'k', 'API_SECRET': 's'})
+    def test_excepcion_de_red_devuelve_none_sin_lanzar(self):
+        with patch('apps.mqtt_worker.emqx_admin._peticion', side_effect=OSError('boom')):
+            resultado = aprovisionar_credencial_estacion(self.estacion)
+        self.assertIsNone(resultado)

@@ -14,6 +14,7 @@ from apps.cuentas.services import (
     usuario_tiene_acceso_total, verificar_acceso,
 )
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
+from apps.facturacion.services import resumen_facturacion
 from apps.monitoreo.models import Alerta, ReglaAlerta
 
 
@@ -148,6 +149,31 @@ def reporte_alertas_csv(request):
     return resp
 
 
+def _resolver_periodo(request):
+    """(anio, mes) pedido por querystring (?periodo=YYYY-MM), por defecto el mes en curso."""
+    valor = request.GET.get('periodo')
+    if valor:
+        try:
+            anio_str, mes_str = valor.split('-')
+            return int(anio_str), int(mes_str)
+        except ValueError:
+            pass
+    ahora = timezone.now()
+    return ahora.year, ahora.month
+
+
+@login_required
+def reporte_facturacion_csv(request):
+    from apps.panel import reportes
+    unidad = _resolver_unidad_negocio(request)
+    if unidad is None:
+        return redirect('panel:reportes_index')
+    anio, mes = _resolver_periodo(request)
+    resp = _csv_response(reportes.nombre_archivo(f'facturacion_{unidad.codigo}_{anio}-{mes:02d}'))
+    reportes.reporte_facturacion(resp, unidad, anio, mes)
+    return resp
+
+
 @login_required
 def reporte_cliente_resumen(request):
     unidades_negocio = unidades_negocio_visibles(request.user)
@@ -184,6 +210,10 @@ def reporte_cliente_resumen(request):
         {'label': label, 'total': conteo_estado_activo.get(valor, 0)} for valor, label in Activo.Estado.choices
     ]
 
+    # La facturación es por mes calendario; se usa el mes de `desde` (por defecto, el
+    # mes en curso) aunque el usuario haya pedido un rango de fechas más amplio.
+    endpoints_facturables = resumen_facturacion(unidad, desde.year, desde.month)
+
     return render(request, 'panel/reporte_cliente.html', {
         'unidad': unidad,
         'unidades_negocio': unidades_negocio,
@@ -204,4 +234,6 @@ def reporte_cliente_resumen(request):
         'alertas_por_severidad': alertas_por_severidad,
         'activos_por_estado': activos_por_estado,
         'total_activos': sum(item['total'] for item in activos_por_estado),
+        'endpoints_facturables': endpoints_facturables,
+        'periodo_facturacion': desde,
     })

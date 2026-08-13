@@ -112,8 +112,14 @@ class AgentePrueba:
         self.args = args
         self.identidad = self._cargar_identidad()
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f'agente-prueba-{args.codigo}')
-        if args.usuario:
-            self.client.username_pw_set(args.usuario, args.password or '')
+        # Si esta estación ya tiene una credencial MQTT propia guardada de un
+        # enrolamiento anterior (ver _manejar_respuesta_enrolamiento), se usa esa en vez
+        # de la compartida de args/config.json — nunca vuelve a tocar la compartida una
+        # vez migrada.
+        usuario = self.identidad.get('mqtt_username') or args.usuario
+        password = self.identidad.get('mqtt_password') if self.identidad.get('mqtt_username') else args.password
+        if usuario:
+            self.client.username_pw_set(usuario, password or '')
         if args.tls:
             self.client.tls_set(ca_certs=args.ca_cert or None)
         self.client.on_connect = self._on_connect
@@ -206,6 +212,18 @@ class AgentePrueba:
         self.identidad['farmacia'] = payload.get('farmacia')
         self.identidad['grupo'] = payload.get('grupo')
         self.identidad['cache_url_base'] = payload.get('cache_url_base')
+
+        # Credencial MQTT propia de la estación (aislamiento a nivel de broker — ver
+        # apps.mqtt_worker.emqx_admin del lado servidor). None si el servidor no tiene
+        # EMQX_ADMIN_CONFIG configurado o falló: en ese caso se sigue usando la
+        # compartida, igual que antes de que existiera este mecanismo.
+        mqtt_username = payload.get('mqtt_username')
+        mqtt_password = payload.get('mqtt_password')
+        credencial_nueva = bool(mqtt_username) and mqtt_username != self.identidad.get('mqtt_username')
+        if mqtt_username:
+            self.identidad['mqtt_username'] = mqtt_username
+            self.identidad['mqtt_password'] = mqtt_password
+
         self._guardar_identidad()
         logging.info(
             'Enrolado. estado_aprobacion=%s farmacia=%s grupo=%s '
@@ -218,6 +236,15 @@ class AgentePrueba:
         if payload.get('grupo'):
             self.client.subscribe(f"/saidsof/software/grupo/{payload['grupo']}/")
             self.client.subscribe(f"/saidsof/despliegue/grupo/{payload['grupo']}/")
+
+        if credencial_nueva:
+            logging.info('Credencial MQTT propia recibida, reconectando con ella...')
+            self.client.username_pw_set(mqtt_username, mqtt_password or '')
+            # reconnect() en un hilo aparte: llamarlo directo desde este callback (que
+            # corre en el hilo del loop de red de paho) puede pisarse con la propia
+            # conexión que se está cerrando/reabriendo — mismo motivo por el que
+            # _manejar_despliegue despacha a un hilo en vez de bloquear el loop de MQTT.
+            threading.Thread(target=self.client.reconnect, daemon=True).start()
 
     def _publicar(self, topico, payload):
         self.client.publish(topico, json.dumps(payload))
@@ -248,6 +275,8 @@ class AgentePrueba:
             self._verificar_y_consultar_info(payload)
         elif comando == 'reiniciar':
             self._verificar_y_reiniciar(payload)
+        elif comando == 'escanear_actualizaciones':
+            self._verificar_y_escanear_actualizaciones(payload)
         else:
             logging.info('Comando "%s" recibido — no implementado en este agente de prueba.', comando)
 
@@ -386,6 +415,69 @@ try {
             ['shutdown', '/r', '/t', '10', '/c', 'Reinicio solicitado desde el panel SAIDSOFT'],
             capture_output=True,
         )
+
+    # --- Windows Update nativo (v1: solo escaneo/reporte, nunca instala ni reinicia) ---
+    def _verificar_y_escanear_actualizaciones(self, payload):
+        # Mismo esquema de firma que consultar_info/reiniciar: solo el nombre del
+        # comando, sin campos extra.
+        firma_esperada = firmar(self.args.hmac_secret, comando='escanear_actualizaciones')
+        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
+            logging.error('Firma HMAC inválida en comando escanear_actualizaciones — se ignora (posible suplantación).')
+            return
+        # En un hilo aparte: Windows Update puede tardar varios minutos en responder, y
+        # eso no debe bloquear el heartbeat ni la recepción de otros mensajes MQTT —
+        # mismo motivo que _manejar_despliegue.
+        threading.Thread(target=self._escanear_y_reportar_actualizaciones, daemon=True).start()
+
+    def _escanear_y_reportar_actualizaciones(self):
+        try:
+            resultado = self._escanear_actualizaciones_windows()
+        except Exception as exc:
+            logging.exception('Falló el escaneo de Windows Update')
+            self._reportar_windows_update(error=str(exc))
+            return
+        self._reportar_windows_update(
+            pendientes=resultado['pendientes'], requiere_reinicio=resultado['requiere_reinicio'],
+        )
+        logging.info(
+            'Escaneo de Windows Update: %d pendiente(s), requiere_reinicio=%s',
+            len(resultado['pendientes']), resultado['requiere_reinicio'],
+        )
+
+    def _escanear_actualizaciones_windows(self) -> dict:
+        """Escanea actualizaciones de Windows pendientes vía la API COM de Windows
+        Update Agent. SOLO `Search` — nunca `Download`/`Install`: v1 es puramente
+        informativo, ver docstring del módulo y PLAN_MODERNIZACION.md."""
+        import win32com.client
+
+        sesion = win32com.client.Dispatch('Microsoft.Update.Session')
+        buscador = sesion.CreateUpdateSearcher()
+        resultado = buscador.Search('IsInstalled=0 and IsHidden=0')
+
+        pendientes = []
+        for i in range(resultado.Updates.Count):
+            actualizacion = resultado.Updates.Item(i)
+            kb = ''
+            if actualizacion.KBArticleIDs.Count > 0:
+                kb = f'KB{actualizacion.KBArticleIDs.Item(0)}'
+            pendientes.append({'titulo': actualizacion.Title, 'kb': kb})
+
+        # Reinicio pendiente AHORA (de una instalación previa) — señal más útil para
+        # visibilidad de cumplimiento que solo "esta actualización lo pediría al
+        # instalarse", que es lo único que expondría iterar RebootRequired por update.
+        info_sistema = win32com.client.Dispatch('Microsoft.Update.SystemInfo')
+        requiere_reinicio = bool(info_sistema.RebootRequired)
+
+        return {'pendientes': pendientes, 'requiere_reinicio': requiere_reinicio}
+
+    def _reportar_windows_update(self, pendientes=None, requiere_reinicio=False, error=''):
+        cuerpo = {'token': self._token()}
+        if error:
+            cuerpo['error'] = error
+        else:
+            cuerpo['pendientes'] = pendientes or []
+            cuerpo['requiere_reinicio'] = requiere_reinicio
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/windows_update/', cuerpo)
 
     # --- software (catálogo) ---
     def _manejar_software(self, payload):

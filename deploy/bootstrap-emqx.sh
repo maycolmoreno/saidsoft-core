@@ -9,13 +9,18 @@
 # cualquier cliente autenticado, así que las 3 credenciales podían leer/escribir
 # cualquier tópico, no solo los suyos).
 #
-# Nota: el usuario "agente" es una sola credencial compartida por las ~1.800
-# estaciones (el agente deriva su código de tópico del hostname, no de una identidad
-# MQTT propia) — su regla es amplia (todo bajo /saidsof/) porque EMQX no tiene forma
-# de restringirlo a "solo su propia estación" sin credenciales por agente o un
-# prefijo de tópico por unidad de negocio. Ver PLAN_MODERNIZACION.md §9 ("ACLs MQTT/
-# EMQX por tenant") — este script no resuelve ese gap, solo cierra el más grave
-# (cualquiera podía tocar cualquier tópico, no solo los de agentes).
+# Nota: el usuario "agente" sigue siendo una credencial compartida, usada como
+# "bootstrap" por cualquier estación que todavía no tenga su propia credencial MQTT.
+# Desde apps.mqtt_worker.emqx_admin, Django aprovisiona una credencial propia por
+# estación (username = codigo_estacion) en cada enrolamiento, vía la API Key que este
+# script crea más abajo — pero eso requiere que el agente instalado en cada estación
+# sepa usarla (el agente hoy es agente-prueba/agente_prueba.py, Python — ver
+# PLAN_MODERNIZACION.md §10-K sobre por qué reemplazó al agente C# original), y ese
+# rollout es gradual (no hay autoactualización del agente, ver
+# apps/scripts/management/commands/seed_scripts_migracion_mqtt.py). Hasta que la flota
+# completa haya migrado, esta credencial compartida debe seguir funcionando para TODO
+# el tráfico, así que su regla se mantiene amplia (todo bajo /saidsof/). Angostarla es
+# un paso manual aparte, ver deploy/emqx-narrow-acl-agente.sh — no lo hace este script.
 set -e
 
 . "$(dirname "$0")/.env"
@@ -110,6 +115,7 @@ definir_acl "$MQTT_USERNAME_WORKER" '[
     {"topic": "/saidsof/agente/+/metricas/", "permission": "allow", "action": "subscribe"},
     {"topic": "/saidsof/agente/+/info_equipo/", "permission": "allow", "action": "subscribe"},
     {"topic": "/saidsof/agente/+/script_estado/", "permission": "allow", "action": "subscribe"},
+    {"topic": "/saidsof/agente/+/windows_update/", "permission": "allow", "action": "subscribe"},
     {"topic": "/saidsof/enrolamiento/respuesta/+/", "permission": "allow", "action": "publish"}
 ]'
 
@@ -126,8 +132,46 @@ definir_acl "$MQTT_USERNAME_PANEL" '[
 ]'
 
 echo
-echo "IMPORTANTE: en el agente .NET, MqttUsuario/MqttPassword deben ser las del agente,"
-echo "y MqttUsarTls=true apuntando al puerto 8883 con el CA que firma deploy/certs/cert.pem."
+echo "Verificando API Key administrativa para apps.mqtt_worker.emqx_admin..."
+
+API_KEY_NAME="saidsof_django_admin"
+
+ya_existe=$(curl -s -X GET "$EMQX_API/api_key" -H "Authorization: Bearer $TOKEN" \
+    | grep -c "\"name\":\"$API_KEY_NAME\"" || true)
+if [ "$ya_existe" -gt 0 ]; then
+    echo "  Ya existe una API Key \"$API_KEY_NAME\". EMQX no vuelve a mostrar el secret:"
+    echo "  si se perdió (EMQX_API_KEY/EMQX_API_SECRET no están en deploy/.env), bórrala"
+    echo "  primero (DELETE $EMQX_API/api_key/$API_KEY_NAME) y corre este script de nuevo."
+else
+    resp_body=$(mktemp)
+    resp=$(curl -s -o "$resp_body" -w "%{http_code}" -X POST "$EMQX_API/api_key" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -d "{\"name\":\"$API_KEY_NAME\",\"enable\":true,\"expired_at\":\"infinity\",\"desc\":\"Aprovisionamiento de credenciales MQTT por estacion (apps.mqtt_worker.emqx_admin)\"}")
+    case "$resp" in
+        200|201)
+            api_key=$(sed -n 's/.*"api_key":"\([^"]*\)".*/\1/p' "$resp_body")
+            api_secret=$(sed -n 's/.*"api_secret":"\([^"]*\)".*/\1/p' "$resp_body")
+            echo "  API Key creada. EMQX NO vuelve a mostrar el secret — pégalos AHORA en deploy/.env:"
+            echo "    EMQX_API_URL=$EMQX_API"
+            echo "    EMQX_API_KEY=$api_key"
+            echo "    EMQX_API_SECRET=$api_secret"
+            echo "  Mientras deploy/.env no tenga estas 3 variables, el aprovisionamiento por"
+            echo "  estación queda desactivado sin romper nada (el enrolamiento sigue usando"
+            echo "  solo la credencial compartida, como hasta ahora)."
+            ;;
+        *)
+            echo "  ERROR (HTTP $resp) creando la API Key:" >&2
+            cat "$resp_body" >&2
+            ;;
+    esac
+    rm -f "$resp_body"
+fi
+
+echo
+echo "IMPORTANTE: en config.json del agente (agente-prueba/servicio_windows.py), usuario/"
+echo "password deben ser las del agente, y tls=true apuntando al puerto 8883 con el CA que"
+echo "firma deploy/certs/cert.pem. (Corregido 13-ago-2026: esto decía \"agente .NET\" desde"
+echo "antes de que ese agente se reemplazara por el de Python, ver PLAN_MODERNIZACION.md §10-K.)"
 echo
 echo "Verificado contra una instancia EMQX real (31-jul-2026): las 3 reglas quedan"
 echo "confirmadas vía la API (GET .../authorization/sources/built_in_database/rules/users)"

@@ -32,6 +32,22 @@
         </form>
     </div>
 
+    {# --- Facturación --- #}
+    <div class="card p-5">
+        <h2 class="font-medium mb-1">Facturación por endpoint</h2>
+        <p class="text-sm text-[var(--text-faint)] mb-4">Estaciones con al menos un heartbeat en el mes, por cliente.</p>
+        <form method="get" action="{% url 'panel:reporte_facturacion_csv' %}" class="space-y-3">
+            {% if unidades_negocio|length > 1 %}
+            <select name="unidad_negocio" required class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+                <option value="">Elegir cliente…</option>
+                {% for u in unidades_negocio %}<option value="{{ u.pk }}">{{ u.codigo }}</option>{% endfor %}
+            </select>
+            {% endif %}
+            <input type="month" name="periodo" class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+            <button type="submit" class="btn primary w-full justify-center">Descargar CSV</button>
+        </form>
+    </div>
+
     {# --- Auditoría --- #}
     <div class="card p-5">
         <h2 class="font-medium mb-1">Bitácora de auditoría</h2>

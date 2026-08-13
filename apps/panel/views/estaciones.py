@@ -115,6 +115,24 @@ def estacion_info_solicitar(request, pk):
 
 
 @login_required
+@require_POST
+def estacion_windows_update_solicitar(request, pk):
+    """Dispara un escaneo puntual de actualizaciones de Windows pendientes — v1 es solo
+    escaneo/reporte, el agente nunca instala ni reinicia solo (ver
+    apps.mqtt_worker.services.manejar_windows_update)."""
+    estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
+    solicitado_wu = False
+    if (
+        estacion.estado_aprobacion == Estacion.EstadoAprobacion.APROBADA
+        and enviar_comando(estacion, 'escanear_actualizaciones')
+    ):
+        registrar_evento(usuario=request.user, accion='estacion.escanear_actualizaciones', objeto=estacion, request=request)
+        solicitado_wu = True
+    return render(request, 'panel/estacion_info_modal.html', {'estacion': estacion, 'solicitado_wu': solicitado_wu})
+
+
+@login_required
 @permission_required('catalogo.acceso_remoto_estacion', raise_exception=True)
 @require_POST
 def estacion_meshcentral_vincular(request, pk):

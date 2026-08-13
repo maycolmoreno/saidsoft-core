@@ -29,8 +29,8 @@ from .despliegues import (
 from .estaciones import (
     estacion_aprobar, estacion_bitlocker_ver_clave, estacion_info_modal, estacion_info_solicitar,
     estacion_meshcentral_escritorio, estacion_meshcentral_terminal, estacion_meshcentral_vincular,
-    estacion_rechazar, estacion_reiniciar, estacion_supervision_grabaciones, estaciones_aprobar_lote,
-    estaciones_lista, estaciones_pendientes_partial,
+    estacion_rechazar, estacion_reiniciar, estacion_supervision_grabaciones, estacion_windows_update_solicitar,
+    estaciones_aprobar_lote, estaciones_lista, estaciones_pendientes_partial,
 )
 from .mantenimiento import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,
@@ -43,7 +43,7 @@ from .mantenimiento import (
 from .monitoreo import monitoreo_detalle, monitoreo_detalle_partial, monitoreo_lista
 from .reportes import (
     reporte_activos_csv, reporte_alertas_csv, reporte_auditoria_csv, reporte_cliente_resumen,
-    reporte_cumplimiento_csv, reporte_despliegue_csv, reportes_index,
+    reporte_cumplimiento_csv, reporte_despliegue_csv, reporte_facturacion_csv, reportes_index,
 )
 from .scripts import (
     ejecucion_detalle, ejecucion_progreso_partial, ejecuciones_lista, script_crear, script_detalle,
@@ -72,7 +72,8 @@ __all__ = [
     'estacion_bitlocker_ver_clave',
     'estacion_meshcentral_escritorio', 'estacion_meshcentral_terminal', 'estacion_meshcentral_vincular',
     'estacion_rechazar', 'estacion_supervision_grabaciones',
-    'estacion_reiniciar', 'estaciones_aprobar_lote', 'estaciones_lista', 'estaciones_pendientes_partial',
+    'estacion_reiniciar', 'estacion_windows_update_solicitar',
+    'estaciones_aprobar_lote', 'estaciones_lista', 'estaciones_pendientes_partial',
     'actividad_planificada_completar', 'actividad_planificada_crear', 'actividades_planificadas_lista',
     'mantenimiento_cancelar', 'mantenimiento_cerrar', 'mantenimiento_checklist_actualizar',
     'mantenimiento_crear', 'mantenimiento_detalle', 'mantenimiento_firmar', 'mantenimiento_generar_informe_pdf',
@@ -84,7 +85,7 @@ __all__ = [
     'orden_compra_crear', 'orden_compra_detalle', 'orden_compra_linea_crear',
     'orden_compra_linea_recibir', 'orden_compra_recibir', 'ordenes_compra_lista',
     'reporte_activos_csv', 'reporte_alertas_csv', 'reporte_auditoria_csv', 'reporte_cliente_resumen',
-    'reporte_cumplimiento_csv', 'reporte_despliegue_csv', 'reportes_index',
+    'reporte_cumplimiento_csv', 'reporte_despliegue_csv', 'reporte_facturacion_csv', 'reportes_index',
     'ejecucion_detalle', 'ejecucion_progreso_partial', 'ejecuciones_lista', 'script_crear',
     'script_detalle', 'script_ejecutar', 'script_ejecutar_adhoc', 'script_programado_crear',
     'scripts_lista', 'scripts_programados_lista',

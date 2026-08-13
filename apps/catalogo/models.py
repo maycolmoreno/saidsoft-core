@@ -155,6 +155,20 @@ class Estacion(models.Model):
                   'Texto libre, no choices: los protectores de BitLocker no son un set fijo pequeño.',
     )
 
+    # Windows Update nativo (v1: solo escaneo/reporte, el agente nunca instala ni
+    # reinicia solo) — comando "escanear_actualizaciones", bajo demanda desde el panel,
+    # mismo patrón "info bajo demanda" que BitLocker arriba. null en
+    # windows_update_pendientes = nunca se escaneó (distinto de 0 = escaneado, sin
+    # pendientes).
+    windows_update_ultima_verificacion = models.DateTimeField(null=True, blank=True)
+    windows_update_pendientes = models.PositiveIntegerField(null=True, blank=True)
+    windows_update_requiere_reinicio = models.BooleanField(null=True, blank=True)
+    windows_update_detalle = models.JSONField(
+        blank=True, default=list,
+        help_text='Actualizaciones pendientes detectadas en el último escaneo: '
+                  '[{"titulo": ..., "kb": ...}, ...].',
+    )
+
     estado_conexion = models.CharField(
         max_length=20, choices=EstadoConexion.choices, default=EstadoConexion.NUNCA_CONECTADA,
     )
