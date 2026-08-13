@@ -168,6 +168,13 @@ class Estacion(models.Model):
         help_text='Actualizaciones pendientes detectadas en el último escaneo: '
                   '[{"titulo": ..., "kb": ...}, ...].',
     )
+    windows_update_ultimo_error = models.CharField(
+        max_length=255, blank=True,
+        help_text='Motivo del último escaneo fallido (ej. sin salida a internet). Vacío = el '
+                  'último escaneo salió bien o todavía no se escaneó. Muchas estaciones no '
+                  'tienen salida a internet por defecto — este campo es lo que le avisa al '
+                  'operador que hay que habilitársela para poder escanear esa estación puntual.',
+    )
 
     estado_conexion = models.CharField(
         max_length=20, choices=EstadoConexion.choices, default=EstadoConexion.NUNCA_CONECTADA,

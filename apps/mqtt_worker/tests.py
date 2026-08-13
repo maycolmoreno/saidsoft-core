@@ -557,18 +557,33 @@ class ManejarWindowsUpdateTests(TestCase):
         self.assertEqual(self.estacion.windows_update_pendientes, 0)
         self.assertFalse(self.estacion.windows_update_requiere_reinicio)
 
-    def test_error_del_agente_solo_actualiza_la_fecha(self):
+    def test_error_del_agente_conserva_el_resultado_anterior_y_guarda_el_motivo(self):
         manejar_windows_update(self.estacion.codigo, {
             'token': self.estacion.token_enrolamiento,
             'pendientes': [{'titulo': 'x', 'kb': ''}], 'requiere_reinicio': True,
         })
         manejar_windows_update(self.estacion.codigo, {
-            'token': self.estacion.token_enrolamiento, 'error': 'WUA no disponible',
+            'token': self.estacion.token_enrolamiento,
+            'error': 'Sin acceso a internet — habilita la salida a internet en esta estación.',
         })
         self.estacion.refresh_from_db()
         # El resultado del escaneo anterior se conserva — un error no lo borra.
         self.assertEqual(self.estacion.windows_update_pendientes, 1)
         self.assertTrue(self.estacion.windows_update_requiere_reinicio)
+        self.assertEqual(
+            self.estacion.windows_update_ultimo_error,
+            'Sin acceso a internet — habilita la salida a internet en esta estación.',
+        )
+
+    def test_escaneo_exitoso_limpia_un_error_previo(self):
+        manejar_windows_update(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'error': 'Sin acceso a internet.',
+        })
+        manejar_windows_update(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'pendientes': [], 'requiere_reinicio': False,
+        })
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.windows_update_ultimo_error, '')
 
     def test_token_invalido_no_actualiza_nada(self):
         manejar_windows_update(self.estacion.codigo, {'token': 'malo', 'pendientes': [], 'requiere_reinicio': False})

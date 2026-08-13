@@ -335,10 +335,12 @@ def manejar_windows_update(codigo_estacion: str, payload: dict) -> None:
     """Guarda el resultado de un escaneo puntual de Windows Update (comando
     "escanear_actualizaciones") — v1 es solo escaneo/reporte, no instala nada.
 
-    Si el agente reportó `error` (el escaneo falló de su lado, ej. WUA no disponible),
-    solo se actualiza la fecha de verificación — se deja el último resultado conocido
-    (pendientes/requiere_reinicio/detalle) como estaba, en vez de borrarlo con datos
-    vacíos que se verían como "sin pendientes" sin serlo.
+    Si el agente reportó `error` (el escaneo falló de su lado — el caso más común es que
+    la estación no tiene salida a internet habilitada, ver
+    `agente_prueba._hay_conexion_a_internet`), se guarda el motivo en
+    `windows_update_ultimo_error` para que el panel le avise al operador qué hacer, pero
+    se deja el último resultado conocido (pendientes/requiere_reinicio/detalle) como
+    estaba, en vez de borrarlo con datos vacíos que se verían como "sin pendientes" sin serlo.
     """
     close_old_connections()
     try:
@@ -350,18 +352,21 @@ def manejar_windows_update(codigo_estacion: str, payload: dict) -> None:
         return
 
     estacion.windows_update_ultima_verificacion = timezone.now()
-    if payload.get('error'):
-        logger.warning('Escaneo de Windows Update falló en %s: %s', codigo_estacion, payload['error'])
-        estacion.save(update_fields=['windows_update_ultima_verificacion'])
+    error = payload.get('error')
+    if error:
+        logger.warning('Escaneo de Windows Update falló en %s: %s', codigo_estacion, error)
+        estacion.windows_update_ultimo_error = error
+        estacion.save(update_fields=['windows_update_ultima_verificacion', 'windows_update_ultimo_error'])
         return
 
     pendientes = payload.get('pendientes') or []
     estacion.windows_update_pendientes = len(pendientes)
     estacion.windows_update_requiere_reinicio = bool(payload.get('requiere_reinicio'))
     estacion.windows_update_detalle = pendientes
+    estacion.windows_update_ultimo_error = ''
     estacion.save(update_fields=[
         'windows_update_ultima_verificacion', 'windows_update_pendientes',
-        'windows_update_requiere_reinicio', 'windows_update_detalle',
+        'windows_update_requiere_reinicio', 'windows_update_detalle', 'windows_update_ultimo_error',
     ])
 
 

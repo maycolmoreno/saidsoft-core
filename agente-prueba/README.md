@@ -72,6 +72,14 @@ completo de esa decisión.
   varios minutos) para no bloquear heartbeat/otros comandos. Dispara este comando el
   botón "Escanear ahora" de la sección "Actualizaciones de Windows" en la ficha de la
   estación del panel.
+  - **Chequeo de conectividad primero**: muchas estaciones de este piloto no tienen
+    salida a internet por defecto, y `Search()` de Windows Update puede colgarse varios
+    minutos intentando conectar sin poder. Antes de escanear, `_hay_conexion_a_internet()`
+    prueba el endpoint NCSI de Microsoft (`http://www.msftconnecttest.com/connecttest.txt`,
+    5s de timeout) — si no hay respuesta, reporta de inmediato un `error` con el mensaje
+    "Sin acceso a internet — habilita la salida a internet en esta estación..." en vez de
+    intentar el escaneo real. El panel muestra ese mensaje tal cual en la ficha de la
+    estación (`Estacion.windows_update_ultimo_error`).
 
 ## Qué NO cubre (fuera de alcance a propósito)
 

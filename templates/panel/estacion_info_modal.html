@@ -82,7 +82,9 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6"/><path d="M2.5 22v-6h6"/><path d="M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>
                 <h3>Actualizaciones de Windows</h3>
             </span>
-            {% if estacion.windows_update_ultima_verificacion %}
+            {% if estacion.windows_update_ultimo_error %}
+            <span class="pill critical">Falló el último escaneo</span>
+            {% elif estacion.windows_update_ultima_verificacion %}
                 {% if estacion.windows_update_pendientes %}
                 <span class="pill critical">{{ estacion.windows_update_pendientes }} pendiente{{ estacion.windows_update_pendientes|pluralize }}</span>
                 {% else %}
@@ -92,6 +94,10 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
             <span class="pill neutral">Nunca escaneada</span>
             {% endif %}
         </div>
+
+        {% if estacion.windows_update_ultimo_error %}
+        <p class="mb-2 text-xs px-3 py-2 rounded-md alert sev-critical">{{ estacion.windows_update_ultimo_error }}</p>
+        {% endif %}
 
         {% if estacion.windows_update_ultima_verificacion %}
         <p class="text-xs text-[var(--text-faint)] mb-2">Último escaneo: {{ estacion.windows_update_ultima_verificacion }}</p>
@@ -105,7 +111,7 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
             {% endfor %}
         </ul>
         {% endif %}
-        {% else %}
+        {% elif not estacion.windows_update_ultimo_error %}
         <p class="text-xs text-[var(--text-dim)] mb-2">
             Todavía no se escaneó esta estación. Solo detecta actualizaciones pendientes —
             no instala ni reinicia nada.

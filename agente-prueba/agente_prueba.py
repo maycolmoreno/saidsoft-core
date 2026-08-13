@@ -429,7 +429,27 @@ try {
         # mismo motivo que _manejar_despliegue.
         threading.Thread(target=self._escanear_y_reportar_actualizaciones, daemon=True).start()
 
+    def _hay_conexion_a_internet(self, timeout: int = 5) -> bool:
+        """Chequeo rápido de conectividad — mismo endpoint (NCSI) que usa el propio
+        Windows para su indicador de estado de red: liviano, sin TLS (evita falsos
+        negativos de portales cautivos). Muchas estaciones de este piloto no tienen
+        salida a internet por defecto — este chequeo es lo que permite fallar en
+        segundos en vez de dejar que `Search()` de Windows Update se cuelgue varios
+        minutos intentando conectar sin poder."""
+        try:
+            with urllib.request.urlopen('http://www.msftconnecttest.com/connecttest.txt', timeout=timeout) as resp:
+                return resp.read() == b'Microsoft Connect Test'
+        except Exception:
+            return False
+
     def _escanear_y_reportar_actualizaciones(self):
+        if not self._hay_conexion_a_internet():
+            logging.warning('Escaneo de Windows Update omitido: sin salida a internet.')
+            self._reportar_windows_update(
+                error='Sin acceso a internet — habilita la salida a internet en esta '
+                      'estación para poder escanear actualizaciones.',
+            )
+            return
         try:
             resultado = self._escanear_actualizaciones_windows()
         except Exception as exc:
