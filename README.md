@@ -279,8 +279,17 @@ detectar señales que ninguna da sola.
   mantiene abierta una conexión WebSocket al canal de control (`control.ashx`) y procesa
   en tiempo real los eventos `nodeconnect` que el propio servidor envía sin que se los
   pidan — no hace polling. Protocolo verificado contra el código fuente del servidor
-  (Ylianst/MeshCentral), **todavía no contra una instancia real** — pendiente de probar
-  contra el servidor de producción, igual que el resto de la integración de MeshCentral.
+  (Ylianst/MeshCentral) **y contra el servidor real de producción** (10.111.6.20:8083,
+  13-ago-2026: login real, `{"action":"nodes"}` trajo la estación piloto `ML016-B`).
+  Dos bugs reales encontrados y corregidos en esa prueba: (1) MeshCentral autogenera su
+  propio certificado autofirmado por instancia — hace falta `MESHCENTRAL_API_CA_CERT`
+  (pinnear el cert real) o `MESHCENTRAL_API_VERIFICAR_TLS=False` (salida rápida, no
+  recomendada para producción), si no la conexión falla siempre con
+  `CERTIFICATE_VERIFY_FAILED`; (2) un `{"action":"nodes"}` mandado justo después del
+  login se pierde — el servidor todavía está armando la sesión — así que
+  `_solicitar_nodes` reintenta una vez. Pendiente: pinnear el cert real (en vez de
+  desactivar la verificación) y confirmar un evento `nodeconnect` espontáneo en vivo
+  (la prueba validó el snapshot inicial, no todavía un evento real de conectividad).
 - **`python manage.py run_meshcentral_worker`**: worker de larga duración (calco de
   `run_mqtt_worker`), servicio propio `meshcentral_worker` en `docker-compose.yml`.
   Opcional: si `MESHCENTRAL_API_WS_URL`/`_USUARIO`/`_PASSWORD` no están configurados

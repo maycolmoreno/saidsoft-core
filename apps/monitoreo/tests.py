@@ -1,5 +1,8 @@
+import json
 from datetime import timedelta
+from unittest.mock import MagicMock
 
+import websocket
 from django.contrib.auth.models import User
 from django.core import mail
 from django.core.management import call_command
@@ -455,3 +458,43 @@ class AdaptadorMeshCentralTests(TestCase):
 
     def test_sincronizar_todo_no_configurado_no_hace_nada(self):
         self.assertEqual(AdaptadorMeshCentral().sincronizar_todo(), 0)
+
+    def test_solicitar_nodes_reintenta_si_no_llega_respuesta_a_tiempo(self):
+        """Regresión: verificado contra el servidor real de producción (13-ago-2026) que
+        un "nodes" mandado inmediatamente después del login se pierde de forma
+        consistente — el servidor todavía está armando la sesión. Sin este reintento,
+        sincronizar_todo() se cuelga siempre en el primer llamado tras loguear."""
+        ws = MagicMock()
+        respuesta_nodes = json.dumps({
+            'action': 'nodes',
+            'nodes': {'mesh/domain0/xyz': [{'_id': 'node/domain0/abc123', 'conn': 1}]},
+        })
+        ws.recv.side_effect = [websocket.WebSocketTimeoutException('timeout'), respuesta_nodes]
+
+        procesados = self.adaptador._solicitar_nodes(ws)
+
+        self.assertEqual(procesados, 1)
+        self.assertEqual(ws.send.call_count, 2)  # el pedido original + el reintento
+
+    def test_solicitar_nodes_agota_reintentos_y_relanza(self):
+        ws = MagicMock()
+        ws.recv.side_effect = websocket.WebSocketTimeoutException('timeout')
+
+        with self.assertRaises(websocket.WebSocketTimeoutException):
+            self.adaptador._solicitar_nodes(ws, reintentos=1)
+
+    def test_solicitar_nodes_procesa_eventos_intermedios_sin_descartarlos(self):
+        ws = MagicMock()
+        evento_intermedio = json.dumps({
+            'action': 'event',
+            'event': {'action': 'nodeconnect', 'nodeid': 'node/domain0/abc123', 'conn': 0},
+        })
+        respuesta_nodes = json.dumps({'action': 'nodes', 'nodes': {}})
+        ws.recv.side_effect = [
+            json.dumps({'action': 'serverinfo', 'serverinfo': {}}), evento_intermedio, respuesta_nodes,
+        ]
+
+        self.adaptador._solicitar_nodes(ws)
+
+        estado = EstadoDispositivo.objects.get(estacion=self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL)
+        self.assertFalse(estado.en_linea)

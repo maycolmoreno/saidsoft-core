@@ -1,9 +1,21 @@
 """Adaptador MeshCentral: cliente del canal de control (`control.ashx`) por WebSocket.
 
 Protocolo verificado contra el código fuente del servidor (Ylianst/MeshCentral —
-webserver.js, meshuser.js, meshcentral.js, ago-2026), NO todavía contra una instancia
-real (ver deploy/README-produccion.md: la integración de MeshCentral en este proyecto
-sigue "NO validada end-to-end"). Puntos clave del protocolo:
+webserver.js, meshuser.js, meshcentral.js) y contra el servidor real de producción
+(10.111.6.20:8083, 13-ago-2026: login real, `{"action":"nodes"}` trajo la estación
+piloto ML016-B, `sincronizar_todo()` escribió el EstadoDispositivo correcto en la BD).
+Dos bugs reales encontrados y corregidos en esa prueba:
+1. **TLS**: MeshCentral autogenera su propio certificado autofirmado por instancia (no
+   hay un CA fijo versionado como `deploy/certs/cert.pem` de EMQX) — sin `CA_CERT` o
+   `VERIFICAR_TLS=False` en `MESHCENTRAL_API_CONFIG`, la conexión falla siempre con
+   `CERTIFICATE_VERIFY_FAILED`, incluso siendo el servidor legítimo.
+2. **Carrera en el login**: un `{"action":"nodes"}` mandado inmediatamente después del
+   `userAuth` se pierde de forma consistente — el servidor todavía está armando la
+   sesión del usuario (manda `serverinfo`/`userinfo`/`traceinfo` primero) y recién ahí
+   queda listo para procesar comandos. `_solicitar_nodes` reintenta una vez si no llega
+   respuesta a tiempo (ver su docstring).
+
+Puntos clave del protocolo:
 
 - **Auth**: conectar a `control.ashx` con el header `x-meshauth: *` (activa el modo de
   "inner auth" para clientes que no son el navegador, en vez de depender de la cookie de
@@ -55,12 +67,32 @@ class AdaptadorMeshCentral(FuenteMonitoreo):
         self._url = cfg.get('WS_URL', '')
         self._usuario = cfg.get('USUARIO', '')
         self._password = cfg.get('PASSWORD', '')
+        self._ca_cert = cfg.get('CA_CERT', '')
+        self._verificar_tls = cfg.get('VERIFICAR_TLS', True)
 
     def configurado(self) -> bool:
         return bool(self._url and self._usuario and self._password)
 
+    def _sslopt(self) -> dict:
+        """MeshCentral autogenera su propio certificado autofirmado por instancia (no
+        hay un CA fijo versionado en el repo, a diferencia de EMQX/deploy/certs/cert.pem)
+        — sin esto, la verificación TLS por defecto de Python rechaza la conexión
+        siempre, incluso contra un servidor legítimo (confirmado: la primera prueba
+        contra el servidor real de producción falló acá con CERTIFICATE_VERIFY_FAILED).
+        Preferí `CA_CERT` (fijar el certificado real, extraído una vez del servidor) por
+        sobre `VERIFICAR_TLS=False` (desactiva la verificación por completo) — ver
+        MESHCENTRAL_API_CONFIG en settings."""
+        if self._ca_cert:
+            return {'ca_certs': self._ca_cert}
+        if not self._verificar_tls:
+            import ssl
+            return {'cert_reqs': ssl.CERT_NONE}
+        return {}
+
     def _autenticar_y_conectar(self):
-        ws = websocket.create_connection(self._url, timeout=15, header=['x-meshauth: *'])
+        ws = websocket.create_connection(
+            self._url, timeout=15, header=['x-meshauth: *'], sslopt=self._sslopt(),
+        )
         ws.send(json.dumps({
             'action': 'userAuth',
             'username': base64.b64encode(self._usuario.encode()).decode(),
@@ -93,12 +125,30 @@ class AdaptadorMeshCentral(FuenteMonitoreo):
             return
         self._registrar_nodo(evento.get('nodeid', ''), evento.get('conn', 0))
 
-    def _solicitar_nodes(self, ws) -> int:
+    def _solicitar_nodes(self, ws, *, reintentos: int = 2, timeout_por_intento: int = 8) -> int:
         """Pide `{"action":"nodes"}` y espera la respuesta, procesando de paso
-        cualquier evento que llegue mientras tanto (no se descarta)."""
+        cualquier evento que llegue mientras tanto (no se descarta).
+
+        Reintenta el pedido si no llega respuesta en `timeout_por_intento` segundos.
+        Verificado contra el servidor real de producción (13-ago-2026): un `nodes`
+        mandado inmediatamente después del `userAuth` se pierde de forma consistente —
+        el servidor todavía está terminando de armar la sesión del usuario (manda tres
+        mensajes propios, `serverinfo`/`userinfo`/`traceinfo`, y recién ahí queda listo
+        para procesar comandos). Sin este reintento, sincronizar_todo() cuelga siempre
+        en el primer llamado tras loguear.
+        """
+        ws.settimeout(timeout_por_intento)
         ws.send(json.dumps({'action': 'nodes'}))
+        intentos_restantes = reintentos
         while True:
-            msg = json.loads(ws.recv())
+            try:
+                msg = json.loads(ws.recv())
+            except websocket.WebSocketTimeoutException:
+                if intentos_restantes <= 0:
+                    raise
+                intentos_restantes -= 1
+                ws.send(json.dumps({'action': 'nodes'}))
+                continue
             if msg.get('action') == 'close':
                 logger.warning('MeshCentral: autenticación rechazada (%s).', msg.get('msg'))
                 return 0

@@ -187,6 +187,14 @@ MESHCENTRAL_API_CONFIG = {
     'WS_URL': env('MESHCENTRAL_API_WS_URL', default=''),  # ej. wss://mesh.example.com/control.ashx
     'USUARIO': env('MESHCENTRAL_API_USUARIO', default=''),
     'PASSWORD': env('MESHCENTRAL_API_PASSWORD', default=''),
+    # MeshCentral autogenera su propio certificado autofirmado por instancia (no hay un
+    # CA fijo versionado como deploy/certs/cert.pem de EMQX) — verificado contra el
+    # servidor real de producción (13-ago-2026): sin uno de estos dos, la conexión
+    # siempre falla con CERTIFICATE_VERIFY_FAILED, incluso siendo el servidor legítimo.
+    # Preferir CA_CERT (fijar el cert real, extraído una vez del servidor) por sobre
+    # VERIFICAR_TLS=False (desactiva la verificación por completo).
+    'CA_CERT': env('MESHCENTRAL_API_CA_CERT', default=''),
+    'VERIFICAR_TLS': env.bool('MESHCENTRAL_API_VERIFICAR_TLS', default=True),
 }
 
 # API móvil (apps Flutter): Token Authentication de DRF, sin dependencias externas.
