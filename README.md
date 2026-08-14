@@ -264,6 +264,41 @@ tiempo real:
 - Panel: `/alertas/` (reconocer/resolver manualmente) y `/monitoreo/reglas/` (CRUD de
   reglas).
 
+## Monitoreo cruzado (MQTT × MeshCentral)
+
+Hoy el estado de conectividad se revisaba a mano cruzando dos paneles distintos.
+`EstadoDispositivo`/`EventoMonitoreo` (`apps/monitoreo`) automatizan ese cruce: cada
+fuente reporta su propio estado por estación, y una tarea periódica compara ambas para
+detectar señales que ninguna da sola.
+- **Puerto único de entrada**: `apps.monitoreo.services.registrar_estado_dispositivo`
+  guarda un snapshot por (estación, fuente) y agrega un `EventoMonitoreo` solo cuando el
+  estado cambia (no en cada señal — evita ruido a 1.800+ estaciones). Lo llaman
+  `manejar_heartbeat`/`marcar_estaciones_offline` (fuente `mqtt`, ya en producción) y el
+  adaptador de MeshCentral (fuente `meshcentral`).
+- **MeshCentral empuja, no hay que pedirle nada**: `apps.monitoreo.adapters.meshcentral`
+  mantiene abierta una conexión WebSocket al canal de control (`control.ashx`) y procesa
+  en tiempo real los eventos `nodeconnect` que el propio servidor envía sin que se los
+  pidan — no hace polling. Protocolo verificado contra el código fuente del servidor
+  (Ylianst/MeshCentral), **todavía no contra una instancia real** — pendiente de probar
+  contra el servidor de producción, igual que el resto de la integración de MeshCentral.
+- **`python manage.py run_meshcentral_worker`**: worker de larga duración (calco de
+  `run_mqtt_worker`), servicio propio `meshcentral_worker` en `docker-compose.yml`.
+  Opcional: si `MESHCENTRAL_API_WS_URL`/`_USUARIO`/`_PASSWORD` no están configurados
+  (una cuenta de MeshCentral dedicada, de bajo privilegio), el comando se queda quieto
+  sin afectar el resto del stack.
+- **Nueva regla de alerta `agente_caido_red_viva`**: se abre cuando una estación lleva
+  más de `umbral` minutos sin heartbeat MQTT pero MeshCentral todavía la ve conectada —
+  distingue "se cayó el servicio del agente" de "se cayó la red" (si fuera la red,
+  MeshCentral tampoco la vería). La evalúa `evaluar_cruce_monitoreo`, tarea de Celery
+  Beat cada ~7 minutos (`apps/monitoreo/tasks.py`).
+- Pill de estado nuevo en la ficha de estación (junto al de "Vinculado" de MeshCentral):
+  en línea / fuera de línea / sin datos todavía.
+- Diseñado para sumar una tercera fuente (ESET PROTECT) sin romper nada: el puerto
+  `FuenteMonitoreo` (`apps/monitoreo/adapters/base.py`) queda reservado para fuentes que
+  hay que consultar (a diferencia de MQTT/MeshCentral, que empujan) — ver
+  PLAN_MODERNIZACION.md §9. Hoy sin implementación: pendiente de que el proveedor
+  apruebe el acceso a su API.
+
 ## Scripts RMM y parcheo
 
 `apps/scripts` — biblioteca de scripts PowerShell que corren sobre el mismo canal de
@@ -290,8 +325,29 @@ por el agente desde antes de esta etapa — ver `EjecutorScript.cs` en `saidsoft
   cambiar_nodo_pos.py`.
 - **Windows Update nativo** (parchar el SO en sí, no apps de terceros): v1 es solo
   escaneo/reporte — comando `escanear_actualizaciones` (botón "Escanear ahora" en la
-  ficha de la estación), nunca instala ni reinicia solo. Ver
-  `agente-prueba/README.md` y `apps.mqtt_worker.services.manejar_windows_update`.
+  ficha de la estación), nunca instala ni reinicia solo. El agente chequea conectividad
+  a internet antes de escanear (endpoint NCSI de Microsoft, 5s de timeout — muchas
+  estaciones del piloto no tienen salida a internet habilitada y `Search()` de Windows
+  Update se cuelga varios minutos sin ese chequeo); si falla, reporta el motivo en
+  `Estacion.windows_update_ultimo_error` y el panel se lo muestra tal cual al operador
+  en la ficha de la estación. Ver `agente-prueba/README.md` y
+  `apps.mqtt_worker.services.manejar_windows_update`.
+
+## Facturación por endpoint
+
+`apps/facturacion` cuenta, por unidad de negocio y período, cuántas estaciones
+estuvieron activas — la base para facturar por endpoint en vez de por contrato fijo:
+- **`ActividadMensualEstacion`** guarda una fila por estación por mes calendario, creada
+  la primera vez que esa estación manda un heartbeat en el mes (`registrar_actividad_mensual`,
+  llamada desde `apps.mqtt_worker.services.manejar_heartbeat`/`manejar_estado_despliegue`
+  — los mismos dos puntos que ya actualizan `Estacion.ultimo_heartbeat`). No se puede
+  reusar `Estacion.ultimo_heartbeat` (se sobreescribe, sin histórico) ni
+  `apps.monitoreo.MuestraMetrica` (se purga a los 30 días) para esto: esta tabla es la
+  única que se conserva indefinidamente para poder facturar meses pasados.
+- **"Endpoint activo"** = tuvo al menos un heartbeat ese mes calendario. No se puede
+  reconstruir retroactivamente para meses anteriores a que se activó este registro.
+- CSV en `/reportes/facturacion.csv` (por unidad de negocio y período `?periodo=YYYY-MM`)
+  e integrado al resumen por cliente (`/reportes/cliente/`).
 
 ## Reportes exportables (CSV) y resumen por cliente
 
@@ -299,16 +355,37 @@ En `/reportes/`, en `apps/panel/reportes.py` (todos salvo auditoría aceptan
 `unidad_negocio`/`unidades_negocio` para acotar a un cliente):
 - **Resumen por cliente** (`/reportes/cliente/`): página imprimible (no CSV — sigue la
   convención de `mantenimiento_orden_trabajo`, sin generación de PDF en servidor) que
-  consolida cumplimiento de versión, despliegues del período, alertas e inventario de
-  activos de una sola unidad de negocio.
+  consolida cumplimiento de versión, despliegues del período, alertas, inventario de
+  activos y endpoints facturables de una sola unidad de negocio.
 - **Cumplimiento de versión**: qué versión corre cada estación vs. la objetivo de su
   grupo (filtrable por grupo y por unidad de negocio).
 - **Resultado de un despliegue**: estado por estación + timestamps de recibido/aplicado/ok.
-- **Activos** y **Alertas**: inventario y alertas de un cliente en un rango de fechas.
+- **Activos**, **Alertas** y **Facturación**: inventario, alertas y endpoints
+  facturables de un cliente en un rango de fechas/período.
 - **Bitácora de auditoría**: acciones sobre el panel en un rango de fechas —
   deliberadamente **sin escopar por cliente** (el modelo es polimórfico, sin FK real al
   objeto auditado; es una herramienta de cumplimiento interno, no algo que se le
   entregue a un cliente).
+
+## Credenciales MQTT por estación (aislamiento a nivel de broker)
+
+Hasta ahora las ~1.800 estaciones comparten una sola credencial MQTT (`MQTT_USERNAME_AGENTE`,
+sembrada por `deploy/bootstrap-emqx.sh`) con ACL amplia — el aislamiento por unidad de
+negocio de R1 es solo a nivel de aplicación/BD, no del broker. `apps.mqtt_worker.emqx_admin`
+le da a cada estación su propia credencial MQTT, con ACL restringida a sus propios tópicos:
+- **Opcional y sin romper nada por defecto**: mientras `EMQX_ADMIN_CONFIG` (`EMQX_API_URL`/
+  `EMQX_API_KEY`/`EMQX_API_SECRET`) esté vacío, el aprovisionamiento queda desactivado y el
+  enrolamiento sigue funcionando con la credencial compartida, igual que antes.
+- **Rollout gradual, no automático**: requiere que la estación ya tenga instalado el agente
+  Python nuevo (`agente-prueba/agente_prueba.py` — reemplazó al agente C# original, ver
+  PLAN_MODERNIZACION.md §10-K) y volver a enrolarse. `python manage.py
+  seed_scripts_migracion_mqtt` crea el script (biblioteca) que fuerza ese re-enrolamiento
+  (borra `identidad.json` y reinicia el servicio) para correrlo contra las estaciones que ya
+  se confirmó que migraron.
+- **`deploy/emqx-narrow-acl-agente.sh`** (nuevo, con confirmación manual): angosta la ACL de
+  la credencial compartida a solo enrolamiento — correrlo **solo** cuando se confirmó que
+  toda la flota ya tiene su propia credencial (corta el tráfico de cualquier estación que
+  todavía dependa de la compartida).
 
 ## Producción (Docker + TimescaleDB + EMQX)
 

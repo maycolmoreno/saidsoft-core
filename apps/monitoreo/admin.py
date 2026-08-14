@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_por_unidad_negocio
 
-from .models import Alerta, MuestraMetrica, ReglaAlerta
+from .models import Alerta, EstadoDispositivo, EventoMonitoreo, MuestraMetrica, ReglaAlerta
 
 
 @admin.register(MuestraMetrica)
@@ -38,6 +38,45 @@ class ReglaAlertaAdmin(admin.ModelAdmin):
         if not change:
             obj.creado_por = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(EstadoDispositivo)
+class EstadoDispositivoAdmin(admin.ModelAdmin):
+    list_display = ('estacion', 'fuente', 'en_linea', 'actualizado_en')
+    list_filter = ('fuente', 'en_linea')
+    search_fields = ('estacion__codigo',)
+    readonly_fields = [f.name for f in EstadoDispositivo._meta.fields]
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(
+            super().get_queryset(request), request.user, 'estacion__farmacia__unidad_negocio',
+        )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(EventoMonitoreo)
+class EventoMonitoreoAdmin(admin.ModelAdmin):
+    list_display = ('estacion', 'fuente', 'en_linea', 'timestamp')
+    list_filter = ('fuente', 'en_linea')
+    search_fields = ('estacion__codigo',)
+    date_hierarchy = 'timestamp'
+    readonly_fields = [f.name for f in EventoMonitoreo._meta.fields]
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(
+            super().get_queryset(request), request.user, 'estacion__farmacia__unidad_negocio',
+        )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Alerta)

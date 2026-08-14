@@ -13,7 +13,7 @@ from django.utils import timezone
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
 from apps.facturacion.models import ActividadMensualEstacion
-from apps.monitoreo.models import MuestraMetrica
+from apps.monitoreo.models import EstadoDispositivo, MuestraMetrica
 from apps.mqtt_worker.management.commands.run_mqtt_worker import (
     TOPICO_ESTADO_DESPLIEGUE, TOPICO_ESTADO_INSTALACION, TOPICO_ESTADO_SCRIPT, TOPICO_HEARTBEAT, Command,
     _codigo_desde_topico,
@@ -443,6 +443,15 @@ class ManejarHeartbeatTests(TestCase):
         self.estacion.refresh_from_db()
         self.assertNotEqual(self.estacion.version_pos, '9.9.9')
         self.assertNotEqual(self.estacion.estado_conexion, Estacion.EstadoConexion.ONLINE)
+
+    def test_heartbeat_valido_registra_estado_dispositivo_mqtt(self):
+        manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento})
+        estado = EstadoDispositivo.objects.get(estacion=self.estacion, fuente=EstadoDispositivo.Fuente.MQTT)
+        self.assertTrue(estado.en_linea)
+
+    def test_token_invalido_no_registra_estado_dispositivo(self):
+        manejar_heartbeat(self.estacion.codigo, {'token': 'malo'})
+        self.assertFalse(EstadoDispositivo.objects.filter(estacion=self.estacion).exists())
 
 
 class ManejarEstadoDespliegueTests(TestCase):

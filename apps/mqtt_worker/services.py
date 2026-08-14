@@ -148,8 +148,9 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
         return
 
     if estacion.estado_conexion != Estacion.EstadoConexion.ONLINE:
-        from apps.monitoreo.services import resolver_alertas_sin_heartbeat
+        from apps.monitoreo.services import resolver_alertas_agente_caido_red_viva, resolver_alertas_sin_heartbeat
         resolver_alertas_sin_heartbeat(estacion)
+        resolver_alertas_agente_caido_red_viva(estacion)
 
     estacion.version_agente = payload.get('version_agente', estacion.version_agente)
     estacion.version_pos = payload.get('version_pos', estacion.version_pos)
@@ -167,6 +168,10 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
 
     from apps.facturacion.services import registrar_actividad_mensual
     registrar_actividad_mensual(estacion)
+
+    from apps.monitoreo.models import EstadoDispositivo
+    from apps.monitoreo.services import registrar_estado_dispositivo
+    registrar_estado_dispositivo(estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=True)
 
 
 def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
@@ -204,6 +209,10 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
 
             from apps.facturacion.services import registrar_actividad_mensual
             registrar_actividad_mensual(estacion)
+
+            from apps.monitoreo.models import EstadoDispositivo
+            from apps.monitoreo.services import registrar_estado_dispositivo
+            registrar_estado_dispositivo(estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=True)
 
     nuevo_estado = _PASO_A_ESTADO.get(paso)
     if nuevo_estado:

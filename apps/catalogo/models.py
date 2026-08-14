@@ -210,8 +210,9 @@ class Estacion(models.Model):
     puerto_cache = models.PositiveIntegerField(null=True, blank=True)
 
     # Acceso remoto interactivo (MeshCentral) — bolt-on independiente del canal MQTT/HMAC.
-    # La correlación con el nodo de MeshCentral es manual en v1 (ver apps/catalogo/services.py):
-    # no hay sincronización automática contra la API de MeshCentral todavía.
+    # El vínculo estación<->nodo sigue siendo manual (se copia desde la consola de
+    # MeshCentral); una vez vinculada, apps.monitoreo.adapters.meshcentral sí sincroniza
+    # su estado de conectividad en tiempo real (ver Estacion.estado_meshcentral abajo).
     meshcentral_node_id = models.CharField(
         max_length=64, blank=True,
         help_text='ID interno del dispositivo en MeshCentral (se copia manualmente desde la '
@@ -249,6 +250,17 @@ class Estacion(models.Model):
         """True si la versión de POS reportada no coincide con la versión objetivo de su grupo."""
         objetivo = self.farmacia.grupo.version_objetivo
         return bool(objetivo) and self.version_pos != objetivo
+
+    @property
+    def estado_meshcentral(self):
+        """El EstadoDispositivo(fuente=meshcentral) de esta estación, o None si no está
+        vinculada a MeshCentral todavía o el cruce nunca la vio. Import diferido: evita
+        que apps.catalogo dependa de apps.monitoreo a nivel de módulo — mismo criterio
+        que ya usan apps.catalogo.services/apps.mqtt_worker.services."""
+        if not self.meshcentral_node_id:
+            return None
+        from apps.monitoreo.models import EstadoDispositivo
+        return self.estados_dispositivo.filter(fuente=EstadoDispositivo.Fuente.MESHCENTRAL).first()
 
 
 class ClaveRecuperacionBitLocker(models.Model):

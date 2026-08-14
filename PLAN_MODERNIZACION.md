@@ -1,6 +1,6 @@
 # Plan de Modernización SAIDSOFT
 
-**Fecha:** 16 de julio de 2026 · **Última actualización:** 31 de julio de 2026
+**Fecha:** 16 de julio de 2026 · **Última actualización:** 13 de agosto de 2026
 **Alcance:** ~600 farmacias · ~1.800 estaciones Windows · servidor propio (LAN/VPN)
 
 > **Estado (31-jul-2026):** las Fases 0-5 de este documento (núcleo, panel de
@@ -157,22 +157,31 @@ unidades de negocio de CRESIO (San Gregorio, MIA, 7DIAS — ver `UnidadNegocio` 
 | **R5 — Acceso remoto (MeshCentral)** | Ya existía antes de esta etapa | ✅ Hecho (preexistente) |
 | **RBAC fast-follow** | `activos`/`mantenimiento`/`cumplimiento` conectados al RBAC de R1 (antes solo `@login_required`, sin escopar por cliente). `ColaboradorForm` ganó el campo `unidad_negocio`; `registrar_asignacion` lo hereda del colaborador al activo | ✅ Hecho |
 | **R6a — Reportes por cliente** | Resumen imprimible por unidad de negocio (`/reportes/cliente/`) + CSVs de activos/alertas + `reporte_cumplimiento` ahora escopado (antes mostraba todo sin filtrar) | ✅ Hecho |
+| **R6b — Facturación por endpoint** (13-ago-2026) | `ActividadMensualEstacion` (`apps/facturacion`) registra, por estación y mes calendario, que hubo al menos un heartbeat (`registrar_actividad_mensual`, llamado desde `manejar_heartbeat`/`manejar_estado_despliegue` en `apps/mqtt_worker/services.py`; idempotente, no se puede reconstruir para meses previos a que se activó). "Endpoint activo" = esa fila. `resumen_facturacion`/`estaciones_facturables` cuentan por unidad de negocio y período; CSV en `/reportes/facturacion.csv` + integrado al resumen por cliente (`/reportes/cliente/`) | ✅ Hecho |
+| **Windows Update nativo v1 (resto de R4)** (13-ago-2026) | Comando `escanear_actualizaciones` (botón "Escanear ahora" en la ficha de estación): v1 es solo escaneo/reporte, el agente nunca instala ni reinicia solo. El agente (Python, ver §10-K) chequea conectividad a internet antes de escanear (`_hay_conexion_a_internet`, endpoint NCSI de Microsoft, 5s timeout — muchas estaciones del piloto no tienen salida a internet y `Search()` de Windows Update se cuelga varios minutos sin ese chequeo) y, si falla, reporta el motivo en `Estacion.windows_update_ultimo_error` para que el panel se lo muestre al operador en vez de dejar el escaneo colgado. Ver `agente-prueba/README.md` y `apps.mqtt_worker.services.manejar_windows_update` | ✅ Hecho (v1: solo escaneo, no instala) |
+| **Credenciales MQTT por estación** (adelanto parcial de "ACLs MQTT/EMQX por tenant", 13-ago-2026) | `apps.mqtt_worker.emqx_admin.aprovisionar_credencial_estacion` le da a cada estación, en su enrolamiento, una credencial MQTT propia (no la compartida) con ACL restringida a sus propios tópicos — aislamiento real a nivel de broker, no solo de aplicación/BD como hasta ahora. Opcional y sin romper nada mientras no se configure (`EMQX_ADMIN_CONFIG` vacío = desactivado, sigue usando la credencial compartida). Rollout gradual: requiere que la estación ya tenga el agente Python nuevo (§10-K) y volver a enrolarse — `python manage.py seed_scripts_migracion_mqtt` crea el script que fuerza ese re-enrolamiento. `deploy/emqx-narrow-acl-agente.sh` (nuevo, confirmación manual) angosta la ACL de la credencial compartida recién cuando toda la flota ya migró | 🟡 Implementado, rollout pendiente |
+| **Monitoreo cruzado MQTT × MeshCentral** (13-ago-2026) | `EstadoDispositivo`/`EventoMonitoreo` (`apps/monitoreo`) — snapshot e histórico de transiciones de conectividad por (estación, fuente). Puerto de entrada único `registrar_estado_dispositivo`, llamado desde `manejar_heartbeat`/`marcar_estaciones_offline` (fuente MQTT) y desde `apps.monitoreo.adapters.meshcentral.AdaptadorMeshCentral` (fuente MeshCentral, WebSocket `control.ashx`, eventos `nodeconnect` en tiempo real — protocolo verificado contra el código fuente del servidor, no todavía contra una instancia real). Worker de larga duración nuevo `python manage.py run_meshcentral_worker` (calco de `run_mqtt_worker`), servicio `meshcentral_worker` en `docker-compose.yml`. Nueva métrica `agente_caido_red_viva` en `ReglaAlerta` (evaluada cada ~7min por `evaluar_cruce_monitoreo`, Celery Beat): distingue "el agente se cayó" (MQTT offline, MeshCentral sigue viendo el equipo) de "se cayó la red" (las dos fuentes lo ven mal). Opcional (`MESHCENTRAL_API_CONFIG` vacío = el worker no arranca, sin afectar nada más). Pill de estado nuevo en la ficha de estación (`Estacion.estado_meshcentral`). El puerto `FuenteMonitoreo` (`apps/monitoreo/adapters/base.py`) queda listo para sumar ESET PROTECT cuando se apruebe el acceso a su API — ver nota abajo | ✅ Hecho (código); **pendiente probar contra una instancia real de MeshCentral** |
 
 **Fuera de alcance de esta etapa, explícitamente diferido:**
-- **ACLs MQTT/EMQX por tenant** — hoy todos los agentes comparten una sola credencial
-  (`deploy/bootstrap-emqx.sh`), sin prefijo de unidad de negocio en los tópicos. El
-  aislamiento de R1 es solo a nivel de aplicación/BD, no del broker. Requiere decidir
-  el enfoque (prefijo de tópico vs. credencial por tenant + ACL `%u`) y casi seguro
-  tocar `saidsoft-agente` (repo aparte).
-- **Facturación por endpoint** (resto de R6) — conteo de estaciones activas por unidad
-  de negocio por período; falta definir qué cuenta como "endpoint activo" (decisión de
-  negocio, no técnica).
+- **ACLs MQTT/EMQX por tenant** — el aislamiento por credencial propia ahora es *por
+  estación* (ver fila "Credenciales MQTT por estación" arriba), no por unidad de
+  negocio/tenant como se planteaba originalmente acá; en la práctica cada estación
+  pertenece a una sola unidad de negocio, así que el resultado es equivalente, pero
+  sigue siendo un rollout manual y gradual (no automático) y la credencial compartida
+  `agente` sigue activa con ACL amplia hasta que se confirme que toda la flota migró.
 - **API REST pública** (resto de R6) — exponer despliegues/estaciones/alertas vía DRF
   con auth por token, escopada por `unidad_negocio`. Hoy solo existe API
   (`apps.mantenimiento.api_urls`) para mantenimiento.
-- **Windows Update nativo** (resto de R4) — parchar el SO en sí, no apps de terceros.
-  Requiere código nuevo en el agente (API de Windows Update, comando MQTT nuevo,
-  tópico de reporte de cumplimiento).
+- **Windows Update: instalar/aplicar parches** — v1 (ver fila arriba) es solo
+  escaneo/reporte; falta el paso de instalar y coordinar el reinicio, mismo cuidado que
+  ya existe para despliegues de POS (ventana de mantenimiento, freno automático).
+- **ESET PROTECT como tercera fuente del monitoreo cruzado** — pendiente de aprobación
+  del proveedor para acceder a su API. El modelo de datos y el puerto
+  `FuenteMonitoreo` (ver fila "Monitoreo cruzado MQTT × MeshCentral") ya quedaron
+  listos para sumarla sin romper nada: agregar el choice `eset` a
+  `EstadoDispositivo.Fuente` y un `apps/monitoreo/adapters/eset.py` que implemente
+  `sincronizar_todo()` (su API es de consulta, no push, así que sí calza en ese puerto,
+  a diferencia de MQTT/MeshCentral que empujan directo a `registrar_estado_dispositivo`).
 
 ## 10. Auditoría de pendientes (31-jul-2026)
 

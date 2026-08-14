@@ -56,18 +56,89 @@ class Metrica(models.TextChoices):
     TEMPERATURA_C = 'temperatura_c', 'Temperatura (°C)'
     SIN_HEARTBEAT = 'sin_heartbeat', 'Sin heartbeat (minutos)'
     BITLOCKER_DESHABILITADO = 'bitlocker_deshabilitado', 'BitLocker deshabilitado'
+    AGENTE_CAIDO_RED_VIVA = 'agente_caido_red_viva', 'Agente sin reportar (con red viva)'
+
+
+class EstadoDispositivo(models.Model):
+    """Snapshot ACTUAL (no histórico) del estado de una estación según una fuente de
+    monitoreo (agente MQTT, MeshCentral, y a futuro ESET PROTECT).
+
+    Convive con `Estacion.estado_conexion`/`ultimo_heartbeat` — no los reemplaza. Esos
+    dos campos siguen siendo el resumen de la fuente MQTT que ya usa todo el resto del
+    panel/reportes; esta tabla es la capa nueva que permite cruzar MQTT contra otras
+    fuentes (`evaluar_cruce_monitoreo`, ver services.py) sin tocar ese código existente.
+
+    Una fila por (estacion, fuente): se actualiza in-place (`update_or_create`) en cada
+    señal — no es un histórico, para eso está `EventoMonitoreo`.
+    """
+
+    class Fuente(models.TextChoices):
+        MQTT = 'mqtt', 'Agente MQTT'
+        MESHCENTRAL = 'meshcentral', 'MeshCentral'
+        # ESET = 'eset', 'ESET PROTECT'  # pendiente de aprobación de acceso a su API —
+        # el modelo ya queda listo para sumarla (agregar el choice + un adapter nuevo).
+
+    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='estados_dispositivo')
+    fuente = models.CharField(max_length=20, choices=Fuente.choices)
+    en_linea = models.BooleanField()
+    detalle = models.JSONField(
+        blank=True, default=dict,
+        help_text='Payload específico de la fuente (ej. conn de MeshCentral). No forma parte '
+                  'del contrato del cruce — solo referencia/debug.',
+    )
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'estado_dispositivo'
+        unique_together = [('estacion', 'fuente')]
+        ordering = ['estacion__codigo', 'fuente']
+        verbose_name = 'Estado de dispositivo'
+        verbose_name_plural = 'Estados de dispositivo'
+
+    def __str__(self):
+        return f'{self.estacion.codigo} · {self.get_fuente_display()}: {"en línea" if self.en_linea else "fuera de línea"}'
+
+
+class EventoMonitoreo(models.Model):
+    """Histórico de TRANSICIONES de EstadoDispositivo (hypertable en producción, igual
+    que MuestraMetrica) — se escribe solo cuando `en_linea` cambia respecto al último
+    EstadoDispositivo conocido, no en cada señal recibida. A la frecuencia de heartbeat/
+    eventos de 1.800+ estaciones, un evento por señal sería ruido puro sin valor; lo que
+    importa para el cruce y para auditar discrepancias es cuándo cambió el estado.
+    """
+
+    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='eventos_monitoreo')
+    fuente = models.CharField(max_length=20, choices=EstadoDispositivo.Fuente.choices)
+    en_linea = models.BooleanField()
+    detalle = models.JSONField(blank=True, default=dict)
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'evento_monitoreo'
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['estacion', '-timestamp']),
+        ]
+
+    def __str__(self):
+        return f'{self.estacion.codigo} · {self.get_fuente_display()} -> {"en línea" if self.en_linea else "fuera de línea"} @ {self.timestamp:%Y-%m-%d %H:%M:%S}'
 
 
 class ReglaAlerta(models.Model):
     """Condición que, sostenida por `duracion_minutos`, abre una Alerta.
 
-    `sin_heartbeat` y `bitlocker_deshabilitado` son las únicas métricas que no
-    comparan contra MuestraMetrica: `sin_heartbeat` se evalúa en el comando
-    `marcar_estaciones_offline`; `bitlocker_deshabilitado` se evalúa en
-    apps.mqtt_worker.services.manejar_info_equipo, justo cuando el agente reporta el
-    estado de cifrado (Estacion.bitlocker_habilitado) — no es una serie de tiempo, es
-    un estado binario, así que no hay "condición sostenida" que evaluar: se abre o
-    resuelve la alerta directo con cada reporte.
+    `sin_heartbeat`, `bitlocker_deshabilitado` y `agente_caido_red_viva` son las únicas
+    métricas que no comparan contra MuestraMetrica ni usan `duracion_minutos`:
+    - `sin_heartbeat` se evalúa en el comando `marcar_estaciones_offline` (umbral en
+      minutos sin heartbeat).
+    - `bitlocker_deshabilitado` se evalúa en apps.mqtt_worker.services.manejar_info_equipo,
+      justo cuando el agente reporta el estado de cifrado (Estacion.bitlocker_habilitado)
+      — no es una serie de tiempo, es un estado binario: se abre o resuelve directo con
+      cada reporte.
+    - `agente_caido_red_viva` (cruce MQTT × MeshCentral, ver EstadoDispositivo/
+      evaluar_cruce_monitoreo) reusa el mismo umbral en minutos que `sin_heartbeat`
+      (minutos sin heartbeat MQTT), exigiendo además que MeshCentral vea la estación en
+      línea — distingue "agente caído, red viva" de "red caída, ambas fuentes lo ven mal".
     """
 
     class Operador(models.TextChoices):
@@ -82,13 +153,14 @@ class ReglaAlerta(models.Model):
     metrica = models.CharField(max_length=30, choices=Metrica.choices)
     operador = models.CharField(
         max_length=3, choices=Operador.choices, default=Operador.GTE,
-        help_text='Ignorado para "Sin heartbeat" (siempre "más de X minutos") y para '
-                  '"BitLocker deshabilitado" (condición binaria, no hay umbral que comparar).',
+        help_text='Ignorado para "Sin heartbeat"/"Agente sin reportar (con red viva)" (siempre '
+                  '"más de X minutos") y para "BitLocker deshabilitado" (condición binaria, sin umbral).',
     )
     umbral = models.FloatField(
         default=0,
-        help_text='% para CPU/RAM, ms para latencia, °C para temperatura, minutos para sin heartbeat. '
-                  'Ignorado (dejar en 0) para "BitLocker deshabilitado".',
+        help_text='% para CPU/RAM, ms para latencia, °C para temperatura, minutos para sin heartbeat '
+                  'y para "Agente sin reportar (con red viva)". Ignorado (dejar en 0) para "BitLocker '
+                  'deshabilitado".',
     )
     duracion_minutos = models.PositiveIntegerField(
         default=10,

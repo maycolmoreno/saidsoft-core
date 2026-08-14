@@ -139,6 +139,15 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
             </span>
             {% if estacion.meshcentral_node_id %}
             <span class="pill good">Vinculado</span>
+            {% with estado_mc=estacion.estado_meshcentral %}
+            {% if estado_mc.en_linea %}
+            <span class="pill good">En línea</span>
+            {% elif estado_mc %}
+            <span class="pill critical">Fuera de línea</span>
+            {% else %}
+            <span class="pill neutral" title="Todavía no se recibió ningún evento de conectividad para este nodo.">Sin datos</span>
+            {% endif %}
+            {% endwith %}
             {% else %}
             <span class="pill neutral">No vinculado</span>
             {% endif %}

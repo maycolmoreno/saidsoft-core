@@ -166,8 +166,11 @@ def marcar_estaciones_offline(*, minutos: int = 5) -> int:
         Estacion.objects.filter(pk__in=[e.pk for e in afectadas]).update(
             estado_conexion=Estacion.EstadoConexion.OFFLINE,
         )
-        from apps.monitoreo.services import evaluar_reglas_sin_heartbeat
+        from apps.monitoreo.models import EstadoDispositivo
+        from apps.monitoreo.services import evaluar_reglas_sin_heartbeat, registrar_estado_dispositivo
         evaluar_reglas_sin_heartbeat(afectadas)
+        for estacion in afectadas:
+            registrar_estado_dispositivo(estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=False)
     return len(afectadas)
 
 

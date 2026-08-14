@@ -176,6 +176,19 @@ MESHCENTRAL_CONFIG = {
     'VIEWMODE_TERMINAL': env('MESHCENTRAL_VIEWMODE_TERMINAL', default='12'),
 }
 
+# Canal de control de MeshCentral (control.ashx, WebSocket) — usado por
+# apps.monitoreo.adapters.meshcentral para el cruce MQTT×MeshCentral (ver
+# EstadoDispositivo/evaluar_cruce_monitoreo). Separado de MESHCENTRAL_CONFIG de arriba
+# a propósito: eso es solo para armar URLs de relay/instalación, esto es una cuenta
+# real de MeshCentral (dedicada, de bajo privilegio — alcanza con acceso de lectura a
+# los device groups relevantes) para autenticar el WebSocket. Vacío por defecto: sin
+# estas 3 variables, run_meshcentral_worker no arranca, sin romper el resto del stack.
+MESHCENTRAL_API_CONFIG = {
+    'WS_URL': env('MESHCENTRAL_API_WS_URL', default=''),  # ej. wss://mesh.example.com/control.ashx
+    'USUARIO': env('MESHCENTRAL_API_USUARIO', default=''),
+    'PASSWORD': env('MESHCENTRAL_API_PASSWORD', default=''),
+}
+
 # API móvil (apps Flutter): Token Authentication de DRF, sin dependencias externas.
 # El técnico obtiene su token una vez en /api/v1/auth/token/ y lo reusa en cada request.
 REST_FRAMEWORK = {
@@ -210,6 +223,16 @@ CELERY_BEAT_SCHEDULE = {
     'purgar-metricas-viejas': {
         'task': 'apps.monitoreo.tasks.purgar_metricas_task',
         'schedule': 60.0 * 60 * 24,  # diario
+    },
+    'purgar-eventos-monitoreo-viejos': {
+        'task': 'apps.monitoreo.tasks.purgar_eventos_monitoreo_task',
+        'schedule': 60.0 * 60 * 24,  # diario
+    },
+    'evaluar-cruce-monitoreo': {
+        'task': 'apps.monitoreo.tasks.evaluar_cruce_monitoreo_task',
+        # Cada 7 min: no hace falta más seguido que marcar-estaciones-offline (60s) —
+        # EstadoDispositivo ya se actualiza en tiempo real, esto solo evalúa el cruce.
+        'schedule': 60.0 * 7,
     },
     'generar-ejecuciones-programadas': {
         'task': 'apps.scripts.tasks.generar_ejecuciones_programadas_task',

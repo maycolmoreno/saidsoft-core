@@ -160,6 +160,33 @@ services:
       redis:
         condition: service_started
 
+  meshcentral_worker:
+    <<: *app-build
+    restart: unless-stopped
+    # Escucha el canal de control de MeshCentral (control.ashx) para el cruce
+    # MQTT×MeshCentral — ver apps.monitoreo.adapters.meshcentral y
+    # PLAN_MODERNIZACION.md §9/§10. Si MESHCENTRAL_API_* no está configurado, el comando
+    # se queda quieto (log de aviso) sin tumbar el servicio ni el resto del stack.
+    command: ["python", "manage.py", "run_meshcentral_worker"]
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.produccion
+      RUN_MIGRATIONS: "0"
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SECRET_KEY: ${SECRET_KEY}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+      COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
+      BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      MESHCENTRAL_API_WS_URL: ${MESHCENTRAL_API_WS_URL}
+      MESHCENTRAL_API_USUARIO: ${MESHCENTRAL_API_USUARIO}
+      MESHCENTRAL_API_PASSWORD: ${MESHCENTRAL_API_PASSWORD}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      meshcentral:
+        condition: service_started
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
