@@ -111,6 +111,9 @@ def registrar_estado_dispositivo(estacion, *, fuente: str, en_linea: bool, detal
     )
     if cambio:
         EventoMonitoreo.objects.create(estacion=estacion, fuente=fuente, en_linea=en_linea, detalle=detalle or {})
+        logger.info(
+            '%s: %s -> %s (%s)', estacion.codigo, fuente, 'en línea' if en_linea else 'fuera de línea', detalle or {},
+        )
 
 
 def evaluar_cruce_monitoreo() -> int:
