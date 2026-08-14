@@ -279,17 +279,22 @@ detectar señales que ninguna da sola.
   mantiene abierta una conexión WebSocket al canal de control (`control.ashx`) y procesa
   en tiempo real los eventos `nodeconnect` que el propio servidor envía sin que se los
   pidan — no hace polling. Protocolo verificado contra el código fuente del servidor
-  (Ylianst/MeshCentral) **y contra el servidor real de producción** (10.111.6.20:8083,
-  13-ago-2026: login real, `{"action":"nodes"}` trajo la estación piloto `ML016-B`).
-  Dos bugs reales encontrados y corregidos en esa prueba: (1) MeshCentral autogenera su
-  propio certificado autofirmado por instancia — hace falta `MESHCENTRAL_API_CA_CERT`
-  (pinnear el cert real) o `MESHCENTRAL_API_VERIFICAR_TLS=False` (salida rápida, no
-  recomendada para producción), si no la conexión falla siempre con
+  (Ylianst/MeshCentral) **y de punta a punta contra el servidor real de producción**
+  (10.111.6.20:8083, 13/14-ago-2026). Tres bugs reales encontrados y corregidos en esa
+  prueba: (1) MeshCentral autogenera su propio certificado autofirmado por instancia —
+  hace falta `MESHCENTRAL_API_CA_CERT` (pinnear el cert real) o
+  `MESHCENTRAL_API_VERIFICAR_TLS=False` (salida rápida, no recomendada para producción
+  a largo plazo — es como quedó por ahora), si no la conexión falla siempre con
   `CERTIFICATE_VERIFY_FAILED`; (2) un `{"action":"nodes"}` mandado justo después del
   login se pierde — el servidor todavía está armando la sesión — así que
-  `_solicitar_nodes` reintenta una vez. Pendiente: pinnear el cert real (en vez de
-  desactivar la verificación) y confirmar un evento `nodeconnect` espontáneo en vivo
-  (la prueba validó el snapshot inicial, no todavía un evento real de conectividad).
+  `_solicitar_nodes` reintenta una vez; (3) `ws.recv()` heredaba un timeout corto que
+  hacía reconectar (re-auth + resync completo) cada 8-15s por simple inactividad,
+  disfrazando el diseño "push" en un poll agresivo — corregido con un timeout propio
+  de 30s que solo sirve para revisar la señal de apagado, no como umbral de "conexión
+  perdida". Con los tres fixes, se confirmó un evento `nodeconnect` espontáneo real
+  (parar/arrancar el servicio "Mesh Agent" en una estación piloto con el worker
+  escuchando) actualizando `EstadoDispositivo` en tiempo real, sin poll ni resync
+  forzado.
 - **`python manage.py run_meshcentral_worker`**: worker de larga duración (calco de
   `run_mqtt_worker`), servicio propio `meshcentral_worker` en `docker-compose.yml`.
   Opcional: si `MESHCENTRAL_API_WS_URL`/`_USUARIO`/`_PASSWORD` no están configurados
@@ -299,9 +304,13 @@ detectar señales que ninguna da sola.
   más de `umbral` minutos sin heartbeat MQTT pero MeshCentral todavía la ve conectada —
   distingue "se cayó el servicio del agente" de "se cayó la red" (si fuera la red,
   MeshCentral tampoco la vería). La evalúa `evaluar_cruce_monitoreo`, tarea de Celery
-  Beat cada ~7 minutos (`apps/monitoreo/tasks.py`).
+  Beat cada ~7 minutos (`apps/monitoreo/tasks.py`). Confirmada disparando sola contra
+  un caso real en producción (una estación piloto con el agente MQTT propio caído hace
+  días pero MeshCentral viéndola online).
 - Pill de estado nuevo en la ficha de estación (junto al de "Vinculado" de MeshCentral):
   en línea / fuera de línea / sin datos todavía.
+- Cada transición real de `EstadoDispositivo` queda logueada (`registrar_estado_dispositivo`)
+  — visible en `docker-compose logs` sin tener que consultar la base a mano.
 - Diseñado para sumar una tercera fuente (ESET PROTECT) sin romper nada: el puerto
   `FuenteMonitoreo` (`apps/monitoreo/adapters/base.py`) queda reservado para fuentes que
   hay que consultar (a diferencia de MQTT/MeshCentral, que empujan) — ver

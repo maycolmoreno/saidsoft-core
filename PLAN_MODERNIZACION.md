@@ -1,6 +1,6 @@
 # Plan de Modernización SAIDSOFT
 
-**Fecha:** 16 de julio de 2026 · **Última actualización:** 13 de agosto de 2026
+**Fecha:** 16 de julio de 2026 · **Última actualización:** 14 de agosto de 2026
 **Alcance:** ~600 farmacias · ~1.800 estaciones Windows · servidor propio (LAN/VPN)
 
 > **Estado (31-jul-2026):** las Fases 0-5 de este documento (núcleo, panel de
@@ -162,32 +162,52 @@ unidades de negocio de CRESIO (San Gregorio, MIA, 7DIAS — ver `UnidadNegocio` 
 | **Credenciales MQTT por estación** (adelanto parcial de "ACLs MQTT/EMQX por tenant", 13-ago-2026) | `apps.mqtt_worker.emqx_admin.aprovisionar_credencial_estacion` le da a cada estación, en su enrolamiento, una credencial MQTT propia (no la compartida) con ACL restringida a sus propios tópicos — aislamiento real a nivel de broker, no solo de aplicación/BD como hasta ahora. Opcional y sin romper nada mientras no se configure (`EMQX_ADMIN_CONFIG` vacío = desactivado, sigue usando la credencial compartida). Rollout gradual: requiere que la estación ya tenga el agente Python nuevo (§10-K) y volver a enrolarse — `python manage.py seed_scripts_migracion_mqtt` crea el script que fuerza ese re-enrolamiento. `deploy/emqx-narrow-acl-agente.sh` (nuevo, confirmación manual) angosta la ACL de la credencial compartida recién cuando toda la flota ya migró | 🟡 Implementado, rollout pendiente |
 | **Monitoreo cruzado MQTT × MeshCentral** (13-ago-2026, **validado contra el servidor real de producción el mismo día**) | `EstadoDispositivo`/`EventoMonitoreo` (`apps/monitoreo`) — snapshot e histórico de transiciones de conectividad por (estación, fuente). Puerto de entrada único `registrar_estado_dispositivo`, llamado desde `manejar_heartbeat`/`marcar_estaciones_offline` (fuente MQTT) y desde `apps.monitoreo.adapters.meshcentral.AdaptadorMeshCentral` (fuente MeshCentral, WebSocket `control.ashx`, eventos `nodeconnect` en tiempo real). Worker de larga duración nuevo `python manage.py run_meshcentral_worker` (calco de `run_mqtt_worker`), servicio `meshcentral_worker` en `docker-compose.yml`. Nueva métrica `agente_caido_red_viva` en `ReglaAlerta` (evaluada cada ~7min por `evaluar_cruce_monitoreo`, Celery Beat): distingue "el agente se cayó" (MQTT offline, MeshCentral sigue viendo el equipo) de "se cayó la red" (las dos fuentes lo ven mal). Opcional (`MESHCENTRAL_API_CONFIG` vacío = el worker no arranca, sin afectar nada más). Pill de estado nuevo en la ficha de estación (`Estacion.estado_meshcentral`). El puerto `FuenteMonitoreo` (`apps/monitoreo/adapters/base.py`) queda listo para sumar ESET PROTECT cuando se apruebe el acceso a su API — ver nota abajo | ✅ Hecho y validado |
 
-**Validación contra el servidor real (13-ago-2026, 10.111.6.20:8083, cuenta admin `romo`) —
-dos bugs reales encontrados y corregidos en la prueba, ninguno visible contra el código
+**Validación contra el servidor real (13/14-ago-2026, 10.111.6.20:8083, cuenta admin
+`romo`) — tres bugs reales encontrados y corregidos, ninguno visible contra el código
 fuente solo:**
 1. **TLS**: MeshCentral autogenera su propio certificado autofirmado por instancia (no
    hay un CA fijo versionado como `deploy/certs/cert.pem` de EMQX) — la conexión fallaba
    siempre con `CERTIFICATE_VERIFY_FAILED`, incluso siendo el servidor legítimo. Se
    agregaron `MESHCENTRAL_API_CA_CERT` (pinnear el cert real, preferido) y
    `MESHCENTRAL_API_VERIFICAR_TLS` (default `True`; `False` como salida rápida mientras
-   no se extraiga el cert real — usado para esta prueba puntual, **no dejar así en
-   producción**).
+   no se extraiga el cert real — así quedó en producción por ahora, **pendiente
+   pinnear el cert real y volver a `True`**).
 2. **Carrera en el login**: un `{"action":"nodes"}` mandado inmediatamente después del
    `userAuth` se pierde de forma consistente — el servidor todavía está armando la
    sesión del usuario (manda `serverinfo`/`userinfo`/`traceinfo` primero) y recién ahí
-   queda listo para procesar comandos. `_solicitar_nodes` ahora reintenta una vez si no
-   llega respuesta a tiempo; sin esto, `sincronizar_todo()` se colgaba siempre en el
-   primer llamado tras loguear.
+   queda listo para procesar comandos. `_solicitar_nodes` reintenta una vez si no llega
+   respuesta a tiempo; sin esto, `sincronizar_todo()` se colgaba siempre en el primer
+   llamado tras loguear.
+3. **Reconexión falsa por timeout de inactividad**: en `escuchar_eventos`, `ws.recv()`
+   heredaba un timeout corto (8-15s) del resync inicial — cuando no llegaba nada nuevo
+   en ese lapso (el caso normal la mayor parte del tiempo), el timeout se trataba como
+   conexión perdida y forzaba reconectar (re-auth + resync completo) en loop constante
+   cada 8-15s, disfrazando el diseño "push, sin polling" en un poll agresivo. Fix:
+   `ws.settimeout(30)` explícito antes del bucle de escucha + `except
+   WebSocketTimeoutException: continue` en vez de tratarlo como error.
 
-Con ambos fixes: login real con la cuenta `romo`, `{"action":"nodes"}` trajo la estación
-piloto real `ML016-B` (la misma del piloto de despliegue, ver §10-F), y
-`sincronizar_todo()` escribió el `EstadoDispositivo` correcto (`en_linea=False`, la
-estación no tenía el agente MeshAgent conectado en ese momento) en la base de datos.
-**Sigue pendiente**: extraer y pinnear el certificado real (`MESHCENTRAL_API_CA_CERT`)
-en vez de `VERIFICAR_TLS=False`, y confirmar en vivo el camino de eventos
-`nodeconnect` en tiempo real (`run_meshcentral_worker` corriendo mientras una estación
-conecta/desconecta de verdad) — la prueba de 13-ago-2026 validó el snapshot inicial
-(`{"action":"nodes"}`), no todavía un evento espontáneo real.
+Con los tres fixes, validación de punta a punta contra producción real, sin simular
+nada:
+- Login real con la cuenta `romo`, `{"action":"nodes"}` trajo la estación piloto real
+  `ML016-B` (la misma del piloto de despliegue, ver §10-F), y `sincronizar_todo()`
+  escribió el `EstadoDispositivo` correcto en la base.
+- Se instaló MeshCentral en una segunda estación piloto (`ML006-A`, vía `curl.exe` —
+  `Invoke-WebRequest` fallaba por un problema de TLS de PowerShell 5.1 no relacionado)
+  y se vinculó desde el panel.
+- **Evento `nodeconnect` espontáneo confirmado en tiempo real**: se paró y volvió a
+  arrancar el servicio Windows "Mesh Agent" en `ML006-A` con el worker ya escuchando —
+  llegaron dos eventos push (sin poll, sin resync forzado) que quedaron en
+  `EventoMonitoreo` con los timestamps exactos de cada transición.
+  `registrar_estado_dispositivo` ahora loguea cada transición real (antes no dejaba
+  rastro en `docker-compose logs`, dificultó esta misma verificación).
+- **La alerta `agente_caido_red_viva` disparó sola contra un caso real**: `ML006-A`
+  llevaba (y sigue llevando) ~2 días sin heartbeat MQTT propio (ver hallazgo separado en
+  §10-T) pero MeshCentral la ve conectada — el cruce (`evaluar_cruce_monitoreo`, Celery
+  Beat) abrió la alerta automáticamente en su primera corrida tras el resync, sin
+  intervención manual.
+
+**Sigue pendiente**: pinnear el certificado real de MeshCentral (`MESHCENTRAL_API_CA_CERT`
+en vez de `VERIFICAR_TLS=False`).
 
 **Fuera de alcance de esta etapa, explícitamente diferido:**
 - **ACLs MQTT/EMQX por tenant** — el aislamiento por credencial propia ahora es *por
@@ -967,6 +987,30 @@ no se conoce todavía el valor real de NODO que disparó el error (el usuario no
 tenía a mano) — si vuelve a aparecer en el reporte de errores del importador, decidir
 ahí si conviene ampliar `Grupo.codigo` más allá de 10 caracteres en vez de solo
 reportarlo.
+
+**T. Bug real en producción, sin cerrar: agente de `ML006-A` falla intermitente con
+"Bad user name or password" contra EMQX (14-ago-2026):** encontrado de paso mientras
+se validaba en vivo el monitoreo cruzado MQTT × MeshCentral (ver fila "Monitoreo
+cruzado" en §9) — al instalar MeshCentral en `ML006-A` para esa prueba, se notó que su
+agente propio (`SaidsoftAgente`, Windows) llevaba desde el 11-ago sin heartbeat pese a
+estar `Running`. Diagnosticado hasta acá:
+- `C:\ProgramData\Saidsoft\agente_prueba.log` muestra un ciclo repetido cada ~2 min:
+  1-2 heartbeats enviados OK, después `Falló la conexión al broker: Bad user name or
+  password`, desconecta, paho reconecta solo, y el ciclo se repite — no es una caída
+  total, es intermitente.
+- Descartado que sean dos instancias del agente compitiendo por la credencial: los dos
+  PID que aparecen (`Get-Process`) son el bootloader + hijo normal de un ejecutable
+  PyInstaller `--onefile`, no un duplicado real (confirmado con
+  `Get-CimInstance Win32_Process` — `ParentProcessId` de uno es el otro).
+- Descartada la feature de credenciales rotativas por estación
+  (`apps.mqtt_worker.emqx_admin`) como causa: `EMQX_API_*` no está configurado en
+  `deploy/.env` de este servidor, así que sigue desactivada — el agente usa la
+  credencial compartida estática (`saidsof_agente`) de `config.json`, la misma que
+  usan el resto de las estaciones sin problema.
+- **Sin diagnosticar todavía**: por qué esa credencial estática falla de forma
+  intermitente (no constante) solo en esta estación. Falta revisar del lado de EMQX
+  (logs del broker, `GET .../authentication/.../users/saidsof_agente`, o si hay algún
+  límite de conexiones/rate-limit que esté rechazando reconexiones muy seguidas).
 
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
