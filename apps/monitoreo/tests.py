@@ -447,7 +447,10 @@ class AdaptadorMeshCentralTests(TestCase):
         })
         self.assertEqual(procesados, 1)
 
+    @override_settings(MESHCENTRAL_API_CONFIG={})
     def test_configurado_false_por_defecto(self):
+        # Explícito con override_settings (no depender de que el .env local no tenga
+        # estas variables — en este entorno de desarrollo, por ejemplo, sí las tiene).
         self.assertFalse(AdaptadorMeshCentral().configurado())
 
     @override_settings(
@@ -456,6 +459,7 @@ class AdaptadorMeshCentralTests(TestCase):
     def test_configurado_true_con_las_3_variables(self):
         self.assertTrue(AdaptadorMeshCentral().configurado())
 
+    @override_settings(MESHCENTRAL_API_CONFIG={})
     def test_sincronizar_todo_no_configurado_no_hace_nada(self):
         self.assertEqual(AdaptadorMeshCentral().sincronizar_todo(), 0)
 
@@ -498,3 +502,47 @@ class AdaptadorMeshCentralTests(TestCase):
 
         estado = EstadoDispositivo.objects.get(estacion=self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL)
         self.assertFalse(estado.en_linea)
+
+    def test_escuchar_eventos_no_reconecta_por_inactividad(self):
+        """Regresión: verificado contra el servidor real de producción (14-ago-2026) que
+        un timeout de recv() por simple inactividad (nadie mandó nada, el caso normal)
+        se trataba como conexión perdida y forzaba reconectar (re-auth + resync
+        completo) cada 8-15s en loop constante — disfrazaba el diseño "push, sin
+        polling" en un poll agresivo."""
+        import threading
+
+        from django.test import override_settings
+
+        detener = threading.Event()
+        ws = MagicMock()
+
+        respuesta_nodes = json.dumps({'action': 'nodes', 'nodes': {}})
+        evento = json.dumps({
+            'action': 'event',
+            'event': {'action': 'nodeconnect', 'nodeid': 'node/domain0/abc123', 'conn': 1},
+        })
+
+        def _recv_side_effect():
+            _recv_side_effect.llamadas += 1
+            if _recv_side_effect.llamadas <= 3:
+                raise websocket.WebSocketTimeoutException('timeout')
+            if _recv_side_effect.llamadas == 4:
+                return evento
+            detener.set()
+            raise websocket.WebSocketTimeoutException('timeout')
+
+        _recv_side_effect.llamadas = 0
+        ws.recv.side_effect = _recv_side_effect
+
+        with override_settings(
+            MESHCENTRAL_API_CONFIG={'WS_URL': 'wss://x', 'USUARIO': 'u', 'PASSWORD': 'p'},
+        ):
+            adaptador = AdaptadorMeshCentral()
+            adaptador._autenticar_y_conectar = MagicMock(return_value=ws)
+            adaptador._solicitar_nodes = MagicMock(return_value=0)
+
+            adaptador.escuchar_eventos(detener=detener)
+
+        adaptador._autenticar_y_conectar.assert_called_once()  # nunca reconectó
+        estado = EstadoDispositivo.objects.get(estacion=self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL)
+        self.assertTrue(estado.en_linea)

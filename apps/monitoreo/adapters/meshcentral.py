@@ -178,7 +178,14 @@ class AdaptadorMeshCentral(FuenteMonitoreo):
     def escuchar_eventos(self, *, detener: threading.Event, on_conectado=None) -> None:
         """Bucle de larga duración para run_meshcentral_worker: mantiene la conexión
         abierta y procesa nodeconnect en tiempo real. Reconecta con backoff simple
-        (1s, 2s, 4s... hasta 60s) si se cae la conexión."""
+        (1s, 2s, 4s... hasta 60s) si se cae la conexión de verdad.
+
+        Verificado contra el servidor real de producción (14-ago-2026): que `ws.recv()`
+        expire por inactividad (nadie mandó nada, el caso normal la mayor parte del
+        tiempo) NO es una conexión perdida — sin este cuidado, el bucle reconectaba
+        (re-auth + resync completo) cada 8-15s indefinidamente, disfrazando el diseño de
+        "push, sin polling" en un poll agresivo cada pocos segundos.
+        """
         backoff = 1
         while not detener.is_set():
             ws = None
@@ -188,8 +195,14 @@ class AdaptadorMeshCentral(FuenteMonitoreo):
                     on_conectado(ws)
                 self._solicitar_nodes(ws)  # resync al (re)conectar
                 backoff = 1
+                # Timeout solo para poder revisar `detener` periódicamente mientras no
+                # llega nada — no implica que la conexión se cayó (ver docstring).
+                ws.settimeout(30)
                 while not detener.is_set():
-                    raw = ws.recv()
+                    try:
+                        raw = ws.recv()
+                    except websocket.WebSocketTimeoutException:
+                        continue
                     if not raw:
                         break
                     self._procesar_mensaje(json.loads(raw))
