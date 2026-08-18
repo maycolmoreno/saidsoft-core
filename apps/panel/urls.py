@@ -47,6 +47,7 @@ urlpatterns = [
     path('auditoria/', views.auditoria_lista, name='auditoria_lista'),
 
     path('monitoreo/', views.monitoreo_lista, name='monitoreo_lista'),
+    path('monitoreo/tendencia/', views.tendencia_flota, name='tendencia_flota'),
     path('monitoreo/<int:pk>/', views.monitoreo_detalle, name='monitoreo_detalle'),
     path('monitoreo/<int:pk>/datos/', views.monitoreo_detalle_partial, name='monitoreo_detalle_partial'),
     path('monitoreo/mantenimiento/', views.ventanas_mantenimiento_lista, name='ventanas_mantenimiento_lista'),

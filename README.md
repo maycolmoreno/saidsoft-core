@@ -308,6 +308,19 @@ tiempo real:
   por regla — decisión del usuario), marcando `Alerta.escalada_en` para no repetir el
   aviso.
 
+## Tendencia de flota
+
+`/monitoreo/tendencia/` (18-ago-2026 — M5, última fase de código del roadmap de
+monitoreo proactivo; M4 sigue bloqueada, requiere el servidor real): a diferencia del
+resto del panel (por estación, o listados planos), esta vista agrega las últimas 12
+semanas para responder "¿cómo viene la salud general de la flota?" — alertas
+abiertas/resueltas por semana (por severidad) y promedio de CPU/RAM/disco de los
+servidores monitoreados, con los mismos gráficos SVG inline (`apps/monitoreo/graficos.py`)
+que ya se usan por estación individual. El top de errores del POS que muestra es el
+mismo "acumulado actual" de `/alertas/errores-pos/` (no una tendencia semanal:
+`PosErrorDetectado` no guarda cuándo ocurrió cada reporte, solo un contador de por
+vida — decisión explícita del usuario ante ese gap de datos).
+
 ## Monitoreo cruzado (MQTT × MeshCentral)
 
 Hoy el estado de conectividad se revisaba a mano cruzando dos paneles distintos.

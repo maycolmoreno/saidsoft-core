@@ -1,7 +1,10 @@
 {% extends "panel/base.html" %}
 {% block title %}Monitoreo · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold mb-2">Monitoreo de servidores</h1>
+<div class="flex items-center justify-between mb-2">
+    <h1 class="text-xl font-semibold">Monitoreo de servidores</h1>
+    <a href="{% url 'panel:tendencia_flota' %}" class="btn secondary">Tendencia de flota</a>
+</div>
 <p class="text-sm text-[var(--text-faint)] mb-6">Recursos de las estaciones marcadas para monitoreo. Cada tarjeta muestra la última muestra recibida.</p>
 
 <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

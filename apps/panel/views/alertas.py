@@ -54,15 +54,10 @@ def alertas_lista(request):
     })
 
 
-@login_required
-def pos_errores_flota(request):
-    """Rollup de errores del POS por mensaje exacto — a diferencia de agrupar por
-    regla (arriba), esto distingue *qué* error puntual está afectando cuántas
-    estaciones: la regla "Errores del POS" sola no alcanza para eso (una farmacia
-    puede tener un timeout de conexión y otra el bug de fidelización, ambos bajo la
-    misma regla). Solo categoría "sistema" — los de "negocio" (ej. venta sin lote) no
-    son una falla real, no tiene sentido rankearlos acá."""
-    q = request.GET.get('q', '').strip()
+def _top_mensajes_pos_errores(request, *, q=''):
+    """Rollup de PosErrorDetectado por mensaje exacto, escopeado por tenant — factorizado
+    de pos_errores_flota para que apps.panel.views.monitoreo.tendencia_flota (M5) pueda
+    mostrar un top acotado sin duplicar la query. Devuelve (filas, queryset_detectados)."""
     detectados = PosErrorDetectado.objects.filter(categoria=PosErrorDetectado.Categoria.SISTEMA)
     detectados = scope_por_unidad_negocio_activa(detectados, request, 'estacion__farmacia__unidad_negocio')
     if q:
@@ -80,6 +75,19 @@ def pos_errores_flota(request):
     maximo = filas[0]['n_estaciones'] if filas else 0
     for fila in filas:
         fila['pct_barra'] = round(100 * fila['n_estaciones'] / maximo) if maximo else 0
+    return filas, detectados
+
+
+@login_required
+def pos_errores_flota(request):
+    """Rollup de errores del POS por mensaje exacto — a diferencia de agrupar por
+    regla (arriba), esto distingue *qué* error puntual está afectando cuántas
+    estaciones: la regla "Errores del POS" sola no alcanza para eso (una farmacia
+    puede tener un timeout de conexión y otra el bug de fidelización, ambos bajo la
+    misma regla). Solo categoría "sistema" — los de "negocio" (ej. venta sin lote) no
+    son una falla real, no tiene sentido rankearlos acá."""
+    q = request.GET.get('q', '').strip()
+    filas, detectados = _top_mensajes_pos_errores(request, q=q)
 
     return render(request, 'panel/pos_errores_flota.html', {
         'filas': filas, 'q': q,

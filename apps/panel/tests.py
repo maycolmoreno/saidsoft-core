@@ -970,6 +970,112 @@ class VentanaMantenimientoPanelTests(TestCase):
         self.assertNotContains(resp, 'En mantenimiento hasta')
 
 
+class TendenciaFlotaTests(TestCase):
+    """M5: series semanales a nivel de flota (alertas por severidad, recursos
+    promedio) + top de errores del POS actual (sin tendencia — PosErrorDetectado no
+    guarda cuándo ocurrió cada reporte, solo un contador de por vida, ver docstring de
+    apps.panel.views.monitoreo.tendencia_flota)."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia_sg, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            monitorear_recursos=True,
+        )
+        self.usuario = User.objects.create_user(username='u_tendencia', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def test_cuenta_alertas_abiertas_de_esta_semana_por_severidad(self):
+        regla_warning = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90,
+            severidad=ReglaAlerta.Severidad.WARNING, creado_por=self.usuario,
+        )
+        regla_critical = ReglaAlerta.objects.create(
+            nombre='Disco lleno', metrica=Metrica.DISCO_USADO_PCT, umbral=95,
+            severidad=ReglaAlerta.Severidad.CRITICAL, creado_por=self.usuario,
+        )
+        Alerta.objects.create(regla=regla_warning, estacion=self.estacion, valor_disparador=95)
+        Alerta.objects.create(regla=regla_critical, estacion=self.estacion, valor_disparador=97)
+
+        resp = self.client.get(reverse('panel:tendencia_flota'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['g_abiertas_warning'].ultimo_valor, 1)
+        self.assertEqual(resp.context['g_abiertas_critical'].ultimo_valor, 1)
+        self.assertEqual(resp.context['total_abiertas_periodo'], 2)
+
+    def test_alerta_vieja_sigue_en_el_periodo_pero_no_en_la_semana_actual(self):
+        regla = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90, creado_por=self.usuario,
+        )
+        alerta = Alerta.objects.create(regla=regla, estacion=self.estacion, valor_disparador=95)
+        Alerta.objects.filter(pk=alerta.pk).update(abierta_en=timezone.now() - timedelta(weeks=3))
+
+        resp = self.client.get(reverse('panel:tendencia_flota'))
+        self.assertEqual(resp.context['g_abiertas_warning'].ultimo_valor, 0)
+        self.assertEqual(resp.context['total_abiertas_periodo'], 1)
+
+    def test_promedio_de_cpu_de_la_flota_esta_semana(self):
+        MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=80)
+        MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=60)
+        resp = self.client.get(reverse('panel:tendencia_flota'))
+        self.assertEqual(resp.context['g_cpu'].ultimo_valor, 70)
+
+    def test_sin_muestras_esta_semana_no_muestra_el_promedio_de_una_semana_vieja(self):
+        # Regresión: construir_grafico().ultimo_valor es el último valor NO NULO de la
+        # serie, no necesariamente el de la semana actual — si la semana actual no
+        # tiene muestras, no debe mostrarse el promedio de una semana vieja rotulado
+        # como "Esta semana".
+        vieja = MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=55)
+        MuestraMetrica.objects.filter(pk=vieja.pk).update(timestamp=timezone.now() - timedelta(weeks=3))
+
+        resp = self.client.get(reverse('panel:tendencia_flota'))
+        self.assertIsNone(resp.context['cpu_semana_actual'])
+        self.assertEqual(resp.context['g_cpu'].ultimo_valor, 55)  # el gráfico sí sigue mostrando el dato viejo
+        self.assertContains(resp, 'Sin datos esta semana')
+        self.assertNotContains(resp, 'Esta semana: 55')
+
+    def test_estacion_no_monitoreada_no_afecta_el_promedio(self):
+        otra = Estacion.objects.create(
+            codigo='ML001-B', farmacia=self.farmacia_sg, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            monitorear_recursos=False,
+        )
+        MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=80)
+        MuestraMetrica.objects.create(estacion=otra, cpu_carga_pct=0)
+        resp = self.client.get(reverse('panel:tendencia_flota'))
+        self.assertEqual(resp.context['g_cpu'].ultimo_valor, 80)
+
+    def test_top_errores_del_pos_reusa_la_misma_agregacion_que_pos_errores_flota(self):
+        PosErrorDetectado.objects.create(estacion=self.estacion, mensaje='no existe la relación X', cantidad_total=40)
+        resp = self.client.get(reverse('panel:tendencia_flota'))
+        top = resp.context['top_pos_errores']
+        self.assertEqual(len(top), 1)
+        self.assertEqual(top[0]['mensaje'], 'no existe la relación X')
+
+    def test_no_mezcla_alertas_de_otro_tenant(self):
+        grupo2 = Grupo.objects.create(codigo='TRX002')
+        farmacia_mia = Farmacia.objects.create(codigo='MAM01', grupo=grupo2, unidad_negocio=self.mia)
+        estacion_mia = Estacion.objects.create(
+            codigo='MAM01-A', farmacia=farmacia_mia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        creador_mia = User.objects.create_user(username='creador_mia_tendencia', password='x')
+        regla_mia = ReglaAlerta.objects.create(
+            nombre='Privada MIA', metrica=Metrica.CPU_CARGA_PCT, umbral=90,
+            unidad_negocio=self.mia, creado_por=creador_mia,
+        )
+        Alerta.objects.create(regla=regla_mia, estacion=estacion_mia, valor_disparador=95)
+
+        usuario_sg_only = User.objects.create_user(username='u_sg_only_tendencia', password='x')
+        PerfilUsuario.objects.create(usuario=usuario_sg_only).unidades_negocio.add(self.sg)
+        self.client.force_login(usuario_sg_only)
+
+        resp = self.client.get(reverse('panel:tendencia_flota'))
+        self.assertEqual(resp.context['total_abiertas_periodo'], 0)
+
+
 class ScriptProgramadoMultiTenantTests(TestCase):
     def setUp(self):
         self.sg = UnidadNegocio.objects.get(codigo='SG')

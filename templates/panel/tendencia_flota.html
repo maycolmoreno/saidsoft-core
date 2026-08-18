@@ -1,0 +1,124 @@
+{% extends "panel/base.html" %}
+{% block title %}Tendencia de flota · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="mb-2">
+    <a href="{% url 'panel:monitoreo_lista' %}" class="text-xs text-[var(--text-faint)]">← Monitoreo</a>
+</div>
+<div class="mb-6">
+    <h1 class="text-xl font-semibold">Tendencia de flota</h1>
+    <p class="text-sm text-[var(--text-faint)]">
+        Últimas 12 semanas ({{ semana_desde|date:"d/m/Y" }} – {{ semana_hasta|date:"d/m/Y" }}) —
+        no por estación, sino cómo viene la salud general de toda la flota en el tiempo.
+    </p>
+</div>
+
+<div class="kpi-strip mb-8">
+    <div class="card kpi tone-warning">
+        <div class="kpi-top"><div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div></div>
+        <div class="kpi-label">Alertas abiertas en el período</div>
+        <div class="kpi-value num">{{ total_abiertas_periodo }}</div>
+    </div>
+    <div class="card kpi tone-good">
+        <div class="kpi-top"><div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div></div>
+        <div class="kpi-label">Alertas resueltas en el período</div>
+        <div class="kpi-value num">{{ total_resueltas_periodo }}</div>
+    </div>
+</div>
+
+<h2 class="text-sm font-semibold text-[var(--text-dim)] uppercase tracking-wide mb-3">Alertas por semana</h2>
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8">
+    <div class="card p-4">
+        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">Abiertas · Advertencia</div>
+        <svg viewBox="0 0 {{ g_abiertas_warning.ancho }} {{ g_abiertas_warning.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
+            <polyline points="{{ g_abiertas_warning.area }}" fill="var(--warning)" fill-opacity="0.1" stroke="none"/>
+            <polyline points="{{ g_abiertas_warning.puntos }}" fill="none" stroke="var(--warning)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        </svg>
+        <div class="text-xs text-[var(--text-faint)] mt-1">Esta semana: {{ g_abiertas_warning.ultimo_valor|default:"0" }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">Abiertas · Crítica</div>
+        <svg viewBox="0 0 {{ g_abiertas_critical.ancho }} {{ g_abiertas_critical.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
+            <polyline points="{{ g_abiertas_critical.area }}" fill="var(--critical)" fill-opacity="0.1" stroke="none"/>
+            <polyline points="{{ g_abiertas_critical.puntos }}" fill="none" stroke="var(--critical)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        </svg>
+        <div class="text-xs text-[var(--text-faint)] mt-1">Esta semana: {{ g_abiertas_critical.ultimo_valor|default:"0" }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">Resueltas</div>
+        <svg viewBox="0 0 {{ g_resueltas.ancho }} {{ g_resueltas.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
+            <polyline points="{{ g_resueltas.area }}" fill="var(--good)" fill-opacity="0.1" stroke="none"/>
+            <polyline points="{{ g_resueltas.puntos }}" fill="none" stroke="var(--good)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        </svg>
+        <div class="text-xs text-[var(--text-faint)] mt-1">Esta semana: {{ g_resueltas.ultimo_valor|default:"0" }}</div>
+    </div>
+</div>
+
+<h2 class="text-sm font-semibold text-[var(--text-dim)] uppercase tracking-wide mb-3">
+    Promedio de recursos de la flota (servidores monitoreados)
+</h2>
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8">
+    <div class="card p-4">
+        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">CPU promedio</div>
+        <svg viewBox="0 0 {{ g_cpu.ancho }} {{ g_cpu.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
+            <polyline points="{{ g_cpu.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
+            <polyline points="{{ g_cpu.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        </svg>
+        <div class="text-xs text-[var(--text-faint)] mt-1">
+            {% if cpu_semana_actual is not None %}Esta semana: {{ cpu_semana_actual|floatformat:1 }}%{% else %}Sin datos esta semana{% endif %}
+        </div>
+    </div>
+    <div class="card p-4">
+        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">RAM usada promedio</div>
+        <svg viewBox="0 0 {{ g_ram.ancho }} {{ g_ram.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
+            <polyline points="{{ g_ram.area }}" fill="var(--good)" fill-opacity="0.1" stroke="none"/>
+            <polyline points="{{ g_ram.puntos }}" fill="none" stroke="var(--good)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        </svg>
+        <div class="text-xs text-[var(--text-faint)] mt-1">
+            {% if ram_semana_actual is not None %}Esta semana: {{ ram_semana_actual|floatformat:1 }}%{% else %}Sin datos esta semana{% endif %}
+        </div>
+    </div>
+    <div class="card p-4">
+        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">Disco usado promedio</div>
+        <svg viewBox="0 0 {{ g_disco.ancho }} {{ g_disco.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
+            <polyline points="{{ g_disco.area }}" fill="var(--accent)" fill-opacity="0.1" stroke="none"/>
+            <polyline points="{{ g_disco.puntos }}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        </svg>
+        <div class="text-xs text-[var(--text-faint)] mt-1">
+            {% if disco_semana_actual is not None %}Esta semana: {{ disco_semana_actual|floatformat:1 }}%{% else %}Sin datos esta semana{% endif %}
+        </div>
+    </div>
+</div>
+
+<div class="flex items-center justify-between mb-3">
+    <h2 class="text-sm font-semibold text-[var(--text-dim)] uppercase tracking-wide">Top errores del POS (acumulado actual)</h2>
+    <a href="{% url 'panel:pos_errores_flota' %}" class="text-xs" style="font-size:12.5px;">Ver todos →</a>
+</div>
+<p class="text-xs text-[var(--text-faint)] mb-3" style="max-width:640px;">
+    No es una tendencia semanal — PosErrorDetectado guarda un contador acumulado de por vida, no
+    un registro de cuándo ocurrió cada reporte. Son los mensajes con más estaciones afectadas ahora mismo.
+</p>
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Mensaje</th>
+                <th class="text-left px-4 py-3" style="width:120px;">Estaciones</th>
+                <th class="text-left px-4 py-3" style="width:100px;">Total</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for fila in top_pos_errores %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3" style="max-width:520px;">
+                    <div style="font-family:var(--font-mono);font-size:12px;background:var(--overlay-faint);border:1px solid var(--border-soft);border-radius:6px;padding:4px 8px;display:inline-block;overflow-wrap:break-word;">{{ fila.mensaje }}</div>
+                </td>
+                <td class="px-4 py-3 num" style="font-weight:700;">{{ fila.n_estaciones }}</td>
+                <td class="px-4 py-3 num">{{ fila.total }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="3" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin errores de categoría "sistema" detectados.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
