@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
@@ -20,8 +20,9 @@ from apps.cumplimiento.models import (
 )
 from apps.despliegues.models import Despliegue
 from apps.mantenimiento.models import EstadoGeneralEquipo, Mantenimiento
-from apps.monitoreo.models import Alerta, Metrica, ReglaAlerta
+from apps.monitoreo.models import Alerta, Metrica, MuestraMetrica, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento
 from apps.scripts.models import EjecucionScript, Script, ScriptProgramado, TipoScript
+from apps.software.models import SoftwareInstaladoDetectado
 
 
 class EstacionMeshCentralTests(TestCase):
@@ -235,7 +236,17 @@ class EstacionWindowsUpdateSolicitarTests(TestCase):
         )
         self.usuario = User.objects.create_user(username='u', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='escanear_actualizaciones_estacion'),
+        )
         self.client.force_login(self.usuario)
+
+    def test_sin_permiso_devuelve_403(self):
+        sin_permiso = User.objects.create_user(username='u_sin_wu', password='x')
+        PerfilUsuario.objects.create(usuario=sin_permiso, acceso_todas_unidades=True)
+        self.client.force_login(sin_permiso)
+        resp = self.client.post(reverse('panel:estacion_windows_update_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 403)
 
     def test_envia_el_comando_y_audita(self):
         with patch('apps.panel.views.estaciones.enviar_comando', return_value=True) as mock_enviar:
@@ -258,6 +269,220 @@ class EstacionWindowsUpdateSolicitarTests(TestCase):
             resp = self.client.post(reverse('panel:estacion_windows_update_solicitar', args=[self.estacion.pk]))
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(EventoAuditoria.objects.filter(accion='estacion.escanear_actualizaciones').exists())
+
+
+class EstacionSoftwareInstaladoSolicitarTests(TestCase):
+    """Mismo permiso que 'Actualizar ahora' (consultar_info_estacion) — no es una
+    acción de riesgo, así que reusa el permiso en vez de uno propio."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        self.usuario = User.objects.create_user(username='u_sw', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='consultar_info_estacion'),
+        )
+        self.client.force_login(self.usuario)
+
+    def test_sin_permiso_devuelve_403(self):
+        sin_permiso = User.objects.create_user(username='u_sw_sin', password='x')
+        PerfilUsuario.objects.create(usuario=sin_permiso, acceso_todas_unidades=True)
+        self.client.force_login(sin_permiso)
+        resp = self.client.post(reverse('panel:estacion_software_instalado_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_envia_el_comando_y_audita(self):
+        with patch('apps.panel.views.estaciones.enviar_comando', return_value=True) as mock_enviar:
+            resp = self.client.post(reverse('panel:estacion_software_instalado_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_called_once_with(self.estacion, 'consultar_software_instalado')
+        self.assertTrue(EventoAuditoria.objects.filter(accion='estacion.consultar_software_instalado').exists())
+
+    def test_estacion_no_aprobada_no_envia_ni_audita(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        with patch('apps.panel.views.estaciones.enviar_comando', return_value=True) as mock_enviar:
+            resp = self.client.post(reverse('panel:estacion_software_instalado_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_not_called()
+
+    def test_modal_muestra_lo_detectado_en_el_ultimo_escaneo(self):
+        SoftwareInstaladoDetectado.objects.create(estacion=self.estacion, nombre='Google Chrome', version='118.0')
+        self.estacion.software_instalado_ultima_verificacion = timezone.now()
+        self.estacion.save(update_fields=['software_instalado_ultima_verificacion'])
+        resp = self.client.get(reverse('panel:estacion_info_modal', args=[self.estacion.pk]))
+        self.assertContains(resp, 'Google Chrome')
+        self.assertContains(resp, '118.0')
+
+
+class EstacionPowerPlanModalTests(TestCase):
+    def test_modal_muestra_el_plan_de_energia_reportado(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            power_plan_actual='Alto rendimiento',
+        )
+        usuario = User.objects.create_user(username='u_power', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+
+        resp = self.client.get(reverse('panel:estacion_info_modal', args=[estacion.pk]))
+        self.assertContains(resp, 'Alto rendimiento')
+
+
+class EstacionPosErroresModalTests(TestCase):
+    def test_modal_muestra_los_errores_del_pos_detectados(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        PosErrorDetectado.objects.create(
+            estacion=estacion, mensaje='no existe la relación X', nivel='ERROR', cantidad_total=42,
+        )
+        usuario = User.objects.create_user(username='u_pos_modal', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+
+        resp = self.client.get(reverse('panel:estacion_info_modal', args=[estacion.pk]))
+        self.assertContains(resp, 'no existe la relación X')
+        self.assertContains(resp, 'x42')
+
+    def test_sin_errores_no_muestra_la_seccion(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        usuario = User.objects.create_user(username='u_pos_modal2', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+
+        resp = self.client.get(reverse('panel:estacion_info_modal', args=[estacion.pk]))
+        self.assertNotContains(resp, 'Errores del POS')
+
+
+class MonitoreoDiscoTests(TestCase):
+    """El disco es la tercera métrica agregada al monitoreo continuo (junto a CPU/RAM,
+    que ya reportaba el pipeline servidor sin que el agente real las emitiera — ver
+    PLAN_MODERNIZACION.md §9, fase R8): confirma que la tarjeta/gráfico nuevos
+    aparecen en ambas vistas."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            monitorear_recursos=True,
+        )
+        MuestraMetrica.objects.create(estacion=self.estacion, disco_total_gb=200.0, disco_libre_gb=20.0)
+        usuario = User.objects.create_user(username='u_disco', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+
+    def test_lista_muestra_pct_de_disco_usado(self):
+        resp = self.client.get(reverse('panel:monitoreo_lista'))
+        # (200-20)/200 = 90% — coma decimal por locale es-EC, no punto.
+        self.assertContains(resp, '90,0')
+
+    def test_detalle_muestra_grafico_y_libres_de_total(self):
+        resp = self.client.get(reverse('panel:monitoreo_detalle_partial', args=[self.estacion.pk]))
+        self.assertContains(resp, '90,0')
+        self.assertContains(resp, '20,0 GB libres de 200,0 GB')
+
+
+class EstacionMesaDeAyudaVsSoporteTecnicoTests(TestCase):
+    """Los cuatro permisos que separan mesa de ayuda (diagnóstico) de soporte técnico
+    (acciones de riesgo): consultar_info/aprobar/reiniciar/escanear_actualizaciones.
+    `seed_permisos` es quien arma los dos Groups; acá se prueba el gating en sí."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+
+        self.mesa_de_ayuda = User.objects.create_user(username='mesa_ayuda', password='x')
+        PerfilUsuario.objects.create(usuario=self.mesa_de_ayuda, acceso_todas_unidades=True)
+        self.mesa_de_ayuda.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='consultar_info_estacion'),
+        )
+
+        self.soporte_tecnico = User.objects.create_user(username='soporte_tec', password='x')
+        PerfilUsuario.objects.create(usuario=self.soporte_tecnico, acceso_todas_unidades=True)
+        for codename in ('consultar_info_estacion', 'aprobar_estacion', 'reiniciar_estacion'):
+            self.soporte_tecnico.user_permissions.add(
+                Permission.objects.get(content_type__app_label='catalogo', codename=codename),
+            )
+
+    def test_mesa_de_ayuda_puede_pedir_info_pero_no_aprobar_ni_reiniciar(self):
+        self.client.force_login(self.mesa_de_ayuda)
+        resp = self.client.post(reverse('panel:estacion_info_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+
+        resp = self.client.post(reverse('panel:estacion_aprobar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.APROBADA
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        resp = self.client.post(reverse('panel:estacion_reiniciar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_soporte_tecnico_puede_aprobar_rechazar_y_reiniciar(self):
+        self.client.force_login(self.soporte_tecnico)
+
+        resp = self.client.post(reverse('panel:estacion_aprobar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.estado_aprobacion, Estacion.EstadoAprobacion.APROBADA)
+
+        with patch('apps.panel.views.estaciones.enviar_comando', return_value=True):
+            resp = self.client.post(reverse('panel:estacion_reiniciar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(EventoAuditoria.objects.filter(accion='estacion.reiniciar').exists())
+
+        resp = self.client.post(reverse('panel:estacion_rechazar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.estado_aprobacion, Estacion.EstadoAprobacion.RECHAZADA)
+
+    def test_sin_ningun_permiso_no_puede_hacer_nada_de_esto(self):
+        sin_permiso = User.objects.create_user(username='sin_nada', password='x')
+        PerfilUsuario.objects.create(usuario=sin_permiso, acceso_todas_unidades=True)
+        self.client.force_login(sin_permiso)
+
+        self.assertEqual(
+            self.client.post(reverse('panel:estacion_info_solicitar', args=[self.estacion.pk])).status_code, 403,
+        )
+        self.assertEqual(
+            self.client.post(reverse('panel:estacion_aprobar', args=[self.estacion.pk])).status_code, 403,
+        )
+        self.assertEqual(
+            self.client.post(reverse('panel:estaciones_aprobar_lote'), {'estacion_ids': [self.estacion.pk]}).status_code,
+            403,
+        )
 
 
 class CumplimientoViewsTests(TestCase):
@@ -495,6 +720,256 @@ class AlertaMultiTenantTests(TestCase):
         self.assertEqual(self.alerta.estado, Alerta.Estado.ABIERTA)
 
 
+class AlertasAgrupadasTests(TestCase):
+    """Rollup por regla (M1a): 'cuántas estaciones tienen esta alerta activa ahora' en
+    vez de una fila por estación — ver apps.panel.views.alertas.alertas_lista."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion_a = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.estacion_b = Estacion.objects.create(
+            codigo='ML001-B', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_agrup', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+        self.regla = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90, creado_por=self.usuario,
+        )
+
+    def test_agrupa_por_regla_contando_estaciones_distintas(self):
+        Alerta.objects.create(regla=self.regla, estacion=self.estacion_a, valor_disparador=95)
+        Alerta.objects.create(regla=self.regla, estacion=self.estacion_b, valor_disparador=96)
+        resp = self.client.get(reverse('panel:alertas_lista'), {'vista': 'agrupada'})
+        self.assertEqual(resp.status_code, 200)
+        agrupadas = resp.context['agrupadas']
+        self.assertEqual(len(agrupadas), 1)
+        self.assertEqual(agrupadas[0]['regla_id'], self.regla.pk)
+        self.assertEqual(agrupadas[0]['n_estaciones'], 2)
+
+    def test_dos_alertas_de_la_misma_estacion_cuentan_una_sola_vez(self):
+        Alerta.objects.create(regla=self.regla, estacion=self.estacion_a, valor_disparador=95)
+        # Una segunda alerta "resuelta" no debería sumar una estación extra ni duplicar.
+        Alerta.objects.create(
+            regla=self.regla, estacion=self.estacion_a, valor_disparador=91, estado=Alerta.Estado.RESUELTA,
+        )
+        resp = self.client.get(reverse('panel:alertas_lista'), {'vista': 'agrupada'})
+        self.assertEqual(resp.context['agrupadas'][0]['n_estaciones'], 1)
+
+    def test_alertas_resueltas_no_aparecen_en_el_rollup(self):
+        Alerta.objects.create(
+            regla=self.regla, estacion=self.estacion_a, valor_disparador=95, estado=Alerta.Estado.RESUELTA,
+        )
+        resp = self.client.get(reverse('panel:alertas_lista'), {'vista': 'agrupada'})
+        self.assertEqual(list(resp.context['agrupadas']), [])
+        self.assertContains(resp, 'Sin alertas activas.')
+
+    def test_no_mezcla_estaciones_de_otro_tenant_en_el_conteo(self):
+        mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo2 = Grupo.objects.create(codigo='TRX002')
+        farmacia_mia = Farmacia.objects.create(codigo='MAM01', grupo=grupo2, unidad_negocio=mia)
+        estacion_mia = Estacion.objects.create(
+            codigo='MAM01-A', farmacia=farmacia_mia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        Alerta.objects.create(regla=self.regla, estacion=self.estacion_a, valor_disparador=95)
+        Alerta.objects.create(regla=self.regla, estacion=estacion_mia, valor_disparador=95)
+
+        usuario_sg_only = User.objects.create_user(username='u_sg_only', password='x')
+        PerfilUsuario.objects.create(usuario=usuario_sg_only).unidades_negocio.add(self.sg)
+        self.client.force_login(usuario_sg_only)
+
+        resp = self.client.get(reverse('panel:alertas_lista'), {'vista': 'agrupada'})
+        self.assertEqual(resp.context['agrupadas'][0]['n_estaciones'], 1)
+
+    def test_link_de_regla_normal_apunta_a_la_lista_filtrada(self):
+        Alerta.objects.create(regla=self.regla, estacion=self.estacion_a, valor_disparador=95)
+        resp = self.client.get(reverse('panel:alertas_lista'), {'vista': 'agrupada'})
+        self.assertContains(resp, f'?regla={self.regla.pk}')
+
+    def test_regla_pos_errores_linkea_al_rollup_por_mensaje(self):
+        regla_pos = ReglaAlerta.objects.create(
+            nombre='Errores del POS', metrica=Metrica.POS_ERRORES, umbral=1, creado_por=self.usuario,
+        )
+        Alerta.objects.create(regla=regla_pos, estacion=self.estacion_a, valor_disparador=3)
+        resp = self.client.get(reverse('panel:alertas_lista'), {'vista': 'agrupada'})
+        self.assertContains(resp, reverse('panel:pos_errores_flota'))
+
+    def test_filtro_por_regla_en_vista_plana(self):
+        otra_regla = ReglaAlerta.objects.create(
+            nombre='RAM alta', metrica=Metrica.RAM_USADA_PCT, umbral=90, creado_por=self.usuario,
+        )
+        Alerta.objects.create(regla=self.regla, estacion=self.estacion_a, valor_disparador=95)
+        Alerta.objects.create(regla=otra_regla, estacion=self.estacion_b, valor_disparador=95)
+        resp = self.client.get(reverse('panel:alertas_lista'), {'regla': self.regla.pk})
+        self.assertContains(resp, 'CPU alta')
+        self.assertNotContains(resp, 'RAM alta')
+
+
+class PosErroresFlotaTests(TestCase):
+    """Rollup por mensaje exacto (M1b): distingue qué error puntual afecta a cuántas
+    estaciones, algo que agrupar solo por regla no puede responder — ver
+    apps.panel.views.alertas.pos_errores_flota."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion_a = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.estacion_b = Estacion.objects.create(
+            codigo='ML001-B', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        usuario = User.objects.create_user(username='u_pos_flota', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+
+    def test_agrupa_por_mensaje_exacto_entre_estaciones(self):
+        PosErrorDetectado.objects.create(
+            estacion=self.estacion_a, mensaje='no existe la relación X', cantidad_total=40,
+        )
+        PosErrorDetectado.objects.create(
+            estacion=self.estacion_b, mensaje='no existe la relación X', cantidad_total=2,
+        )
+        resp = self.client.get(reverse('panel:pos_errores_flota'))
+        filas = resp.context['filas']
+        self.assertEqual(len(filas), 1)
+        self.assertEqual(filas[0]['n_estaciones'], 2)
+        self.assertEqual(filas[0]['total'], 42)
+
+    def test_categoria_negocio_no_aparece_en_el_rollup(self):
+        PosErrorDetectado.objects.create(
+            estacion=self.estacion_a, mensaje='VENTA SIN LOTE: x',
+            categoria=PosErrorDetectado.Categoria.NEGOCIO, cantidad_total=100,
+        )
+        resp = self.client.get(reverse('panel:pos_errores_flota'))
+        self.assertEqual(list(resp.context['filas']), [])
+
+    def test_ordenado_por_mas_estaciones_afectadas_primero(self):
+        PosErrorDetectado.objects.create(estacion=self.estacion_a, mensaje='error raro', cantidad_total=1)
+        PosErrorDetectado.objects.create(estacion=self.estacion_a, mensaje='error comun', cantidad_total=1)
+        PosErrorDetectado.objects.create(estacion=self.estacion_b, mensaje='error comun', cantidad_total=1)
+        resp = self.client.get(reverse('panel:pos_errores_flota'))
+        mensajes = [f['mensaje'] for f in resp.context['filas']]
+        self.assertEqual(mensajes[0], 'error comun')
+
+    def test_filtro_por_texto(self):
+        PosErrorDetectado.objects.create(estacion=self.estacion_a, mensaje='timeout de conexión', cantidad_total=1)
+        PosErrorDetectado.objects.create(estacion=self.estacion_a, mensaje='columna faltante', cantidad_total=1)
+        resp = self.client.get(reverse('panel:pos_errores_flota'), {'q': 'timeout'})
+        mensajes = [f['mensaje'] for f in resp.context['filas']]
+        self.assertEqual(mensajes, ['timeout de conexión'])
+
+    def test_no_mezcla_estaciones_de_otro_tenant(self):
+        mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo2 = Grupo.objects.create(codigo='TRX002')
+        farmacia_mia = Farmacia.objects.create(codigo='MAM01', grupo=grupo2, unidad_negocio=mia)
+        estacion_mia = Estacion.objects.create(
+            codigo='MAM01-A', farmacia=farmacia_mia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        PosErrorDetectado.objects.create(estacion=self.estacion_a, mensaje='error compartido', cantidad_total=1)
+        PosErrorDetectado.objects.create(estacion=estacion_mia, mensaje='error compartido', cantidad_total=1)
+
+        usuario_sg_only = User.objects.create_user(username='u_sg_only_pos', password='x')
+        PerfilUsuario.objects.create(usuario=usuario_sg_only).unidades_negocio.add(self.sg)
+        self.client.force_login(usuario_sg_only)
+
+        resp = self.client.get(reverse('panel:pos_errores_flota'))
+        self.assertEqual(resp.context['filas'][0]['n_estaciones'], 1)
+
+
+class VentanaMantenimientoPanelTests(TestCase):
+    """CRUD del panel (M2) + el aviso "en mantenimiento hasta" en el modal de la
+    estación (mismo patrón de destino/permiso que ScriptProgramado)."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.farmacia_mia = Farmacia.objects.create(codigo='MAM01', grupo=grupo, unidad_negocio=self.mia)
+        self.estacion_sg = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia_sg, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        creador = User.objects.create_user(username='creador_ventana', password='x')
+        self.ventana_sg = VentanaMantenimiento.objects.create(
+            unidad_negocio=self.sg, destino_tipo=VentanaMantenimiento.DestinoTipo.CADENA,
+            desde=timezone.now() - timedelta(hours=1), hasta=timezone.now() + timedelta(hours=1),
+            motivo='Ventana privada SG', creado_por=creador,
+        )
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_vm', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+
+    def test_usuario_de_otro_tenant_no_ve_la_ventana(self):
+        self.client.force_login(self.usuario_mia)
+        resp = self.client.get(reverse('panel:ventanas_mantenimiento_lista'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'Ventana privada SG')
+
+    def test_sin_permiso_no_puede_crear(self):
+        self.client.force_login(self.usuario_mia)
+        self.assertEqual(self.client.get(reverse('panel:ventana_mantenimiento_crear')).status_code, 403)
+
+    def test_operador_rmm_puede_crear(self):
+        operador = User.objects.create_user(username='operador_rmm_vm', password='x')
+        PerfilUsuario.objects.create(usuario=operador, acceso_todas_unidades=True)
+        operador.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='add_ventanamantenimiento'),
+        )
+        self.client.force_login(operador)
+        resp = self.client.post(reverse('panel:ventana_mantenimiento_crear'), {
+            'unidad_negocio': self.sg.pk,
+            'destino_tipo': VentanaMantenimiento.DestinoTipo.FARMACIAS,
+            'farmacias': [self.farmacia_sg.pk],
+            'desde': '2026-09-01T22:00',
+            'hasta': '2026-09-02T02:00',
+            'motivo': 'Reinicio masivo nocturno',
+            'activo': 'on',
+        })
+        self.assertRedirects(resp, reverse('panel:ventanas_mantenimiento_lista'))
+        self.assertTrue(VentanaMantenimiento.objects.filter(motivo='Reinicio masivo nocturno').exists())
+
+    def test_rechaza_farmacia_de_otra_unidad_negocio(self):
+        operador = User.objects.create_user(username='operador_rmm_vm2', password='x')
+        PerfilUsuario.objects.create(usuario=operador, acceso_todas_unidades=True)
+        operador.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='add_ventanamantenimiento'),
+        )
+        self.client.force_login(operador)
+        resp = self.client.post(reverse('panel:ventana_mantenimiento_crear'), {
+            'unidad_negocio': self.sg.pk,
+            'destino_tipo': VentanaMantenimiento.DestinoTipo.FARMACIAS,
+            'farmacias': [self.farmacia_mia.pk],
+            'desde': '2026-09-01T22:00',
+            'hasta': '2026-09-02T02:00',
+            'motivo': 'No debería crearse',
+            'activo': 'on',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(VentanaMantenimiento.objects.filter(motivo='No debería crearse').exists())
+
+    def test_modal_de_estacion_muestra_aviso_de_mantenimiento(self):
+        usuario_sg = User.objects.create_user(username='user_sg_vm', password='x')
+        PerfilUsuario.objects.create(usuario=usuario_sg).unidades_negocio.add(self.sg)
+        self.client.force_login(usuario_sg)
+        resp = self.client.get(reverse('panel:estacion_info_modal', args=[self.estacion_sg.pk]))
+        self.assertContains(resp, 'En mantenimiento hasta')
+
+    def test_modal_de_estacion_sin_ventana_activa_no_muestra_aviso(self):
+        self.ventana_sg.hasta = timezone.now() - timedelta(minutes=5)
+        self.ventana_sg.save(update_fields=['hasta'])
+        usuario_sg = User.objects.create_user(username='user_sg_vm2', password='x')
+        PerfilUsuario.objects.create(usuario=usuario_sg).unidades_negocio.add(self.sg)
+        self.client.force_login(usuario_sg)
+        resp = self.client.get(reverse('panel:estacion_info_modal', args=[self.estacion_sg.pk]))
+        self.assertNotContains(resp, 'En mantenimiento hasta')
+
+
 class ScriptProgramadoMultiTenantTests(TestCase):
     def setUp(self):
         self.sg = UnidadNegocio.objects.get(codigo='SG')
@@ -511,6 +986,9 @@ class ScriptProgramadoMultiTenantTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia2', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='scripts', codename='add_scriptprogramado'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_usuario_de_otro_tenant_no_ve_la_programacion(self):
@@ -522,6 +1000,46 @@ class ScriptProgramadoMultiTenantTests(TestCase):
         resp = self.client.get(reverse('panel:script_programado_crear'))
         self.assertNotContains(resp, '>SG</option>')
         self.assertContains(resp, '>MIA</option>')
+
+
+class ScriptsRequierenPermisoDeOperadorRmmTests(TestCase):
+    """Crear/ejecutar scripts (código arbitrario en la flota) es la superficie de riesgo
+    que separa el rol "Mesa de Ayuda" del rol "Soporte Técnico" — mesa de ayuda no la
+    tiene por defecto (ver seed_permisos.py)."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        creador = User.objects.create_user(username='creador_gate', password='x')
+        self.script = Script.objects.create(
+            nombre='Actualizar winget', tipo=TipoScript.POWERSHELL, contenido='winget upgrade --all',
+            unidad_negocio=self.sg, creado_por=creador,
+        )
+
+        self.sin_permiso = User.objects.create_user(username='sin_permiso_scripts', password='x')
+        PerfilUsuario.objects.create(usuario=self.sin_permiso, acceso_todas_unidades=True)
+
+        self.operador = User.objects.create_user(username='operador_rmm', password='x')
+        PerfilUsuario.objects.create(usuario=self.operador, acceso_todas_unidades=True)
+        for app_label, codename in [
+            ('scripts', 'add_script'), ('scripts', 'add_ejecucionscript'), ('scripts', 'add_scriptprogramado'),
+        ]:
+            self.operador.user_permissions.add(
+                Permission.objects.get(content_type__app_label=app_label, codename=codename),
+            )
+
+    def test_sin_permiso_no_puede_crear_ni_ejecutar_scripts(self):
+        self.client.force_login(self.sin_permiso)
+        self.assertEqual(self.client.get(reverse('panel:script_crear')).status_code, 403)
+        self.assertEqual(self.client.get(reverse('panel:script_ejecutar', args=[self.script.pk])).status_code, 403)
+        self.assertEqual(self.client.get(reverse('panel:script_ejecutar_adhoc')).status_code, 403)
+        self.assertEqual(self.client.get(reverse('panel:script_programado_crear')).status_code, 403)
+
+    def test_operador_rmm_si_puede(self):
+        self.client.force_login(self.operador)
+        self.assertEqual(self.client.get(reverse('panel:script_crear')).status_code, 200)
+        self.assertEqual(self.client.get(reverse('panel:script_ejecutar', args=[self.script.pk])).status_code, 200)
+        self.assertEqual(self.client.get(reverse('panel:script_ejecutar_adhoc')).status_code, 200)
+        self.assertEqual(self.client.get(reverse('panel:script_programado_crear')).status_code, 200)
 
 
 class ActivosMultiTenantTests(TestCase):
@@ -811,6 +1329,26 @@ class ReportesPorClienteTests(TestCase):
         estaciones = [fila[2] for fila in list(csv.reader(salida))[1:]]
         self.assertIn('MAM01-A', estaciones)
         self.assertNotIn('ML001-A', estaciones)
+
+    def test_reporte_software_instalado_service_filtra_por_unidad_y_nombre(self):
+        from apps.panel.reportes import reporte_software_instalado
+        SoftwareInstaladoDetectado.objects.create(estacion=self.estacion_mia, nombre='Google Chrome', version='118.0')
+        SoftwareInstaladoDetectado.objects.create(estacion=self.estacion_mia, nombre='7-Zip', version='23.01')
+        SoftwareInstaladoDetectado.objects.create(estacion=self.estacion_sg, nombre='Google Chrome', version='118.0')
+
+        salida = io.StringIO()
+        reporte_software_instalado(salida, self.mia)
+        salida.seek(0)
+        filas = list(csv.reader(salida))[1:]
+        self.assertEqual({fila[5] for fila in filas}, {'MAM01-A'})
+        self.assertEqual({fila[0] for fila in filas}, {'Google Chrome', '7-Zip'})
+
+        salida = io.StringIO()
+        reporte_software_instalado(salida, self.mia, nombre_filtro='chrome')
+        salida.seek(0)
+        filas = list(csv.reader(salida))[1:]
+        self.assertEqual(len(filas), 1)
+        self.assertEqual(filas[0][0], 'Google Chrome')
 
     def test_reporte_cumplimiento_csv_sin_parametro_no_muestra_todo(self):
         resp = self.client.get(reverse('panel:reporte_cumplimiento_csv'))

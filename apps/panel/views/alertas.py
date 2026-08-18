@@ -1,5 +1,6 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.db.models import Count, Max, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -10,7 +11,7 @@ from apps.cuentas.services import (
     scope_opcional_por_unidad_negocio_activa, scope_por_unidad_negocio_activa, verificar_acceso,
 )
 from apps.monitoreo.forms import ReglaAlertaForm
-from apps.monitoreo.models import Alerta, ReglaAlerta
+from apps.monitoreo.models import Alerta, PosErrorDetectado, ReglaAlerta
 
 
 @login_required
@@ -19,10 +20,73 @@ def alertas_lista(request):
         Alerta.objects.select_related('regla', 'estacion', 'estacion__farmacia'),
         request, 'estacion__farmacia__unidad_negocio',
     )
+    regla_id = request.GET.get('regla')
+    if regla_id:
+        alertas = alertas.filter(regla_id=regla_id)
     solo_activas = request.GET.get('todas') != '1'
     if solo_activas:
         alertas = alertas.filter(estado__in=[Alerta.Estado.ABIERTA, Alerta.Estado.RECONOCIDA])
-    return render(request, 'panel/alertas_lista.html', {'alertas': alertas, 'solo_activas': solo_activas})
+
+    # Vista agrupada: "cuántas estaciones tienen esta regla activa ahora mismo" — sin
+    # esto, un bug sistémico (ej. un error de esquema del POS en 40 farmacias) generaba
+    # 40 filas idénticas en vez de una, entrenando al operador a ignorar la lista a
+    # escala. Siempre sobre alertas ACTIVAS (no depende de `todas`/`regla`): agrupar
+    # alertas ya resueltas no tiene el mismo sentido de "esto está pasando ahora".
+    vista_agrupada = request.GET.get('vista') == 'agrupada'
+    agrupadas = None
+    if vista_agrupada:
+        activas = scope_por_unidad_negocio_activa(
+            Alerta.objects.filter(estado__in=[Alerta.Estado.ABIERTA, Alerta.Estado.RECONOCIDA]),
+            request, 'estacion__farmacia__unidad_negocio',
+        )
+        agrupadas = list(
+            activas.values('regla_id', 'regla__nombre', 'regla__severidad', 'regla__metrica')
+            .annotate(n_estaciones=Count('estacion', distinct=True))
+            .order_by('-n_estaciones')
+        )
+        for fila in agrupadas:
+            fila['severidad_display'] = ReglaAlerta.Severidad(fila['regla__severidad']).label
+            fila['es_pos_errores'] = fila['regla__metrica'] == 'pos_errores'
+
+    return render(request, 'panel/alertas_lista.html', {
+        'alertas': alertas, 'solo_activas': solo_activas,
+        'vista_agrupada': vista_agrupada, 'agrupadas': agrupadas,
+    })
+
+
+@login_required
+def pos_errores_flota(request):
+    """Rollup de errores del POS por mensaje exacto — a diferencia de agrupar por
+    regla (arriba), esto distingue *qué* error puntual está afectando cuántas
+    estaciones: la regla "Errores del POS" sola no alcanza para eso (una farmacia
+    puede tener un timeout de conexión y otra el bug de fidelización, ambos bajo la
+    misma regla). Solo categoría "sistema" — los de "negocio" (ej. venta sin lote) no
+    son una falla real, no tiene sentido rankearlos acá."""
+    q = request.GET.get('q', '').strip()
+    detectados = PosErrorDetectado.objects.filter(categoria=PosErrorDetectado.Categoria.SISTEMA)
+    detectados = scope_por_unidad_negocio_activa(detectados, request, 'estacion__farmacia__unidad_negocio')
+    if q:
+        detectados = detectados.filter(mensaje__icontains=q)
+
+    filas = list(
+        detectados.values('mensaje')
+        .annotate(
+            n_estaciones=Count('estacion', distinct=True),
+            total=Sum('cantidad_total'),
+            ultima_vez=Max('ultima_vez'),
+        )
+        .order_by('-n_estaciones')
+    )
+    maximo = filas[0]['n_estaciones'] if filas else 0
+    for fila in filas:
+        fila['pct_barra'] = round(100 * fila['n_estaciones'] / maximo) if maximo else 0
+
+    return render(request, 'panel/pos_errores_flota.html', {
+        'filas': filas, 'q': q,
+        'total_mensajes': len(filas),
+        'total_estaciones': detectados.values('estacion_id').distinct().count(),
+        'total_errores': sum(f['total'] for f in filas),
+    })
 
 
 @login_required

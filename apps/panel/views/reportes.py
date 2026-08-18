@@ -175,6 +175,18 @@ def reporte_facturacion_csv(request):
 
 
 @login_required
+def reporte_software_instalado_csv(request):
+    from apps.panel import reportes
+    unidad = _resolver_unidad_negocio(request)
+    if unidad is None:
+        return redirect('panel:reportes_index')
+    nombre_filtro = request.GET.get('q', '').strip()
+    resp = _csv_response(reportes.nombre_archivo(f'software_instalado_{unidad.codigo}'))
+    reportes.reporte_software_instalado(resp, unidad, nombre_filtro=nombre_filtro)
+    return resp
+
+
+@login_required
 def reporte_cliente_resumen(request):
     unidades_negocio = unidades_negocio_visibles(request.user)
     unidad = _resolver_unidad_negocio(request)

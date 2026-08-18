@@ -6,12 +6,55 @@
         <h1 class="text-xl font-semibold">Alertas</h1>
         <p class="text-sm text-[var(--text-faint)]">{% if solo_activas %}Abiertas y reconocidas.{% else %}Todas, incluyendo resueltas.{% endif %}</p>
     </div>
-    <div class="flex gap-3">
+    <div class="flex gap-3 items-center">
+        <div class="segmented">
+            <a href="?{% if not solo_activas %}todas=1{% endif %}" class="seg {% if not vista_agrupada %}is-active{% endif %}">Por estación</a>
+            <a href="?vista=agrupada" class="seg {% if vista_agrupada %}is-active{% endif %}">Agrupado por regla</a>
+        </div>
+        {% if not vista_agrupada %}
         <a href="?{% if solo_activas %}todas=1{% endif %}" class="btn secondary">{% if solo_activas %}Ver todas{% else %}Ver solo activas{% endif %}</a>
+        {% endif %}
+        <a href="{% url 'panel:ventanas_mantenimiento_lista' %}" class="btn secondary">Mantenimiento</a>
         <a href="{% url 'panel:reglas_alerta_lista' %}" class="btn secondary">Reglas</a>
     </div>
 </div>
 
+{% if vista_agrupada %}
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Regla</th>
+                <th class="text-left px-4 py-3">Estaciones con esta alerta activa ahora</th>
+                <th class="text-right px-4 py-3">Acción</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for fila in agrupadas %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">
+                    <span class="pill {% if fila.severidad_display == 'Crítica' %}critical{% else %}warning{% endif %}">{{ fila.severidad_display }}</span>
+                    <span style="margin-left:8px;">{{ fila.regla__nombre }}</span>
+                </td>
+                <td class="px-4 py-3">
+                    <span style="font-size:20px;font-weight:700;" class="num">{{ fila.n_estaciones }}</span>
+                    <span class="text-xs text-[var(--text-faint)]" style="margin-left:8px;">estación{{ fila.n_estaciones|pluralize }}</span>
+                </td>
+                <td class="px-4 py-3 text-right">
+                    {% if fila.es_pos_errores %}
+                    <a href="{% url 'panel:pos_errores_flota' %}" class="text-xs" style="font-size:12.5px;">Ver por mensaje →</a>
+                    {% else %}
+                    <a href="{% url 'panel:alertas_lista' %}?regla={{ fila.regla_id }}" class="text-xs" style="font-size:12.5px;">Ver estaciones →</a>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="3" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin alertas activas.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
 <div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
         <thead style="background:var(--panel);">
@@ -62,4 +105,5 @@
         </tbody>
     </table>
 </div>
+{% endif %}
 {% endblock %}

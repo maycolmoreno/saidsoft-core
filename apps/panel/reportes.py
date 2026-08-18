@@ -199,5 +199,34 @@ def reporte_facturacion(salida, unidad_negocio, anio: int, mes: int):
     _escribir(salida, ['grupo', 'farmacia', 'estacion', 'hostname'], filas)
 
 
+def reporte_software_instalado(salida, unidad_negocio, nombre_filtro: str = ''):
+    """Qué estaciones tienen instalado qué software, según el último escaneo de cada
+    una (comando "consultar_software_instalado") — el valor real del feature: compliance
+    de licenciamiento y detectar software no autorizado. `nombre_filtro` acota a
+    programas cuyo nombre lo contiene (ej. "Chrome"), sin acotar por defecto."""
+    from apps.software.models import SoftwareInstaladoDetectado
+
+    detectados = (
+        SoftwareInstaladoDetectado.objects
+        .filter(estacion__farmacia__unidad_negocio=unidad_negocio)
+        .select_related('estacion', 'estacion__farmacia', 'estacion__farmacia__grupo')
+        .order_by('nombre', 'estacion__codigo')
+    )
+    if nombre_filtro:
+        detectados = detectados.filter(nombre__icontains=nombre_filtro)
+
+    filas = [
+        [
+            d.nombre, d.version, d.fabricante,
+            d.estacion.farmacia.grupo.codigo, d.estacion.farmacia.codigo, d.estacion.codigo,
+            d.detectado_en.strftime('%Y-%m-%d %H:%M:%S'),
+        ]
+        for d in detectados
+    ]
+    _escribir(salida, [
+        'programa', 'version', 'fabricante', 'grupo', 'farmacia', 'estacion', 'detectado_en',
+    ], filas)
+
+
 def nombre_archivo(prefijo: str) -> str:
     return f'{prefijo}_{timezone.now():%Y%m%d_%H%M%S}.csv'

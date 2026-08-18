@@ -1,5 +1,6 @@
-"""Catálogo de software instalable en estaciones bajo demanda (Fase 1: núcleo + admin;
-el panel HTMX llega en Fase 2).
+"""Catálogo de software instalable en estaciones bajo demanda, con panel HTMX completo
+(`apps/panel/views/software.py`), más el inventario de lo que ya está instalado
+(SoftwareInstaladoDetectado, R7 — ver PLAN_MODERNIZACION.md §9).
 
 Dos niveles, a diferencia de Despliegue (que es "una fila = una versión suelta"):
 AplicacionCatalogo es la entrada del catálogo (persiste entre versiones), Version
@@ -12,6 +13,9 @@ No hay aprobación de cuatro ojos aquí a propósito (a diferencia de Despliegue
 software es una operación de menor radio que actualizar el POS de toda la cadena — más
 parecido en riesgo a Scripts (auditado, pero sin segundo aprobador obligatorio). Si en la
 práctica hace falta, se agrega después sin romper el modelo.
+
+SoftwareInstaladoDetectado es un concepto aparte: lo que el agente *detectó* instalado
+(cualquier origen, no solo una SolicitudInstalacion de este catálogo), no un push.
 """
 import hashlib
 
@@ -238,3 +242,74 @@ class EventoInstalacion(models.Model):
 
     def delete(self, *args, **kwargs):
         raise NotImplementedError('EventoInstalacion es inmutable: no se puede eliminar.')
+
+
+class SoftwareInstaladoDetectado(models.Model):
+    """Inventario de lo que el agente detectó instalado en una Estacion (registro de
+    Windows, claves Uninstall) — independiente de si llegó por una SolicitudInstalacion
+    de este catálogo o por cualquier otra vía (instalación manual, el propio POS, etc.).
+
+    Snapshot, no historial: cada escaneo (comando "consultar_software_instalado")
+    reemplaza por completo las filas de esa estación (ver
+    apps.mqtt_worker.services.manejar_software_instalado) — instalar/desinstalar algo
+    entre escaneos simplemente se refleja en el próximo, sin necesidad de lógica de
+    diff. Modelo relacional (no un JSONField en Estacion, a diferencia de
+    windows_update_detalle) a propósito: el valor del feature es poder *buscar* — "qué
+    estaciones tienen instalado Chrome 118" — algo que un blob JSON no permite indexar.
+    """
+
+    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='software_instalado')
+    nombre = models.CharField(max_length=200)
+    version = models.CharField(max_length=50, blank=True)
+    fabricante = models.CharField(max_length=150, blank=True)
+    detectado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'software_instalado_detectado'
+        ordering = ['estacion', 'nombre']
+        unique_together = [('estacion', 'nombre')]
+        verbose_name = 'Software instalado detectado'
+        verbose_name_plural = 'Software instalado detectado'
+
+    def __str__(self):
+        return f'{self.estacion.codigo}: {self.nombre} {self.version}'.strip()
+
+
+class InventarioProgramado(models.Model):
+    """Política "escanear software instalado cada N días" — mismo patrón que
+    ScriptProgramado/MantenimientoProgramado: un comando periódico
+    (generar_escaneos_programados) recorre las vencidas y dispara el comando fijo
+    "consultar_software_instalado" a cada estación resuelta. A diferencia de
+    ScriptProgramado, no hay un `Script` de por medio ni un modelo de "ejecución" — el
+    resultado de cada escaneo simplemente sobreescribe SoftwareInstaladoDetectado
+    cuando el agente responde (mismo snapshot que el escaneo manual).
+    """
+
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, related_name='inventarios_programados',
+        help_text='Cliente al que se dirige. "Toda la cadena" significa toda la cadena '
+                  'de esta unidad de negocio, nunca de otras.',
+    )
+    destino_tipo = models.CharField(max_length=20, choices=DestinoTipo.choices)
+    grupos = models.ManyToManyField(Grupo, blank=True, related_name='inventarios_programados')
+    farmacias = models.ManyToManyField(Farmacia, blank=True, related_name='inventarios_programados')
+    estaciones = models.ManyToManyField(Estacion, blank=True, related_name='inventarios_programados')
+
+    frecuencia_dias = models.PositiveIntegerField()
+    fecha_ultima_ejecucion = models.DateField(null=True, blank=True)
+    fecha_proxima_ejecucion = models.DateField()
+    activo = models.BooleanField(default=True)
+
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='inventarios_programados_creados',
+    )
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'inventario_programado'
+        ordering = ['fecha_proxima_ejecucion']
+        verbose_name = 'Inventario de software programado'
+        verbose_name_plural = 'Inventarios de software programados'
+
+    def __str__(self):
+        return f'Inventario de software cada {self.frecuencia_dias} días ({self.unidad_negocio.codigo})'

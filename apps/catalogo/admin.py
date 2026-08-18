@@ -6,6 +6,7 @@ from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 
+from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_por_unidad_negocio
 
 from .models import Estacion, Farmacia, Grupo, UnidadNegocio
@@ -115,6 +116,7 @@ class EstacionAdmin(admin.ModelAdmin):
     list_editable = ('es_cache_farmacia', 'monitorear_recursos')
     autocomplete_fields = ('farmacia',)
     readonly_fields = ('token_enrolamiento', 'ip_lan', 'puerto_cache', 'ultimo_heartbeat', 'fecha_creacion')
+    actions = ['activar_monitoreo_recursos', 'desactivar_monitoreo_recursos']
 
     def get_queryset(self, request):
         return scope_por_unidad_negocio(super().get_queryset(request), request.user, 'farmacia__unidad_negocio')
@@ -122,3 +124,30 @@ class EstacionAdmin(admin.ModelAdmin):
     @admin.display(description='¿Desactualizada?', boolean=True)
     def desactualizada_badge(self, obj):
         return obj.desactualizada
+
+    def _cambiar_monitoreo_recursos(self, request, queryset, *, activar):
+        # list_editable ya permite tildar el flag fila por fila, pero para ~1.800
+        # estaciones eso no escala — con list_filter por grupo/es_cache_farmacia se
+        # puede filtrar y aplicar en lote a la selección completa.
+        estaciones = list(queryset.exclude(monitorear_recursos=activar))
+        for estacion in estaciones:
+            registrar_evento(
+                usuario=request.user,
+                accion='estacion.monitoreo_activar' if activar else 'estacion.monitoreo_desactivar',
+                objeto=estacion,
+            )
+        Estacion.objects.filter(pk__in=[e.pk for e in estaciones]).update(monitorear_recursos=activar)
+        verbo = 'activado' if activar else 'desactivado'
+        self.message_user(
+            request,
+            f'Monitoreo de recursos {verbo} en {len(estaciones)} estación(es). El agente lo aplica '
+            'recién en su próximo re-enrolamiento (ver "Monitoreo de servidores" en README.md).',
+        )
+
+    @admin.action(description='Activar monitoreo de recursos (CPU/RAM/disco)')
+    def activar_monitoreo_recursos(self, request, queryset):
+        self._cambiar_monitoreo_recursos(request, queryset, activar=True)
+
+    @admin.action(description='Desactivar monitoreo de recursos (CPU/RAM/disco)')
+    def desactivar_monitoreo_recursos(self, request, queryset):
+        self._cambiar_monitoreo_recursos(request, queryset, activar=False)

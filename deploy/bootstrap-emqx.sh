@@ -116,6 +116,8 @@ definir_acl "$MQTT_USERNAME_WORKER" '[
     {"topic": "/saidsof/agente/+/info_equipo/", "permission": "allow", "action": "subscribe"},
     {"topic": "/saidsof/agente/+/script_estado/", "permission": "allow", "action": "subscribe"},
     {"topic": "/saidsof/agente/+/windows_update/", "permission": "allow", "action": "subscribe"},
+    {"topic": "/saidsof/agente/+/software_instalado/", "permission": "allow", "action": "subscribe"},
+    {"topic": "/saidsof/agente/+/pos_errores/", "permission": "allow", "action": "subscribe"},
     {"topic": "/saidsof/enrolamiento/respuesta/+/", "permission": "allow", "action": "publish"}
 ]'
 

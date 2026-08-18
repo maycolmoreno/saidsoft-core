@@ -11,6 +11,12 @@ from apps.catalogo.services import (
     url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
+from apps.monitoreo.services import ventana_mantenimiento_activa
+
+
+def _render_info_modal(request, estacion, **extra):
+    contexto = {'estacion': estacion, 'ventana_mantenimiento': ventana_mantenimiento_activa(estacion), **extra}
+    return render(request, 'panel/estacion_info_modal.html', contexto)
 
 
 @login_required
@@ -57,6 +63,7 @@ def estaciones_pendientes_partial(request, aviso=''):
 
 
 @login_required
+@permission_required('catalogo.aprobar_estacion', raise_exception=True)
 @require_POST
 def estacion_aprobar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
@@ -68,6 +75,7 @@ def estacion_aprobar(request, pk):
 
 
 @login_required
+@permission_required('catalogo.aprobar_estacion', raise_exception=True)
 @require_POST
 def estacion_rechazar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
@@ -79,6 +87,7 @@ def estacion_rechazar(request, pk):
 
 
 @login_required
+@permission_required('catalogo.reiniciar_estacion', raise_exception=True)
 @require_POST
 def estacion_reiniciar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
@@ -99,10 +108,11 @@ def estacion_reiniciar(request, pk):
 def estacion_info_modal(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
     verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
-    return render(request, 'panel/estacion_info_modal.html', {'estacion': estacion})
+    return _render_info_modal(request, estacion)
 
 
 @login_required
+@permission_required('catalogo.consultar_info_estacion', raise_exception=True)
 @require_POST
 def estacion_info_solicitar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
@@ -111,10 +121,11 @@ def estacion_info_solicitar(request, pk):
     if estacion.estado_aprobacion == Estacion.EstadoAprobacion.APROBADA and enviar_comando(estacion, 'consultar_info'):
         registrar_evento(usuario=request.user, accion='estacion.consultar_info', objeto=estacion, request=request)
         solicitado = True
-    return render(request, 'panel/estacion_info_modal.html', {'estacion': estacion, 'solicitado': solicitado})
+    return _render_info_modal(request, estacion, solicitado=solicitado)
 
 
 @login_required
+@permission_required('catalogo.escanear_actualizaciones_estacion', raise_exception=True)
 @require_POST
 def estacion_windows_update_solicitar(request, pk):
     """Dispara un escaneo puntual de actualizaciones de Windows pendientes — v1 es solo
@@ -129,7 +140,29 @@ def estacion_windows_update_solicitar(request, pk):
     ):
         registrar_evento(usuario=request.user, accion='estacion.escanear_actualizaciones', objeto=estacion, request=request)
         solicitado_wu = True
-    return render(request, 'panel/estacion_info_modal.html', {'estacion': estacion, 'solicitado_wu': solicitado_wu})
+    return _render_info_modal(request, estacion, solicitado_wu=solicitado_wu)
+
+
+@login_required
+@permission_required('catalogo.consultar_info_estacion', raise_exception=True)
+@require_POST
+def estacion_software_instalado_solicitar(request, pk):
+    """Dispara un escaneo puntual de software instalado (ver
+    apps.mqtt_worker.services.manejar_software_instalado). Mismo permiso que
+    "Actualizar ahora" (consultar_info_estacion): es diagnóstico, no una acción de
+    riesgo — no hace falta un permiso propio."""
+    estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
+    solicitado_sw = False
+    if (
+        estacion.estado_aprobacion == Estacion.EstadoAprobacion.APROBADA
+        and enviar_comando(estacion, 'consultar_software_instalado')
+    ):
+        registrar_evento(
+            usuario=request.user, accion='estacion.consultar_software_instalado', objeto=estacion, request=request,
+        )
+        solicitado_sw = True
+    return _render_info_modal(request, estacion, solicitado_sw=solicitado_sw)
 
 
 @login_required
@@ -146,7 +179,7 @@ def estacion_meshcentral_vincular(request, pk):
         usuario=request.user, accion='estacion.meshcentral_vincular', objeto=estacion,
         detalle={'meshcentral_node_id': node_id}, request=request,
     )
-    return render(request, 'panel/estacion_info_modal.html', {'estacion': estacion})
+    return _render_info_modal(request, estacion)
 
 
 @login_required
@@ -217,12 +250,11 @@ def estacion_bitlocker_ver_clave(request, pk):
         registrar_evento(
             usuario=request.user, accion='estacion.bitlocker_clave_ver', objeto=estacion, request=request,
         )
-    return render(request, 'panel/estacion_info_modal.html', {
-        'estacion': estacion, 'bitlocker_clave_revelada': clave, 'bitlocker_solicitada': True,
-    })
+    return _render_info_modal(request, estacion, bitlocker_clave_revelada=clave, bitlocker_solicitada=True)
 
 
 @login_required
+@permission_required('catalogo.aprobar_estacion', raise_exception=True)
 @require_POST
 def estaciones_aprobar_lote(request):
     ids = request.POST.getlist('estacion_ids')

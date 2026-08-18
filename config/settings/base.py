@@ -250,6 +250,16 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.mantenimiento.tasks.generar_mantenimientos_programados_task',
         'schedule': 60.0 * 60 * 24,  # diario
     },
+    'generar-escaneos-programados': {
+        'task': 'apps.software.tasks.generar_escaneos_programados_task',
+        'schedule': 60.0 * 60 * 24,  # diario — el propio filtro por fecha lo hace seguro de repetir
+    },
+    'escalar-alertas-abiertas': {
+        'task': 'apps.monitoreo.tasks.escalar_alertas_task',
+        # Cada 10 min: suficiente margen frente a UMBRAL_ESCALAMIENTO_MINUTOS (30) sin
+        # sumar carga significativa — mismo orden de magnitud que evaluar-cruce-monitoreo.
+        'schedule': 60.0 * 10,
+    },
 }
 
 # El handler "console" del LOGGING por defecto de Django viene filtrado por

@@ -155,6 +155,17 @@ class Estacion(models.Model):
                   'Texto libre, no choices: los protectores de BitLocker no son un set fijo pequeño.',
     )
 
+    # Política de energía, reportada junto con el resto de info de hardware (mismo
+    # comando "consultar_info") — v1 es solo lectura, a propósito: no hay todavía forma
+    # de aplicar/forzar un plan desde el panel (ver PLAN_MODERNIZACION.md §9, misma
+    # cautela que Windows Update v1 en equipos de farmacia). '' = nunca se consultó.
+    power_plan_actual = models.CharField(
+        max_length=100, blank=True,
+        help_text='Nombre del plan de energía activo (ej. "Equilibrado", "Alto rendimiento"), '
+                  'tal como lo reporta Windows (Win32_PowerPlan).',
+    )
+    power_plan_ultima_verificacion = models.DateTimeField(null=True, blank=True)
+
     # Windows Update nativo (v1: solo escaneo/reporte, el agente nunca instala ni
     # reinicia solo) — comando "escanear_actualizaciones", bajo demanda desde el panel,
     # mismo patrón "info bajo demanda" que BitLocker arriba. null en
@@ -175,6 +186,12 @@ class Estacion(models.Model):
                   'tienen salida a internet por defecto — este campo es lo que le avisa al '
                   'operador que hay que habilitársela para poder escanear esa estación puntual.',
     )
+
+    # Inventario de software instalado — comando "consultar_software_instalado", mismo
+    # patrón "info bajo demanda" que Windows Update. El detalle (qué está instalado) vive
+    # en apps.software.models.SoftwareInstaladoDetectado (relacional, no un JSONField acá,
+    # para poder buscar "qué estaciones tienen instalado X" — ver docstring del modelo).
+    software_instalado_ultima_verificacion = models.DateTimeField(null=True, blank=True)
 
     estado_conexion = models.CharField(
         max_length=20, choices=EstadoConexion.choices, default=EstadoConexion.NUNCA_CONECTADA,
@@ -234,6 +251,13 @@ class Estacion(models.Model):
             # Más sensible todavía que las dos de arriba: con la clave de recuperación se
             # descifra el disco completo. Permiso propio, nadie lo hereda de los otros dos.
             ('ver_clave_bitlocker', 'Puede ver la clave de recuperación de BitLocker de estaciones'),
+            # Los cuatro de abajo separan mesa de ayuda (primera línea, solo diagnóstico) de
+            # soporte técnico (segunda línea, acciones de riesgo sobre el equipo) — ver
+            # apps/activos/management/commands/seed_permisos.py para los grupos que los agrupan.
+            ('consultar_info_estacion', 'Puede pedir refresco de información (hardware/BitLocker) de una estación'),
+            ('aprobar_estacion', 'Puede aprobar o rechazar el enrolamiento de una estación'),
+            ('reiniciar_estacion', 'Puede reiniciar remotamente una estación'),
+            ('escanear_actualizaciones_estacion', 'Puede disparar un escaneo de Windows Update en una estación'),
         ]
 
     def __str__(self):

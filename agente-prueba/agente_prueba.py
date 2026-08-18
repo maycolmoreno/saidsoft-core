@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -212,6 +213,12 @@ class AgentePrueba:
         self.identidad['farmacia'] = payload.get('farmacia')
         self.identidad['grupo'] = payload.get('grupo')
         self.identidad['cache_url_base'] = payload.get('cache_url_base')
+        # Viaja en la respuesta de enrolamiento (ver apps.mqtt_worker.services, línea
+        # que arma la respuesta) — controla el volumen de métricas: solo las estaciones
+        # marcadas (típicamente servidores/matriz) las reportan, igual que en el sistema
+        # viejo. Si cambia desde el admin, no se aplica hasta el próximo enrolamiento
+        # (no hay un mecanismo de "config push" separado todavía).
+        self.identidad['monitorear_recursos'] = bool(payload.get('monitorear_recursos'))
 
         # Credencial MQTT propia de la estación (aislamiento a nivel de broker — ver
         # apps.mqtt_worker.emqx_admin del lado servidor). None si el servidor no tiene
@@ -266,6 +273,133 @@ class AgentePrueba:
             })
             logging.info('Heartbeat enviado')
 
+    # --- métricas periódicas (CPU/RAM/disco) ---
+    def bucle_metricas(self):
+        """Calco de bucle_heartbeat, con su propio intervalo. Solo reporta si esta
+        estación está marcada `monitorear_recursos=True` (viaja en la respuesta de
+        enrolamiento) — mismo criterio de volumen que ya usaba el sistema viejo (solo
+        servidores/matriz), aplicado ahora también a las cajas si se decide activarlo."""
+        while True:
+            time.sleep(self.args.intervalo_metricas)
+            if not self._token() or not self.identidad.get('monitorear_recursos'):
+                continue
+            recursos = self._medir_recursos()
+            if not recursos:
+                continue
+            self._publicar(f'/saidsof/agente/{self.args.codigo}/metricas/', {
+                'token': self._token(), **recursos,
+            })
+            logging.info('Métricas enviadas: %s', recursos)
+
+    def _medir_recursos(self) -> dict:
+        """CPU/RAM/disco vía CIM, mismo estilo de un solo script PowerShell que
+        _consultar_info_equipo (evita varias llamadas sueltas). No mide latencia
+        (`latencia_ms` queda ausente del payload — el servidor lo trata como no
+        medido, igual que temperatura_c) ni temperatura, por las mismas razones que ya
+        documenta _consultar_info_equipo para BitLocker: sin sensor confiable
+        disponible de forma genérica."""
+        script = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+$os = Get-CimInstance Win32_OperatingSystem
+$ramTotalMb = if ($os.TotalVisibleMemorySize) { [math]::Round($os.TotalVisibleMemorySize / 1KB) } else { $null }
+$ramLibreMb = if ($os.FreePhysicalMemory) { [math]::Round($os.FreePhysicalMemory / 1KB) } else { $null }
+$ramUsadaMb = if ($ramTotalMb -and $ramLibreMb) { $ramTotalMb - $ramLibreMb } else { $null }
+$disco = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+$discoTotalGb = if ($disco) { [math]::Round($disco.Size / 1GB, 1) } else { $null }
+$discoLibreGb = if ($disco) { [math]::Round($disco.FreeSpace / 1GB, 1) } else { $null }
+[PSCustomObject]@{
+    cpu_carga_pct = $cpu
+    ram_total = $ramTotalMb
+    ram_usada = $ramUsadaMb
+    ram_libre = $ramLibreMb
+    disco_total_gb = $discoTotalGb
+    disco_libre_gb = $discoLibreGb
+} | ConvertTo-Json -Compress
+"""
+        try:
+            salida = subprocess.check_output(
+                ['powershell', '-NoProfile', '-Command', script], timeout=20, text=True,
+            )
+            return json.loads(salida)
+        except Exception:
+            logging.exception('No se pudo medir CPU/RAM/disco')
+            return {}
+
+    # --- log del POS (errores, "reportar a tiempo") ---
+    # Cada línea de entrada real de log4net matchea este patrón (ver log4net.config del
+    # POS: PatternLayout "%date [%thread] %-5level %logger - %message%newline"); las
+    # líneas de un stack trace no lo matchean y se descartan sin reenviarlas al
+    # servidor (evita payloads gigantes — si hace falta más detalle, queda en el
+    # archivo local).
+    _RE_LINEA_LOG_POS = re.compile(
+        r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \[\d+\]\s+(?P<nivel>\w+)\s+\S+ - (?P<mensaje>.*)$',
+    )
+    _NIVELES_A_REPORTAR = {'ERROR', 'FATAL'}
+
+    def bucle_log_pos(self):
+        """Calco de bucle_metricas, con su propio intervalo. Solo corre si el agente
+        tiene un POS configurado (--pos-carpeta-instalacion) — sin eso no hay log que
+        leer. No depende de monitorear_recursos: la salud del POS importa para
+        cualquier estación con POS, no es un concepto de "servidor"."""
+        while True:
+            time.sleep(self.args.intervalo_log_pos)
+            if not self._token() or not self.args.pos_carpeta_instalacion:
+                continue
+            try:
+                errores = self._leer_errores_nuevos_pos()
+            except Exception:
+                logging.exception('No se pudo leer el log del POS')
+                continue
+            if errores is None:
+                continue  # no se pudo leer (archivo ausente todavía, etc.) — no reportar nada
+            self._publicar(f'/saidsof/agente/{self.args.codigo}/pos_errores/', {
+                'token': self._token(), 'errores': errores,
+            })
+            if errores:
+                logging.info('Errores del POS reportados: %d tipo(s) distinto(s)', len(errores))
+
+    def _ruta_log_pos(self) -> str:
+        return os.path.join(self.args.pos_carpeta_instalacion, self.args.pos_log_relativo)
+
+    def _leer_errores_nuevos_pos(self):
+        """Lee desde la última posición guardada (identidad['pos_log_posicion']),
+        agrupa por mensaje exacto los niveles ERROR/FATAL, y devuelve
+        [{mensaje, nivel, cantidad}, ...]. None si el archivo no existe todavía (POS
+        recién instalado, o nunca generó el log) — distinto de [] (se leyó, sin
+        errores nuevos), para no pisar en falso la posición guardada."""
+        ruta = self._ruta_log_pos()
+        if not os.path.exists(ruta):
+            return None
+
+        tamanio_actual = os.path.getsize(ruta)
+        posicion = self.identidad.get('pos_log_posicion', 0)
+        if tamanio_actual < posicion:
+            # El POS truncó el archivo (appendToFile=false en su log4net.config, se
+            # reinicia en cada arranque) o log4net lo rotó por fecha — se relee desde
+            # el principio en vez de perder lo nuevo asumiendo una posición inválida.
+            posicion = 0
+
+        conteos = {}  # mensaje -> {'nivel': ..., 'cantidad': int}
+        with open(ruta, 'r', encoding='utf-8', errors='replace') as f:
+            f.seek(posicion)
+            entrada_actual = None
+            for linea in f:
+                coincidencia = self._RE_LINEA_LOG_POS.match(linea)
+                if coincidencia:
+                    entrada_actual = coincidencia
+                    nivel = coincidencia.group('nivel').upper()
+                    if nivel in self._NIVELES_A_REPORTAR:
+                        mensaje = coincidencia.group('mensaje').strip()
+                        item = conteos.setdefault(mensaje, {'nivel': nivel, 'cantidad': 0})
+                        item['cantidad'] += 1
+                # Líneas que no matchean (continuación de stack trace) se ignoran —
+                # ya se contó la entrada por su primera línea.
+            self.identidad['pos_log_posicion'] = f.tell()
+        self._guardar_identidad()
+
+        return [{'mensaje': m, 'nivel': d['nivel'], 'cantidad': d['cantidad']} for m, d in conteos.items()]
+
     # --- scripts (RMM) ---
     def _manejar_comando(self, payload):
         comando = payload.get('comando')
@@ -277,6 +411,8 @@ class AgentePrueba:
             self._verificar_y_reiniciar(payload)
         elif comando == 'escanear_actualizaciones':
             self._verificar_y_escanear_actualizaciones(payload)
+        elif comando == 'consultar_software_instalado':
+            self._verificar_y_consultar_software_instalado(payload)
         else:
             logging.info('Comando "%s" recibido — no implementado en este agente de prueba.', comando)
 
@@ -351,17 +487,20 @@ class AgentePrueba:
         logging.info('Info del equipo reportada.')
 
     def _consultar_info_equipo(self) -> dict:
-        """Procesador/RAM/almacenamiento vía CIM y BitLocker del volumen C: — un solo
-        script de PowerShell que arma todo en JSON, en vez de varias llamadas sueltas
-        parseando texto (más frágil). BitLocker puede no estar disponible (Windows
-        Home, o el cmdlet ausente) — con -ErrorAction Stop + try/catch, esa sección
-        simplemente queda vacía en vez de tirar abajo el resto de la consulta."""
+        """Procesador/RAM/almacenamiento vía CIM, BitLocker del volumen C: y plan de
+        energía activo — un solo script de PowerShell que arma todo en JSON, en vez de
+        varias llamadas sueltas parseando texto (más frágil). BitLocker puede no estar
+        disponible (Windows Home, o el cmdlet ausente) — con -ErrorAction Stop +
+        try/catch, esa sección simplemente queda vacía en vez de tirar abajo el resto
+        de la consulta. El plan de energía es solo lectura (v1, ver
+        PLAN_MODERNIZACION.md §9) — no se aplica/fuerza nada desde acá."""
         script = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $proc = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
 $ramBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
 $disco = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
 $discoGB = if ($disco) { [math]::Round($disco.Size / 1GB) } else { $null }
+$planEnergia = (Get-CimInstance -Namespace root\cimv2\power -ClassName Win32_PowerPlan | Where-Object IsActive).ElementName
 
 $habilitado = $null
 $metodo = ''
@@ -388,6 +527,7 @@ try {
     bitlocker_metodo_proteccion = $metodo
     bitlocker_clave_recuperacion = $claveRecuperacion
     bitlocker_id_protector = $idProtector
+    power_plan = $planEnergia
 } | ConvertTo-Json -Compress
 """
         try:
@@ -498,6 +638,59 @@ try {
             cuerpo['pendientes'] = pendientes or []
             cuerpo['requiere_reinicio'] = requiere_reinicio
         self._publicar(f'/saidsof/agente/{self.args.codigo}/windows_update/', cuerpo)
+
+    # --- inventario de software instalado (bajo demanda) ---
+    def _verificar_y_consultar_software_instalado(self, payload):
+        # Mismo esquema de firma que consultar_info/escanear_actualizaciones.
+        firma_esperada = firmar(self.args.hmac_secret, comando='consultar_software_instalado')
+        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
+            logging.error(
+                'Firma HMAC inválida en comando consultar_software_instalado — se ignora (posible suplantación).',
+            )
+            return
+        # En un hilo aparte, igual que escanear_actualizaciones: en equipos con mucho
+        # software instalado, leer el registro completo puede tardar más de lo que
+        # conviene bloquear el loop de red de paho.
+        threading.Thread(target=self._escanear_y_reportar_software_instalado, daemon=True).start()
+
+    def _escanear_y_reportar_software_instalado(self):
+        try:
+            programas = self._listar_software_instalado()
+        except Exception:
+            logging.exception('No se pudo listar el software instalado')
+            programas = []
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/software_instalado/', {
+            'token': self._token(), 'programas': programas,
+        })
+        logging.info('Software instalado reportado: %d programa(s)', len(programas))
+
+    def _listar_software_instalado(self) -> list:
+        """Lee las claves de registro Uninstall (64 y 32 bits, más HKCU para lo instalado
+        solo para el usuario actual) — mismo mecanismo que usa el propio Panel de control
+        de Windows para armar "Aplicaciones y características". No se usa la clase WMI
+        Win32_Product a propósito: es conocida por ser lenta y por reparar/reinstalar
+        paquetes MSI como efecto secundario de solo consultarla."""
+        script = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$rutas = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)
+$programas = Get-ItemProperty -Path $rutas -ErrorAction SilentlyContinue |
+    Where-Object { $_.DisplayName -and -not $_.SystemComponent } |
+    Select-Object @{N='nombre';E={$_.DisplayName}}, @{N='version';E={$_.DisplayVersion}}, @{N='fabricante';E={$_.Publisher}}
+ConvertTo-Json -Compress -InputObject @($programas)
+"""
+        # -InputObject @(...) en vez de pipeline: ConvertTo-Json desenvuelve un array de
+        # un solo elemento a un objeto suelto si llega por pipeline, lo que rompe el
+        # parseo del lado servidor (espera siempre una lista). Pasarlo como -InputObject
+        # lo serializa como array sin importar cuántos elementos tenga (0, 1 o muchos).
+        salida = subprocess.check_output(
+            ['powershell', '-NoProfile', '-Command', script], timeout=30, text=True,
+        )
+        datos = json.loads(salida) if salida.strip() else []
+        return datos if isinstance(datos, list) else [datos]
 
     # --- software (catálogo) ---
     def _manejar_software(self, payload):
@@ -819,6 +1012,8 @@ try {
         # primer intento, igual que hace con reconexiones posteriores.
         self.client.connect_async(self.args.host, self.args.puerto, keepalive=60)
         threading.Thread(target=self.bucle_heartbeat, daemon=True).start()
+        threading.Thread(target=self.bucle_metricas, daemon=True).start()
+        threading.Thread(target=self.bucle_log_pos, daemon=True).start()
         self.client.loop_forever(retry_first_connection=True)
 
     def detener(self):
@@ -843,6 +1038,9 @@ CAMPOS_CONFIG = [
     ('ca_cert', ''),
     ('hmac_secret', ''),
     ('intervalo_heartbeat', 60),
+    ('intervalo_metricas', 300),
+    ('intervalo_log_pos', 300),
+    ('pos_log_relativo', os.path.join('Logs', 'GeneraXML.txt')),
     ('pos_carpeta_instalacion', ''),
     ('pos_nombre_proceso', ''),
     ('pos_comando_iniciar', ''),
@@ -871,6 +1069,22 @@ def main():
         help='COMANDO_HMAC_SECRET del servidor — obligatorio para validar comandos de scripts (ejecutar_script).',
     )
     parser.add_argument('--intervalo-heartbeat', type=int, default=60, help='Segundos entre heartbeats (default 60)')
+    parser.add_argument(
+        '--intervalo-metricas', type=int, default=300,
+        help='Segundos entre reportes de CPU/RAM/disco (default 300 = 5min). Solo se envían si la '
+             'estación está marcada "monitorear_recursos" en el panel.',
+    )
+    parser.add_argument(
+        '--intervalo-log-pos', type=int, default=300,
+        help='Segundos entre revisiones del log de errores del POS (default 300 = 5min). '
+             'Solo corre si --pos-carpeta-instalacion está configurado.',
+    )
+    parser.add_argument(
+        '--pos-log-relativo', default=os.path.join('Logs', 'GeneraXML.txt'),
+        help='Ruta del log de errores del POS, relativa a --pos-carpeta-instalacion '
+             '(default "Logs\\GeneraXML.txt" — pese al nombre, log4net lo usa como log general, '
+             'no solo de generación de XML).',
+    )
     parser.add_argument(
         '--pos-carpeta-instalacion', default='',
         help='Carpeta donde vive el POS real, ej. "C:\\Program Files (x86)\\Farmamia Cia Ltda - Elipsys\\Cliente". '

@@ -32,6 +32,24 @@ class SeedPermisosTests(TestCase):
             ).exists(),
         )
 
+    def test_mesa_de_ayuda_solo_diagnostico_sin_acciones_de_riesgo(self):
+        call_command('seed_permisos')
+        grupo = Group.objects.get(name='Mesa de Ayuda')
+        codenames = set(grupo.permissions.values_list('codename', flat=True))
+        self.assertEqual(codenames, {'acceso_remoto_estacion', 'consultar_info_estacion'})
+
+    def test_soporte_tecnico_tiene_acciones_de_riesgo_pero_no_bitlocker_ni_grabaciones(self):
+        call_command('seed_permisos')
+        grupo = Group.objects.get(name='Soporte Técnico')
+        codenames = set(grupo.permissions.values_list('codename', flat=True))
+        self.assertTrue({
+            'acceso_remoto_estacion', 'consultar_info_estacion', 'aprobar_estacion',
+            'reiniciar_estacion', 'escanear_actualizaciones_estacion',
+            'add_script', 'view_script', 'add_ejecucionscript', 'view_ejecucionscript',
+        }.issubset(codenames))
+        self.assertNotIn('ver_clave_bitlocker', codenames)
+        self.assertNotIn('supervision_auditoria_estacion', codenames)
+
 
 class RegistrarAsignacionTests(TestCase):
     def setUp(self):

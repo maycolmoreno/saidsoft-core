@@ -8,6 +8,7 @@ la publicación falla por completo (antes eso generaba auditoría falsa en despl
 import json
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 
 import paho.mqtt.publish as mqtt_publish
 from django.conf import settings
@@ -123,3 +124,57 @@ def verificar_completado(solicitud: SolicitudInstalacion) -> bool:
         solicitud.save(update_fields=['estado'])
         return True
     return False
+
+
+def generar_escaneo_programado(*, programado) -> int:
+    """Dispara "consultar_software_instalado" a cada estación resuelta de un
+    InventarioProgramado vencido, y avanza sus fechas. Mismo patrón que
+    apps.scripts.services.generar_ejecucion_programada, pero sin crear un registro de
+    "ejecución" intermedio: no hay Script de por medio, solo el comando fijo — el
+    resultado de cada escaneo llega solo (o no) por el canal ya existente
+    (manejar_software_instalado) cuando cada agente responda.
+
+    Devuelve la cantidad de estaciones a las que se les envió el comando (no confirma
+    que lo hayan recibido — igual que enviar_comando en general).
+    """
+    from apps.catalogo.services import enviar_comando, resolver_estaciones
+
+    estaciones = resolver_estaciones(
+        programado.destino_tipo, unidad_negocio=programado.unidad_negocio,
+        grupos=programado.grupos.all(), farmacias=programado.farmacias.all(),
+        estaciones=programado.estaciones.all(),
+    )
+    enviados = 0
+    for estacion in estaciones:
+        if enviar_comando(estacion, 'consultar_software_instalado'):
+            enviados += 1
+
+    hoy = timezone.now().date()
+    programado.fecha_ultima_ejecucion = hoy
+    programado.fecha_proxima_ejecucion = hoy + timedelta(days=programado.frecuencia_dias)
+    programado.save(update_fields=['fecha_ultima_ejecucion', 'fecha_proxima_ejecucion'])
+    return enviados
+
+
+def generar_escaneos_vencidos() -> int:
+    """Recorre los InventarioProgramado vencidos (fecha_proxima_ejecucion <= hoy) y
+    dispara el escaneo de cada uno. La llaman tanto el comando manual
+    (`generar_escaneos_programados`) como la tarea periódica de Celery."""
+    from django.db import transaction
+
+    from apps.auditoria.models import registrar_evento
+
+    from .models import InventarioProgramado
+
+    with transaction.atomic():
+        hoy = timezone.now().date()
+        vencidos = InventarioProgramado.objects.filter(activo=True, fecha_proxima_ejecucion__lte=hoy)
+        total = 0
+        for programado in vencidos:
+            enviados = generar_escaneo_programado(programado=programado)
+            registrar_evento(
+                usuario=programado.creado_por, accion='inventario_programado.disparar', objeto=programado,
+                detalle={'estaciones_notificadas': enviados},
+            )
+            total += 1
+    return total

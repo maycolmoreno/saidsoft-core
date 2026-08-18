@@ -1,0 +1,71 @@
+{% extends "panel/base.html" %}
+{% block title %}Errores del POS · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="mb-2">
+    <a href="{% url 'panel:alertas_lista' %}?vista=agrupada" class="text-xs text-[var(--text-faint)]">← Alertas</a>
+</div>
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold">Errores del POS — por mensaje</h1>
+        <p class="text-sm text-[var(--text-faint)]" style="max-width:640px;">
+            Agrupado por el mensaje exacto detectado en el log de cada estación, no por regla — para distinguir
+            un bug puntual de una farmacia de un problema sistémico en toda la cadena.
+        </p>
+    </div>
+    <form method="get" class="flex gap-2">
+        <input type="text" name="q" value="{{ q }}" placeholder="Filtrar por texto…"
+               class="rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+        <button type="submit" class="btn secondary">Filtrar</button>
+    </form>
+</div>
+
+<div class="kpi-strip mb-8">
+    <div class="card kpi tone-critical">
+        <div class="kpi-top"><div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div></div>
+        <div class="kpi-label">Mensajes distintos activos</div>
+        <div class="kpi-value num">{{ total_mensajes }}</div>
+    </div>
+    <div class="card kpi tone-warning">
+        <div class="kpi-top"><div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.3"/><rect x="3" y="14" width="18" height="6" rx="1.3"/><circle cx="7" cy="7" r=".8" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r=".8" fill="currentColor" stroke="none"/></svg></div></div>
+        <div class="kpi-label">Estaciones afectadas (al menos 1)</div>
+        <div class="kpi-value num">{{ total_estaciones }}</div>
+    </div>
+    <div class="card kpi tone-accent">
+        <div class="kpi-top"><div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div></div>
+        <div class="kpi-label">Errores acumulados</div>
+        <div class="kpi-value num">{{ total_errores }}</div>
+    </div>
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Mensaje</th>
+                <th class="text-left px-4 py-3" style="width:200px;">Estaciones</th>
+                <th class="text-left px-4 py-3" style="width:110px;">Total</th>
+                <th class="text-left px-4 py-3" style="width:130px;">Última vez</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for fila in filas %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3" style="max-width:520px;">
+                    <div style="font-family:var(--font-mono);font-size:12px;background:var(--overlay-faint);border:1px solid var(--border-soft);border-radius:6px;padding:4px 8px;display:inline-block;overflow-wrap:break-word;">{{ fila.mensaje }}</div>
+                </td>
+                <td class="px-4 py-3">
+                    <div class="rank-row">
+                        <span class="track"><span class="fill" style="width:{{ fila.pct_barra }}%;background:{% if forloop.first %}var(--critical){% else %}var(--warning){% endif %};"></span></span>
+                        <span class="num" style="font-weight:700;">{{ fila.n_estaciones }}</span>
+                    </div>
+                </td>
+                <td class="px-4 py-3 num" style="font-weight:600;">{{ fila.total }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ fila.ultima_vez|date:"d/m H:i" }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="4" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin errores de categoría "sistema" detectados.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

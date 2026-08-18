@@ -42,6 +42,23 @@ desde apps/monitoreo/graficos.py.
         </div>
     </div>
 
+    {% comment %} --- Disco --- {% endcomment %}
+    <div class="card p-4">
+        <div class="flex items-baseline justify-between mb-2">
+            <span class="text-sm font-medium text-[var(--text-dim)]">Disco usado</span>
+            <span class="text-2xl font-semibold" style="color:{% if estado_disco == 'critical' %}var(--critical){% elif estado_disco == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
+                {{ ultima.disco_usado_pct|default:"—" }}{% if ultima.disco_usado_pct is not None %}%{% endif %}
+            </span>
+        </div>
+        <svg viewBox="0 0 {{ g_disco.ancho }} {{ g_disco.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
+            <polyline points="{{ g_disco.area }}" fill="var(--accent)" fill-opacity="0.1" stroke="none"/>
+            <polyline points="{{ g_disco.puntos }}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        </svg>
+        <div class="text-xs text-[var(--text-faint)] mt-1">
+            {% if ultima.disco_total_gb %}{{ ultima.disco_libre_gb }} GB libres de {{ ultima.disco_total_gb }} GB{% else %}Eje 0–100%{% endif %}
+        </div>
+    </div>
+
     {% comment %} --- Latencia --- {% endcomment %}
     <div class="card p-4">
         <div class="flex items-baseline justify-between mb-2">

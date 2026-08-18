@@ -4,8 +4,8 @@ from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_por_unidad_negocio
 
 from .models import (
-    AplicacionCatalogo, EstadoSolicitud, EventoInstalacion, ResultadoInstalacion, SolicitudInstalacion,
-    VersionAplicacion,
+    AplicacionCatalogo, EstadoSolicitud, EventoInstalacion, InventarioProgramado, ResultadoInstalacion,
+    SoftwareInstaladoDetectado, SolicitudInstalacion, VersionAplicacion,
 )
 from .services import publicar_solicitud
 
@@ -136,3 +136,45 @@ class ResultadoInstalacionAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         return scope_por_unidad_negocio(super().get_queryset(request), request.user, 'solicitud__unidad_negocio')
+
+
+@admin.register(SoftwareInstaladoDetectado)
+class SoftwareInstaladoDetectadoAdmin(admin.ModelAdmin):
+    list_display = ('estacion', 'nombre', 'version', 'fabricante', 'detectado_en')
+    list_filter = ('detectado_en',)
+    search_fields = ('estacion__codigo', 'nombre', 'fabricante')
+    autocomplete_fields = ('estacion',)
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(
+            super().get_queryset(request), request.user, 'estacion__farmacia__unidad_negocio',
+        )
+
+    def has_add_permission(self, request):
+        # Solo lo escribe el worker MQTT (manejar_software_instalado) — es un reflejo
+        # de lo que el agente detectó, no algo que se cree a mano desde el admin.
+        return False
+
+
+@admin.register(InventarioProgramado)
+class InventarioProgramadoAdmin(admin.ModelAdmin):
+    list_display = (
+        'unidad_negocio', 'destino_tipo', 'frecuencia_dias',
+        'fecha_ultima_ejecucion', 'fecha_proxima_ejecucion', 'activo',
+    )
+    list_filter = ('unidad_negocio', 'destino_tipo', 'activo')
+    autocomplete_fields = ('unidad_negocio', 'grupos', 'farmacias', 'estaciones', 'creado_por')
+    readonly_fields = ('fecha_ultima_ejecucion', 'fecha_creacion')
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(super().get_queryset(request), request.user, 'unidad_negocio')
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.creado_por = request.user
+        super().save_model(request, obj, form, change)
+        registrar_evento(
+            usuario=request.user,
+            accion='inventario_programado.crear' if not change else 'inventario_programado.editar',
+            objeto=obj,
+        )

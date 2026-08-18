@@ -17,7 +17,7 @@
             </span>
         </div>
         {% if t.ultima %}
-        <div class="grid grid-cols-3 gap-2 text-center">
+        <div class="grid grid-cols-4 gap-2 text-center">
             <div>
                 <div class="text-xs text-[var(--text-faint)] uppercase">CPU</div>
                 <div class="text-lg font-semibold" style="color:{% if t.estado_cpu == 'critical' %}var(--critical){% elif t.estado_cpu == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
@@ -28,6 +28,12 @@
                 <div class="text-xs text-[var(--text-faint)] uppercase">RAM</div>
                 <div class="text-lg font-semibold" style="color:{% if t.estado_ram == 'critical' %}var(--critical){% elif t.estado_ram == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
                     {{ t.ultima.ram_usada_pct|default:"—" }}{% if t.ultima.ram_usada_pct is not None %}%{% endif %}
+                </div>
+            </div>
+            <div>
+                <div class="text-xs text-[var(--text-faint)] uppercase">Disco</div>
+                <div class="text-lg font-semibold" style="color:{% if t.estado_disco == 'critical' %}var(--critical){% elif t.estado_disco == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
+                    {{ t.ultima.disco_usado_pct|default:"—" }}{% if t.ultima.disco_usado_pct is not None %}%{% endif %}
                 </div>
             </div>
             <div>

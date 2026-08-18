@@ -24,6 +24,10 @@ urlpatterns = [
         'estaciones/<int:pk>/windows-update/solicitar/', views.estacion_windows_update_solicitar,
         name='estacion_windows_update_solicitar',
     ),
+    path(
+        'estaciones/<int:pk>/software-instalado/solicitar/', views.estacion_software_instalado_solicitar,
+        name='estacion_software_instalado_solicitar',
+    ),
     path('estaciones/<int:pk>/meshcentral/vincular/', views.estacion_meshcentral_vincular, name='estacion_meshcentral_vincular'),
     path('estaciones/<int:pk>/meshcentral/escritorio/', views.estacion_meshcentral_escritorio, name='estacion_meshcentral_escritorio'),
     path('estaciones/<int:pk>/meshcentral/terminal/', views.estacion_meshcentral_terminal, name='estacion_meshcentral_terminal'),
@@ -45,8 +49,11 @@ urlpatterns = [
     path('monitoreo/', views.monitoreo_lista, name='monitoreo_lista'),
     path('monitoreo/<int:pk>/', views.monitoreo_detalle, name='monitoreo_detalle'),
     path('monitoreo/<int:pk>/datos/', views.monitoreo_detalle_partial, name='monitoreo_detalle_partial'),
+    path('monitoreo/mantenimiento/', views.ventanas_mantenimiento_lista, name='ventanas_mantenimiento_lista'),
+    path('monitoreo/mantenimiento/nueva/', views.ventana_mantenimiento_crear, name='ventana_mantenimiento_crear'),
 
     path('alertas/', views.alertas_lista, name='alertas_lista'),
+    path('alertas/errores-pos/', views.pos_errores_flota, name='pos_errores_flota'),
     path('alertas/<int:pk>/reconocer/', views.alerta_reconocer, name='alerta_reconocer'),
     path('alertas/<int:pk>/resolver/', views.alerta_resolver, name='alerta_resolver'),
     path('alertas/reglas/', views.reglas_alerta_lista, name='reglas_alerta_lista'),
@@ -60,6 +67,10 @@ urlpatterns = [
     path('reportes/activos.csv', views.reporte_activos_csv, name='reporte_activos_csv'),
     path('reportes/alertas.csv', views.reporte_alertas_csv, name='reporte_alertas_csv'),
     path('reportes/facturacion.csv', views.reporte_facturacion_csv, name='reporte_facturacion_csv'),
+    path(
+        'reportes/software-instalado.csv', views.reporte_software_instalado_csv,
+        name='reporte_software_instalado_csv',
+    ),
 
     # Módulo de Activos
     path('colaboradores/', views.colaboradores_lista, name='colaboradores_lista'),

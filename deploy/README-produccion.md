@@ -357,6 +357,19 @@ confirmar el flujo completo (grabar → listar en "Recordings" → reproducir).
   Quedan por rol (agente/worker/panel), no por unidad de negocio — la credencial del
   agente sigue siendo compartida por las ~1.800 estaciones; segmentar por tenant es un
   gap aparte, ver PLAN_MODERNIZACION.md §9.
+- **Pendiente en el próximo despliegue: volver a correr `bootstrap-emqx.sh`** (16-ago-2026,
+  fase R7 — inventario de software instalado, ver PLAN_MODERNIZACION.md §9). Se agregó
+  la regla de `subscribe` de `/saidsof/agente/+/software_instalado/` para `worker`; sin
+  volver a correr el script en el servidor real, el escaneo de software instalado va a
+  fallar en silencio exactamente como describe el bug de más arriba (mensaje publicado,
+  nunca entregado, sin error visible ni en el agente ni en el panel). El script es
+  reentrante (ver el fix de idempotencia arriba) — correrlo de nuevo no rompe las reglas
+  ya sembradas.
+- **Misma pendiente, segunda regla agregada la misma sesión (16-ago-2026)**: monitoreo
+  de errores del POS (ver PLAN_MODERNIZACION.md §9) agregó también `subscribe` de
+  `/saidsof/agente/+/pos_errores/` para `worker` — una sola corrida de
+  `bootstrap-emqx.sh` cubre las dos reglas nuevas (software_instalado + pos_errores),
+  no hace falta correrlo dos veces.
 - **Respaldos**: `deploy/backup.sh` (pg_dump + media, con retención de 14 días
   locales), pensado para el cron del host — ver paso 7 arriba. No reemplaza una copia
   fuera del servidor.

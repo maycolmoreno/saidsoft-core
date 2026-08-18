@@ -1,6 +1,8 @@
 from celery import shared_task
 
-from .services import evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas
+from .services import (
+    escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
+)
 
 
 @shared_task(name='apps.monitoreo.tasks.purgar_metricas_task')
@@ -25,3 +27,11 @@ def evaluar_cruce_monitoreo_task():
     tiempo real por manejar_heartbeat (mqtt_worker) y run_meshcentral_worker."""
     abiertas = evaluar_cruce_monitoreo()
     return f'{abiertas} alerta(s) "agente_caido_red_viva" abierta(s).'
+
+
+@shared_task(name='apps.monitoreo.tasks.escalar_alertas_task')
+def escalar_alertas_task():
+    """Cada 10 min (ver CELERY_BEAT_SCHEDULE) — reenvía alertas ABIERTAS que nadie
+    reconoció a tiempo (ver UMBRAL_ESCALAMIENTO_MINUTOS en services.py)."""
+    escaladas = escalar_alertas_abiertas()
+    return f'{escaladas} alerta(s) escalada(s).'

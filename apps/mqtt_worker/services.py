@@ -316,6 +316,9 @@ def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:
     estacion.bitlocker_metodo_proteccion = payload.get(
         'bitlocker_metodo_proteccion', estacion.bitlocker_metodo_proteccion,
     )
+    if payload.get('power_plan'):
+        estacion.power_plan_actual = payload['power_plan']
+        estacion.power_plan_ultima_verificacion = timezone.now()
     estacion.info_equipo_fecha = timezone.now()
     estacion.save()
 
@@ -377,6 +380,94 @@ def manejar_windows_update(codigo_estacion: str, payload: dict) -> None:
         'windows_update_ultima_verificacion', 'windows_update_pendientes',
         'windows_update_requiere_reinicio', 'windows_update_detalle', 'windows_update_ultimo_error',
     ])
+
+
+def manejar_software_instalado(codigo_estacion: str, payload: dict) -> None:
+    """Guarda el resultado de un escaneo puntual de software instalado (comando
+    "consultar_software_instalado"). Semántica de snapshot: reemplaza por completo lo
+    que había antes para esta estación — ver docstring de
+    apps.software.models.SoftwareInstaladoDetectado sobre por qué (evita lógica de
+    diff; instalar/desinstalar algo entre escaneos se refleja solo en el próximo)."""
+    close_old_connections()
+    try:
+        estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
+    except Estacion.DoesNotExist:
+        logger.warning('Reporte de software instalado con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    from apps.software.models import SoftwareInstaladoDetectado
+
+    programas = payload.get('programas') or []
+    detectados = []
+    nombres_vistos = set()
+    for p in programas:
+        nombre = (p.get('nombre') or '').strip()
+        if not nombre or nombre in nombres_vistos:
+            # El registro de Windows puede traer una misma entrada duplicada (32/64
+            # bits) — unique_together=('estacion', 'nombre') no tolera duplicados en el
+            # mismo bulk_create, así que se descarta silenciosamente el repetido.
+            continue
+        nombres_vistos.add(nombre)
+        detectados.append(SoftwareInstaladoDetectado(
+            estacion=estacion, nombre=nombre,
+            version=(p.get('version') or '').strip(), fabricante=(p.get('fabricante') or '').strip(),
+        ))
+
+    SoftwareInstaladoDetectado.objects.filter(estacion=estacion).delete()
+    SoftwareInstaladoDetectado.objects.bulk_create(detectados)
+
+    estacion.software_instalado_ultima_verificacion = timezone.now()
+    estacion.save(update_fields=['software_instalado_ultima_verificacion'])
+
+
+def manejar_pos_errores(codigo_estacion: str, payload: dict) -> None:
+    """Guarda lo nuevo de un reporte periódico del log del POS (ver
+    agente-prueba/agente_prueba.py::bucle_log_pos) — el agente ya agrupó por mensaje
+    exacto dentro de la ventana leída, acá solo se acumula por estación (a diferencia
+    de manejar_software_instalado, esto no es un snapshot: cada reporte es un delta que
+    se suma al contador de por vida de PosErrorDetectado). Termina evaluando la regla
+    de alerta correspondiente con el total de errores de categoría "sistema" nuevos de
+    esta ventana — los de categoría "negocio" (ej. "VENTA SIN LOTE", una validación del
+    POS funcionando bien, no una falla) se guardan igual pero no cuentan para la
+    alerta, ver apps.monitoreo.services.clasificar_error_pos."""
+    close_old_connections()
+    try:
+        estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
+    except Estacion.DoesNotExist:
+        logger.warning('Reporte de errores del POS con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    from apps.monitoreo.models import PosErrorDetectado
+    from apps.monitoreo.services import clasificar_error_pos, evaluar_regla_pos_errores
+
+    errores = payload.get('errores') or []
+    total_nuevos = 0
+    for e in errores:
+        mensaje = (e.get('mensaje') or '').strip()[:500]
+        if not mensaje:
+            continue
+        cantidad = e.get('cantidad')
+        cantidad = int(cantidad) if isinstance(cantidad, (int, float)) and cantidad > 0 else 1
+        categoria = clasificar_error_pos(mensaje)
+        if categoria == PosErrorDetectado.Categoria.SISTEMA:
+            total_nuevos += cantidad
+
+        detectado, _creado = PosErrorDetectado.objects.get_or_create(
+            estacion=estacion, mensaje=mensaje, defaults={'nivel': e.get('nivel') or 'ERROR', 'categoria': categoria},
+        )
+        detectado.cantidad_total += cantidad
+        detectado.nivel = e.get('nivel') or detectado.nivel
+        # Reclasifica en cada reporte, no solo al crear: si PREFIJOS_ERROR_DE_NEGOCIO
+        # gana un patrón nuevo más adelante, las filas viejas se ponen al día solas la
+        # próxima vez que ese mensaje se repita, sin necesitar una migración de datos.
+        detectado.categoria = categoria
+        detectado.save(update_fields=['cantidad_total', 'nivel', 'categoria', 'ultima_vez'])
+
+    evaluar_regla_pos_errores(estacion, total_nuevos)
 
 
 def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:
@@ -449,6 +540,8 @@ def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
         cpu_carga_pct=_num('cpu_carga_pct'),
         temperatura_c=_num('temperatura_c'),
         latencia_ms=_num('latencia_ms'),
+        disco_total_gb=_num('disco_total_gb'),
+        disco_libre_gb=_num('disco_libre_gb'),
     )
 
     from apps.monitoreo.services import evaluar_reglas_metricas

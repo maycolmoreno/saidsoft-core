@@ -1,0 +1,51 @@
+{% extends "panel/base.html" %}
+{% block title %}Ventanas de mantenimiento · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold">Ventanas de mantenimiento</h1>
+        <p class="text-sm text-[var(--text-faint)]">
+            Silencian las alertas de un destino de estaciones durante una acción operativa propia
+            (despliegue, reinicio masivo) para que no se confunda con un problema real.
+        </p>
+    </div>
+    <a href="{% url 'panel:ventana_mantenimiento_crear' %}" class="btn primary">+ Nueva ventana</a>
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Motivo</th>
+                <th class="text-left px-4 py-3">Cliente</th>
+                <th class="text-left px-4 py-3">Destino</th>
+                <th class="text-left px-4 py-3">Desde</th>
+                <th class="text-left px-4 py-3">Hasta</th>
+                <th class="text-left px-4 py-3">Estado</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for v in ventanas %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">{{ v.motivo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ v.unidad_negocio.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ v.get_destino_tipo_display }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ v.desde|date:"d/m/Y H:i" }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ v.hasta|date:"d/m/Y H:i" }}</td>
+                <td class="px-4 py-3 text-xs">
+                    {% if not v.activo %}
+                    <span class="pill neutral">Inactiva</span>
+                    {% elif v.esta_en_curso %}
+                    <span class="pill warning">En curso</span>
+                    {% else %}
+                    <span class="pill good">Programada</span>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin ventanas de mantenimiento todavía.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -27,8 +27,16 @@ completo de esa decisión.
   también trae `mqtt_username`/`mqtt_password` propios de la estación — se guardan en
   `identidad.json` y el agente reconecta con ellos de inmediato, dejando de usar la
   credencial MQTT compartida (`--usuario`/`--password`) para siempre (hasta que se
-  borre `identidad.json` y se fuerce un re-enrolamiento).
+  borre `identidad.json` y se fuerce un re-enrolamiento). También trae
+  `monitorear_recursos` (bool), que controla si el agente reporta métricas periódicas
+  (ver abajo) — no se vuelve a aplicar hasta el próximo enrolamiento si cambia desde
+  el panel.
 - **Heartbeat** periódico.
+- **Métricas periódicas (CPU/RAM/disco)** — solo si `monitorear_recursos=True`: hilo
+  propio `bucle_metricas` (calco de heartbeat, `--intervalo-metricas`, default 300s)
+  que mide CPU/RAM/disco vía CIM (mismo mecanismo que `consultar_info`) y publica a
+  `/saidsof/agente/{codigo}/metricas/`. No mide latencia ni temperatura (quedan sin
+  reportar). Ver "Monitoreo de servidores" en `README.md` del proyecto principal.
 - **Scripts (RMM)**: valida la firma HMAC-SHA256 del comando `ejecutar_script`
   (mismo algoritmo que `apps.catalogo.services.firmar_payload` del servidor — ver
   `firmar()` en `agente_prueba.py`), corre el script real con PowerShell y reporta
@@ -52,11 +60,12 @@ completo de esa decisión.
 - **`consultar_info`**: valida la firma HMAC (mismo esquema que `ejecutar_script`) y
   reporta hostname/número de serie/SO/procesador/RAM/almacenamiento vía CIM, más
   BitLocker del volumen `C:` (habilitado, método de protección, y la clave de
-  recuperación + su ID si el protector es de tipo `RecoveryPassword`) — un solo script
-  de PowerShell que arma todo en JSON. Si BitLocker no está disponible (Windows Home,
-  o sin privilegios suficientes), esos campos quedan vacíos sin romper el resto de la
-  consulta. Dispara este comando el botón "Actualizar ahora" en la ficha de la
-  estación del panel.
+  recuperación + su ID si el protector es de tipo `RecoveryPassword`) y el **plan de
+  energía activo** (`Win32_PowerPlan`, solo lectura v1 — ver PLAN_MODERNIZACION.md §9)
+  — un solo script de PowerShell que arma todo en JSON. Si BitLocker no está disponible
+  (Windows Home, o sin privilegios suficientes), esos campos quedan vacíos sin romper
+  el resto de la consulta. Dispara este comando el botón "Actualizar ahora" en la
+  ficha de la estación del panel.
 - **`reiniciar`**: valida la firma HMAC y reinicia el **equipo Windows completo** (no
   solo el servicio del agente) con `shutdown /r /t 10` — 10 segundos de margen, no
   inmediato. Es fire-and-forget: el servidor no espera ninguna confirmación de vuelta
@@ -80,6 +89,28 @@ completo de esa decisión.
     "Sin acceso a internet — habilita la salida a internet en esta estación..." en vez de
     intentar el escaneo real. El panel muestra ese mensaje tal cual en la ficha de la
     estación (`Estacion.windows_update_ultimo_error`).
+- **`consultar_software_instalado`** (inventario de software, v1 — cierra un gap real
+  frente a RMMs comerciales como Aranda/NinjaOne, ver `PLAN_MODERNIZACION.md` §9): valida
+  la firma HMAC y lista el software instalado leyendo las claves de registro `Uninstall`
+  (`HKLM` 64 y 32 bits, más `HKCU` para lo instalado solo para el usuario actual) —
+  mismo mecanismo que usa "Aplicaciones y características" de Windows. **No usa
+  `Win32_Product` (WMI)** a propósito: es lento y puede reparar/reinstalar paquetes MSI
+  como efecto secundario de solo consultarla. Reporta `[{nombre, version, fabricante}]`
+  al tópico `/saidsof/agente/{codigo}/software_instalado/`; el servidor reemplaza por
+  completo el inventario anterior de esa estación en cada escaneo (snapshot, no diff).
+  Corre en un hilo aparte. Dispara este comando el botón "Escanear software instalado"
+  en la ficha de la estación del panel.
+- **`bucle_log_pos`** (monitoreo de errores del POS, 16-ago-2026 — ver
+  `PLAN_MODERNIZACION.md` §9): hilo periódico (calco de `bucle_metricas`,
+  `--intervalo-log-pos` default 300s) que lee `Logs\GeneraXML.txt` dentro de
+  `--pos-carpeta-instalacion` (log4net del propio POS — pese al nombre, captura
+  errores generales de la app, no solo generación de XML) desde la última posición
+  guardada en `identidad.json` (`pos_log_posicion`; detecta truncado/rotación y relee
+  desde el principio si el archivo encogió). Agrupa por mensaje exacto los niveles
+  ERROR/FATAL (descarta el resto del stack trace, no lo envía) y publica
+  `[{mensaje, nivel, cantidad}, ...]` a `/saidsof/agente/{codigo}/pos_errores/`. Sin
+  `--pos-carpeta-instalacion` configurado, el hilo no hace nada (no es un error). Ver
+  "Monitoreo de errores del POS" en el `README.md` del proyecto principal.
 
 ## Qué NO cubre (fuera de alcance a propósito)
 

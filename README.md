@@ -230,24 +230,39 @@ Visibles/filtrables desde `/admin/catalogo/farmacia/`.
 Migra y unifica el monitoreo del sistema viejo (`log_servidor_memoria` + `log_servidor_cpu`,
 que eran dos tablas/tópicos) en una sola muestra por instante:
 
-- **`MuestraMetrica`** guarda RAM/swap/cache (MB), CPU (%), temperatura (°C) y latencia (ms)
-  ligados a una `Estacion`. Solo las estaciones con `monitorear_recursos=True` reportan
-  (el flag viaja en la respuesta de enrolamiento); así se controla el volumen, igual que
-  en el sistema viejo solo reportaban los servidores matriz.
-- El agente C# mide con **APIs nativas de Windows** (`GlobalMemoryStatusEx`, `GetSystemTimes`)
-  y hace ping al central para la latencia — sin dependencias externas. La temperatura del
-  CPU queda en `null` por ahora (no se expone de forma fiable sin sensores/WMI).
+- **`MuestraMetrica`** guarda RAM/swap/cache (MB), disco (GB, total/libre — `disco_usado_pct`
+  calculado), CPU (%), temperatura (°C) y latencia (ms) ligados a una `Estacion`. Solo las
+  estaciones con `monitorear_recursos=True` reportan (el flag viaja en la respuesta de
+  enrolamiento, `apps.mqtt_worker.services` → `manejar_enrolamiento`, y el agente lo guarda en
+  `identidad.json`); así se controla el volumen, igual que en el sistema viejo solo reportaban
+  los servidores matriz.
+- **El agente Python vigente** (`agente-prueba/agente_prueba.py`, ver "Probar el flujo completo"
+  arriba) mide CPU/RAM/disco vía CIM (`Win32_Processor`/`Win32_OperatingSystem`/
+  `Win32_LogicalDisk` — mismo mecanismo que `consultar_info`) en un hilo periódico propio
+  (`bucle_metricas`, calco de `bucle_heartbeat`, intervalo configurable con
+  `--intervalo-metricas`, default 300s). **No mide latencia ni temperatura** todavía (quedan
+  `null`) — no hay un mecanismo de ping al central ni un sensor de temperatura confiable
+  disponible de forma genérica. *(Nota histórica: hasta el 16-ago-2026 este pipeline solo
+  existía del lado servidor — pensado originalmente para el agente C# ya reemplazado — sin que
+  ningún agente real lo alimentara; ver PLAN_MODERNIZACION.md §9, fase R8.)*
 - El panel (`/monitoreo/`) grafica las últimas ~60 muestras por servidor como **SVG inline**
-  (sin CDN), con auto-refresco HTMX cada 10s y stat tiles que cambian de color por umbral.
+  (sin CDN), con auto-refresco HTMX cada 10s y stat tiles que cambian de color por umbral
+  (CPU/RAM/disco comparten el mismo patrón de tarjeta + gráfico).
 - **Retención**: el comando `purgar_metricas --dias 30` (para cron) borra muestras viejas,
   reemplazando el `vaciar_logs` del sistema viejo (que borraba TODO cada domingo). En
   producción, esta tabla va sobre **TimescaleDB** con retención nativa.
+- **Activar monitoreo en lote**: `list_editable` en `/admin/catalogo/estacion/` alcanza
+  fila por fila, pero no escala a ~1.800 estaciones — las acciones de admin "Activar
+  monitoreo de recursos"/"Desactivar..." aplican el flag a toda la selección (filtrable
+  por grupo/farmacia con `list_filter` antes de seleccionar), auditado por estación en
+  `EventoAuditoria`. El agente lo aplica recién en su próximo re-enrolamiento (no hay
+  todavía un mecanismo de "config push" separado).
 
 ## Motor de alertas
 
 `ReglaAlerta` (umbral + duración + severidad, global o de un cliente) evaluada en
 tiempo real:
-- **Reglas de métrica** (`cpu_carga_pct`, `ram_usada_pct`, `latencia_ms`,
+- **Reglas de métrica** (`cpu_carga_pct`, `ram_usada_pct`, `disco_usado_pct`, `latencia_ms`,
   `temperatura_c`): se evalúan en `apps/mqtt_worker/services.py::manejar_metricas`
   justo tras guardar cada `MuestraMetrica`. Anti-flapping: la condición debe sostenerse
   `duracion_minutos` completos (todas las muestras no nulas de la ventana incumplen, y
@@ -263,6 +278,35 @@ tiempo real:
   sostiene).
 - Panel: `/alertas/` (reconocer/resolver manualmente) y `/monitoreo/reglas/` (CRUD de
   reglas).
+- **Vista agrupada** (17-ago-2026 — M1 del roadmap de monitoreo proactivo, ver §9 de
+  `PLAN_MODERNIZACION.md`): `/alertas/?vista=agrupada` cuenta cuántas estaciones
+  tienen cada regla activa *ahora mismo* (`Count('estacion', distinct=True)`), en vez
+  de una fila por estación — sin esto, un bug sistémico en 40 farmacias generaba 40
+  filas idénticas. Para la regla "Errores del POS" específicamente, agrupar por regla
+  no alcanza (no distingue *qué* mensaje afecta a cuántas estaciones) — ese caso tiene
+  su propia vista, `/alertas/errores-pos/` (`apps.panel.views.alertas.pos_errores_flota`),
+  que agrupa `PosErrorDetectado` por mensaje exacto en vez de por regla.
+- **Ventanas de mantenimiento** (17-ago-2026 — M2 del roadmap): `VentanaMantenimiento`
+  (`apps/monitoreo`) silencia a propósito las alertas de un destino de estaciones
+  (cadena/grupos/farmacias/estaciones puntuales, mismo shape que `ScriptProgramado`)
+  durante `desde`/`hasta`, para que un despliegue o reinicio masivo propio no se
+  confunda con un problema real. `apps.monitoreo.services.ventana_mantenimiento_activa`
+  es el único punto que la consulta — un solo chequeo al principio de
+  `abrir_o_mantener_alerta` cubre las cuatro rutas de evaluación (métricas, sin
+  heartbeat, bitlocker, pos_errores) sin tocar cada una. CRUD en
+  `/monitoreo/mantenimiento/` (permiso `monitoreo.add_ventanamantenimiento`, otorgado
+  al rol "Operador RMM"); aviso "En mantenimiento hasta HH:MM" en la ficha de la
+  estación cuando aplica ahora mismo.
+- **Webhook de Teams + escalamiento** (18-ago-2026 — M3 del roadmap): `notificar_alerta`
+  además del correo de siempre hace `POST {"text": ...}` a todo `CanalNotificacion`
+  activo (`apps/monitoreo`, admin-only) que aplique a la unidad de negocio de la
+  alerta — global o propio, mismo criterio "global o del cliente" que `ReglaAlerta`.
+  Solo tipo `webhook_teams` por ahora (decisión del usuario, sin Slack). Un webhook
+  caído nunca rompe la notificación. **Escalamiento**: `escalar_alertas_abiertas`
+  (Celery Beat cada 10 min) reenvía por los mismos canales/destinatarios cualquier
+  `Alerta` `ABIERTA` (nunca reconocida) más vieja que 30 minutos (umbral global, no
+  por regla — decisión del usuario), marcando `Alerta.escalada_en` para no repetir el
+  aviso.
 
 ## Monitoreo cruzado (MQTT × MeshCentral)
 
@@ -317,6 +361,57 @@ detectar señales que ninguna da sola.
   PLAN_MODERNIZACION.md §9. Hoy sin implementación: pendiente de que el proveedor
   apruebe el acceso a su API.
 
+## Monitoreo de errores del POS (log del propio POS)
+
+El POS real (Zabyca.Pos.Desktop, Farmamia/Elipsys) trae su propio log vía log4net
+(`Logs\GeneraXML.txt` dentro de la carpeta de instalación — pese al nombre engañoso,
+captura errores generales de la aplicación, no solo generación de XML: timeouts de
+conexión a la base, errores de esquema, excepciones de negocio). Sin nadie leyéndolo,
+un bug puede repetirse cientos de veces en silencio (encontrado un caso real: el
+módulo de fidelización de una farmacia llevaba tiempo roto, sin que nadie se
+enterara). El agente ahora lo monitorea:
+
+- **`bucle_log_pos`** (`agente-prueba/agente_prueba.py`, calco de `bucle_metricas`,
+  `--intervalo-log-pos` default 300s): lee el archivo desde la última posición
+  guardada en `identidad.json` (`pos_log_posicion`), detecta truncado/rotación (el
+  tamaño actual menor a la posición guardada = el POS reinició o log4net rotó por
+  fecha, se relee desde el principio). Reusa `--pos-carpeta-instalacion` que ya
+  existía — sin argumento nuevo obligatorio (`--pos-log-relativo` es opcional, default
+  `Logs\GeneraXML.txt`).
+- Solo reporta niveles **ERROR/FATAL** (INFO/WARN se ignoran — son trazabilidad
+  rutinaria, no problemas). Agrupa por mensaje **exacto** dentro de la ventana leída
+  (`{mensaje, nivel, cantidad}`) — el resto del stack trace se descarta, no viaja al
+  servidor (evita payloads gigantes; queda disponible en el archivo local si hace
+  falta más detalle).
+- **Servidor**: `apps.monitoreo.models.PosErrorDetectado` acumula por
+  `(estación, mensaje)` — a diferencia del inventario de software (snapshot que se
+  reemplaza), esto es un contador de por vida: cada reporte es un delta ("lo nuevo
+  desde el último chequeo"). Handler `apps.mqtt_worker.services.manejar_pos_errores`.
+- **Alertas reales desde el día uno** (decisión explícita del usuario, no solo
+  visibilidad pasiva): nueva métrica `Metrica.POS_ERRORES` +
+  `evaluar_regla_pos_errores` (`apps/monitoreo/services.py`) — reusa el motor de
+  `ReglaAlerta`/`Alerta` tal cual (correo al abrir, resolución automática cuando una
+  ventana viene limpia), sin condición sostenida en el tiempo (cada reporte ya es una
+  ventana cerrada, mismo criterio que `agente_caido_red_viva`).
+- **Limitación de v1, aceptada**: mensajes con detalle variable en la misma línea
+  (ej. `VENTA SIN LOTE: <código> Usuario: <user>...`) no dedupan entre sí — cada
+  ocurrencia distinta cuenta como mensaje nuevo. No es el caso de uso principal
+  (conectividad a base / errores de esquema, que sí repiten idéntico).
+- **Clasificación sistema/negocio** (17-ago-2026): el usuario confirmó que
+  `VENTA SIN LOTE` es rutinario en la operación real (no esporádico) — es una
+  validación del POS bloqueando una venta sin lote, ERROR en el log pero no una falla
+  de infraestructura; contarlo igual que un timeout de conexión habría inundado la
+  alerta de falsos positivos en cualquier farmacia con volumen normal de ventas.
+  `PosErrorDetectado.categoria` (`sistema`/`negocio`) +
+  `apps.monitoreo.services.clasificar_error_pos` (lista chica de prefijos conocidos,
+  editada a mano — mismo criterio que `PERMISOS_LITERALES` de `seed_permisos.py`; un
+  mensaje no reconocido se clasifica `sistema` por defecto, ante la duda se trata como
+  señal real). Solo los de categoría `sistema` cuentan para `evaluar_regla_pos_errores`
+  — los de `negocio` se guardan y quedan visibles en la ficha de la estación (pill
+  neutral en vez de crítico), pero no abren alerta. Se reclasifica en cada reporte, no
+  solo al crear la fila: si la lista gana un prefijo nuevo más adelante, las filas
+  viejas se ponen al día solas.
+
 ## Scripts RMM y parcheo
 
 `apps/scripts` — biblioteca de scripts PowerShell que corren sobre el mismo canal de
@@ -350,6 +445,32 @@ por el agente desde antes de esta etapa — ver `EjecutorScript.cs` en `saidsoft
   `Estacion.windows_update_ultimo_error` y el panel se lo muestra tal cual al operador
   en la ficha de la estación. Ver `agente-prueba/README.md` y
   `apps.mqtt_worker.services.manejar_windows_update`.
+- **Inventario de software instalado** (16-ago-2026 — gap identificado comparando
+  saidsoft-core contra propuestas comerciales de Aranda ADM/Patch y NinjaOne, ver
+  `PLAN_MODERNIZACION.md` §9): comando `consultar_software_instalado` (botón "Escanear
+  software instalado" en la ficha de la estación), mismo patrón "info bajo demanda" que
+  Windows Update. El agente lee las claves de registro `Uninstall` de Windows (64/32
+  bits + `HKCU`) — nunca `Win32_Product`/WMI, que es lento y puede reparar/reinstalar
+  paquetes MSI como efecto secundario de solo consultarla — y reporta
+  `[{nombre, version, fabricante}]`. El servidor guarda el resultado en
+  `apps.software.models.SoftwareInstaladoDetectado` (modelo relacional, no un JSONField:
+  el valor es poder *buscar* "qué estaciones tienen instalado X"), con semántica de
+  snapshot — cada escaneo reemplaza por completo el inventario anterior de esa estación
+  (`apps.mqtt_worker.services.manejar_software_instalado`). Reporte de flota filtrable
+  por nombre en `/reportes/software-instalado.csv` — el valor real es compliance de
+  licenciamiento y detectar software no autorizado.
+- **Escaneo programado** (16-ago-2026): el botón manual no escala a ~1.935 estaciones —
+  `InventarioProgramado` ("escanear cada N días" contra cadena/grupos/farmacias/
+  estaciones, mismo shape de destino y mismo `resolver_estaciones` que `ScriptProgramado`)
+  administrado desde `/admin/software/inventarioprogramado/`. `generar_escaneos_vencidos`
+  (`apps.software.services`) dispara `consultar_software_instalado` a cada estación
+  resuelta — sin crear un modelo de "ejecución" intermedio, a diferencia de
+  `ScriptProgramado`: no hay `Script` de por medio, el resultado llega solo por el canal
+  ya existente cuando cada agente responde. Corre diario vía Celery Beat
+  (`generar-escaneos-programados`) o a mano con
+  `python manage.py generar_escaneos_programados`. Cada disparo queda auditado (una fila
+  por `InventarioProgramado`, con la cantidad de estaciones notificadas — no una por
+  estación, sería demasiado volumen para un job rutinario).
 
 ## Facturación por endpoint
 
@@ -380,6 +501,9 @@ En `/reportes/`, en `apps/panel/reportes.py` (todos salvo auditoría aceptan
 - **Resultado de un despliegue**: estado por estación + timestamps de recibido/aplicado/ok.
 - **Activos**, **Alertas** y **Facturación**: inventario, alertas y endpoints
   facturables de un cliente en un rango de fechas/período.
+- **Software instalado**: qué estaciones tienen instalado qué programa (según el
+  último escaneo de cada una), filtrable por nombre (`?q=`) — ver "Inventario de
+  software instalado" arriba.
 - **Bitácora de auditoría**: acciones sobre el panel en un rango de fechas —
   deliberadamente **sin escopar por cliente** (el modelo es polimórfico, sin FK real al
   objeto auditado; es una herramienta de cumplimiento interno, no algo que se le
@@ -512,6 +636,60 @@ La **clave de recuperación** es otra historia — con ella se descifra el disco
 - `BITLOCKER_ENCRYPTION_KEY` es una setting requerida (sin default, igual que
   `COMANDO_HMAC_SECRET`): generar con
   `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+
+## Política de energía (solo lectura v1)
+
+Último gap cerrado frente a Aranda (lo publicita como capacidad propia — ver
+PLAN_MODERNIZACION.md §9, fase R9): reportar qué plan de energía tiene activo cada
+estación (`Estacion.power_plan_actual`), sin poder aplicar/forzar uno todavía — mismo
+criterio conservador que Windows Update v1 en equipos de farmacia.
+
+- Viaja en el mismo comando/payload que `consultar_info` (una línea más en el script
+  PowerShell que ya junta procesador/RAM/almacenamiento/BitLocker —
+  `Get-CimInstance -Namespace root\cimv2\power -ClassName Win32_PowerPlan`), así que no
+  hay UX nueva: el botón "Actualizar ahora" que ya existía alcanza.
+- `manejar_info_equipo` solo actualiza `power_plan_actual` si el agente reportó un
+  valor — si no (ej. el namespace no está disponible en esa versión de Windows), se
+  conserva el último valor conocido en vez de vaciarlo.
+- Sin permiso propio: cubierto por `catalogo.consultar_info_estacion`, igual que el
+  resto de la info de hardware.
+- **Aplicar/forzar un plan** (ej. "Alto rendimiento" en toda una farmacia) queda fuera
+  de alcance a propósito — sería una acción de riesgo comparable a "reiniciar",
+  pendiente de una decisión de negocio explícita antes de construirla.
+
+## Roles y permisos (RBAC)
+
+No hay un modelo `Rol`/`Modulo` propio: se usa el sistema de permisos estándar de
+Django (`Group`/`Permission`), sembrado por
+`python manage.py seed_permisos` (`apps/activos/management/commands/seed_permisos.py`
+— única fuente de verdad, un diccionario `ROLES` declarativo). Reemplaza a
+`RolesJpa`/`ModuloJpa` de InvTICS.
+
+**Grupos heredados de InvTICS**: `Administrador` (todos los permisos), `Técnico` y
+`Bodeguero` (activos/inventario), `Auditor` (solo lectura + grabaciones de sesión),
+`Operador RMM` (ejecutar/programar scripts — superficie de riesgo propia, no se agrega
+a Técnico/Bodeguero por defecto).
+
+**`Mesa de Ayuda` / `Soporte Técnico`** (16-ago-2026 — modelo de soporte propio del
+piloto RMM, no viene de InvTICS): separan primera línea de segunda línea de atención a
+las estaciones, cada agente real con su propio usuario (no credenciales compartidas) —
+así `EventoAuditoria` por fin atribuye cada acción a una persona concreta.
+- **Mesa de Ayuda** — solo diagnóstico: `acceso_remoto_estacion` (guiar al usuario del
+  PDV por escritorio remoto vía MeshCentral) y `consultar_info_estacion` (pedir
+  refresco de hardware/BitLocker/software instalado bajo demanda).
+- **Soporte Técnico** — todo lo de Mesa de Ayuda, más las acciones de riesgo:
+  `aprobar_estacion`, `reiniciar_estacion`, `escanear_actualizaciones_estacion`, y
+  ejecutar/programar scripts (`scripts.add_script`/`add_ejecucionscript`/
+  `add_scriptprogramado`).
+- Antes de que existieran estos cuatro permisos custom en `Estacion` (`aprobar_estacion`/
+  `reiniciar_estacion`/`consultar_info_estacion`/`escanear_actualizaciones_estacion`),
+  **cualquier usuario logueado podía aprobar/rechazar/reiniciar una estación o correr
+  scripts** — solo estaba acotado por unidad de negocio (tenant), no por rol. Ya no.
+
+**Permisos deliberadamente fuera de ambos grupos por defecto** (mismo criterio en todo
+el proyecto — más sensibles, se otorgan persona por persona, no por grupo): ver
+`catalogo.ver_clave_bitlocker` en "BitLocker" y `catalogo.supervision_auditoria_estacion`
+en "Acceso remoto (MeshCentral)" arriba.
 
 ## Seguridad y robustez
 

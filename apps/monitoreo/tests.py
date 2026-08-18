@@ -1,6 +1,7 @@
 import json
+import urllib.error
 from datetime import timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import websocket
 from django.contrib.auth.models import User
@@ -13,11 +14,15 @@ from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
 from apps.monitoreo.adapters.meshcentral import AdaptadorMeshCentral, _en_linea, _id_corto
 
-from .models import Alerta, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, ReglaAlerta
+from .models import (
+    Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, PosErrorDetectado,
+    ReglaAlerta, VentanaMantenimiento,
+)
 from .services import (
-    evaluar_cruce_monitoreo, evaluar_regla_bitlocker, evaluar_reglas_metricas, registrar_estado_dispositivo,
-    reglas_aplicables_a, resolver_alertas_agente_caido_red_viva, resolver_alertas_bitlocker,
-    resolver_alertas_sin_heartbeat,
+    UMBRAL_ESCALAMIENTO_MINUTOS, clasificar_error_pos, escalar_alertas_abiertas, evaluar_cruce_monitoreo,
+    evaluar_regla_bitlocker, evaluar_regla_pos_errores, evaluar_reglas_metricas, notificar_alerta,
+    registrar_estado_dispositivo, reglas_aplicables_a, resolver_alertas_agente_caido_red_viva,
+    resolver_alertas_bitlocker, resolver_alertas_sin_heartbeat,
 )
 
 
@@ -44,6 +49,34 @@ class EvaluarReglasMetricasTests(TestCase):
             )
             muestra.refresh_from_db()
         return muestra
+
+    def _crear_muestra_disco(self, disco_usado_pct, hace_minutos=0):
+        # disco_usado_pct es una property (100 - libre/total), no un campo — se arma
+        # total/libre para que dé el porcentaje pedido.
+        muestra = MuestraMetrica.objects.create(
+            estacion=self.estacion, disco_total_gb=100.0, disco_libre_gb=100.0 - disco_usado_pct,
+        )
+        if hace_minutos:
+            MuestraMetrica.objects.filter(pk=muestra.pk).update(
+                timestamp=timezone.now() - timedelta(minutes=hace_minutos),
+            )
+            muestra.refresh_from_db()
+        return muestra
+
+    def test_regla_de_disco_usado_abre_alerta_por_el_mismo_mecanismo_generico(self):
+        # evaluar_reglas_metricas lee getattr(muestra, regla.metrica) — no hace falta
+        # tocar el service al agregar una métrica nueva, esta prueba lo confirma.
+        regla_disco = ReglaAlerta.objects.create(
+            nombre='Disco lleno', metrica=Metrica.DISCO_USADO_PCT, operador=ReglaAlerta.Operador.GTE,
+            umbral=90, duracion_minutos=10, creado_por=self.usuario,
+        )
+        self._crear_muestra_disco(95, hace_minutos=15)
+        muestra = self._crear_muestra_disco(96)
+        evaluar_reglas_metricas(self.estacion, muestra)
+
+        alerta = Alerta.objects.get(regla=regla_disco)
+        self.assertEqual(alerta.estado, Alerta.Estado.ABIERTA)
+        self.assertEqual(alerta.valor_disparador, 96)
 
     def test_pico_aislado_no_abre_alerta(self):
         # Sin historial previo (estación "nueva"): una sola muestra alta no alcanza
@@ -296,6 +329,298 @@ class BitlockerAlertaTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn('BitLocker deshabilitado', mail.outbox[0].body)
         self.assertNotIn('umbral', mail.outbox[0].body.lower())
+
+
+class EvaluarReglaPosErroresTests(TestCase):
+    """pos_errores: cada reporte ya es una ventana cerrada, sin duracion_minutos (como
+    bitlocker), pero sí reusa umbral/operador de ReglaAlerta (a diferencia de
+    bitlocker, que es puramente binario)."""
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        usuario = User.objects.create_user(username='u_pos_err', password='x')
+        self.regla = ReglaAlerta.objects.create(
+            nombre='Errores del POS', metrica=Metrica.POS_ERRORES,
+            operador=ReglaAlerta.Operador.GTE, umbral=1, creado_por=usuario,
+        )
+
+    def test_por_debajo_del_umbral_no_abre_nada(self):
+        evaluar_regla_pos_errores(self.estacion, 0)
+        self.assertFalse(Alerta.objects.exists())
+
+    def test_alcanzar_el_umbral_abre_alerta_con_el_total_como_valor(self):
+        evaluar_regla_pos_errores(self.estacion, 3)
+        alerta = Alerta.objects.get()
+        self.assertEqual(alerta.regla, self.regla)
+        self.assertEqual(alerta.estado, Alerta.Estado.ABIERTA)
+        self.assertEqual(alerta.valor_disparador, 3)
+
+    def test_no_duplica_si_ya_hay_una_activa(self):
+        evaluar_regla_pos_errores(self.estacion, 2)
+        evaluar_regla_pos_errores(self.estacion, 5)
+        self.assertEqual(Alerta.objects.count(), 1)
+
+    def test_una_ventana_limpia_resuelve_la_alerta(self):
+        evaluar_regla_pos_errores(self.estacion, 2)
+        evaluar_regla_pos_errores(self.estacion, 0)
+        alerta = Alerta.objects.get()
+        self.assertEqual(alerta.estado, Alerta.Estado.RESUELTA)
+        self.assertIsNotNone(alerta.resuelta_en)
+
+
+class VentanaMantenimientoHookTests(TestCase):
+    """abrir_o_mantener_alerta consulta ventana_mantenimiento_activa antes que nada —
+    un solo hook cubre las rutas de evaluación existentes (métricas, bitlocker,
+    pos_errores) sin tocar cada evaluador por separado."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            bitlocker_habilitado=False,
+        )
+        self.usuario = User.objects.create_user(username='u_vm', password='x')
+
+    def _crear_ventana(
+        self, *, destino_tipo=VentanaMantenimiento.DestinoTipo.CADENA, estaciones=None,
+        activo=True, hace_minutos=30, dura_minutos=60,
+    ):
+        ventana = VentanaMantenimiento.objects.create(
+            unidad_negocio=self.sg, destino_tipo=destino_tipo, activo=activo,
+            desde=timezone.now() - timedelta(minutes=hace_minutos),
+            hasta=timezone.now() + timedelta(minutes=dura_minutos),
+            motivo='Despliegue de POS v5.2', creado_por=self.usuario,
+        )
+        if estaciones:
+            ventana.estaciones.set(estaciones)
+        return ventana
+
+    def test_silencia_alerta_de_bitlocker(self):
+        ReglaAlerta.objects.create(
+            nombre='Disco sin cifrar', metrica=Metrica.BITLOCKER_DESHABILITADO, umbral=0, creado_por=self.usuario,
+        )
+        self._crear_ventana()
+        evaluar_regla_bitlocker(self.estacion)
+        self.assertFalse(Alerta.objects.exists())
+
+    def test_silencia_alerta_de_pos_errores(self):
+        ReglaAlerta.objects.create(
+            nombre='Errores del POS', metrica=Metrica.POS_ERRORES, operador=ReglaAlerta.Operador.GTE,
+            umbral=1, creado_por=self.usuario,
+        )
+        self._crear_ventana()
+        evaluar_regla_pos_errores(self.estacion, 5)
+        self.assertFalse(Alerta.objects.exists())
+
+    def test_silencia_alerta_de_metricas(self):
+        ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, operador=ReglaAlerta.Operador.GTE,
+            umbral=90, duracion_minutos=10, creado_por=self.usuario,
+        )
+        vieja = MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=95)
+        MuestraMetrica.objects.filter(pk=vieja.pk).update(timestamp=timezone.now() - timedelta(minutes=15))
+        self._crear_ventana()
+        muestra = MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=96)
+        evaluar_reglas_metricas(self.estacion, muestra)
+        self.assertFalse(Alerta.objects.exists())
+
+    def test_ventana_ya_terminada_no_silencia(self):
+        ReglaAlerta.objects.create(
+            nombre='Disco sin cifrar', metrica=Metrica.BITLOCKER_DESHABILITADO, umbral=0, creado_por=self.usuario,
+        )
+        self._crear_ventana(hace_minutos=120, dura_minutos=-60)  # terminó hace una hora
+        evaluar_regla_bitlocker(self.estacion)
+        self.assertTrue(Alerta.objects.exists())
+
+    def test_ventana_inactiva_no_silencia(self):
+        ReglaAlerta.objects.create(
+            nombre='Disco sin cifrar', metrica=Metrica.BITLOCKER_DESHABILITADO, umbral=0, creado_por=self.usuario,
+        )
+        self._crear_ventana(activo=False)
+        evaluar_regla_bitlocker(self.estacion)
+        self.assertTrue(Alerta.objects.exists())
+
+    def test_destino_de_estaciones_puntuales_no_cubre_una_estacion_distinta(self):
+        otra = Estacion.objects.create(
+            codigo='ML001-B', farmacia=self.farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            bitlocker_habilitado=False,
+        )
+        ReglaAlerta.objects.create(
+            nombre='Disco sin cifrar', metrica=Metrica.BITLOCKER_DESHABILITADO, umbral=0, creado_por=self.usuario,
+        )
+        self._crear_ventana(destino_tipo=VentanaMantenimiento.DestinoTipo.ESTACIONES, estaciones=[otra])
+        evaluar_regla_bitlocker(self.estacion)  # self.estacion no está en el destino de la ventana
+        self.assertTrue(Alerta.objects.exists())
+
+    def test_destino_de_estaciones_puntuales_si_cubre_la_estacion_elegida(self):
+        ReglaAlerta.objects.create(
+            nombre='Disco sin cifrar', metrica=Metrica.BITLOCKER_DESHABILITADO, umbral=0, creado_por=self.usuario,
+        )
+        self._crear_ventana(destino_tipo=VentanaMantenimiento.DestinoTipo.ESTACIONES, estaciones=[self.estacion])
+        evaluar_regla_bitlocker(self.estacion)
+        self.assertFalse(Alerta.objects.exists())
+
+
+class NotificarAlertaWebhookTeamsTests(TestCase):
+    """notificar_alerta reenvía por Teams además de correo — canal global, canal
+    propio de la unidad de negocio, o ninguno (M3)."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        usuario = User.objects.create_user(username='u_teams', password='x')
+        self.regla = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90, creado_por=usuario,
+        )
+        self.alerta = Alerta.objects.create(regla=self.regla, estacion=self.estacion, valor_disparador=95)
+
+    def test_sin_canal_configurado_no_llama_al_webhook(self):
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            notificar_alerta(self.alerta)
+        urlopen.assert_not_called()
+
+    def test_canal_global_recibe_el_webhook(self):
+        CanalNotificacion.objects.create(
+            destino='https://outlook.office.com/webhook/global', creado_por=self.regla.creado_por,
+        )
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            notificar_alerta(self.alerta)
+        urlopen.assert_called_once()
+
+    def test_canal_de_otra_unidad_de_negocio_no_recibe_nada(self):
+        CanalNotificacion.objects.create(
+            unidad_negocio=self.mia, destino='https://outlook.office.com/webhook/mia',
+            creado_por=self.regla.creado_por,
+        )
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            notificar_alerta(self.alerta)
+        urlopen.assert_not_called()
+
+    def test_canal_inactivo_no_recibe_nada(self):
+        CanalNotificacion.objects.create(
+            unidad_negocio=self.sg, destino='https://outlook.office.com/webhook/sg', activo=False,
+            creado_por=self.regla.creado_por,
+        )
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            notificar_alerta(self.alerta)
+        urlopen.assert_not_called()
+
+    def test_webhook_caido_no_rompe_la_notificacion(self):
+        CanalNotificacion.objects.create(
+            unidad_negocio=self.sg, destino='https://outlook.office.com/webhook/sg', creado_por=self.regla.creado_por,
+        )
+        with patch('apps.monitoreo.services.urllib.request.urlopen', side_effect=urllib.error.URLError('caído')):
+            notificar_alerta(self.alerta)  # no debe lanzar
+
+    def test_escalamiento_marca_el_asunto_como_sin_atender(self):
+        PerfilUsuario.objects.create(usuario=self.regla.creado_por, acceso_todas_unidades=True)
+        self.regla.creado_por.email = 'ops@example.com'
+        self.regla.creado_por.save(update_fields=['email'])
+
+        notificar_alerta(self.alerta, escalamiento=True)
+        self.assertIn('SIN ATENDER', mail.outbox[-1].subject)
+
+
+class EscalarAlertasAbiertasTests(TestCase):
+    """Reenvía la notificación de una Alerta ABIERTA que nadie reconoció a tiempo —
+    una sola vez por alerta (escalada_en), y solo mientras siga ABIERTA (M3)."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_escalar', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.email = 'ops@example.com'
+        self.usuario.save(update_fields=['email'])
+        self.regla = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90, creado_por=self.usuario,
+        )
+
+    def _crear_alerta(self, *, estado=Alerta.Estado.ABIERTA, hace_minutos=0):
+        alerta = Alerta.objects.create(
+            regla=self.regla, estacion=self.estacion, valor_disparador=95, estado=estado,
+        )
+        if hace_minutos:
+            Alerta.objects.filter(pk=alerta.pk).update(
+                abierta_en=timezone.now() - timedelta(minutes=hace_minutos),
+            )
+            alerta.refresh_from_db()
+        return alerta
+
+    def test_alerta_reciente_no_escala_todavia(self):
+        self._crear_alerta(hace_minutos=UMBRAL_ESCALAMIENTO_MINUTOS - 5)
+        escaladas = escalar_alertas_abiertas()
+        self.assertEqual(escaladas, 0)
+
+    def test_alerta_vieja_sin_reconocer_escala(self):
+        alerta = self._crear_alerta(hace_minutos=UMBRAL_ESCALAMIENTO_MINUTOS + 5)
+        escaladas = escalar_alertas_abiertas()
+        self.assertEqual(escaladas, 1)
+        alerta.refresh_from_db()
+        self.assertIsNotNone(alerta.escalada_en)
+        self.assertIn('SIN ATENDER', mail.outbox[-1].subject)
+
+    def test_no_reescala_una_alerta_ya_escalada(self):
+        self._crear_alerta(hace_minutos=UMBRAL_ESCALAMIENTO_MINUTOS + 5)
+        escalar_alertas_abiertas()
+        escaladas_de_nuevo = escalar_alertas_abiertas()
+        self.assertEqual(escaladas_de_nuevo, 0)
+
+    def test_alerta_reconocida_no_escala(self):
+        self._crear_alerta(estado=Alerta.Estado.RECONOCIDA, hace_minutos=UMBRAL_ESCALAMIENTO_MINUTOS + 5)
+        escaladas = escalar_alertas_abiertas()
+        self.assertEqual(escaladas, 0)
+
+    def test_alerta_resuelta_no_escala(self):
+        self._crear_alerta(estado=Alerta.Estado.RESUELTA, hace_minutos=UMBRAL_ESCALAMIENTO_MINUTOS + 5)
+        escaladas = escalar_alertas_abiertas()
+        self.assertEqual(escaladas, 0)
+
+
+class ClasificarErrorPosTests(TestCase):
+    def test_venta_sin_lote_es_negocio(self):
+        mensaje = 'VENTA SIN LOTE: 056-020-000105005 Usuario: jtorresq Defaul Code: 03317'
+        self.assertEqual(clasificar_error_pos(mensaje), PosErrorDetectado.Categoria.NEGOCIO)
+
+    def test_error_de_conexion_es_sistema(self):
+        mensaje = 'Exception while reading from stream'
+        self.assertEqual(clasificar_error_pos(mensaje), PosErrorDetectado.Categoria.SISTEMA)
+
+    def test_mensaje_desconocido_por_defecto_es_sistema(self):
+        # Ante la duda, un mensaje nuevo no reconocido se trata como señal real, no se
+        # descarta en silencio — mismo criterio conservador que el resto del proyecto.
+        self.assertEqual(clasificar_error_pos('un error nunca antes visto'), PosErrorDetectado.Categoria.SISTEMA)
+
+
+class PosErrorDetectadoModeloTests(TestCase):
+    def test_unique_together_estacion_mensaje(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        from django.db import IntegrityError, transaction
+
+        PosErrorDetectado.objects.create(estacion=estacion, mensaje='no existe la relación X', cantidad_total=1)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PosErrorDetectado.objects.create(estacion=estacion, mensaje='no existe la relación X', cantidad_total=1)
 
 
 class ReglasAplicablesMultiTenantTests(TestCase):

@@ -17,8 +17,8 @@ from django.utils import timezone
 
 from apps.mqtt_worker.services import (
     NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_instalacion,
-    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_windows_update,
-    registrar_latido_worker, registrar_mensaje_fallido,
+    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_pos_errores,
+    manejar_software_instalado, manejar_windows_update, registrar_latido_worker, registrar_mensaje_fallido,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,8 @@ TOPICO_INFO_EQUIPO = '/saidsof/agente/+/info_equipo/'
 TOPICO_ESTADO_SCRIPT = '/saidsof/agente/+/script_estado/'
 TOPICO_ESTADO_INSTALACION = '/saidsof/agente/+/software_estado/'
 TOPICO_WINDOWS_UPDATE = '/saidsof/agente/+/windows_update/'
+TOPICO_SOFTWARE_INSTALADO = '/saidsof/agente/+/software_instalado/'
+TOPICO_POS_ERRORES = '/saidsof/agente/+/pos_errores/'
 
 # El latido se guarda como mucho cada N segundos (no en cada mensaje): a la
 # frecuencia de heartbeat/métricas de 1.800+ estaciones, escribirlo en cada
@@ -119,6 +121,8 @@ class Command(BaseCommand):
         client.subscribe(TOPICO_ESTADO_SCRIPT, qos=1)
         client.subscribe(TOPICO_ESTADO_INSTALACION, qos=1)
         client.subscribe(TOPICO_WINDOWS_UPDATE)
+        client.subscribe(TOPICO_SOFTWARE_INSTALADO)
+        client.subscribe(TOPICO_POS_ERRORES)
         registrar_latido_worker(NOMBRE_WORKER_MQTT)
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
@@ -163,6 +167,10 @@ class Command(BaseCommand):
                 manejar_estado_instalacion(_codigo_desde_topico(msg.topic), payload)
             elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/windows_update/'):
                 manejar_windows_update(_codigo_desde_topico(msg.topic), payload)
+            elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/software_instalado/'):
+                manejar_software_instalado(_codigo_desde_topico(msg.topic), payload)
+            elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/pos_errores/'):
+                manejar_pos_errores(_codigo_desde_topico(msg.topic), payload)
         except Exception as exc:
             # Antes esto solo quedaba en el log del proceso — fácil de no ver hasta
             # que ya importa. Ahora además queda en una cola de revisión manual.

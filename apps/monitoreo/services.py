@@ -5,7 +5,10 @@ Los handlers de MQTT (apps.mqtt_worker.services) llaman a estas funciones justo
 después de guardar cada muestra/heartbeat; el comando `marcar_estaciones_offline`
 llama a la parte de "sin_heartbeat".
 """
+import json
 import logging
+import urllib.error
+import urllib.request
 from datetime import timedelta
 
 from django.core.mail import send_mail
@@ -13,7 +16,10 @@ from django.db import close_old_connections
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import Alerta, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, ReglaAlerta
+from .models import (
+    Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, PosErrorDetectado,
+    ReglaAlerta, VentanaMantenimiento,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +27,35 @@ logger = logging.getLogger(__name__)
 # worker de MeshCentral está caído) y NO se usa para abrir agente_caido_red_viva — evita
 # falsos positivos por datos viejos en vez de por una discrepancia real entre fuentes.
 FRESCURA_MESHCENTRAL_MINUTOS = 30
+
+# Minutos que una Alerta puede quedar ABIERTA sin que nadie la reconozca antes de
+# reenviar la notificación (ver escalar_alertas_abiertas). Global y no por ReglaAlerta
+# a propósito (decisión del usuario): un solo valor es más simple de operar mientras
+# no haya evidencia real de que algunas reglas necesitan escalar antes/después que
+# otras — mismo criterio que FRESCURA_MESHCENTRAL_MINUTOS arriba.
+UMBRAL_ESCALAMIENTO_MINUTOS = 30
+
+# Prefijos de mensaje que el POS loguea en nivel ERROR pero que son una validación de
+# negocio funcionando bien (ej. bloquear una venta sin lote), no una falla real del
+# sistema — confirmado con el usuario que "VENTA SIN LOTE" es rutinario en la operación
+# real, no esporádico. Contarlos igual que un timeout de conexión inundaría la alerta
+# de falsos positivos apenas se activara en una farmacia con volumen normal de ventas.
+# Agregar acá nuevos patrones a medida que se encuentren en producción (mismo criterio
+# que PERMISOS_LITERALES en apps/activos/management/commands/seed_permisos.py: una
+# lista chica que se edita a mano, no vale la pena un modelo/admin para esto todavía).
+PREFIJOS_ERROR_DE_NEGOCIO = (
+    'VENTA SIN LOTE',
+)
+
+
+def clasificar_error_pos(mensaje: str) -> str:
+    """PosErrorDetectado.Categoria.NEGOCIO si `mensaje` matchea un prefijo conocido de
+    validación de negocio, si no PosErrorDetectado.Categoria.SISTEMA (default: ante la
+    duda, un mensaje nuevo que no se reconoce se trata como señal real, no se descarta
+    en silencio)."""
+    if mensaje.startswith(PREFIJOS_ERROR_DE_NEGOCIO):
+        return PosErrorDetectado.Categoria.NEGOCIO
+    return PosErrorDetectado.Categoria.SISTEMA
 
 
 def reglas_aplicables_a(unidad_negocio, *, metrica=None):
@@ -67,9 +102,36 @@ def _alerta_activa(regla, estacion):
     ).first()
 
 
+def ventana_mantenimiento_activa(estacion):
+    """La VentanaMantenimiento activa que cubre a `estacion` ahora mismo, si alguna,
+    si no None. Único punto que consulta VentanaMantenimiento — tanto
+    abrir_o_mantener_alerta (silenciar) como el panel (aviso "en mantenimiento
+    hasta") lo reusan, en vez de resolver el destino cada uno por su cuenta."""
+    from apps.catalogo.services import resolver_estaciones
+
+    ahora = timezone.now()
+    candidatas = VentanaMantenimiento.objects.filter(
+        activo=True, desde__lte=ahora, hasta__gte=ahora,
+        unidad_negocio_id=estacion.farmacia.unidad_negocio_id,
+    )
+    for ventana in candidatas:
+        estaciones = resolver_estaciones(
+            ventana.destino_tipo, unidad_negocio=ventana.unidad_negocio,
+            grupos=ventana.grupos.all(), farmacias=ventana.farmacias.all(), estaciones=ventana.estaciones.all(),
+        )
+        if estaciones.filter(pk=estacion.pk).exists():
+            return ventana
+    return None
+
+
 def abrir_o_mantener_alerta(regla, estacion, valor):
     """Abre una Alerta nueva si no hay ya una activa para (regla, estacion); si ya
-    existe, no hace nada (no se duplica ni se vuelve a notificar)."""
+    existe, no hace nada (no se duplica ni se vuelve a notificar). Si `estacion` está
+    cubierta por una VentanaMantenimiento activa, no abre nada — un solo chequeo acá
+    cierra el silenciamiento para las cuatro rutas de evaluación (métricas, sin
+    heartbeat, bitlocker, pos_errores), presente y futura, sin tocar cada una."""
+    if ventana_mantenimiento_activa(estacion):
+        return None
     if _alerta_activa(regla, estacion):
         return None
     alerta = Alerta.objects.create(regla=regla, estacion=estacion, valor_disparador=valor)
@@ -242,10 +304,46 @@ def resolver_alertas_bitlocker(estacion):
     ).update(estado=Alerta.Estado.RESUELTA, resuelta_en=timezone.now())
 
 
-def notificar_alerta(alerta):
+def evaluar_regla_pos_errores(estacion, total_nuevos: int) -> None:
+    """Llamada tras ingerir un reporte del log del POS (ver
+    apps.mqtt_worker.services.manejar_pos_errores). Cada reporte ya es una ventana
+    cerrada (los ERROR/FATAL nuevos desde el último chequeo del agente) — no hay
+    condición sostenida en el tiempo que esperar, mismo criterio que
+    agente_caido_red_viva/sin_heartbeat. A diferencia de esas dos (que ignoran
+    operador/umbral salvo como minutos), acá sí se reusa el umbral/operador de
+    ReglaAlerta tal cual: "abrir si la cantidad de errores nuevos en la ventana
+    cumple la condición" — mismo mecanismo de comparación que evaluar_reglas_metricas
+    (_cumple), solo que el valor no sale de una MuestraMetrica."""
+    unidad = estacion.farmacia.unidad_negocio
+    for regla in reglas_aplicables_a(unidad, metrica=Metrica.POS_ERRORES):
+        if _cumple(regla, total_nuevos):
+            abrir_o_mantener_alerta(regla, estacion, total_nuevos)
+        else:
+            resolver_condicion(regla, estacion)
+
+
+def _enviar_webhook_teams(url, texto):
+    """POST {"text": ...} al webhook entrante de Teams (formato clásico del conector
+    O365) — nunca lanza: un webhook caído no debe tumbar la ingesta de métricas ni el
+    envío de correo, mismo criterio que fail_silently=True de send_mail. Mismo patrón
+    stdlib (urllib, sin agregar `requests` como dependencia) que
+    apps.mqtt_worker.emqx_admin."""
+    datos = json.dumps({'text': texto}).encode('utf-8')
+    req = urllib.request.Request(url, data=datos, method='POST', headers={'Content-Type': 'application/json'})
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        logger.warning('No se pudo notificar por webhook de Teams (%s).', url, exc_info=True)
+
+
+def notificar_alerta(alerta, *, escalamiento=False):
     """Correo a quienes tengan acceso a la unidad de negocio de la estación (equipo
-    interno + usuarios de ese cliente) con email configurado. Solo se llama al abrir
-    una alerta nueva, no en cada muestra que la sostiene."""
+    interno + usuarios de ese cliente) con email configurado, más un webhook de Teams
+    si hay un CanalNotificacion activo para esa unidad de negocio (o uno global). Se
+    llama al abrir una alerta nueva y, con escalamiento=True, desde
+    escalar_alertas_abiertas cuando sigue sin reconocerse — mismos destinatarios y
+    canales, solo cambia el texto (decisión del usuario: sin lista de escalamiento
+    separada)."""
     from django.contrib.auth import get_user_model
     User = get_user_model()
 
@@ -255,11 +353,7 @@ def notificar_alerta(alerta):
             Q(is_superuser=True) | Q(perfil__acceso_todas_unidades=True) | Q(perfil__unidades_negocio=unidad),
         ).exclude(email='').values_list('email', flat=True).distinct()
     )
-    if not destinatarios:
-        logger.info('Alerta #%s sin destinatarios de correo (unidad %s).', alerta.pk, unidad.codigo)
-        return
 
-    asunto = f'[{alerta.regla.get_severidad_display()}] {alerta.regla.nombre} — {alerta.estacion.codigo}'
     if alerta.regla.metrica == Metrica.BITLOCKER_DESHABILITADO:
         # Condición binaria: "valor (umbral: >= X)" no significa nada aquí, a diferencia
         # de las métricas numéricas (CPU/RAM/latencia/sin_heartbeat).
@@ -268,14 +362,49 @@ def notificar_alerta(alerta):
         detalle_condicion = (
             f'Valor: {alerta.valor_disparador} (umbral: {alerta.regla.get_operador_display()} {alerta.regla.umbral}).'
         )
+    prefijo_asunto = 'SIN ATENDER — ' if escalamiento else ''
+    asunto = f'[{alerta.regla.get_severidad_display()}] {prefijo_asunto}{alerta.regla.nombre} — {alerta.estacion.codigo}'
+    aviso_escalamiento = (
+        f'Sigue ABIERTA sin reconocer hace más de {UMBRAL_ESCALAMIENTO_MINUTOS} minutos.\n' if escalamiento else ''
+    )
     cuerpo = (
+        f'{aviso_escalamiento}'
         f'{alerta.regla.nombre} en {alerta.estacion.codigo} ({unidad.codigo}).\n'
         f'{detalle_condicion}\n'
         f'Abierta: {alerta.abierta_en:%Y-%m-%d %H:%M:%S}.'
     )
-    # fail_silently: un SMTP caído no debe tumbar la ingesta de métricas del worker MQTT
-    # ni el cron de marcar_estaciones_offline — la alerta ya quedó guardada en la BD.
-    send_mail(asunto, cuerpo, None, destinatarios, fail_silently=True)
+
+    if destinatarios:
+        # fail_silently: un SMTP caído no debe tumbar la ingesta de métricas del worker
+        # MQTT ni el cron de marcar_estaciones_offline — la alerta ya quedó guardada en la BD.
+        send_mail(asunto, cuerpo, None, destinatarios, fail_silently=True)
+    else:
+        logger.info('Alerta #%s sin destinatarios de correo (unidad %s).', alerta.pk, unidad.codigo)
+
+    canales_teams = CanalNotificacion.objects.filter(
+        activo=True, tipo=CanalNotificacion.Tipo.WEBHOOK_TEAMS,
+    ).filter(Q(unidad_negocio__isnull=True) | Q(unidad_negocio=unidad))
+    for canal in canales_teams:
+        _enviar_webhook_teams(canal.destino, f'{asunto}\n\n{cuerpo}')
+
+
+def escalar_alertas_abiertas() -> int:
+    """Celery Beat periódico (mismo mecanismo que marcar_estaciones_offline): reenvía
+    la notificación de cualquier Alerta en estado ABIERTA (nunca reconocida —
+    RECONOCIDA ya significa que alguien la vio, aunque no la haya resuelto todavía) más
+    vieja que UMBRAL_ESCALAMIENTO_MINUTOS, por los mismos canales que la notificación
+    original. Marca escalada_en para no repetir el aviso en cada corrida siguiente."""
+    umbral = timezone.now() - timedelta(minutes=UMBRAL_ESCALAMIENTO_MINUTOS)
+    candidatas = Alerta.objects.filter(
+        estado=Alerta.Estado.ABIERTA, escalada_en__isnull=True, abierta_en__lte=umbral,
+    ).select_related('regla', 'estacion__farmacia__unidad_negocio')
+    escaladas = 0
+    for alerta in candidatas:
+        notificar_alerta(alerta, escalamiento=True)
+        alerta.escalada_en = timezone.now()
+        alerta.save(update_fields=['escalada_en'])
+        escaladas += 1
+    return escaladas
 
 
 def purgar_metricas_antiguas(*, dias: int = 30) -> int:

@@ -1,5 +1,5 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
@@ -21,6 +21,7 @@ def scripts_lista(request):
 
 
 @login_required
+@permission_required('scripts.add_script', raise_exception=True)
 def script_crear(request):
     if request.method == 'POST':
         form = ScriptForm(request.POST, user=request.user)
@@ -59,6 +60,7 @@ def _crear_ejecucion(request, form, script):
 
 
 @login_required
+@permission_required('scripts.add_ejecucionscript', raise_exception=True)
 def script_ejecutar(request, pk):
     script = get_object_or_404(Script, pk=pk)
     verificar_acceso(request.user, script.unidad_negocio)
@@ -77,6 +79,7 @@ def script_ejecutar(request, pk):
 
 
 @login_required
+@permission_required(('scripts.add_script', 'scripts.add_ejecucionscript'), raise_exception=True)
 def script_ejecutar_adhoc(request):
     if request.method == 'POST':
         form = EjecutarScriptAdhocForm(request.POST, user=request.user)
@@ -160,6 +163,7 @@ def scripts_programados_lista(request):
 
 
 @login_required
+@permission_required('scripts.add_scriptprogramado', raise_exception=True)
 def script_programado_crear(request):
     if request.method == 'POST':
         form = ScriptProgramadoForm(request.POST, user=request.user)

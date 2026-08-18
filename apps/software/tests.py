@@ -1,16 +1,22 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
 from .models import (
-    AplicacionCatalogo, DestinoTipo, EstadoSolicitud, EventoInstalacion, ResultadoInstalacion, SolicitudInstalacion,
-    TipoAccionInstalacion, VersionAplicacion,
+    AplicacionCatalogo, DestinoTipo, EstadoSolicitud, EventoInstalacion, InventarioProgramado,
+    ResultadoInstalacion, SoftwareInstaladoDetectado, SolicitudInstalacion, TipoAccionInstalacion,
+    VersionAplicacion,
 )
-from .services import publicar_solicitud, verificar_completado
+from .services import (
+    generar_escaneo_programado, generar_escaneos_vencidos, publicar_solicitud, verificar_completado,
+)
 
 
 class _BaseSoftwareTests(TestCase):
@@ -122,3 +128,70 @@ class VerificarCompletadoTests(_BaseSoftwareTests):
         self.assertFalse(verificar_completado(solicitud))
         solicitud.refresh_from_db()
         self.assertEqual(solicitud.estado, EstadoSolicitud.PUBLICANDO)
+
+
+class SoftwareInstaladoDetectadoTests(_BaseSoftwareTests):
+    def test_no_permite_dos_filas_del_mismo_nombre_en_la_misma_estacion(self):
+        estacion = self._crear_estacion('ML001-A')
+        SoftwareInstaladoDetectado.objects.create(estacion=estacion, nombre='Google Chrome', version='118.0')
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            SoftwareInstaladoDetectado.objects.create(estacion=estacion, nombre='Google Chrome', version='119.0')
+
+    def test_el_mismo_nombre_en_otra_estacion_si_es_valido(self):
+        e1 = self._crear_estacion('ML001-A')
+        e2 = self._crear_estacion('ML001-B')
+        SoftwareInstaladoDetectado.objects.create(estacion=e1, nombre='Google Chrome', version='118.0')
+        SoftwareInstaladoDetectado.objects.create(estacion=e2, nombre='Google Chrome', version='118.0')
+        self.assertEqual(SoftwareInstaladoDetectado.objects.count(), 2)
+
+
+class GenerarEscaneoProgramadoTests(_BaseSoftwareTests):
+    def setUp(self):
+        super().setUp()
+        self.estacion = self._crear_estacion('ML001-A')
+        self.programado = InventarioProgramado.objects.create(
+            unidad_negocio=self.sg, destino_tipo=DestinoTipo.CADENA,
+            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.now().date(), creado_por=self.usuario,
+        )
+
+    def test_dispara_el_comando_y_avanza_fechas(self):
+        hoy = timezone.now().date()
+        with patch('apps.catalogo.services.enviar_comando', return_value=True) as mock_enviar:
+            enviados = generar_escaneo_programado(programado=self.programado)
+
+        mock_enviar.assert_called_once_with(self.estacion, 'consultar_software_instalado')
+        self.assertEqual(enviados, 1)
+        self.programado.refresh_from_db()
+        self.assertEqual(self.programado.fecha_ultima_ejecucion, hoy)
+        self.assertEqual(self.programado.fecha_proxima_ejecucion, hoy + timedelta(days=7))
+
+    def test_fallo_de_publish_no_cuenta_como_enviado_pero_igual_avanza_fecha(self):
+        with patch('apps.catalogo.services.enviar_comando', return_value=False):
+            enviados = generar_escaneo_programado(programado=self.programado)
+        self.assertEqual(enviados, 0)
+        self.programado.refresh_from_db()
+        self.assertIsNotNone(self.programado.fecha_ultima_ejecucion)
+
+    def test_generar_escaneos_vencidos_solo_recoge_las_vencidas_y_audita(self):
+        from apps.auditoria.models import EventoAuditoria
+
+        futuro = InventarioProgramado.objects.create(
+            unidad_negocio=self.sg, destino_tipo=DestinoTipo.CADENA,
+            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.now().date() + timedelta(days=5),
+            creado_por=self.usuario,
+        )
+        with patch('apps.catalogo.services.enviar_comando', return_value=True):
+            total = generar_escaneos_vencidos()
+
+        self.assertEqual(total, 1)
+        futuro.refresh_from_db()
+        self.assertIsNone(futuro.fecha_ultima_ejecucion)
+        self.assertTrue(EventoAuditoria.objects.filter(accion='inventario_programado.disparar').exists())
+
+    def test_inactivo_no_se_dispara(self):
+        self.programado.activo = False
+        self.programado.save(update_fields=['activo'])
+        with patch('apps.catalogo.services.enviar_comando', return_value=True) as mock_enviar:
+            total = generar_escaneos_vencidos()
+        self.assertEqual(total, 0)
+        mock_enviar.assert_not_called()

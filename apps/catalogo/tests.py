@@ -341,3 +341,49 @@ class FarmaciaAdminImportarViewTests(TestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'Elegí un archivo CSV')
+
+
+class EstacionAdminMonitoreoEnLoteTests(TestCase):
+    """list_editable alcanza fila por fila, pero no escala a ~1.800 estaciones — estas
+    dos acciones del admin activan/desactivan monitorear_recursos sobre la selección
+    completa (filtrable por grupo/farmacia con list_filter)."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+        self.admin_user = User.objects.create_superuser(username='admin_mon', email='a@a.com', password='x')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'))
+        self.e1 = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+        self.e2 = Estacion.objects.create(codigo='ML001-B', farmacia=farmacia, monitorear_recursos=True)
+        self.client.force_login(self.admin_user)
+
+    def _url(self):
+        from django.urls import reverse
+        return reverse('admin:catalogo_estacion_changelist')
+
+    def test_activar_en_lote_solo_toca_las_que_no_lo_tenian(self):
+        resp = self.client.post(self._url(), {
+            'action': 'activar_monitoreo_recursos', '_selected_action': [self.e1.pk, self.e2.pk],
+        }, follow=True)
+        self.e1.refresh_from_db()
+        self.e2.refresh_from_db()
+        self.assertTrue(self.e1.monitorear_recursos)
+        self.assertTrue(self.e2.monitorear_recursos)
+        self.assertContains(resp, 'activado en 1 estación')  # e2 ya estaba activa, se excluye
+
+    def test_desactivar_en_lote(self):
+        resp = self.client.post(self._url(), {
+            'action': 'desactivar_monitoreo_recursos', '_selected_action': [self.e1.pk, self.e2.pk],
+        }, follow=True)
+        self.e2.refresh_from_db()
+        self.assertFalse(self.e2.monitorear_recursos)
+        self.assertContains(resp, 'desactivado en 1 estación')
+
+    def test_activar_en_lote_audita_cada_estacion(self):
+        from apps.auditoria.models import EventoAuditoria
+        self.client.post(self._url(), {
+            'action': 'activar_monitoreo_recursos', '_selected_action': [self.e1.pk],
+        })
+        self.assertTrue(
+            EventoAuditoria.objects.filter(accion='estacion.monitoreo_activar', usuario=self.admin_user).exists(),
+        )

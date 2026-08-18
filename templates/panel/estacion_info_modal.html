@@ -14,6 +14,12 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
                 class="text-[var(--text-faint)] hover:text-[var(--text)] text-xl leading-none">&times;</button>
     </div>
 
+    {% if ventana_mantenimiento %}
+    <div class="mb-4 text-xs px-3 py-2 rounded-md alert sev-info">
+        En mantenimiento hasta {{ ventana_mantenimiento.hasta|date:"d/m H:i" }} — las alertas de esta estación
+        están silenciadas ({{ ventana_mantenimiento.motivo }}).
+    </div>
+    {% endif %}
     {% if solicitado %}
     <div class="mb-4 text-xs px-3 py-2 rounded-md alert sev-info">
         Actualización solicitada — esta ventana se refresca sola cuando el equipo responda (unos segundos si está en línea).
@@ -22,6 +28,11 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
     {% if solicitado_wu %}
     <div class="mb-4 text-xs px-3 py-2 rounded-md alert sev-info">
         Escaneo de Windows Update solicitado — puede tardar unos minutos en responder.
+    </div>
+    {% endif %}
+    {% if solicitado_sw %}
+    <div class="mb-4 text-xs px-3 py-2 rounded-md alert sev-info">
+        Escaneo de software instalado solicitado — esta ventana se refresca sola cuando el equipo responda.
     </div>
     {% endif %}
 
@@ -53,6 +64,10 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
         <div class="field">
             <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/></svg></span>
             <div class="field-body"><div class="field-label">Almacenamiento</div><div class="field-value mono num">{% if estacion.almacenamiento_total_gb %}{{ estacion.almacenamiento_total_gb }} GB{% else %}—{% endif %}</div></div>
+        </div>
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 11-14h-7z"/></svg></span>
+            <div class="field-body"><div class="field-label">Plan de energía</div><div class="field-value">{{ estacion.power_plan_actual|default:"—" }}</div></div>
         </div>
         <div class="field">
             <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
@@ -129,6 +144,72 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
         <p class="text-xs text-[var(--text-faint)]">La estación debe estar aprobada y en línea para escanear.</p>
         {% endif %}
     </div>
+
+    <div class="section-divider">
+        <div class="section-head">
+            <span class="label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+                <h3>Software instalado</h3>
+            </span>
+            {% if estacion.software_instalado_ultima_verificacion %}
+            <span class="pill neutral">{{ estacion.software_instalado.count }} programa{{ estacion.software_instalado.count|pluralize }}</span>
+            {% else %}
+            <span class="pill neutral">Nunca escaneado</span>
+            {% endif %}
+        </div>
+
+        {% if estacion.software_instalado_ultima_verificacion %}
+        <p class="text-xs text-[var(--text-faint)] mb-2">Último escaneo: {{ estacion.software_instalado_ultima_verificacion }}</p>
+        <ul class="text-xs mb-2 space-y-1" style="max-height:9rem;overflow-y:auto;">
+            {% for s in estacion.software_instalado.all %}
+            <li>{{ s.nombre }}{% if s.version %} <span class="text-[var(--text-faint)] mono num">{{ s.version }}</span>{% endif %}</li>
+            {% empty %}
+            <li class="text-[var(--text-faint)]">Sin programas detectados.</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-xs text-[var(--text-dim)] mb-2">Todavía no se escaneó esta estación.</p>
+        {% endif %}
+
+        {% if estacion.estado_aprobacion == 'aprobada' and estacion.estado_conexion == 'online' %}
+        <form hx-post="{% url 'panel:estacion_software_instalado_solicitar' estacion.pk %}"
+              hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+              hx-target="#modal-info-content" hx-swap="innerHTML">
+            {% csrf_token %}
+            <button type="submit" class="btn secondary">Escanear software instalado</button>
+        </form>
+        {% else %}
+        <p class="text-xs text-[var(--text-faint)]">La estación debe estar aprobada y en línea para escanear.</p>
+        {% endif %}
+    </div>
+
+    {% with errores_pos=estacion.pos_errores.all %}
+    {% if errores_pos %}
+    <div class="section-divider">
+        <div class="section-head">
+            <span class="label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                <h3>Errores del POS</h3>
+            </span>
+            <span class="pill critical">{{ errores_pos|length }} tipo{{ errores_pos|length|pluralize }}</span>
+        </div>
+        <p class="text-xs text-[var(--text-faint)] mb-2">
+            Detectados en el log del POS (Logs\GeneraXML.txt), reportado cada pocos minutos por el agente.
+            "Sistema" cuenta para la alerta; "negocio" (ej. venta sin lote) queda visible pero no alerta.
+        </p>
+        <ul class="text-xs mb-2 space-y-1" style="max-height:9rem;overflow-y:auto;">
+            {% for e in errores_pos|slice:":10" %}
+            <li>
+                <span class="pill {% if e.categoria == 'sistema' %}critical{% else %}neutral{% endif %}" style="font-size:0.65rem;">{{ e.get_categoria_display }}</span>
+                {{ e.mensaje }}
+                <span class="text-[var(--text-faint)] mono num">(x{{ e.cantidad_total }})</span>
+                <span class="text-[var(--text-faint)]">— última vez {{ e.ultima_vez|date:"d/m H:i" }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    {% endwith %}
 
     {% if perms.catalogo.acceso_remoto_estacion %}
     <div class="section-divider">

@@ -13,7 +13,7 @@ from django.utils import timezone
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
 from apps.facturacion.models import ActividadMensualEstacion
-from apps.monitoreo.models import EstadoDispositivo, MuestraMetrica
+from apps.monitoreo.models import Alerta, EstadoDispositivo, Metrica, MuestraMetrica, PosErrorDetectado, ReglaAlerta
 from apps.mqtt_worker.management.commands.run_mqtt_worker import (
     TOPICO_ESTADO_DESPLIEGUE, TOPICO_ESTADO_INSTALACION, TOPICO_ESTADO_SCRIPT, TOPICO_HEARTBEAT, Command,
     _codigo_desde_topico,
@@ -22,10 +22,11 @@ from apps.mqtt_worker.emqx_admin import aprovisionar_credencial_estacion
 from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
 from apps.mqtt_worker.services import (
     NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_instalacion,
-    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_windows_update,
-    registrar_latido_worker, registrar_mensaje_fallido,
+    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_pos_errores,
+    manejar_software_instalado, manejar_windows_update, registrar_latido_worker, registrar_mensaje_fallido,
 )
 from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript, Script, TipoScript
+from apps.software.models import SoftwareInstaladoDetectado
 
 BITLOCKER_KEY_TEST = Fernet.generate_key().decode()
 
@@ -253,6 +254,37 @@ class ManejarInfoEquipoBitlockerTests(TestCase):
         manejar_info_equipo('ML001-A', {'token': 'tok123', 'bitlocker_habilitado': True})
         self.assertEqual(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).count(), 0)
         self.assertEqual(Alerta.objects.get().estado, Alerta.Estado.RESUELTA)
+
+
+class ManejarInfoEquipoPowerPlanTests(TestCase):
+    """Plan de energía v1: solo lectura, viaja en el mismo payload que consultar_info."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            token_enrolamiento='tok123',
+        )
+
+    def test_guarda_el_plan_activo_y_la_fecha(self):
+        manejar_info_equipo('ML001-A', {'token': 'tok123', 'power_plan': 'Equilibrado'})
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.power_plan_actual, 'Equilibrado')
+        self.assertIsNotNone(self.estacion.power_plan_ultima_verificacion)
+
+    def test_sin_power_plan_en_el_payload_conserva_el_ultimo_conocido(self):
+        manejar_info_equipo('ML001-A', {'token': 'tok123', 'power_plan': 'Alto rendimiento'})
+        manejar_info_equipo('ML001-A', {'token': 'tok123', 'hostname': 'PC-ML001-A'})  # sin power_plan
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.power_plan_actual, 'Alto rendimiento')
+
+    def test_token_invalido_no_guarda_nada(self):
+        manejar_info_equipo('ML001-A', {'token': 'malo', 'power_plan': 'Equilibrado'})
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.power_plan_actual, '')
 
 
 class ManejarEstadoInstalacionTests(TestCase):
@@ -609,6 +641,185 @@ class ManejarWindowsUpdateTests(TestCase):
         self.assertIsNone(self.estacion.windows_update_ultima_verificacion)
 
 
+class ManejarSoftwareInstaladoTests(TestCase):
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def test_guarda_los_programas_reportados(self):
+        manejar_software_instalado(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'programas': [
+                {'nombre': 'Google Chrome', 'version': '118.0', 'fabricante': 'Google LLC'},
+                {'nombre': '7-Zip', 'version': '23.01', 'fabricante': 'Igor Pavlov'},
+            ],
+        })
+        detectados = SoftwareInstaladoDetectado.objects.filter(estacion=self.estacion).order_by('nombre')
+        self.assertEqual(list(detectados.values_list('nombre', 'version')), [
+            ('7-Zip', '23.01'), ('Google Chrome', '118.0'),
+        ])
+        self.estacion.refresh_from_db()
+        self.assertIsNotNone(self.estacion.software_instalado_ultima_verificacion)
+
+    def test_un_escaneo_nuevo_reemplaza_el_anterior_por_completo(self):
+        manejar_software_instalado(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'programas': [{'nombre': 'Programa Viejo', 'version': '1.0', 'fabricante': ''}],
+        })
+        manejar_software_instalado(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'programas': [{'nombre': 'Programa Nuevo', 'version': '2.0', 'fabricante': ''}],
+        })
+        nombres = set(SoftwareInstaladoDetectado.objects.filter(estacion=self.estacion).values_list('nombre', flat=True))
+        self.assertEqual(nombres, {'Programa Nuevo'})
+
+    def test_programas_sin_nombre_o_duplicados_se_descartan(self):
+        manejar_software_instalado(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'programas': [
+                {'nombre': '', 'version': '1.0'},
+                {'nombre': 'Chrome', 'version': '1.0'},
+                {'nombre': 'Chrome', 'version': '2.0'},  # duplicado (32/64 bits) — gana el primero
+            ],
+        })
+        detectados = SoftwareInstaladoDetectado.objects.filter(estacion=self.estacion)
+        self.assertEqual(detectados.count(), 1)
+        self.assertEqual(detectados.first().version, '1.0')
+
+    def test_lista_vacia_limpia_el_inventario_anterior(self):
+        manejar_software_instalado(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'programas': [{'nombre': 'Algo', 'version': '1.0'}],
+        })
+        manejar_software_instalado(self.estacion.codigo, {'token': self.estacion.token_enrolamiento, 'programas': []})
+        self.assertFalse(SoftwareInstaladoDetectado.objects.filter(estacion=self.estacion).exists())
+
+    def test_token_invalido_no_actualiza_nada(self):
+        manejar_software_instalado(self.estacion.codigo, {
+            'token': 'malo', 'programas': [{'nombre': 'Chrome', 'version': '1.0'}],
+        })
+        self.assertFalse(SoftwareInstaladoDetectado.objects.filter(estacion=self.estacion).exists())
+        self.estacion.refresh_from_db()
+        self.assertIsNone(self.estacion.software_instalado_ultima_verificacion)
+
+    def test_estacion_no_aprobada_se_ignora(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        manejar_software_instalado(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'programas': [{'nombre': 'Chrome', 'version': '1.0'}],
+        })
+        self.assertFalse(SoftwareInstaladoDetectado.objects.filter(estacion=self.estacion).exists())
+
+
+class ManejarPosErroresTests(TestCase):
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_pos_err_h', password='x')
+
+    def test_guarda_y_acumula_por_mensaje(self):
+        manejar_pos_errores(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'errores': [{'mensaje': 'no existe la relación X', 'nivel': 'ERROR', 'cantidad': 3}],
+        })
+        manejar_pos_errores(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'errores': [{'mensaje': 'no existe la relación X', 'nivel': 'ERROR', 'cantidad': 2}],
+        })
+        detectado = PosErrorDetectado.objects.get(estacion=self.estacion, mensaje='no existe la relación X')
+        self.assertEqual(detectado.cantidad_total, 5)
+
+    def test_dos_mensajes_distintos_quedan_como_dos_filas(self):
+        manejar_pos_errores(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'errores': [
+                {'mensaje': 'error A', 'nivel': 'ERROR', 'cantidad': 1},
+                {'mensaje': 'error B', 'nivel': 'FATAL', 'cantidad': 1},
+            ],
+        })
+        self.assertEqual(PosErrorDetectado.objects.filter(estacion=self.estacion).count(), 2)
+
+    def test_dispara_la_alerta_con_el_total_de_la_ventana(self):
+        ReglaAlerta.objects.create(
+            nombre='Errores del POS', metrica=Metrica.POS_ERRORES,
+            operador=ReglaAlerta.Operador.GTE, umbral=1, creado_por=self.usuario,
+        )
+        manejar_pos_errores(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'errores': [
+                {'mensaje': 'error A', 'nivel': 'ERROR', 'cantidad': 2},
+                {'mensaje': 'error B', 'nivel': 'ERROR', 'cantidad': 3},
+            ],
+        })
+        alerta = Alerta.objects.get()
+        self.assertEqual(alerta.valor_disparador, 5)  # 2 + 3
+
+    def test_errores_de_negocio_se_guardan_pero_no_cuentan_para_la_alerta(self):
+        ReglaAlerta.objects.create(
+            nombre='Errores del POS', metrica=Metrica.POS_ERRORES,
+            operador=ReglaAlerta.Operador.GTE, umbral=1, creado_por=self.usuario,
+        )
+        manejar_pos_errores(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'errores': [{'mensaje': 'VENTA SIN LOTE: 056 Usuario: x', 'nivel': 'ERROR', 'cantidad': 40}],
+        })
+        detectado = PosErrorDetectado.objects.get(estacion=self.estacion)
+        self.assertEqual(detectado.categoria, PosErrorDetectado.Categoria.NEGOCIO)
+        self.assertEqual(detectado.cantidad_total, 40)
+        self.assertFalse(Alerta.objects.exists())  # 40 ventas sin lote no deben abrir alerta
+
+    def test_mezcla_de_sistema_y_negocio_solo_cuenta_el_de_sistema(self):
+        ReglaAlerta.objects.create(
+            nombre='Errores del POS', metrica=Metrica.POS_ERRORES,
+            operador=ReglaAlerta.Operador.GTE, umbral=1, creado_por=self.usuario,
+        )
+        manejar_pos_errores(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'errores': [
+                {'mensaje': 'VENTA SIN LOTE: 056 Usuario: x', 'nivel': 'ERROR', 'cantidad': 40},
+                {'mensaje': 'Exception while reading from stream', 'nivel': 'ERROR', 'cantidad': 1},
+            ],
+        })
+        alerta = Alerta.objects.get()
+        self.assertEqual(alerta.valor_disparador, 1)  # sin las 40 de negocio
+
+    def test_ventana_vacia_resuelve_alerta_previa(self):
+        regla = ReglaAlerta.objects.create(
+            nombre='Errores del POS', metrica=Metrica.POS_ERRORES,
+            operador=ReglaAlerta.Operador.GTE, umbral=1, creado_por=self.usuario,
+        )
+        manejar_pos_errores(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'errores': [{'mensaje': 'error A', 'nivel': 'ERROR', 'cantidad': 1}],
+        })
+        manejar_pos_errores(self.estacion.codigo, {'token': self.estacion.token_enrolamiento, 'errores': []})
+        alerta = Alerta.objects.get(regla=regla)
+        self.assertEqual(alerta.estado, Alerta.Estado.RESUELTA)
+
+    def test_token_invalido_no_guarda_nada(self):
+        manejar_pos_errores(self.estacion.codigo, {
+            'token': 'malo', 'errores': [{'mensaje': 'error A', 'nivel': 'ERROR', 'cantidad': 1}],
+        })
+        self.assertFalse(PosErrorDetectado.objects.filter(estacion=self.estacion).exists())
+
+    def test_estacion_no_aprobada_se_ignora(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        manejar_pos_errores(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'errores': [{'mensaje': 'error A', 'nivel': 'ERROR', 'cantidad': 1}],
+        })
+        self.assertFalse(PosErrorDetectado.objects.filter(estacion=self.estacion).exists())
+
+
 class ManejarEstadoScriptTests(TestCase):
     def setUp(self):
         sg = UnidadNegocio.objects.get(codigo='SG')
@@ -663,6 +874,15 @@ class ManejarMetricasTests(TestCase):
         muestra = MuestraMetrica.objects.get(estacion=self.estacion)
         self.assertEqual(muestra.cpu_carga_pct, 42.5)
 
+    def test_guarda_disco_total_y_libre(self):
+        manejar_metricas(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'disco_total_gb': 256.0, 'disco_libre_gb': 64.0,
+        })
+        muestra = MuestraMetrica.objects.get(estacion=self.estacion)
+        self.assertEqual(muestra.disco_total_gb, 256.0)
+        self.assertEqual(muestra.disco_libre_gb, 64.0)
+        self.assertEqual(muestra.disco_usado_pct, 75.0)
+
     def test_token_invalido_no_crea_nada(self):
         manejar_metricas(self.estacion.codigo, {'token': 'malo', 'cpu_carga_pct': 99})
         self.assertFalse(MuestraMetrica.objects.filter(estacion=self.estacion).exists())
@@ -705,6 +925,22 @@ class OnMessageDispatchTests(TestCase):
             'token': self.estacion.token_enrolamiento, 'paso': EventoDespliegue.Paso.RECIBIDO,
         })
         self.command._on_message(MagicMock(), None, msg)  # no debe lanzar
+
+    def test_software_instalado_dispatcha_a_manejar_software_instalado(self):
+        msg = _msg('/saidsof/agente/ML001-A/software_instalado/', {
+            'token': self.estacion.token_enrolamiento,
+            'programas': [{'nombre': 'Google Chrome', 'version': '118.0', 'fabricante': 'Google LLC'}],
+        })
+        self.command._on_message(MagicMock(), None, msg)
+        self.assertTrue(SoftwareInstaladoDetectado.objects.filter(estacion=self.estacion, nombre='Google Chrome').exists())
+
+    def test_pos_errores_dispatcha_a_manejar_pos_errores(self):
+        msg = _msg('/saidsof/agente/ML001-A/pos_errores/', {
+            'token': self.estacion.token_enrolamiento,
+            'errores': [{'mensaje': 'no existe la relación X', 'nivel': 'ERROR', 'cantidad': 2}],
+        })
+        self.command._on_message(MagicMock(), None, msg)
+        self.assertTrue(PosErrorDetectado.objects.filter(estacion=self.estacion, mensaje='no existe la relación X').exists())
 
     def test_enrolamiento_publica_respuesta_por_el_topico_correcto(self):
         client = MagicMock()
