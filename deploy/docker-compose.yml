@@ -33,6 +33,16 @@ services:
   emqx:
     image: emqx/emqx:5.8.3
     restart: unless-stopped
+    # Sin esto, el contenedor arranca con una identidad interna nueva cada vez que se
+    # recrea (`docker-compose down` + `up`, o un rebuild) — el nodo Erlang de EMQX
+    # (y con él, la base Mnesia de built_in_database: usuarios/ACLs que siembra
+    # bootstrap-emqx.sh) queda atado a ese hostname, así que un hostname que cambia
+    # hace que EMQX arranque "en blanco" aunque el volumen emqx_data siga intacto —
+    # confirmado en producción (20-ago-2026): dos recreaciones seguidas del
+    # contenedor dejaron al worker/agente en loop de "Not authorized" hasta volver a
+    # correr bootstrap-emqx.sh cada vez. Un hostname fijo le da continuidad al nodo
+    # entre recreaciones.
+    hostname: emqx
     environment:
       EMQX_NODE__COOKIE: ${EMQX_COOKIE}
       EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD}

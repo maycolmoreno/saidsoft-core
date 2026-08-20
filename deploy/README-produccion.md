@@ -373,3 +373,17 @@ confirmar el flujo completo (grabar → listar en "Recordings" → reproducir).
 - **Respaldos**: `deploy/backup.sh` (pg_dump + media, con retención de 14 días
   locales), pensado para el cron del host — ver paso 7 arriba. No reemplaza una copia
   fuera del servidor.
+- **Bug real encontrado en producción (20-ago-2026): `docker-compose down` + `up`
+  "pierde" las credenciales MQTT de EMQX aunque el volumen `emqx_data` sea con
+  nombre y sobreviva.** El servicio `emqx` no tenía `hostname` fijo — cada
+  recreación del contenedor le daba una identidad interna nueva, y la base Mnesia
+  de EMQX (donde vive `built_in_database`: los usuarios/ACLs que siembra
+  `bootstrap-emqx.sh`) queda atada a esa identidad, así que un nodo con hostname
+  distinto arranca "en blanco" pese a que los archivos del volumen siguen intactos.
+  Reproducido dos veces seguidas en el mismo despliegue: cada `down`+`up`/rebuild
+  dejaba a `worker` y a los agentes en loop de `[MQTT] Falló la conexión: Not
+  authorized` hasta volver a correr `bootstrap-emqx.sh`. Fix: `hostname: emqx`
+  fijo en el servicio (`docker-compose.yml`), le da continuidad al nodo entre
+  recreaciones. **Si de todas formas vuelve a pasar** (ej. tras un
+  `docker-compose down -v`, que sí borra el volumen), el remedio sigue siendo el
+  mismo: volver a correr `sh bootstrap-emqx.sh` — es reentrante, seguro de repetir.
