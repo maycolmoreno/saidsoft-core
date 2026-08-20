@@ -126,6 +126,13 @@ class AgentePrueba:
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
         self.client.on_disconnect = self._on_disconnect
+        # (bytes_recibidos, bytes_enviados, momento) de la última muestra de red — en
+        # memoria de proceso, no en identidad.json: el agente corre como servicio de
+        # larga duración, así que persiste entre ciclos de bucle_metricas sin
+        # necesidad de guardarlo en disco (a diferencia del sondeo SNMP de Mikrotik
+        # del lado servidor, que si necesita persistir en BD por si el proceso
+        # Celery reinicia entre corridas). None hasta la primera muestra.
+        self._ultima_muestra_red = None
 
     # --- identidad persistida ---
     def _cargar_identidad(self) -> dict:
@@ -286,18 +293,26 @@ class AgentePrueba:
             recursos = self._medir_recursos()
             if not recursos:
                 continue
+            self._tasa_red_kbps(recursos)
             self._publicar(f'/saidsof/agente/{self.args.codigo}/metricas/', {
                 'token': self._token(), **recursos,
             })
             logging.info('Métricas enviadas: %s', recursos)
 
     def _medir_recursos(self) -> dict:
-        """CPU/RAM/disco vía CIM, mismo estilo de un solo script PowerShell que
+        """CPU/RAM/disco/red vía CIM, mismo estilo de un solo script PowerShell que
         _consultar_info_equipo (evita varias llamadas sueltas). No mide latencia
         (`latencia_ms` queda ausente del payload — el servidor lo trata como no
         medido, igual que temperatura_c) ni temperatura, por las mismas razones que ya
         documenta _consultar_info_equipo para BitLocker: sin sensor confiable
-        disponible de forma genérica."""
+        disponible de forma genérica.
+
+        Red: contadores ACUMULADOS (bytes desde que arrancó el adaptador), no una
+        tasa — bucle_metricas los convierte a kbps comparando contra la muestra
+        anterior (ver _tasa_red_kbps). Se toma el adaptador de la ruta por defecto
+        (Get-NetRoute a 0.0.0.0/0 con menor métrica), no se suman todas las
+        interfaces — evita contar adaptadores virtuales/deshabilitados. Sin
+        validar todavía contra una estación real con múltiples adaptadores."""
         script = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
@@ -308,6 +323,10 @@ $ramUsadaMb = if ($ramTotalMb -and $ramLibreMb) { $ramTotalMb - $ramLibreMb } el
 $disco = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
 $discoTotalGb = if ($disco) { [math]::Round($disco.Size / 1GB, 1) } else { $null }
 $discoLibreGb = if ($disco) { [math]::Round($disco.FreeSpace / 1GB, 1) } else { $null }
+$ruta = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object -Property RouteMetric | Select-Object -First 1
+$redStats = if ($ruta) { Get-NetAdapterStatistics -InterfaceIndex $ruta.InterfaceIndex -ErrorAction SilentlyContinue } else { $null }
+$redRecibidoBytes = if ($redStats) { $redStats.ReceivedBytes } else { $null }
+$redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
 [PSCustomObject]@{
     cpu_carga_pct = $cpu
     ram_total = $ramTotalMb
@@ -315,6 +334,8 @@ $discoLibreGb = if ($disco) { [math]::Round($disco.FreeSpace / 1GB, 1) } else { 
     ram_libre = $ramLibreMb
     disco_total_gb = $discoTotalGb
     disco_libre_gb = $discoLibreGb
+    red_recibido_bytes = $redRecibidoBytes
+    red_enviado_bytes = $redEnviadoBytes
 } | ConvertTo-Json -Compress
 """
         try:
@@ -325,6 +346,30 @@ $discoLibreGb = if ($disco) { [math]::Round($disco.FreeSpace / 1GB, 1) } else { 
         except Exception:
             logging.exception('No se pudo medir CPU/RAM/disco')
             return {}
+
+    def _tasa_red_kbps(self, recursos: dict) -> None:
+        """Convierte los contadores acumulados de red de `recursos` (ver
+        _medir_recursos) en una tasa kbps, comparando contra la muestra anterior
+        guardada en memoria de proceso. Modifica `recursos` in-place: saca los bytes
+        crudos (no viajan al servidor, solo la tasa) y agrega red_recibido_kbps/
+        red_enviado_kbps si hay con qué calcularla — la primera muestra tras
+        arrancar el servicio, o un contador que bajó (reinicio del adaptador/equipo),
+        no calculan nada esta vez, se retoma normal en el próximo ciclo."""
+        recibido = recursos.pop('red_recibido_bytes', None)
+        enviado = recursos.pop('red_enviado_bytes', None)
+        ahora = time.monotonic()
+        anterior = self._ultima_muestra_red
+        self._ultima_muestra_red = (
+            (recibido, enviado, ahora) if recibido is not None and enviado is not None else None
+        )
+        if anterior is None or recibido is None or enviado is None:
+            return
+        recibido_prev, enviado_prev, momento_prev = anterior
+        elapsed = ahora - momento_prev
+        if elapsed <= 0 or recibido < recibido_prev or enviado < enviado_prev:
+            return
+        recursos['red_recibido_kbps'] = round((recibido - recibido_prev) * 8 / 1000 / elapsed, 1)
+        recursos['red_enviado_kbps'] = round((enviado - enviado_prev) * 8 / 1000 / elapsed, 1)
 
     # --- log del POS (errores, "reportar a tiempo") ---
     # Cada línea de entrada real de log4net matchea este patrón (ver log4net.config del

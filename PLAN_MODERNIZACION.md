@@ -142,7 +142,7 @@ lo que falta cerrar antes de un rollout real.
 | Windows 10 sin soporte (oct-2025) | El inventario de SO del heartbeat alimenta el plan de migración a W11 |
 | Instalar agente en 1.800 equipos | MSI + GPO/script, una sola vez; después se auto-actualiza por su propio canal |
 
-## 9. Extensión multi-tenant / RMM (fases R1-R9 + roadmap de monitoreo M1-M5)
+## 9. Extensión multi-tenant / RMM (fases R1-R9 + roadmap de monitoreo M1-M5 + ancho de banda)
 
 El sistema pasó de servir una sola operación a ser un RMM tipo MSP para las
 unidades de negocio de CRESIO (San Gregorio, MIA, 7DIAS — ver `UnidadNegocio` en
@@ -171,6 +171,8 @@ unidades de negocio de CRESIO (San Gregorio, MIA, 7DIAS — ver `UnidadNegocio` 
 | **M2 — Ventanas de mantenimiento** (17-ago-2026) | Segunda fase del roadmap: silenciar a propósito las alertas de un destino de estaciones durante una acción operativa propia (despliegue, reinicio masivo) para que no se confunda con un problema real. Nuevo modelo `VentanaMantenimiento` (`apps/monitoreo`, mismo shape de destino que `ScriptProgramado`/`Despliegue` — `unidad_negocio`/`destino_tipo`/`grupos`/`farmacias`/`estaciones`, resuelto con `apps.catalogo.services.resolver_estaciones`), más `desde`/`hasta`/`motivo`/`activo`. Un solo hook nuevo — `ventana_mantenimiento_activa(estacion)` consultado al principio de `abrir_o_mantener_alerta` — cierra el silenciamiento para las cuatro rutas de evaluación existentes (métricas, sin heartbeat, bitlocker, pos_errores) y las futuras, sin tocar cada evaluador por separado. CRUD en `/monitoreo/mantenimiento/` (mismo patrón que `scripts_programados_lista`/`script_programado_crear`, permiso propio `monitoreo.add_ventanamantenimiento` otorgado al rol "Operador RMM"), enlazado desde el botón "Mantenimiento" en `/alertas/`. Aviso "En mantenimiento hasta HH:MM" en la ficha de la estación cuando aplica ahora mismo (mismo `ventana_mantenimiento_activa`, vía un helper `_render_info_modal` nuevo que centraliza el contexto común de las 6 vistas que renderizan ese modal) | ✅ Hecho (387 tests OK) |
 | **M3 — Notificación por Teams + escalamiento** (18-ago-2026) | Tercera fase, con tres decisiones de negocio que el plan dejaba abiertas a propósito, resueltas con el usuario antes de programar: (1) canal nuevo = solo webhook de **Microsoft Teams** (no Slack), (2) umbral de escalamiento **global**, no por `ReglaAlerta`, (3) el segundo aviso va a los **mismos destinatarios/canales** que el original (sin lista de escalamiento separada). Nuevo modelo `CanalNotificacion` (`apps/monitoreo`, `unidad_negocio` nullable = canal global, `tipo` limitado hoy a `webhook_teams`, admin-only — no justifica un CRUD de panel para 3 unidades de negocio). `notificar_alerta` (`apps/monitoreo/services.py`) ahora, además del correo de siempre, hace `POST {"text": ...}` (formato clásico del conector O365) a todo `CanalNotificacion` activo que aplique a la unidad de negocio de la alerta (global o propio) — vía `urllib.request` (mismo patrón stdlib que `apps.mqtt_worker.emqx_admin`, sin sumar `requests` como dependencia nueva); un webhook caído nunca rompe la notificación (`try/except` alrededor, mismo criterio que `fail_silently=True` de `send_mail`). **Escalamiento**: campo nuevo `Alerta.escalada_en`; `escalar_alertas_abiertas()` (tarea Celery Beat `escalar-alertas-abiertas`, cada 10 min) reenvía por los mismos canales cualquier `Alerta` en estado `ABIERTA` (nunca `RECONOCIDA`) más vieja que `UMBRAL_ESCALAMIENTO_MINUTOS` (constante global = 30, mismo estilo que `FRESCURA_MESHCENTRAL_MINUTOS`), marcando `escalada_en` para no repetir el aviso en cada corrida — el asunto/cuerpo llevan el prefijo "SIN ATENDER" | ✅ Hecho (398 tests OK) |
 | **M5 — Dashboard de tendencia de flota** (18-ago-2026) | Última fase de código del roadmap (M4 sigue bloqueada por el servidor real, ver abajo). Nueva vista `/monitoreo/tendencia/` (`apps.panel.views.monitoreo.tendencia_flota`): series de las últimas 12 semanas (buckets lunes-domingo calculados a mano, sin `TruncWeek` de la ORM, para no depender de cómo trunca semanas cada backend) — **(a)** alertas abiertas por semana por severidad + resueltas por semana, sobre `Alerta` escopeado por tenant; **(b)** promedio de CPU/RAM/disco de la flota (solo estaciones con `monitorear_recursos=True`) por semana — RAM/disco se calculan como razón de promedios (`avg(ram_usada)/avg(ram_total)`, no promedio de razones por muestra) para evitar traer cada `MuestraMetrica` a Python fila por fila a la escala de la flota. Reusa `apps.monitoreo.graficos.construir_grafico` (mismo SVG inline que ya grafica CPU/RAM/disco por estación individual) para las 6 series, sin sumar una librería de gráficos nueva. **(c)** Top de errores del POS: decisión explícita del usuario tras plantearle el gap — `PosErrorDetectado` solo guarda un contador acumulado de por vida (sin registro de cuándo ocurrió cada reporte), así que no hay con qué armar una tendencia semanal real sin agregar un modelo nuevo; el dashboard muestra el mismo "top actual" de `pos_errores_flota` (factorizado a `apps.panel.views.alertas._top_mensajes_pos_errores` para no duplicar la query), acotado a 5 filas, con link a la vista completa — no una serie de tiempo | ✅ Hecho (404 tests OK) |
+| **Monitoreo de ancho de banda por estación** (19-ago-2026) | Motivado por un problema real: farmacias reportando lentitud, y al revisar el usuario confirmó estaciones acaparando el enlace. Extiende R8 (`bucle_metricas`) en vez de crear un subsistema nuevo — el agente ya mide CPU/RAM/disco cada ciclo, se le sumó `Get-NetAdapterStatistics` sobre el adaptador de la ruta por defecto (`Get-NetRoute` a `0.0.0.0/0`, no se suman todas las interfaces) al mismo script PowerShell. Los contadores son acumulados (bytes desde que arrancó el adaptador); como el agente corre como servicio de Windows de larga duración (confirmado en producción esta sesión), la tasa (kbps) se calcula en memoria de proceso comparando contra la muestra anterior — sin necesidad de persistir nada extra. Campos nuevos `red_recibido_kbps`/`red_enviado_kbps` en `MuestraMetrica` + property `red_total_kbps` + `Metrica.RED_TOTAL_KBPS`, mismo mecanismo genérico de alertas que CPU/RAM/disco (cero cambios en el evaluador). Tile nuevo en `/monitoreo/` (lista y detalle) y en `/monitoreo/tendencia/`, mismo patrón visual que latencia (sin escala fija — kbps no tiene techo natural) | ✅ Hecho (420 tests OK, junto con la fila de abajo; agente solo `py_compile`, sin validar aún contra una estación real) |
+| **Monitoreo de ancho de banda por farmacia (Mikrotik/SNMP)** (19-ago-2026) | Complementa la fila de arriba: el Mikrotik de cada farmacia (~600, uno por sitio, config uniforme) no reparte tráfico por estación (sin Queues por IP/MAC — confirmado con el usuario), así que solo puede dar el consumo TOTAL del enlace, no por equipo. Subsistema nuevo, no una extensión de R8: nuevo modelo `MuestraRedFarmacia` (`apps/monitoreo`, farmacia-scoped en vez de estación-scoped — sigue el precedente de modelos paralelos por granularidad que ya usa `apps.cumplimiento` con `ResultadoCumplimientoEstacion`/`Farmacia`, no se fuerza en `EstadoDispositivo`/`Alerta` ni en el puerto `FuenteMonitoreo`, que son para presencia online/offline de un dispositivo, forma distinta). Nuevo campo `Farmacia.ip_router`. Poller nuevo `apps/monitoreo/mikrotik.py`: WALK sobre `ifDescr` para resolver el `ifIndex` de la interfaz WAN (cacheado en proceso), GET de `ifHCInOctets`/`ifHCOutOctets` (contadores de 64 bits, evita wraparound) — primera dependencia no-stdlib de este tipo en el proyecto (`pysnmp>=7`, que es asyncio-nativo, sin API sincrónica; concurrencia acotada con `asyncio.Semaphore` en vez de threads). La tasa se calcula diferenciando contra la última `MuestraRedFarmacia` persistida en BD (no en memoria de proceso — a diferencia de la estación, este poller corre en un task de Celery Beat cada 5 min que puede reiniciar entre corridas). Config global (`MIKROTIK_SNMP_CONFIG`, mismo patrón que `MESHCENTRAL_API_CONFIG`) — vacío no rompe nada. **Decisión de alcance confirmada con el usuario**: v1 es solo visibilidad (`/monitoreo/red-farmacias/`, coloreado por umbral fijo) — sin `Alerta` ni notificación todavía, para no hacer `Alerta.estacion` opcional (FK obligatoria hoy, usada en decenas de lugares de esta sesión); se automatiza en v2 una vez confirmado que el dato SNMP es confiable, mismo criterio que Windows Update v1/Plan de energía v1. **Bug real encontrado y corregido durante la implementación**: `GenericIPAddressField` normaliza `''` a `None` al guardar — un `.exclude(ip_router='')` encadenado después de `.exclude(ip_router__isnull=True)` terminaba excluyendo TODAS las filas (incluidas las que sí tienen una IP real), porque en SQL `columna = NULL` nunca es verdadero; `__isnull=True` alcanza solo | ✅ Hecho (420 tests OK; sin validar contra un Mikrotik real todavía — falta confirmar el `ifIndex`/nombre de interfaz real y si la comunidad SNMP puede habilitarse de forma uniforme en los ~600 sitios) |
 
 **M4 — Activar TimescaleDB en producción** sigue bloqueada: requiere el servidor real
 para retomar desde el error exacto ya documentado (`cannot create a unique index
@@ -179,25 +181,35 @@ contra la que probar. Con M1, M2, M3 y M5 cerrados, **el roadmap de monitoreo
 proactivo (M1-M5) queda completo en código salvo M4**.
 
 **Con R7-R9, sus mejoras de rollout, el monitoreo de errores del POS, su
-clasificación sistema/negocio, M1, M2, M3 y M5 cerrados, todo lo de esta sesión
-(16/17/18-ago-2026) queda con la misma salvedad**: validado por test suite (404 tests
-OK) y `py_compile` del agente, pero **nada se probó contra una estación real
-todavía** — el servidor de producción estaba apagado durante toda la sesión (M3 no
-toca el agente, pero sí necesita un webhook de Teams real para probarse de punta a
-punta; M5 no toca el agente en absoluto — es una vista nueva sobre datos que ya
-existen — pero tampoco se vio con datos reales de 12 semanas de flota). Antes de dar
-cualquiera de estas fases por cerrada de verdad, falta: (a)
-volver a correr `deploy/bootstrap-emqx.sh` (dos ACLs nuevas de `worker`: R7 y el log
-del POS — ver `deploy/README-produccion.md`), y (b) validar en una estación piloto
-real (ML016-A o ML006-A) que el registro de software se lee bien, que
-`bucle_metricas`/`bucle_log_pos` no interfieren con el resto del agente, que
-`Win32_PowerPlan` responde en el parque real, y sobre todo que el regex de
-`bucle_log_pos` matchea el archivo `Logs\GeneraXML.txt` completo de una estación real
-(no solo el fragmento que se compartió en esta sesión) — mismo caveat que ya tenía
-Windows Update. (c) `PREFIJOS_ERROR_DE_NEGOCIO` hoy solo tiene `"VENTA SIN LOTE"` —
-falta revisar un log real completo de varias farmacias para ver si hay otros mensajes
-de negocio rutinarios sin identificar todavía (la lista es chica y se edita a mano a
-propósito, pero eso implica que empieza incompleta).
+clasificación sistema/negocio, M1, M2, M3, M5 y el monitoreo de ancho de banda
+(estación + farmacia) cerrados, todo lo de esta sesión (16/17/18/19-ago-2026) quedó
+validado por test suite (420 tests OK) y `py_compile` del agente durante la sesión de
+código — la validación contra el servidor real empezó el 18-ago-2026 (ver bloque de
+abajo)**: `migrate`/`seed_permisos` corridos sin problema en el servidor real
+(confirmó los 8 permisos nuevos de "Operador RMM" para M2), y se encontró y corrigió
+un bug real de infraestructura (`bootstrap-emqx.sh` nunca se había corrido — ver el
+bloque de validación de abajo), tras el cual **el heartbeat básico MQTT (agente →
+worker → panel) quedó confirmado funcionando de punta a punta en `ML006-A`/`ML016-A`**.
+Lo que sigue sin validar porque el agente instalado en esas estaciones es una build
+**anterior** a esta sesión (solo se desplegó el código Django/servidor, no se
+reconstruyó ni reinstaló el `.exe` del agente): (a) R7 (inventario de software), R8
+(`bucle_metricas`), R9 (`Win32_PowerPlan`), el monitoreo de errores del POS
+(`bucle_log_pos`) y el consumo de red por estación (mismo `bucle_metricas`) —
+ninguno corre todavía en una estación real, hace falta `agente-prueba/build.ps1` +
+`instalar-servicio.ps1` de nuevo con el código actual. (b) M3 (webhook de Teams) —
+pendiente que el usuario tenga una URL de webhook real para probar de punta a punta.
+(c) M5 — la vista carga, pero sin R8 desplegado en el agente los gráficos de
+CPU/RAM/disco/red de la flota siguen sin datos reales. (d) `PREFIJOS_ERROR_DE_NEGOCIO`
+hoy solo tiene `"VENTA SIN LOTE"` — falta revisar un log real completo de varias
+farmacias para ver si hay otros mensajes de negocio rutinarios sin identificar
+todavía (la lista es chica y se edita a mano a propósito, pero eso implica que
+empieza incompleta). El regex de `bucle_log_pos` sigue sin probarse contra el archivo
+`Logs\GeneraXML.txt` completo de una estación real (solo contra el fragmento
+compartido en esta sesión) — mismo caveat que ya tenía Windows Update. (e) El
+sondeo SNMP a Mikrotik no se probó contra hardware real todavía — falta confirmar el
+`ifIndex`/nombre real de la interfaz WAN y si la comunidad SNMP puede habilitarse de
+forma uniforme en los ~600 sitios, y ninguna `Farmacia` tiene `ip_router` cargada
+todavía en producción (el poller no hace nada hasta que se cargue al menos una).
 
 **Validación contra el servidor real (13/14-ago-2026, 10.111.6.20:8083, cuenta admin
 `romo`) — tres bugs reales encontrados y corregidos, ninguno visible contra el código
@@ -245,6 +257,31 @@ nada:
 
 **Sigue pendiente**: pinnear el certificado real de MeshCentral (`MESHCENTRAL_API_CA_CERT`
 en vez de `VERIFICAR_TLS=False`).
+
+**Validación contra el servidor real (18-ago-2026) — bug de infraestructura real
+encontrado y corregido: `bootstrap-emqx.sh` nunca se había corrido con éxito contra
+este EMQX.** Tras desplegar el código de esta sesión (R7-R9, POS, M1-M3+M5) y correr
+`migrate`/`seed_permisos` sin problema, el panel seguía mostrando `ML006-A`/`ML016-A`
+"fuera de línea" con el último heartbeat de más de una semana atrás, pese a que el
+`ping` a la estación respondía normal. El log del agente mostraba heartbeats
+"enviados" con éxito intermitente pero también `Not authorized` recurrente al
+reconectar; el log del contenedor `worker` mostraba **`Not authorized` en loop
+constante, sin lograr conectarse ni una vez**. Al correr `sh bootstrap-emqx.sh`, los
+tres usuarios MQTT (`saidsof_panel`/`saidsof_worker`/`saidsof_agente`) se crearon
+**de cero** (ninguno devolvió "ya existía") — confirma que la base interna de
+credenciales de EMQX (`built_in_database`) estaba vacía, probablemente desde el
+primer arranque del stack en este servidor. Esto probablemente sea la causa real
+detrás del "~2 días sin heartbeat MQTT propio" de `ML006-A` que ya se había notado
+el 13/14-ago (ver arriba) — no una falla puntual de esa estación, sino el broker
+completo sin credenciales sembradas. Tras `docker-compose restart worker`, el worker
+conectó (`[MQTT] Conectado al broker`) y ambas estaciones piloto volvieron a "En
+línea" con heartbeat del mismo minuto. **Lección operativa**: `bootstrap-emqx.sh`
+(paso 5 de `deploy/README-produccion.md`) no es solo para ACLs de tópicos nuevos —
+es la única fuente de las credenciales de autenticación en sí; si el volumen de datos
+de EMQX se recrea (reinstalación, `docker volume rm`, cambio de host), hay que
+volver a correrlo o el broker rechaza a todo el mundo sin ningún error visible del
+lado de Django (el 500/403 nunca ocurre: el fallo queda enterrado en los logs de
+`worker`/agente, que nadie mira a menos que ya se sospeche de MQTT).
 
 **Fuera de alcance de esta etapa, explícitamente diferido:**
 - **ACLs MQTT/EMQX por tenant** — el aislamiento por credencial propia ahora es *por

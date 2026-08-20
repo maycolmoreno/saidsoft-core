@@ -1,5 +1,6 @@
 from celery import shared_task
 
+from .mikrotik import sincronizar_ancho_banda_farmacias
 from .services import (
     escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
 )
@@ -35,3 +36,12 @@ def escalar_alertas_task():
     reconoció a tiempo (ver UMBRAL_ESCALAMIENTO_MINUTOS en services.py)."""
     escaladas = escalar_alertas_abiertas()
     return f'{escaladas} alerta(s) escalada(s).'
+
+
+@shared_task(name='apps.monitoreo.tasks.sincronizar_ancho_banda_farmacias_task')
+def sincronizar_ancho_banda_farmacias_task():
+    """Cada 5 min (ver CELERY_BEAT_SCHEDULE) — sondea por SNMP el Mikrotik de cada
+    farmacia con `ip_router` cargada. Sin efecto si MIKROTIK_SNMP_CONFIG no está
+    configurado (ver apps.monitoreo.mikrotik)."""
+    exitosas = sincronizar_ancho_banda_farmacias()
+    return f'{exitosas} farmacia(s) sondeada(s) por SNMP.'

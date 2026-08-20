@@ -542,6 +542,8 @@ def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
         latencia_ms=_num('latencia_ms'),
         disco_total_gb=_num('disco_total_gb'),
         disco_libre_gb=_num('disco_libre_gb'),
+        red_recibido_kbps=_num('red_recibido_kbps'),
+        red_enviado_kbps=_num('red_enviado_kbps'),
     )
 
     from apps.monitoreo.services import evaluar_reglas_metricas

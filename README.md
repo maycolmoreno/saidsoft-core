@@ -231,11 +231,18 @@ Migra y unifica el monitoreo del sistema viejo (`log_servidor_memoria` + `log_se
 que eran dos tablas/tópicos) en una sola muestra por instante:
 
 - **`MuestraMetrica`** guarda RAM/swap/cache (MB), disco (GB, total/libre — `disco_usado_pct`
-  calculado), CPU (%), temperatura (°C) y latencia (ms) ligados a una `Estacion`. Solo las
-  estaciones con `monitorear_recursos=True` reportan (el flag viaja en la respuesta de
-  enrolamiento, `apps.mqtt_worker.services` → `manejar_enrolamiento`, y el agente lo guarda en
+  calculado), red (kbps recibido/enviado — `red_total_kbps` calculado, ver abajo), CPU (%),
+  temperatura (°C) y latencia (ms) ligados a una `Estacion`. Solo las estaciones con
+  `monitorear_recursos=True` reportan (el flag viaja en la respuesta de enrolamiento,
+  `apps.mqtt_worker.services` → `manejar_enrolamiento`, y el agente lo guarda en
   `identidad.json`); así se controla el volumen, igual que en el sistema viejo solo reportaban
   los servidores matriz.
+- **Red por estación** (19-ago-2026, motivado por farmacias reportando lentitud): el agente
+  mide bytes acumulados del adaptador de la ruta por defecto (`Get-NetAdapterStatistics`,
+  mismo script PowerShell que CPU/RAM/disco) y, como corre como servicio de Windows de larga
+  duración, calcula la tasa (kbps) en memoria comparando contra la muestra anterior — sin
+  persistir nada extra. Alertable igual que CPU/RAM/disco (`Metrica.RED_TOTAL_KBPS`, mismo
+  mecanismo genérico de `evaluar_reglas_metricas`).
 - **El agente Python vigente** (`agente-prueba/agente_prueba.py`, ver "Probar el flujo completo"
   arriba) mide CPU/RAM/disco vía CIM (`Win32_Processor`/`Win32_OperatingSystem`/
   `Win32_LogicalDisk` — mismo mecanismo que `consultar_info`) en un hilo periódico propio
@@ -320,6 +327,24 @@ que ya se usan por estación individual. El top de errores del POS que muestra e
 mismo "acumulado actual" de `/alertas/errores-pos/` (no una tendencia semanal:
 `PosErrorDetectado` no guarda cuándo ocurrió cada reporte, solo un contador de por
 vida — decisión explícita del usuario ante ese gap de datos).
+
+## Red por farmacia (Mikrotik / SNMP)
+
+`/monitoreo/red-farmacias/` (19-ago-2026): complementa el consumo de red por
+estación de arriba — el Mikrotik de cada farmacia (~600, uno por sitio) no reparte
+tráfico por equipo (sin Queues por IP/MAC), así que solo puede dar el consumo TOTAL
+del enlace del sitio. `apps/monitoreo/mikrotik.py` (Celery Beat cada 5 min, sin
+efecto si `MIKROTIK_SNMP_CONFIG` no está configurado) resuelve el `ifIndex` de la
+interfaz WAN por WALK sobre `ifDescr` (cacheado en proceso) y lee `ifHCInOctets`/
+`ifHCOutOctets` (contadores de 64 bits, evita wraparound) de cada `Farmacia` con
+`ip_router` cargada — la tasa se calcula diferenciando contra la última
+`MuestraRedFarmacia` persistida en base (no en memoria: este poller corre en un task
+de Celery que puede reiniciar entre corridas, a diferencia del agente de estación).
+Un router caído no interrumpe el resto de la corrida. **Solo visibilidad en v1**
+(coloreado por umbral fijo, sin `Alerta` ni notificación todavía) — decisión
+confirmada con el usuario para no hacer `Alerta.estacion` opcional, mismo criterio
+que Windows Update v1/Plan de energía v1: probar primero que el dato SNMP es
+confiable, automatizar después.
 
 ## Monitoreo cruzado (MQTT × MeshCentral)
 

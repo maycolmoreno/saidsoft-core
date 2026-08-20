@@ -1,7 +1,7 @@
 import json
 import urllib.error
 from datetime import timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import websocket
 from django.contrib.auth.models import User
@@ -14,9 +14,10 @@ from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
 from apps.monitoreo.adapters.meshcentral import AdaptadorMeshCentral, _en_linea, _id_corto
 
+from .mikrotik import sincronizar_ancho_banda_farmacias
 from .models import (
-    Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, PosErrorDetectado,
-    ReglaAlerta, VentanaMantenimiento,
+    Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, MuestraRedFarmacia,
+    PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
 from .services import (
     UMBRAL_ESCALAMIENTO_MINUTOS, clasificar_error_pos, escalar_alertas_abiertas, evaluar_cruce_monitoreo,
@@ -77,6 +78,26 @@ class EvaluarReglasMetricasTests(TestCase):
         alerta = Alerta.objects.get(regla=regla_disco)
         self.assertEqual(alerta.estado, Alerta.Estado.ABIERTA)
         self.assertEqual(alerta.valor_disparador, 96)
+
+    def test_regla_de_red_abre_alerta_por_el_mismo_mecanismo_generico(self):
+        # Mismo mecanismo genérico que la prueba de disco arriba — red_total_kbps es
+        # una property, no una columna, y también funciona vía getattr sin cambios.
+        regla_red = ReglaAlerta.objects.create(
+            nombre='Consumo de red alto', metrica=Metrica.RED_TOTAL_KBPS, operador=ReglaAlerta.Operador.GTE,
+            umbral=5000, duracion_minutos=10, creado_por=self.usuario,
+        )
+        vieja = MuestraMetrica.objects.create(
+            estacion=self.estacion, red_recibido_kbps=4000, red_enviado_kbps=1200,
+        )
+        MuestraMetrica.objects.filter(pk=vieja.pk).update(timestamp=timezone.now() - timedelta(minutes=15))
+        muestra = MuestraMetrica.objects.create(
+            estacion=self.estacion, red_recibido_kbps=4500, red_enviado_kbps=1300,
+        )
+        evaluar_reglas_metricas(self.estacion, muestra)
+
+        alerta = Alerta.objects.get(regla=regla_red)
+        self.assertEqual(alerta.estado, Alerta.Estado.ABIERTA)
+        self.assertEqual(alerta.valor_disparador, 5800)
 
     def test_pico_aislado_no_abre_alerta(self):
         # Sin historial previo (estación "nueva"): una sola muestra alta no alcanza
@@ -871,3 +892,87 @@ class AdaptadorMeshCentralTests(TestCase):
         adaptador._autenticar_y_conectar.assert_called_once()  # nunca reconectó
         estado = EstadoDispositivo.objects.get(estacion=self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL)
         self.assertTrue(estado.en_linea)
+
+
+@override_settings(MIKROTIK_SNMP_CONFIG={'COMUNIDAD': 'public', 'PUERTO': 161, 'INTERFAZ_WAN': 'ether1'})
+class SincronizarAnchoBandaFarmaciasTests(TestCase):
+    """Parte A del monitoreo proactivo de red (SNMP a Mikrotik) — el cliente SNMP se
+    mockea siempre (_sondear_farmacia), nunca se sondea hardware real en tests."""
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.con_ip = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg, ip_router='10.0.1.1')
+        self.sin_ip = Farmacia.objects.create(codigo='ML002', grupo=grupo, unidad_negocio=sg)
+
+    def test_sin_config_no_hace_nada(self):
+        with override_settings(MIKROTIK_SNMP_CONFIG={'COMUNIDAD': '', 'PUERTO': 161, 'INTERFAZ_WAN': ''}):
+            with patch('apps.monitoreo.mikrotik._sondear_farmacia', new_callable=AsyncMock) as sondear:
+                n = sincronizar_ancho_banda_farmacias()
+        self.assertEqual(n, 0)
+        sondear.assert_not_called()
+
+    def test_farmacia_sin_ip_router_no_se_sondea(self):
+        with patch('apps.monitoreo.mikrotik._sondear_farmacia', new_callable=AsyncMock) as sondear:
+            sondear.return_value = (self.con_ip, 1000, 500)
+            sincronizar_ancho_banda_farmacias()
+        sondear.assert_called_once()
+        self.assertEqual(sondear.call_args[0][0], self.con_ip)
+
+    def test_router_caido_no_interrumpe_el_resto(self):
+        otra = Farmacia.objects.create(
+            codigo='ML003', grupo=self.con_ip.grupo, unidad_negocio=self.con_ip.unidad_negocio, ip_router='10.0.1.2',
+        )
+
+        async def side_effect(farmacia, *args):
+            return None if farmacia.pk == self.con_ip.pk else (farmacia, 1000, 500)
+
+        with patch('apps.monitoreo.mikrotik._sondear_farmacia', side_effect=side_effect):
+            n = sincronizar_ancho_banda_farmacias()
+
+        self.assertEqual(n, 1)
+        self.assertFalse(MuestraRedFarmacia.objects.filter(farmacia=self.con_ip).exists())
+        self.assertTrue(MuestraRedFarmacia.objects.filter(farmacia=otra).exists())
+
+    def test_primera_muestra_no_calcula_tasa(self):
+        with patch('apps.monitoreo.mikrotik._sondear_farmacia', new_callable=AsyncMock) as sondear:
+            sondear.return_value = (self.con_ip, 100_000, 50_000)
+            sincronizar_ancho_banda_farmacias()
+
+        muestra = MuestraRedFarmacia.objects.get(farmacia=self.con_ip)
+        self.assertEqual(muestra.bytes_recibidos, 100_000)
+        self.assertIsNone(muestra.red_recibido_kbps)
+        self.assertIsNone(muestra.red_enviado_kbps)
+
+    def test_segunda_muestra_calcula_la_tasa_contra_la_anterior(self):
+        anterior = MuestraRedFarmacia.objects.create(
+            farmacia=self.con_ip, bytes_recibidos=100_000_000, bytes_enviados=50_000_000,
+        )
+        MuestraRedFarmacia.objects.filter(pk=anterior.pk).update(timestamp=timezone.now() - timedelta(seconds=300))
+
+        with patch('apps.monitoreo.mikrotik._sondear_farmacia', new_callable=AsyncMock) as sondear:
+            # +12.000.000 bytes recibidos en 300s -> 12e6*8/1000/300 = 320 kbps
+            # +6.000.000 bytes enviados en 300s -> 6e6*8/1000/300 = 160 kbps
+            sondear.return_value = (self.con_ip, 112_000_000, 56_000_000)
+            sincronizar_ancho_banda_farmacias()
+
+        muestra = MuestraRedFarmacia.objects.filter(farmacia=self.con_ip).exclude(pk=anterior.pk).get()
+        self.assertEqual(muestra.red_recibido_kbps, 320.0)
+        self.assertEqual(muestra.red_enviado_kbps, 160.0)
+
+    def test_contador_reiniciado_no_calcula_tasa_negativa(self):
+        # Router reiniciado entre corridas: el contador vuelve a empezar desde ~0,
+        # menor que la muestra anterior — no debe calcular una tasa negativa/sin
+        # sentido, se retoma normal en la próxima corrida.
+        anterior = MuestraRedFarmacia.objects.create(
+            farmacia=self.con_ip, bytes_recibidos=100_000_000, bytes_enviados=50_000_000,
+        )
+        MuestraRedFarmacia.objects.filter(pk=anterior.pk).update(timestamp=timezone.now() - timedelta(seconds=300))
+
+        with patch('apps.monitoreo.mikrotik._sondear_farmacia', new_callable=AsyncMock) as sondear:
+            sondear.return_value = (self.con_ip, 500, 200)
+            sincronizar_ancho_banda_farmacias()
+
+        muestra = MuestraRedFarmacia.objects.filter(farmacia=self.con_ip).exclude(pk=anterior.pk).get()
+        self.assertIsNone(muestra.red_recibido_kbps)
+        self.assertIsNone(muestra.red_enviado_kbps)

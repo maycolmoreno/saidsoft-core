@@ -197,6 +197,19 @@ MESHCENTRAL_API_CONFIG = {
     'VERIFICAR_TLS': env.bool('MESHCENTRAL_API_VERIFICAR_TLS', default=True),
 }
 
+# Sondeo SNMP a los Mikrotik de cada farmacia (ver apps.monitoreo.mikrotik) — solo
+# consumo total del enlace por sitio, el router no reparte tráfico por estación (sin
+# Queues por IP/MAC). Config global, no por farmacia: la flota (~600 sitios) tiene
+# configuración uniforme; si algún sitio real difiere, se agrega un override puntual
+# recién cuando aparezca el caso (Farmacia.ip_router es el único dato por sitio en v1).
+# Vacío = la sincronización no hace nada, sin romper el resto (mismo criterio que
+# EMQX_ADMIN_CONFIG/MESHCENTRAL_API_CONFIG).
+MIKROTIK_SNMP_CONFIG = {
+    'COMUNIDAD': env('MIKROTIK_SNMP_COMUNIDAD', default=''),
+    'PUERTO': env.int('MIKROTIK_SNMP_PUERTO', default=161),
+    'INTERFAZ_WAN': env('MIKROTIK_SNMP_INTERFAZ_WAN', default=''),  # ej. "ether1"
+}
+
 # API móvil (apps Flutter): Token Authentication de DRF, sin dependencias externas.
 # El técnico obtiene su token una vez en /api/v1/auth/token/ y lo reusa en cada request.
 REST_FRAMEWORK = {
@@ -259,6 +272,12 @@ CELERY_BEAT_SCHEDULE = {
         # Cada 10 min: suficiente margen frente a UMBRAL_ESCALAMIENTO_MINUTOS (30) sin
         # sumar carga significativa — mismo orden de magnitud que evaluar-cruce-monitoreo.
         'schedule': 60.0 * 10,
+    },
+    'sincronizar-ancho-banda-farmacias': {
+        'task': 'apps.monitoreo.tasks.sincronizar_ancho_banda_farmacias_task',
+        # Cada 5 min: mismo orden de magnitud que las demás tareas de apps.monitoreo.
+        # Sin efecto si MIKROTIK_SNMP_CONFIG no está configurado.
+        'schedule': 60.0 * 5,
     },
 }
 

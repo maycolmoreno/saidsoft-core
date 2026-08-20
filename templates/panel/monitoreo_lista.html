@@ -3,7 +3,10 @@
 {% block content %}
 <div class="flex items-center justify-between mb-2">
     <h1 class="text-xl font-semibold">Monitoreo de servidores</h1>
-    <a href="{% url 'panel:tendencia_flota' %}" class="btn secondary">Tendencia de flota</a>
+    <div class="flex gap-2">
+        <a href="{% url 'panel:red_farmacias_lista' %}" class="btn secondary">Red por farmacia</a>
+        <a href="{% url 'panel:tendencia_flota' %}" class="btn secondary">Tendencia de flota</a>
+    </div>
 </div>
 <p class="text-sm text-[var(--text-faint)] mb-6">Recursos de las estaciones marcadas para monitoreo. Cada tarjeta muestra la última muestra recibida.</p>
 
@@ -20,7 +23,7 @@
             </span>
         </div>
         {% if t.ultima %}
-        <div class="grid grid-cols-4 gap-2 text-center">
+        <div class="grid grid-cols-5 gap-2 text-center">
             <div>
                 <div class="text-xs text-[var(--text-faint)] uppercase">CPU</div>
                 <div class="text-lg font-semibold" style="color:{% if t.estado_cpu == 'critical' %}var(--critical){% elif t.estado_cpu == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
@@ -43,6 +46,12 @@
                 <div class="text-xs text-[var(--text-faint)] uppercase">Latencia</div>
                 <div class="text-lg font-semibold">
                     {{ t.ultima.latencia_ms|default:"—" }}{% if t.ultima.latencia_ms is not None %}ms{% endif %}
+                </div>
+            </div>
+            <div>
+                <div class="text-xs text-[var(--text-faint)] uppercase">Red</div>
+                <div class="text-lg font-semibold">
+                    {{ t.ultima.red_total_kbps|default:"—" }}{% if t.ultima.red_total_kbps is not None %}kb/s{% endif %}
                 </div>
             </div>
         </div>

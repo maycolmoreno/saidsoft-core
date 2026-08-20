@@ -883,6 +883,15 @@ class ManejarMetricasTests(TestCase):
         self.assertEqual(muestra.disco_libre_gb, 64.0)
         self.assertEqual(muestra.disco_usado_pct, 75.0)
 
+    def test_guarda_red_recibido_y_enviado(self):
+        manejar_metricas(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'red_recibido_kbps': 1200.5, 'red_enviado_kbps': 300.2,
+        })
+        muestra = MuestraMetrica.objects.get(estacion=self.estacion)
+        self.assertEqual(muestra.red_recibido_kbps, 1200.5)
+        self.assertEqual(muestra.red_enviado_kbps, 300.2)
+        self.assertEqual(muestra.red_total_kbps, 1500.7)
+
     def test_token_invalido_no_crea_nada(self):
         manejar_metricas(self.estacion.codigo, {'token': 'malo', 'cpu_carga_pct': 99})
         self.assertFalse(MuestraMetrica.objects.filter(estacion=self.estacion).exists())

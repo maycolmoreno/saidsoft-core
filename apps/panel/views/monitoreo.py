@@ -8,12 +8,19 @@ from django.urls import reverse
 from django.utils import timezone
 
 from apps.auditoria.models import registrar_evento
-from apps.catalogo.models import Estacion
+from apps.catalogo.models import Estacion, Farmacia
 from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
 from apps.monitoreo.forms import VentanaMantenimientoForm
 from apps.monitoreo.models import Alerta, MuestraMetrica, ReglaAlerta, VentanaMantenimiento
 
 from .alertas import _top_mensajes_pos_errores
+
+# Umbral fijo en v1 (no hay Farmacia.capacidad_mbps todavía para mostrar % de la
+# capacidad contratada) — mismo estilo que FRESCURA_MESHCENTRAL_MINUTOS/
+# UMBRAL_ESCALAMIENTO_MINUTOS en apps.monitoreo.services: constante a nivel de
+# módulo, se ajusta a mano si hace falta.
+RED_FARMACIA_UMBRAL_WARNING_KBPS = 8000
+RED_FARMACIA_UMBRAL_CRITICAL_KBPS = 15000
 
 
 def _clasificar(valor, umbral_warning, umbral_critico):
@@ -71,6 +78,7 @@ def monitoreo_detalle_partial(request, pk):
     cpu = [m.cpu_carga_pct for m in muestras]
     disco_pct = [m.disco_usado_pct for m in muestras]
     latencia = [m.latencia_ms for m in muestras]
+    red = [m.red_total_kbps for m in muestras]
 
     ultima = muestras[-1] if muestras else None
     return render(request, 'panel/monitoreo_detalle_partial.html', {
@@ -81,6 +89,7 @@ def monitoreo_detalle_partial(request, pk):
         'g_ram': construir_grafico(ram_pct, escala_fija=100),
         'g_disco': construir_grafico(disco_pct, escala_fija=100),
         'g_latencia': construir_grafico(latencia),
+        'g_red': construir_grafico(red),
         'estado_cpu': _clasificar(ultima.cpu_carga_pct if ultima else None, 75, 90),
         'estado_ram': _clasificar(ultima.ram_usada_pct if ultima else None, 80, 92),
         'estado_disco': _clasificar(ultima.disco_usado_pct if ultima else None, 85, 95),
@@ -152,7 +161,7 @@ def tendencia_flota(request):
     metricas = MuestraMetrica.objects.filter(estacion__in=servidores)
 
     abiertas_warning, abiertas_critical, resueltas = [], [], []
-    cpu_prom, ram_prom, disco_prom = [], [], []
+    cpu_prom, ram_prom, disco_prom, red_prom = [], [], [], []
     for inicio, fin in semanas:
         de_la_semana = alertas.filter(abierta_en__date__gte=inicio, abierta_en__date__lt=fin)
         abiertas_warning.append(de_la_semana.filter(regla__severidad=ReglaAlerta.Severidad.WARNING).count())
@@ -162,10 +171,13 @@ def tendencia_flota(request):
         # Promedio de la flota = razón de promedios (avg(ram_usada)/avg(ram_total)), no
         # promedio de razones por muestra — evita traer cada MuestraMetrica a Python
         # para calcular su .ram_usada_pct/.disco_usado_pct fila por fila (inviable a
-        # ~1.900 estaciones × muestras cada 5-10 min sobre 12 semanas).
+        # ~1.900 estaciones × muestras cada 5-10 min sobre 12 semanas). Red no necesita
+        # esa razón (ya es una tasa, no un % derivado de dos cantidades) — promedio
+        # directo de los kbps ya calculados por el agente.
         agregado = metricas.filter(timestamp__date__gte=inicio, timestamp__date__lt=fin).aggregate(
             cpu=Avg('cpu_carga_pct'), ram_total=Avg('ram_total'), ram_usada=Avg('ram_usada'),
             disco_total=Avg('disco_total_gb'), disco_libre=Avg('disco_libre_gb'),
+            red_recibido=Avg('red_recibido_kbps'), red_enviado=Avg('red_enviado_kbps'),
         )
         cpu_prom.append(agregado['cpu'])
         ram_prom.append(100 * agregado['ram_usada'] / agregado['ram_total'] if agregado['ram_total'] else None)
@@ -173,6 +185,10 @@ def tendencia_flota(request):
             100 * (agregado['disco_total'] - agregado['disco_libre']) / agregado['disco_total']
             if agregado['disco_total'] else None
         )
+        if agregado['red_recibido'] is None and agregado['red_enviado'] is None:
+            red_prom.append(None)
+        else:
+            red_prom.append(round((agregado['red_recibido'] or 0) + (agregado['red_enviado'] or 0), 1))
 
     filas_pos, _detectados = _top_mensajes_pos_errores(request)
 
@@ -183,6 +199,7 @@ def tendencia_flota(request):
         'g_cpu': construir_grafico(cpu_prom, escala_fija=100),
         'g_ram': construir_grafico(ram_prom, escala_fija=100),
         'g_disco': construir_grafico(disco_prom, escala_fija=100),
+        'g_red': construir_grafico(red_prom),
         # Explícito en vez de g_cpu.ultimo_valor: ese es el ÚLTIMO VALOR NO NULO de la
         # serie (puede venir de una semana vieja si la actual todavía no tiene
         # muestras), y el template lo etiqueta "Esta semana" — con .ultimo_valor
@@ -190,9 +207,39 @@ def tendencia_flota(request):
         'cpu_semana_actual': cpu_prom[-1],
         'ram_semana_actual': ram_prom[-1],
         'disco_semana_actual': disco_prom[-1],
+        'red_semana_actual': red_prom[-1],
         'total_abiertas_periodo': sum(abiertas_warning) + sum(abiertas_critical),
         'total_resueltas_periodo': sum(resueltas),
         'semana_desde': semanas[0][0],
         'semana_hasta': semanas[-1][1] - timedelta(days=1),
         'top_pos_errores': filas_pos[:5],
     })
+
+
+@login_required
+def red_farmacias_lista(request):
+    """Consumo de ancho de banda por FARMACIA (Parte A del monitoreo proactivo de
+    red, ver PLAN_MODERNIZACION.md §9) — sondeado por SNMP al Mikrotik de cada sitio
+    (apps.monitoreo.mikrotik, Celery Beat cada 5 min). Solo visibilidad en v1: sin
+    Alerta ni notificación — decisión confirmada con el usuario, mismo criterio que
+    Windows Update v1/Plan de energía v1 (probar primero que el dato es confiable,
+    automatizar después). Complementa el consumo por ESTACIÓN de /monitoreo/ (ahí sí
+    hay alertas reales, ver R8/MuestraMetrica.red_recibido_kbps): el Mikrotik no
+    reparte tráfico por equipo, así que esto es lo más granular que se puede medir
+    del lado del enlace."""
+    # GenericIPAddressField normaliza '' a None al guardar — __isnull=True alcanza
+    # solo (ver apps.monitoreo.mikrotik.sincronizar_ancho_banda_farmacias).
+    farmacias = scope_por_unidad_negocio_activa(
+        Farmacia.objects.exclude(ip_router__isnull=True),
+        request, 'unidad_negocio',
+    ).order_by('codigo')
+    filas = []
+    for farmacia in farmacias:
+        ultima = farmacia.muestras_red.first()  # ordering = -timestamp
+        valor = ultima.red_total_kbps if ultima else None
+        filas.append({
+            'farmacia': farmacia,
+            'ultima': ultima,
+            'estado': _clasificar(valor, RED_FARMACIA_UMBRAL_WARNING_KBPS, RED_FARMACIA_UMBRAL_CRITICAL_KBPS),
+        })
+    return render(request, 'panel/red_farmacias_lista.html', {'filas': filas})

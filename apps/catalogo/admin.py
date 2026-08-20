@@ -39,9 +39,9 @@ class GrupoAdmin(admin.ModelAdmin):
 class FarmaciaAdmin(admin.ModelAdmin):
     list_display = (
         'codigo', 'nombre', 'grupo', 'unidad_negocio', 'ubicacion', 'tipo_enlace',
-        'tiene_backup', 'activa', 'fecha_apertura', 'total_estaciones',
+        'tiene_backup', 'ip_router', 'activa', 'fecha_apertura', 'total_estaciones',
     )
-    search_fields = ('codigo', 'nombre', 'segmento_red')
+    search_fields = ('codigo', 'nombre', 'segmento_red', 'ip_router')
     list_filter = ('grupo', 'unidad_negocio', 'activa', 'tipo_enlace', 'tiene_backup')
     autocomplete_fields = ('grupo', 'unidad_negocio')
     change_list_template = 'admin/catalogo/farmacia/change_list.html'

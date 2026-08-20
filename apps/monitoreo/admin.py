@@ -3,8 +3,8 @@ from django.contrib import admin
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_por_unidad_negocio
 
 from .models import (
-    Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, MuestraMetrica, PosErrorDetectado, ReglaAlerta,
-    VentanaMantenimiento,
+    Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, MuestraMetrica, MuestraRedFarmacia,
+    PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
 
 
@@ -12,7 +12,7 @@ from .models import (
 class MuestraMetricaAdmin(admin.ModelAdmin):
     list_display = (
         'estacion', 'timestamp', 'ram_usada_pct', 'cpu_carga_pct', 'disco_usado_pct',
-        'temperatura_c', 'latencia_ms',
+        'temperatura_c', 'latencia_ms', 'red_total_kbps',
     )
     list_filter = ('estacion',)
     date_hierarchy = 'timestamp'
@@ -24,6 +24,28 @@ class MuestraMetricaAdmin(admin.ModelAdmin):
         )
 
     def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(MuestraRedFarmacia)
+class MuestraRedFarmaciaAdmin(admin.ModelAdmin):
+    list_display = ('farmacia', 'timestamp', 'red_recibido_kbps', 'red_enviado_kbps', 'bytes_recibidos', 'bytes_enviados')
+    list_filter = ('farmacia',)
+    date_hierarchy = 'timestamp'
+    readonly_fields = [f.name for f in MuestraRedFarmacia._meta.fields]
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(
+            super().get_queryset(request), request.user, 'farmacia__unidad_negocio',
+        )
+
+    def has_add_permission(self, request):
+        # Solo lo escribe apps.monitoreo.mikrotik.sincronizar_ancho_banda_farmacias
+        # (Celery Beat) — igual que SoftwareInstaladoDetectadoAdmin/
+        # PosErrorDetectadoAdmin, no algo que se cree a mano.
         return False
 
     def has_change_permission(self, request, obj=None):

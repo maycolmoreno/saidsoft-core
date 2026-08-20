@@ -35,6 +35,15 @@ class MuestraMetrica(models.Model):
     disco_total_gb = models.FloatField(null=True, blank=True)
     disco_libre_gb = models.FloatField(null=True, blank=True)
 
+    # Red (KB/s) — tasa ya calculada por el agente (contadores acumulados del
+    # adaptador de la ruta por defecto, convertidos a tasa entre dos muestras, ver
+    # agente-prueba/agente_prueba.py::_tasa_red_kbps). No se guarda el contador
+    # crudo acá — a diferencia de MuestraRedFarmacia (SNMP a Mikrotik), este valor ya
+    # viene calculado por un proceso de larga duración que puede quedarse la muestra
+    # anterior en memoria.
+    red_recibido_kbps = models.FloatField(null=True, blank=True)
+    red_enviado_kbps = models.FloatField(null=True, blank=True)
+
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -59,6 +68,57 @@ class MuestraMetrica(models.Model):
             return round(100 * (self.disco_total_gb - self.disco_libre_gb) / self.disco_total_gb, 1)
         return None
 
+    @property
+    def red_total_kbps(self):
+        if self.red_recibido_kbps is None and self.red_enviado_kbps is None:
+            return None
+        return round((self.red_recibido_kbps or 0) + (self.red_enviado_kbps or 0), 1)
+
+
+class MuestraRedFarmacia(models.Model):
+    """Una muestra de ancho de banda del enlace de una FARMACIA (no de una estación),
+    sondeada por SNMP al Mikrotik del sitio — ver apps.monitoreo.mikrotik. Mismo
+    espíritu que MuestraMetrica pero a nivel de sitio: el router no reparte tráfico
+    por estación (sin Queues por IP/MAC), así que esto es lo más granular que se
+    puede medir del lado del enlace. No se fuerza en EstadoDispositivo/Alerta
+    (estación-scoped, no encajan) — sigue el precedente de modelos paralelos por
+    granularidad que ya usa apps.cumplimiento (ResultadoCumplimientoEstacion +
+    ResultadoCumplimientoFarmacia).
+
+    bytes_recibidos/bytes_enviados son el contador CRUDO acumulado que reportó el
+    router en este sondeo (IF-MIB ifHCIn/OutOctets, 64 bits) — se guardan para poder
+    auditar/depurar el cálculo. red_recibido_kbps/red_enviado_kbps es la tasa ya
+    calculada al guardar, diferenciando contra la fila anterior de esta farmacia
+    (NO memoria de proceso: el poller corre en un task de Celery que puede reiniciar
+    entre corridas, a diferencia del agente de estación). null = primera muestra de
+    esta farmacia, o el contador bajó respecto a la anterior (reinicio del router).
+    """
+
+    farmacia = models.ForeignKey(Farmacia, on_delete=models.CASCADE, related_name='muestras_red')
+    bytes_recibidos = models.BigIntegerField()
+    bytes_enviados = models.BigIntegerField()
+    red_recibido_kbps = models.FloatField(null=True, blank=True)
+    red_enviado_kbps = models.FloatField(null=True, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'muestra_red_farmacia'
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['farmacia', '-timestamp']),
+        ]
+        verbose_name = 'Muestra de red de farmacia'
+        verbose_name_plural = 'Muestras de red de farmacia'
+
+    def __str__(self):
+        return f'{self.farmacia.codigo} @ {self.timestamp:%Y-%m-%d %H:%M:%S}'
+
+    @property
+    def red_total_kbps(self):
+        if self.red_recibido_kbps is None and self.red_enviado_kbps is None:
+            return None
+        return round((self.red_recibido_kbps or 0) + (self.red_enviado_kbps or 0), 1)
+
 
 class Metrica(models.TextChoices):
     CPU_CARGA_PCT = 'cpu_carga_pct', 'CPU (%)'
@@ -66,6 +126,7 @@ class Metrica(models.TextChoices):
     DISCO_USADO_PCT = 'disco_usado_pct', 'Disco usado (%)'
     LATENCIA_MS = 'latencia_ms', 'Latencia (ms)'
     TEMPERATURA_C = 'temperatura_c', 'Temperatura (°C)'
+    RED_TOTAL_KBPS = 'red_total_kbps', 'Red (KB/s)'
     SIN_HEARTBEAT = 'sin_heartbeat', 'Sin heartbeat (minutos)'
     BITLOCKER_DESHABILITADO = 'bitlocker_deshabilitado', 'BitLocker deshabilitado'
     AGENTE_CAIDO_RED_VIVA = 'agente_caido_red_viva', 'Agente sin reportar (con red viva)'

@@ -95,6 +95,12 @@ class Farmacia(models.Model):
         help_text='Si el sitio tiene enlace de respaldo — sin uno, una caída del enlace '
                   'principal deja a la farmacia sin conectividad (punto único de falla).',
     )
+    ip_router = models.GenericIPAddressField(
+        null=True, blank=True,
+        help_text='IP del Mikrotik de la farmacia, para sondeo SNMP de ancho de banda '
+                  '(ver apps.monitoreo.mikrotik). Vacío = esta farmacia no se sondea, sin '
+                  'romper nada más.',
+    )
 
     class Meta:
         db_table = 'farmacia'

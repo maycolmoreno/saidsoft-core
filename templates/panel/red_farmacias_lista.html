@@ -1,0 +1,53 @@
+{% extends "panel/base.html" %}
+{% block title %}Red por farmacia · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="mb-2">
+    <a href="{% url 'panel:monitoreo_lista' %}" class="text-xs text-[var(--text-faint)]">← Monitoreo</a>
+</div>
+<div class="mb-6">
+    <h1 class="text-xl font-semibold">Red por farmacia</h1>
+    <p class="text-sm text-[var(--text-faint)]" style="max-width:640px;">
+        Consumo total del enlace de cada farmacia, sondeado por SNMP al Mikrotik del sitio cada 5 minutos.
+        El router no reparte tráfico por estación — para ver qué equipo puntual acapara ancho de banda,
+        entrá a la ficha de esa estación en <a href="{% url 'panel:monitoreo_lista' %}" class="underline">Monitoreo de servidores</a>.
+        Solo visibilidad por ahora, sin alertas automáticas todavía.
+    </p>
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Farmacia</th>
+                <th class="text-left px-4 py-3">IP del router</th>
+                <th class="text-left px-4 py-3">Bajada</th>
+                <th class="text-left px-4 py-3">Subida</th>
+                <th class="text-left px-4 py-3">Total</th>
+                <th class="text-left px-4 py-3">Última muestra</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for fila in filas %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">{{ fila.farmacia.codigo }} · {{ fila.farmacia.grupo.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] mono num">{{ fila.farmacia.ip_router }}</td>
+                <td class="px-4 py-3 num">{{ fila.ultima.red_recibido_kbps|default:"—" }}{% if fila.ultima.red_recibido_kbps is not None %}kb/s{% endif %}</td>
+                <td class="px-4 py-3 num">{{ fila.ultima.red_enviado_kbps|default:"—" }}{% if fila.ultima.red_enviado_kbps is not None %}kb/s{% endif %}</td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if fila.estado == 'critical' %}critical{% elif fila.estado == 'warning' %}warning{% elif fila.estado == 'ok' %}good{% else %}neutral{% endif %}">
+                        {% if fila.ultima.red_total_kbps is not None %}{{ fila.ultima.red_total_kbps }}kb/s{% else %}sin dato{% endif %}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
+                    {% if fila.ultima %}{{ fila.ultima.timestamp|date:"d/m H:i" }}{% else %}nunca sondeada{% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">
+                Ninguna farmacia tiene la IP del router cargada todavía (campo "IP del router" en su ficha).
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -20,7 +20,9 @@ from apps.cumplimiento.models import (
 )
 from apps.despliegues.models import Despliegue
 from apps.mantenimiento.models import EstadoGeneralEquipo, Mantenimiento
-from apps.monitoreo.models import Alerta, Metrica, MuestraMetrica, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento
+from apps.monitoreo.models import (
+    Alerta, Metrica, MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
+)
 from apps.scripts.models import EjecucionScript, Script, ScriptProgramado, TipoScript
 from apps.software.models import SoftwareInstaladoDetectado
 
@@ -406,6 +408,81 @@ class MonitoreoDiscoTests(TestCase):
         resp = self.client.get(reverse('panel:monitoreo_detalle_partial', args=[self.estacion.pk]))
         self.assertContains(resp, '90,0')
         self.assertContains(resp, '20,0 GB libres de 200,0 GB')
+
+
+class MonitoreoRedTests(TestCase):
+    """Consumo de red por estación (extiende R8, mismo patrón que MonitoreoDiscoTests
+    de arriba) — confirma que la tarjeta/gráfico nuevos aparecen en ambas vistas."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            monitorear_recursos=True,
+        )
+        MuestraMetrica.objects.create(estacion=self.estacion, red_recibido_kbps=1200.0, red_enviado_kbps=300.5)
+        usuario = User.objects.create_user(username='u_red', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+
+    def test_lista_muestra_kbps_totales(self):
+        resp = self.client.get(reverse('panel:monitoreo_lista'))
+        # 1200.0 + 300.5 = 1500.5 — coma decimal por locale es-EC, no punto.
+        self.assertContains(resp, '1500,5')
+
+    def test_detalle_muestra_grafico_y_desglose_bajada_subida(self):
+        resp = self.client.get(reverse('panel:monitoreo_detalle_partial', args=[self.estacion.pk]))
+        self.assertContains(resp, '1500,5')
+        self.assertContains(resp, '1200,0')
+        self.assertContains(resp, '300,5')
+
+
+class RedFarmaciasListaTests(TestCase):
+    """Consumo de red por FARMACIA (Parte A, SNMP a Mikrotik) — solo visibilidad,
+    ver docstring de apps.panel.views.monitoreo.red_farmacias_lista."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia_sg = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=self.sg, ip_router='10.0.1.1',
+        )
+        self.farmacia_sin_ip = Farmacia.objects.create(codigo='ML002', grupo=grupo, unidad_negocio=self.sg)
+        usuario = User.objects.create_user(username='u_red_farmacia', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+
+    def test_farmacia_sin_ip_router_no_aparece(self):
+        resp = self.client.get(reverse('panel:red_farmacias_lista'))
+        self.assertNotContains(resp, 'ML002')
+
+    def test_farmacia_con_ip_router_pero_nunca_sondeada_muestra_sin_dato(self):
+        resp = self.client.get(reverse('panel:red_farmacias_lista'))
+        self.assertContains(resp, 'ML001')
+        self.assertContains(resp, 'sin dato')
+
+    def test_muestra_el_consumo_de_la_ultima_muestra(self):
+        MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia_sg, bytes_recibidos=1000, bytes_enviados=500,
+            red_recibido_kbps=1200.0, red_enviado_kbps=300.5,
+        )
+        resp = self.client.get(reverse('panel:red_farmacias_lista'))
+        self.assertContains(resp, '1500,5kb/s')  # coma decimal por locale es-EC
+
+    def test_no_mezcla_farmacias_de_otro_tenant(self):
+        grupo2 = Grupo.objects.create(codigo='TRX002')
+        Farmacia.objects.create(codigo='MAM01', grupo=grupo2, unidad_negocio=self.mia, ip_router='10.0.2.1')
+
+        usuario_sg_only = User.objects.create_user(username='u_sg_only_red', password='x')
+        PerfilUsuario.objects.create(usuario=usuario_sg_only).unidades_negocio.add(self.sg)
+        self.client.force_login(usuario_sg_only)
+
+        resp = self.client.get(reverse('panel:red_farmacias_lista'))
+        self.assertNotContains(resp, 'MAM01')
 
 
 class EstacionMesaDeAyudaVsSoporteTecnicoTests(TestCase):
@@ -1023,6 +1100,13 @@ class TendenciaFlotaTests(TestCase):
         MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=60)
         resp = self.client.get(reverse('panel:tendencia_flota'))
         self.assertEqual(resp.context['g_cpu'].ultimo_valor, 70)
+
+    def test_promedio_de_red_de_la_flota_esta_semana(self):
+        MuestraMetrica.objects.create(estacion=self.estacion, red_recibido_kbps=1000, red_enviado_kbps=200)
+        MuestraMetrica.objects.create(estacion=self.estacion, red_recibido_kbps=2000, red_enviado_kbps=400)
+        resp = self.client.get(reverse('panel:tendencia_flota'))
+        # promedio recibido=(1000+2000)/2=1500, enviado=(200+400)/2=300 -> total 1800
+        self.assertEqual(resp.context['g_red'].ultimo_valor, 1800)
 
     def test_sin_muestras_esta_semana_no_muestra_el_promedio_de_una_semana_vieja(self):
         # Regresión: construir_grafico().ultimo_valor es el último valor NO NULO de la
