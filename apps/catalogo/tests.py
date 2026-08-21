@@ -87,6 +87,13 @@ class MeshCentralServiciosTests(TestCase):
         self.assertIn('curl.exe', comando)
         self.assertNotIn('Invoke-WebRequest', comando)
 
+    def test_generar_comando_no_espera_a_que_termine_meshagent(self):
+        # meshagent.exe se convierte en el agente persistente al instalarse — nunca
+        # termina por sí solo, así que "-Wait" deja la ejecución del script colgada
+        # para siempre aunque la instalación haya funcionado (reproducido en MC001-C).
+        comando = generar_comando_instalacion_meshcentral(self.estacion)
+        self.assertNotIn('-Wait', comando)
+
     def test_urls_remotas_none_sin_node_id(self):
         self.assertIsNone(url_escritorio_remoto_meshcentral(self.estacion))
         self.assertIsNone(url_terminal_remoto_meshcentral(self.estacion))

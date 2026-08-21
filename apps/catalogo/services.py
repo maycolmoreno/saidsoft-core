@@ -202,10 +202,19 @@ def generar_comando_instalacion_meshcentral(estacion) -> str:
         # Framework que usa PowerShell 5.1) sí la baja bien con -k (salta verificación del
         # certificado autofirmado, equivalente al ServerCertificateValidationCallback de
         # antes).
+        # NO usar "-Wait": meshagent.exe, una vez que se instala como servicio, SE
+        # CONVIERTE en el agente persistente (queda corriendo para siempre por diseño)
+        # — "-Wait" nunca vuelve, y la ejecución del script se queda "en progreso"
+        # hasta el timeout aunque la instalación ya haya funcionado (reproducido
+        # instalando de verdad en MC001-C, ver PLAN_MODERNIZACION.md §9/§10). Se lanza
+        # sin esperar y se le da un margen fijo para que termine de auto-instalarse
+        # antes de intentar limpiar el temporal (best-effort: el propio instalador
+        # suele mover/borrar ese archivo solo, por eso el ErrorAction).
         '$ruta = Join-Path $env:TEMP "meshagent.exe"; '
         f'curl.exe -k -sS -o $ruta "{url_instalador}"; '
         'if (-not (Test-Path $ruta)) { throw "No se pudo descargar el agente MeshCentral (curl.exe)." }; '
-        'Start-Process -FilePath $ruta -Wait; '
+        'Start-Process -FilePath $ruta; '
+        'Start-Sleep -Seconds 10; '
         'Remove-Item $ruta -Force -ErrorAction SilentlyContinue'
     )
 
