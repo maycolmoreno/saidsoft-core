@@ -384,6 +384,10 @@ confirmar el flujo completo (grabar → listar en "Recordings" → reproducir).
   dejaba a `worker` y a los agentes en loop de `[MQTT] Falló la conexión: Not
   authorized` hasta volver a correr `bootstrap-emqx.sh`. Fix: `hostname: emqx`
   fijo en el servicio (`docker-compose.yml`), le da continuidad al nodo entre
-  recreaciones. **Si de todas formas vuelve a pasar** (ej. tras un
-  `docker-compose down -v`, que sí borra el volumen), el remedio sigue siendo el
-  mismo: volver a correr `sh bootstrap-emqx.sh` — es reentrante, seguro de repetir.
+  recreaciones. **Confirmado en producción (20-ago-2026)**: tras el fix, un
+  `docker-compose down` + `up -d` completo (recreó los 9 contenedores de cero,
+  red nueva) dejó a `worker` conectado sin `Not authorized` — ya no hace falta
+  volver a correr `bootstrap-emqx.sh` en cada recreación. **Si de todas formas
+  vuelve a pasar** (ej. tras un `docker-compose down -v`, que sí borra el
+  volumen), el remedio sigue siendo el mismo: volver a correr
+  `sh bootstrap-emqx.sh` — es reentrante, seguro de repetir.
