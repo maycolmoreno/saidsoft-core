@@ -77,6 +77,16 @@ class MeshCentralServiciosTests(TestCase):
         self.assertIn('meshid=abc123meshid', comando)
         self.assertIn('installflags=2', comando)
 
+    def test_generar_comando_usa_curl_no_invoke_webrequest(self):
+        # Invoke-WebRequest de PowerShell 5.1 corta la descarga con "error inesperado de
+        # envío" contra el TLS autofirmado de MeshCentral, incluso forzando Tls12 y
+        # saltando la validación del certificado — probado de verdad instalando en
+        # ML006-A y MC001-B (ver PLAN_MODERNIZACION.md). curl.exe (Schannel, no el stack
+        # de .NET Framework) sí funciona.
+        comando = generar_comando_instalacion_meshcentral(self.estacion)
+        self.assertIn('curl.exe', comando)
+        self.assertNotIn('Invoke-WebRequest', comando)
+
     def test_urls_remotas_none_sin_node_id(self):
         self.assertIsNone(url_escritorio_remoto_meshcentral(self.estacion))
         self.assertIsNone(url_terminal_remoto_meshcentral(self.estacion))

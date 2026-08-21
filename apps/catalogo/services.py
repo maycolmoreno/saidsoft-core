@@ -193,18 +193,18 @@ def generar_comando_instalacion_meshcentral(estacion) -> str:
         f"&meshid={conf['MESH_ID']}&installflags={conf['INSTALL_FLAGS']}"
     )
     return (
-        # MeshCentral usa un certificado autofirmado en el piloto (mismo criterio que la
-        # advertencia que se acepta en el navegador al entrar a la consola) — sin esto,
-        # Invoke-WebRequest rechaza la descarga con "no se puede establecer una relación
-        # de confianza para el canal seguro SSL/TLS". Válido en Windows PowerShell 5.1
-        # (no depende de -SkipCertificateCheck, que recién existe en PowerShell 7+).
-        # Windows PowerShell 5.1 no siempre negocia TLS 1.2 por default en esta versión
-        # de .NET Framework — sin fijarlo, MeshCentral (Node.js moderno) corta la
-        # conexión con "error inesperado de envío" al no encontrar un protocolo en común.
-        '[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; '
-        '[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}; '
+        # MeshCentral usa un certificado autofirmado en el piloto — Invoke-WebRequest de
+        # Windows PowerShell 5.1 corta la descarga con "error inesperado de envío" contra
+        # este TLS, incluso forzando SecurityProtocol=Tls12 y saltando la validación del
+        # certificado (probado así antes, no alcanzó — reproducido de nuevo instalando de
+        # verdad en ML006-A y MC001-B, ver PLAN_MODERNIZACION.md §9/§10). curl.exe (nativo
+        # desde Windows 10 1803+, usa su propio stack TLS vía Schannel, no el de .NET
+        # Framework que usa PowerShell 5.1) sí la baja bien con -k (salta verificación del
+        # certificado autofirmado, equivalente al ServerCertificateValidationCallback de
+        # antes).
         '$ruta = Join-Path $env:TEMP "meshagent.exe"; '
-        f'Invoke-WebRequest -Uri "{url_instalador}" -OutFile $ruta -UseBasicParsing; '
+        f'curl.exe -k -sS -o $ruta "{url_instalador}"; '
+        'if (-not (Test-Path $ruta)) { throw "No se pudo descargar el agente MeshCentral (curl.exe)." }; '
         'Start-Process -FilePath $ruta -Wait; '
         'Remove-Item $ruta -Force -ErrorAction SilentlyContinue'
     )
