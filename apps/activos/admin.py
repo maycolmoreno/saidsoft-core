@@ -46,9 +46,13 @@ class UbicacionAdmin(admin.ModelAdmin):
 
 @admin.register(Bodega)
 class BodegaAdmin(admin.ModelAdmin):
-    list_display = ('codigo', 'nombre', 'custodio', 'ubicacion', 'activa')
+    list_display = ('codigo', 'nombre', 'custodio', 'ubicacion', 'unidad_negocio', 'activa')
     search_fields = ('codigo', 'nombre')
-    list_filter = ('activa',)
+    list_filter = ('activa', 'unidad_negocio')
+    autocomplete_fields = ('unidad_negocio',)
+
+    def get_queryset(self, request):
+        return scope_opcional_por_unidad_negocio(super().get_queryset(request), request.user, 'unidad_negocio')
 
 
 @admin.register(Colaborador)
@@ -64,7 +68,7 @@ class ColaboradorAdmin(admin.ModelAdmin):
 
 @admin.register(TipoConsumible)
 class TipoConsumibleAdmin(admin.ModelAdmin):
-    list_display = ('codigo', 'nombre')
+    list_display = ('codigo', 'nombre', 'stock_minimo')
     search_fields = ('codigo', 'nombre')
 
 
@@ -84,12 +88,17 @@ class OrdenCompraDetalleInline(admin.TabularInline):
 
 @admin.register(OrdenCompra)
 class OrdenCompraAdmin(admin.ModelAdmin):
-    list_display = ('numero_oc', 'proveedor', 'fecha_emision', 'estado', 'recibido_por', 'total_activos')
-    list_filter = ('estado',)
+    list_display = (
+        'numero_oc', 'proveedor', 'fecha_emision', 'unidad_negocio', 'estado', 'recibido_por', 'total_activos',
+    )
+    list_filter = ('estado', 'unidad_negocio')
     search_fields = ('numero_oc', 'proveedor')
-    autocomplete_fields = ('bodegas_destino',)
+    autocomplete_fields = ('unidad_negocio', 'bodegas_destino')
     readonly_fields = ('version',)
     inlines = [OrdenCompraDetalleInline]
+
+    def get_queryset(self, request):
+        return scope_opcional_por_unidad_negocio(super().get_queryset(request), request.user, 'unidad_negocio')
 
     @admin.display(description='Activos')
     def total_activos(self, obj):
@@ -147,7 +156,9 @@ class ActivoAdmin(admin.ModelAdmin):
     )
     list_filter = ('tipo', 'estado', 'bodega_actual', 'unidad_negocio', 'baja_recomendada')
     search_fields = ('codigo', 'numero_serie', 'marca__nombre', 'modelo', 'codigo_sap')
-    autocomplete_fields = ('orden_compra', 'bodega_actual', 'colaborador_actual', 'marca', 'categoria', 'unidad_negocio')
+    autocomplete_fields = (
+        'orden_compra', 'bodega_actual', 'colaborador_actual', 'marca', 'categoria', 'unidad_negocio', 'estacion',
+    )
     readonly_fields = ('codigo', 'fecha_creacion')
     inlines = [EventoActivoInline]
 

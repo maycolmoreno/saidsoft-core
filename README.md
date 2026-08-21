@@ -138,6 +138,19 @@ estado vive en `apps/activos/services.py`, reutilizada por panel y admin.
   RRHH/nómina queda prevista para más adelante sin cambiar el modelo.
 - **Stock de consumibles**: se descuenta al entregar (`registrar_consumible_entregado`,
   valida que haya suficiente) y se repone desde "Bodegas y stock" en el panel.
+- **Vínculo automático con el RMM por número de serie** (20-ago-2026): el agente ya
+  reporta el número de serie del hardware (`Estacion.numero_serie`, R7-R9); nuevo
+  `Activo.estacion` (OneToOne) se vincula solo cuando matchea con exactamente un
+  Activo (`apps.activos.services.vincular_activos_por_numero_serie`, diario vía Celery
+  Beat — nunca adivina ante 0 o varias coincidencias). Habilita dos detecciones:
+  `activos_dados_de_baja_pero_conectados()` (un activo "destruido" cuya estación sigue
+  con heartbeat) y `activos_movidos_sin_registro()` (el equipo aparece operando en una
+  farmacia de otra unidad de negocio a la registrada). Visibles en
+  `/activos/avisos/`.
+- **Avisos de garantía y stock bajo** (20-ago-2026, solo panel v1, sin correo — mismo
+  criterio que Windows Update v1): `TipoConsumible.stock_minimo` (0 = no vigilado);
+  `/activos/avisos/` junta garantías vencidas/por vencer (30 días), stock bajo mínimo
+  y las dos anomalías del punto anterior, todo escopado por tenant.
 
 ## Despliegue por anillos y aprobación por lotes (Fase 4)
 
@@ -178,10 +191,13 @@ apoya en el Grupo, siempre en la unidad de negocio de la farmacia/estación/cola
   acceso a más de una unidad, puede enfocar los listados/dashboard en una sola —
   puramente de presentación, no reemplaza el RBAC (`unidad_negocio_activa` en sesión).
 - **Alcance deliberado**: `activos`/`mantenimiento`/`cumplimiento` están conectados al
-  mismo RBAC (`Colaborador`/`Activo` con `unidad_negocio` opcional, heredada
-  automáticamente al asignar un activo a un colaborador). `Bodega`, `OrdenCompra` y los
-  catálogos (`Marca`, `CategoriaEquipo`, etc.) **no** se escopan — son infraestructura
-  de TI centralizada de CRESIO, compartida entre sus marcas, no de un cliente.
+  mismo RBAC (`Colaborador`/`Activo`/`Bodega`/`OrdenCompra` con `unidad_negocio`
+  opcional, heredada automáticamente al asignar un activo a un colaborador —
+  `None` = compartido, ej. una bodega central). `MovimientoInventario` (kardex) no
+  tiene su propio `unidad_negocio` — se escopa por `bodega_origen`/`bodega_destino`
+  vía `apps.activos.services.scope_movimientos_visibles`. Los catálogos puros (`Marca`,
+  `CategoriaEquipo`, etc.) no se escopan — son infraestructura de TI centralizada de
+  CRESIO, sin dueño de un cliente en particular.
 - **Gap conocido**: el aislamiento es de aplicación/BD, no del broker MQTT — todos los
   agentes hoy comparten una sola credencial (`deploy/bootstrap-emqx.sh`), sin ACLs por
   tenant. Ver PLAN_MODERNIZACION.md §9.

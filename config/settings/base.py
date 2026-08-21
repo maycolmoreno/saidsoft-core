@@ -266,6 +266,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.software.tasks.generar_escaneos_programados_task',
         'schedule': 60.0 * 60 * 24,  # diario — el propio filtro por fecha lo hace seguro de repetir
     },
+    'vincular-activos-por-serie': {
+        'task': 'apps.activos.tasks.vincular_activos_por_serie_task',
+        'schedule': 60.0 * 60 * 24,  # diario — un cruce por número de serie no cambia cada minuto
+    },
     'escalar-alertas-abiertas': {
         'task': 'apps.monitoreo.tasks.escalar_alertas_task',
         # Cada 10 min: suficiente margen frente a UMBRAL_ESCALAMIENTO_MINUTOS (30) sin

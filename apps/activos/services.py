@@ -4,7 +4,10 @@ Sigue el mismo patrón que apps/despliegues/services.py: la lógica de negocio
 vive aquí, separada de las vistas, para que tanto el panel como el admin la
 reutilicen igual.
 """
-from django.db.models import F
+import datetime
+
+from django.db.models import F, Q
+from django.utils import timezone
 
 from apps.activos.models import (
     Activo, EventoActivo, MovimientoInventario, OrdenCompraDetalle, RecepcionLote, StockBodega,
@@ -310,3 +313,79 @@ def registrar_traslado_bodega(*, tipo_consumible, bodega_origen, bodega_destino,
         cantidad=cantidad, bodega_origen=bodega_origen, bodega_destino=bodega_destino,
         realizado_por=usuario, motivo=motivo,
     )
+
+
+def scope_movimientos_visibles(queryset, user):
+    """`MovimientoInventario` no tiene su propio `unidad_negocio` — se escopa por la(s)
+    bodega(s) involucradas (`bodega_origen`/`bodega_destino`, uno de los dos puede ser
+    null según el tipo de movimiento). El lado no aplicable pasa siempre; solo se exige
+    que el/los lado(s) presentes sean compartidos (`unidad_negocio=None`) o visibles."""
+    from apps.cuentas.services import unidades_negocio_visibles, usuario_tiene_acceso_total
+
+    if usuario_tiene_acceso_total(user):
+        return queryset
+    visibles = unidades_negocio_visibles(user)
+    return queryset.filter(
+        Q(bodega_origen__isnull=True) | Q(bodega_origen__unidad_negocio__isnull=True) |
+        Q(bodega_origen__unidad_negocio__in=visibles),
+    ).filter(
+        Q(bodega_destino__isnull=True) | Q(bodega_destino__unidad_negocio__isnull=True) |
+        Q(bodega_destino__unidad_negocio__in=visibles),
+    )
+
+
+def vincular_activos_por_numero_serie() -> int:
+    """Cruza `Estacion.numero_serie` (reportado por el agente RMM) contra
+    `Activo.numero_serie` para vincular automáticamente el registro de ITAM con su
+    identidad de red. Nunca adivina: si el número de serie no matchea con exactamente
+    un Activo (0 o varios), esa estación se deja sin vincular. Idempotente — no repite
+    trabajo en estaciones que ya tienen un Activo vinculado."""
+    from apps.catalogo.models import Estacion
+
+    vinculados = 0
+    estaciones = Estacion.objects.exclude(numero_serie='').filter(activo_vinculado__isnull=True)
+    for estacion in estaciones:
+        candidatos = list(Activo.objects.filter(numero_serie__iexact=estacion.numero_serie, estacion__isnull=True))
+        if len(candidatos) == 1:
+            candidatos[0].estacion = estacion
+            candidatos[0].save(update_fields=['estacion'])
+            vinculados += 1
+    return vinculados
+
+
+def activos_dados_de_baja_pero_conectados():
+    """Un Activo marcado como dado de baja cuya Estación vinculada sigue reportando
+    heartbeat — indicio de una baja mal hecha o de un número de serie duplicado."""
+    from apps.catalogo.models import Estacion
+
+    return Activo.objects.filter(
+        estado=Activo.Estado.DADO_DE_BAJA, estacion__isnull=False,
+        estacion__estado_conexion=Estacion.EstadoConexion.ONLINE,
+    ).select_related('estacion', 'estacion__farmacia')
+
+
+def activos_movidos_sin_registro():
+    """Un Activo cuya unidad de negocio conocida no coincide con la de la farmacia
+    donde su Estación vinculada está reportando — el equipo se movió físicamente sin
+    que nadie actualizara el registro en ITAM."""
+    return Activo.objects.filter(estacion__isnull=False, unidad_negocio__isnull=False).exclude(
+        unidad_negocio_id=F('estacion__farmacia__unidad_negocio_id'),
+    ).select_related('estacion', 'estacion__farmacia', 'unidad_negocio')
+
+
+def activos_por_vencer_garantia(dias=30):
+    """Activos con garantía ya vencida o por vencer dentro de `dias`. Incluye ambos
+    casos (no solo "por vencer") — el panel los distingue por color según si la fecha
+    ya pasó o no."""
+    limite = timezone.now().date() + datetime.timedelta(days=dias)
+    return Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA).filter(
+        vencimiento_garantia__isnull=False, vencimiento_garantia__lte=limite,
+    ).select_related('marca', 'bodega_actual', 'colaborador_actual').order_by('vencimiento_garantia')
+
+
+def stock_bajo_minimo():
+    """Filas de `StockBodega` cuya cantidad cayó debajo del `stock_minimo` configurado
+    en su `TipoConsumible` (0 = ese tipo no se vigila)."""
+    return StockBodega.objects.filter(
+        tipo_consumible__stock_minimo__gt=0, cantidad__lt=F('tipo_consumible__stock_minimo'),
+    ).select_related('bodega', 'tipo_consumible')

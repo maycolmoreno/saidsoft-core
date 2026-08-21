@@ -1,0 +1,147 @@
+{% extends "panel/base.html" %}
+{% block title %}Avisos de activos · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="mb-2">
+    <a href="{% url 'panel:activos_lista' %}" class="text-xs text-[var(--text-faint)]">← Inventario de activos</a>
+</div>
+<div class="mb-6">
+    <h1 class="text-xl font-semibold">Avisos de activos</h1>
+    <p class="text-sm text-[var(--text-faint)]" style="max-width:640px;">
+        Garantías vencidas o por vencer, stock de consumibles bajo el mínimo, y anomalías
+        detectadas cruzando el inventario contra el número de serie que reporta el agente
+        RMM. Solo visibilidad por ahora, sin alertas automáticas.
+    </p>
+</div>
+
+<div class="card mb-8" style="overflow:hidden;">
+    <div class="section-head px-4 py-3" style="background:var(--panel);">
+        <span class="label"><h3>Garantías vencidas o por vencer (30 días)</h3></span>
+        {% if garantias %}
+        <span class="pill critical">{{ garantias|length }}</span>
+        {% else %}
+        <span class="pill good">Al día</span>
+        {% endif %}
+    </div>
+    {% if garantias %}
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Código</th>
+                <th class="text-left px-4 py-3">Marca / Modelo</th>
+                <th class="text-left px-4 py-3">Ubicación</th>
+                <th class="text-left px-4 py-3">Vencimiento</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for a in garantias %}
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:activo_detalle' a.pk %}'">
+                <td class="px-4 py-3 font-mono">{{ a.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.marca }} {{ a.modelo }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
+                    {% if a.colaborador_actual %}{{ a.colaborador_actual.nombre }}{% elif a.bodega_actual %}{{ a.bodega_actual.codigo }}{% else %}—{% endif %}
+                </td>
+                <td class="px-4 py-3 mono num" style="{% if a.vencimiento_garantia < hoy %}color:var(--critical);{% else %}color:var(--warning);{% endif %}">
+                    {{ a.vencimiento_garantia }}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+
+<div class="card mb-8" style="overflow:hidden;">
+    <div class="section-head px-4 py-3" style="background:var(--panel);">
+        <span class="label"><h3>Stock de consumibles bajo el mínimo</h3></span>
+        {% if stock_bajo %}
+        <span class="pill critical">{{ stock_bajo|length }}</span>
+        {% else %}
+        <span class="pill good">Al día</span>
+        {% endif %}
+    </div>
+    {% if stock_bajo %}
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Bodega</th>
+                <th class="text-left px-4 py-3">Consumible</th>
+                <th class="text-left px-4 py-3">Stock actual</th>
+                <th class="text-left px-4 py-3">Mínimo</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for s in stock_bajo %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">{{ s.bodega.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ s.tipo_consumible.nombre }}</td>
+                <td class="px-4 py-3 mono num" style="color:var(--critical);">{{ s.cantidad }}</td>
+                <td class="px-4 py-3 mono num text-[var(--text-faint)]">{{ s.tipo_consumible.stock_minimo }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+
+<div class="card mb-8" style="overflow:hidden;">
+    <div class="section-head px-4 py-3" style="background:var(--panel);">
+        <span class="label"><h3>Dados de baja pero siguen conectados</h3></span>
+        {% if dados_de_baja_conectados %}
+        <span class="pill critical">{{ dados_de_baja_conectados|length }}</span>
+        {% else %}
+        <span class="pill good">Ninguno</span>
+        {% endif %}
+    </div>
+    {% if dados_de_baja_conectados %}
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Código</th>
+                <th class="text-left px-4 py-3">Estación vinculada</th>
+                <th class="text-left px-4 py-3">Farmacia</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for a in dados_de_baja_conectados %}
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:activo_detalle' a.pk %}'">
+                <td class="px-4 py-3 font-mono">{{ a.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.estacion.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.estacion.farmacia.codigo }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <div class="section-head px-4 py-3" style="background:var(--panel);">
+        <span class="label"><h3>Equipos movidos sin registro</h3></span>
+        {% if movidos_sin_registro %}
+        <span class="pill warning">{{ movidos_sin_registro|length }}</span>
+        {% else %}
+        <span class="pill good">Ninguno</span>
+        {% endif %}
+    </div>
+    {% if movidos_sin_registro %}
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Código</th>
+                <th class="text-left px-4 py-3">Unidad de negocio registrada</th>
+                <th class="text-left px-4 py-3">Estación / farmacia actual</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for a in movidos_sin_registro %}
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:activo_detalle' a.pk %}'">
+                <td class="px-4 py-3 font-mono">{{ a.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.unidad_negocio.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.estacion.codigo }} / {{ a.estacion.farmacia.codigo }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+{% endblock %}

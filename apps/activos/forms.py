@@ -42,13 +42,27 @@ class ColaboradorForm(forms.ModelForm):
 class OrdenCompraForm(forms.ModelForm):
     class Meta:
         model = OrdenCompra
-        fields = ['numero_oc', 'proveedor', 'fecha_emision', 'bodegas_destino']
+        fields = ['numero_oc', 'proveedor', 'fecha_emision', 'unidad_negocio', 'bodegas_destino']
         widgets = {
             'numero_oc': forms.TextInput(attrs={'class': INPUT_CLASS}),
             'proveedor': forms.TextInput(attrs={'class': INPUT_CLASS}),
             'fecha_emision': forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
+            'unidad_negocio': forms.Select(attrs={'class': INPUT_CLASS}),
             'bodegas_destino': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 4}),
         }
+        help_texts = {
+            'unidad_negocio': 'Vacío = orden de compra compartida, visible para todos los clientes.',
+        }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        from apps.cuentas.services import scope_opcional_por_unidad_negocio, unidades_negocio_visibles
+        self.fields['unidad_negocio'].queryset = (
+            unidades_negocio_visibles(user) if user is not None else self.fields['unidad_negocio'].queryset.none()
+        )
+        self.fields['bodegas_destino'].queryset = scope_opcional_por_unidad_negocio(
+            Bodega.objects.filter(activa=True), user, 'unidad_negocio',
+        )
 
 
 class RecibirOrdenCompraForm(forms.Form):
@@ -88,6 +102,13 @@ class RecepcionLoteForm(forms.Form):
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
     numero_lote = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        from apps.cuentas.services import scope_opcional_por_unidad_negocio
+        self.fields['bodega'].queryset = scope_opcional_por_unidad_negocio(
+            Bodega.objects.filter(activa=True), user, 'unidad_negocio',
+        )
 
 
 class ActivoIngresoForm(forms.Form):
@@ -130,10 +151,17 @@ class ActivoIngresoForm(forms.Form):
         queryset=None, widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
+        from apps.cuentas.services import scope_opcional_por_unidad_negocio
+
         from .models import Bodega
-        self.fields['bodega'].queryset = Bodega.objects.filter(activa=True)
+        self.fields['bodega'].queryset = scope_opcional_por_unidad_negocio(
+            Bodega.objects.filter(activa=True), user, 'unidad_negocio',
+        )
+        self.fields['orden_compra'].queryset = scope_opcional_por_unidad_negocio(
+            OrdenCompra.objects.all(), user, 'unidad_negocio',
+        )
 
 
 class AsignacionForm(forms.Form):

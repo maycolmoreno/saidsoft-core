@@ -3,6 +3,7 @@ from django.contrib.auth.decorators import login_required
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.activos import services as activos_services
 from apps.activos.forms import (
@@ -16,7 +17,8 @@ from apps.activos.models import (
 from apps.activos.services import ConcurrencyError
 from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import (
-    scope_opcional_por_unidad_negocio_activa, usuario_puede_ver, verificar_acceso,
+    scope_opcional_por_unidad_negocio, scope_opcional_por_unidad_negocio_activa, usuario_puede_ver,
+    verificar_acceso,
 )
 
 
@@ -82,21 +84,23 @@ def visita_tecnica_lista(request):
 
 @login_required
 def ordenes_compra_lista(request):
-    ordenes = OrdenCompra.objects.prefetch_related('bodegas_destino').order_by('-fecha_creacion')
+    ordenes = scope_opcional_por_unidad_negocio_activa(
+        OrdenCompra.objects.prefetch_related('bodegas_destino'), request, 'unidad_negocio',
+    ).order_by('-fecha_creacion')
     return render(request, 'panel/ordenes_compra_lista.html', {'ordenes': ordenes})
 
 
 @login_required
 def orden_compra_crear(request):
     if request.method == 'POST':
-        form = OrdenCompraForm(request.POST)
+        form = OrdenCompraForm(request.POST, user=request.user)
         if form.is_valid():
             oc = form.save()
             registrar_evento(usuario=request.user, accion='orden_compra.crear', objeto=oc, request=request)
             messages.success(request, f'OC {oc.numero_oc} creada.')
             return redirect('panel:orden_compra_detalle', pk=oc.pk)
     else:
-        form = OrdenCompraForm()
+        form = OrdenCompraForm(user=request.user)
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': 'Nueva orden de compra',
         'volver_url': reverse('panel:ordenes_compra_lista'),
@@ -113,12 +117,14 @@ def orden_compra_detalle(request, pk):
         ),
         pk=pk,
     )
+    verificar_acceso(request.user, oc.unidad_negocio)
     return render(request, 'panel/orden_compra_detalle.html', {'oc': oc})
 
 
 @login_required
 def orden_compra_linea_crear(request, pk):
     oc = get_object_or_404(OrdenCompra, pk=pk)
+    verificar_acceso(request.user, oc.unidad_negocio)
     if request.method == 'POST':
         form = OrdenCompraLineaForm(request.POST)
         if form.is_valid():
@@ -143,11 +149,12 @@ def orden_compra_linea_crear(request, pk):
 @login_required
 def orden_compra_linea_recibir(request, pk):
     detalle = get_object_or_404(OrdenCompraDetalle.objects.select_related('orden_compra'), pk=pk)
+    verificar_acceso(request.user, detalle.orden_compra.unidad_negocio)
     if detalle.estado == OrdenCompraDetalle.Estado.COMPLETO:
         messages.error(request, 'Esta línea ya fue recibida por completo.')
         return redirect('panel:orden_compra_detalle', pk=detalle.orden_compra_id)
     if request.method == 'POST':
-        form = RecepcionLoteForm(request.POST)
+        form = RecepcionLoteForm(request.POST, user=request.user)
         if form.is_valid():
             try:
                 activos_services.registrar_recepcion_lote(
@@ -165,7 +172,7 @@ def orden_compra_linea_recibir(request, pk):
                 messages.success(request, 'Recepción registrada.')
                 return redirect('panel:orden_compra_detalle', pk=detalle.orden_compra_id)
     else:
-        form = RecepcionLoteForm(initial={
+        form = RecepcionLoteForm(user=request.user, initial={
             'cantidad': detalle.cantidad_solicitada - detalle.cantidad_recibida,
         })
     return render(request, 'panel/accion_form.html', {
@@ -177,8 +184,11 @@ def orden_compra_linea_recibir(request, pk):
 
 @login_required
 def movimientos_inventario_lista(request):
-    movimientos = MovimientoInventario.objects.select_related(
-        'tipo_consumible', 'bodega_origen', 'bodega_destino', 'realizado_por', 'orden_compra',
+    movimientos = activos_services.scope_movimientos_visibles(
+        MovimientoInventario.objects.select_related(
+            'tipo_consumible', 'bodega_origen', 'bodega_destino', 'realizado_por', 'orden_compra',
+        ),
+        request.user,
     ).order_by('-fecha_efectiva')
 
     bodega = request.GET.get('bodega')
@@ -190,9 +200,10 @@ def movimientos_inventario_lista(request):
     if tipo:
         movimientos = movimientos.filter(tipo_movimiento=tipo)
 
+    bodegas_visibles = scope_opcional_por_unidad_negocio(Bodega.objects.all(), request.user, 'unidad_negocio')
     return render(request, 'panel/movimientos_inventario_lista.html', {
         'movimientos': movimientos[:500],
-        'bodegas': Bodega.objects.order_by('codigo'),
+        'bodegas': bodegas_visibles.order_by('codigo'),
         'tipos': MovimientoInventario.TipoMovimiento.choices,
         'filtro_bodega': bodega or '', 'filtro_tipo': tipo or '',
     })
@@ -201,6 +212,7 @@ def movimientos_inventario_lista(request):
 @login_required
 def orden_compra_recibir(request, pk):
     oc = get_object_or_404(OrdenCompra, pk=pk)
+    verificar_acceso(request.user, oc.unidad_negocio)
     if oc.estado == OrdenCompra.Estado.RECIBIDA:
         messages.error(request, 'Esta OC ya fue marcada como recibida.')
         return redirect('panel:orden_compra_detalle', pk=pk)
@@ -242,7 +254,7 @@ def activos_lista(request):
         'activos': activos,
         'tipos': Activo.Tipo.choices,
         'estados': Activo.Estado.choices,
-        'bodegas': Bodega.objects.order_by('codigo'),
+        'bodegas': scope_opcional_por_unidad_negocio(Bodega.objects.all(), request.user, 'unidad_negocio').order_by('codigo'),
         'filtro_tipo': tipo or '', 'filtro_estado': estado or '', 'filtro_bodega': bodega or '',
     })
 
@@ -250,7 +262,7 @@ def activos_lista(request):
 @login_required
 def activo_crear(request):
     if request.method == 'POST':
-        form = ActivoIngresoForm(request.POST)
+        form = ActivoIngresoForm(request.POST, user=request.user)
         if form.is_valid():
             d = form.cleaned_data
             activo = activos_services.registrar_ingreso(
@@ -269,7 +281,7 @@ def activo_crear(request):
         oc_id = request.GET.get('oc')
         if oc_id:
             initial['orden_compra'] = oc_id
-        form = ActivoIngresoForm(initial=initial)
+        form = ActivoIngresoForm(user=request.user, initial=initial)
     return render(request, 'panel/activo_form.html', {
         'form': form, 'titulo': 'Registrar ingreso de activo',
         'subtitulo': 'Genera el código CR-TIPO-NNNN automáticamente y lo deja "En bodega".',
@@ -282,6 +294,7 @@ def activo_detalle(request, pk):
     activo = get_object_or_404(
         Activo.objects.select_related(
             'bodega_actual', 'colaborador_actual', 'orden_compra', 'marca', 'categoria',
+            'estacion', 'estacion__farmacia',
         ), pk=pk,
     )
     verificar_acceso(request.user, activo.unidad_negocio)
@@ -448,13 +461,16 @@ def activo_consumible_entregar(request, pk):
 
 @login_required
 def bodegas_lista(request):
-    bodegas = Bodega.objects.prefetch_related('stock__tipo_consumible').order_by('codigo')
+    bodegas = scope_opcional_por_unidad_negocio_activa(
+        Bodega.objects.prefetch_related('stock__tipo_consumible'), request, 'unidad_negocio',
+    ).order_by('codigo')
     return render(request, 'panel/bodegas_lista.html', {'bodegas': bodegas})
 
 
 @login_required
 def bodega_stock_ingresar(request, pk):
     bodega = get_object_or_404(Bodega, pk=pk)
+    verificar_acceso(request.user, bodega.unidad_negocio)
     if request.method == 'POST':
         form = StockIngresoForm(request.POST)
         if form.is_valid():
@@ -475,4 +491,29 @@ def bodega_stock_ingresar(request, pk):
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': f'Ingresar consumibles a {bodega.codigo}',
         'volver_url': reverse('panel:bodegas_lista'),
+    })
+
+
+@login_required
+def activos_avisos(request):
+    """Panel de visibilidad v1 (sin correo/Alerta todavía, decisión del usuario):
+    garantías vencidas/por vencer, stock de consumibles bajo mínimo, y las anomalías
+    detectadas cruzando Activo.numero_serie contra el número de serie que reporta el
+    agente RMM (activo dado de baja que sigue conectado, equipo movido sin registro)."""
+    garantias = scope_opcional_por_unidad_negocio_activa(
+        activos_services.activos_por_vencer_garantia(), request, 'unidad_negocio',
+    )
+    stock_bajo = scope_opcional_por_unidad_negocio_activa(
+        activos_services.stock_bajo_minimo(), request, 'bodega__unidad_negocio',
+    )
+    dados_de_baja_conectados = scope_opcional_por_unidad_negocio_activa(
+        activos_services.activos_dados_de_baja_pero_conectados(), request, 'estacion__farmacia__unidad_negocio',
+    )
+    movidos_sin_registro = scope_opcional_por_unidad_negocio_activa(
+        activos_services.activos_movidos_sin_registro(), request, 'estacion__farmacia__unidad_negocio',
+    )
+    return render(request, 'panel/activos_avisos.html', {
+        'garantias': garantias, 'stock_bajo': stock_bajo,
+        'dados_de_baja_conectados': dados_de_baja_conectados, 'movidos_sin_registro': movidos_sin_registro,
+        'hoy': timezone.now().date(),
     })

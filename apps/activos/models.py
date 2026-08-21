@@ -99,6 +99,10 @@ class Bodega(models.Model):
         related_name='bodegas_custodiadas',
     )
     ubicacion = models.CharField(max_length=150, blank=True)
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='bodegas',
+        help_text='Vacío = bodega compartida (ej. central), visible para todas las unidades de negocio.',
+    )
     activa = models.BooleanField(default=True)
 
     class Meta:
@@ -157,6 +161,9 @@ class Colaborador(models.Model):
 class TipoConsumible(models.Model):
     codigo = models.CharField(max_length=30, unique=True, help_text='Ej. MOUSE, TECLADO, TONER-HP26A')
     nombre = models.CharField(max_length=100)
+    stock_minimo = models.PositiveIntegerField(
+        default=0, help_text='Alertar cuando el stock de una bodega caiga por debajo. 0 = no vigilar.',
+    )
 
     class Meta:
         db_table = 'tipo_consumible'
@@ -191,6 +198,10 @@ class OrdenCompra(models.Model):
     numero_oc = models.CharField(max_length=30, unique=True, verbose_name='N° Orden de Compra')
     proveedor = models.CharField(max_length=150)
     fecha_emision = models.DateField()
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='ordenes_compra',
+        help_text='Vacío = orden de compra compartida, visible para todas las unidades de negocio.',
+    )
     bodegas_destino = models.ManyToManyField(Bodega, related_name='ordenes_compra', blank=True)
     novedad_recepcion = models.TextField(blank=True, help_text='Faltantes, daños o diferencias frente a la OC.')
     estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.EMITIDA)
@@ -396,6 +407,11 @@ class Activo(models.Model):
     )
     modelo = models.CharField(max_length=100, blank=True)
     numero_serie = models.CharField(max_length=100, blank=True)
+    estacion = models.OneToOneField(
+        'catalogo.Estacion', on_delete=models.SET_NULL, null=True, blank=True, related_name='activo_vinculado',
+        help_text='Estación RMM vinculada automáticamente por número de serie coincidente '
+                  '(ver apps.activos.services.vincular_activos_por_numero_serie).',
+    )
     procesador = models.CharField(max_length=100, blank=True)
     ram_gb = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name='RAM (GB)')
     almacenamiento_gb = models.PositiveIntegerField(null=True, blank=True, verbose_name='Almacenamiento (GB)')

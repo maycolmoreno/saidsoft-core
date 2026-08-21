@@ -1,11 +1,20 @@
+import datetime
+
 from django.contrib.auth.models import Group, User
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
-from apps.catalogo.models import UnidadNegocio
+from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
-from .models import Activo, Bodega, Cargo, Colaborador, Departamento, EventoActivo, StockBodega, TipoConsumible
-from .services import registrar_asignacion, registrar_salida_stock
+from .models import (
+    Activo, Bodega, Cargo, Colaborador, Departamento, EventoActivo, StockBodega, TipoConsumible,
+)
+from .services import (
+    activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, activos_por_vencer_garantia,
+    registrar_asignacion, registrar_salida_stock, scope_movimientos_visibles, stock_bajo_minimo,
+    vincular_activos_por_numero_serie,
+)
 
 
 class SeedPermisosTests(TestCase):
@@ -115,3 +124,192 @@ class RegistrarSalidaStockTests(TestCase):
     def test_rechaza_cantidad_cero_o_negativa(self):
         with self.assertRaises(ValueError):
             registrar_salida_stock(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=0)
+
+
+class ScopeMovimientosVisiblesTests(TestCase):
+    """MovimientoInventario no tiene unidad_negocio propia — se escopa por las bodegas
+    involucradas (bodega_origen/bodega_destino, cualquiera de los dos puede ser null)."""
+
+    def setUp(self):
+        from .models import MovimientoInventario
+
+        self.MovimientoInventario = MovimientoInventario
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.tipo_consumible = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB')
+
+        self.bodega_sg = Bodega.objects.create(codigo='BOD-SG', unidad_negocio=self.sg)
+        self.bodega_mia = Bodega.objects.create(codigo='BOD-MIA', unidad_negocio=self.mia)
+        self.bodega_compartida = Bodega.objects.create(codigo='BOD-CENTRAL')
+
+        self.usuario_mia = User.objects.create_user(username='u_mov_mia', password='x')
+        from apps.cuentas.models import PerfilUsuario
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+
+    def _movimiento(self, *, origen=None, destino=None):
+        return self.MovimientoInventario.objects.create(
+            tipo_movimiento=self.MovimientoInventario.TipoMovimiento.TRASLADO if (origen and destino)
+            else self.MovimientoInventario.TipoMovimiento.INGRESO_CONSUMIBLE,
+            tipo_consumible=self.tipo_consumible, cantidad=1, bodega_origen=origen, bodega_destino=destino,
+        )
+
+    def test_oculta_movimiento_entre_bodegas_de_otro_tenant(self):
+        self._movimiento(origen=self.bodega_sg, destino=None)
+        visibles = scope_movimientos_visibles(self.MovimientoInventario.objects.all(), self.usuario_mia)
+        self.assertEqual(visibles.count(), 0)
+
+    def test_muestra_movimiento_de_bodega_compartida(self):
+        mov = self._movimiento(origen=None, destino=self.bodega_compartida)
+        visibles = scope_movimientos_visibles(self.MovimientoInventario.objects.all(), self.usuario_mia)
+        self.assertIn(mov, visibles)
+
+    def test_muestra_movimiento_del_propio_tenant(self):
+        mov = self._movimiento(origen=None, destino=self.bodega_mia)
+        visibles = scope_movimientos_visibles(self.MovimientoInventario.objects.all(), self.usuario_mia)
+        self.assertIn(mov, visibles)
+
+    def test_traslado_entre_bodega_propia_y_ajena_queda_oculto(self):
+        self._movimiento(origen=self.bodega_mia, destino=self.bodega_sg)
+        visibles = scope_movimientos_visibles(self.MovimientoInventario.objects.all(), self.usuario_mia)
+        self.assertEqual(visibles.count(), 0)
+
+
+class VincularActivosPorNumeroSerieTests(TestCase):
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001', version_objetivo='4.2.1')
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+
+    def _crear_estacion(self, codigo, numero_serie):
+        return Estacion.objects.create(
+            codigo=codigo, farmacia=self.farmacia, numero_serie=numero_serie,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def test_vincula_cuando_hay_un_solo_match(self):
+        estacion = self._crear_estacion('ML001-A', 'SN-0001')
+        activo = Activo.objects.create(codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, numero_serie='SN-0001')
+
+        vinculados = vincular_activos_por_numero_serie()
+
+        self.assertEqual(vinculados, 1)
+        activo.refresh_from_db()
+        self.assertEqual(activo.estacion, estacion)
+
+    def test_no_vincula_si_no_hay_match(self):
+        self._crear_estacion('ML001-A', 'SN-0001')
+        self.assertEqual(vincular_activos_por_numero_serie(), 0)
+
+    def test_no_vincula_si_hay_series_duplicadas(self):
+        self._crear_estacion('ML001-A', 'SN-0001')
+        Activo.objects.create(codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, numero_serie='SN-0001')
+        Activo.objects.create(codigo='CR-DSK-0002', tipo=Activo.Tipo.DESKTOP, numero_serie='SN-0001')
+        self.assertEqual(vincular_activos_por_numero_serie(), 0)
+
+    def test_no_repite_trabajo_en_estacion_ya_vinculada(self):
+        estacion = self._crear_estacion('ML001-A', 'SN-0001')
+        activo = Activo.objects.create(
+            codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, numero_serie='SN-0001', estacion=estacion,
+        )
+        otro = Activo.objects.create(codigo='CR-DSK-0002', tipo=Activo.Tipo.DESKTOP, numero_serie='SN-0001')
+
+        self.assertEqual(vincular_activos_por_numero_serie(), 0)
+        otro.refresh_from_db()
+        self.assertIsNone(otro.estacion)
+        activo.refresh_from_db()
+        self.assertEqual(activo.estacion, estacion)
+
+
+class AnomaliasRedActivoTests(TestCase):
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001', version_objetivo='4.2.1')
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+
+    def test_activo_dado_de_baja_con_estacion_online_aparece(self):
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia_sg,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        activo = Activo.objects.create(
+            codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, estado=Activo.Estado.DADO_DE_BAJA, estacion=estacion,
+        )
+        self.assertIn(activo, activos_dados_de_baja_pero_conectados())
+
+    def test_activo_dado_de_baja_con_estacion_offline_no_aparece(self):
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia_sg,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.OFFLINE,
+        )
+        Activo.objects.create(
+            codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, estado=Activo.Estado.DADO_DE_BAJA, estacion=estacion,
+        )
+        self.assertEqual(activos_dados_de_baja_pero_conectados().count(), 0)
+
+    def test_activo_movido_a_farmacia_de_otra_unidad_aparece(self):
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia_sg, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        activo = Activo.objects.create(
+            codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.mia, estacion=estacion,
+        )
+        self.assertIn(activo, activos_movidos_sin_registro())
+
+    def test_activo_en_farmacia_de_su_propia_unidad_no_aparece(self):
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia_sg, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        Activo.objects.create(
+            codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg, estacion=estacion,
+        )
+        self.assertEqual(activos_movidos_sin_registro().count(), 0)
+
+
+class ActivosPorVencerGarantiaTests(TestCase):
+    def test_incluye_vencida_y_por_vencer_dentro_de_la_ventana(self):
+        hoy = timezone.now().date()
+        vencida = Activo.objects.create(
+            codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, vencimiento_garantia=hoy - datetime.timedelta(days=5),
+        )
+        por_vencer = Activo.objects.create(
+            codigo='CR-DSK-0002', tipo=Activo.Tipo.DESKTOP, vencimiento_garantia=hoy + datetime.timedelta(days=10),
+        )
+        lejos = Activo.objects.create(
+            codigo='CR-DSK-0003', tipo=Activo.Tipo.DESKTOP, vencimiento_garantia=hoy + datetime.timedelta(days=90),
+        )
+        resultado = list(activos_por_vencer_garantia(dias=30))
+        self.assertIn(vencida, resultado)
+        self.assertIn(por_vencer, resultado)
+        self.assertNotIn(lejos, resultado)
+
+    def test_excluye_dados_de_baja_y_sin_fecha(self):
+        hoy = timezone.now().date()
+        Activo.objects.create(
+            codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, estado=Activo.Estado.DADO_DE_BAJA,
+            vencimiento_garantia=hoy - datetime.timedelta(days=5),
+        )
+        Activo.objects.create(codigo='CR-DSK-0002', tipo=Activo.Tipo.DESKTOP, vencimiento_garantia=None)
+        self.assertEqual(activos_por_vencer_garantia(dias=30).count(), 0)
+
+
+class StockBajoMinimoTests(TestCase):
+    def test_detecta_cantidad_por_debajo_del_minimo(self):
+        bodega = Bodega.objects.create(codigo='BOD01')
+        tipo = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB', stock_minimo=5)
+        stock = StockBodega.objects.create(bodega=bodega, tipo_consumible=tipo, cantidad=2)
+        self.assertIn(stock, stock_bajo_minimo())
+
+    def test_ignora_tipo_sin_stock_minimo_configurado(self):
+        bodega = Bodega.objects.create(codigo='BOD01')
+        tipo = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB', stock_minimo=0)
+        StockBodega.objects.create(bodega=bodega, tipo_consumible=tipo, cantidad=0)
+        self.assertEqual(stock_bajo_minimo().count(), 0)
+
+    def test_no_incluye_stock_por_encima_del_minimo(self):
+        bodega = Bodega.objects.create(codigo='BOD01')
+        tipo = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB', stock_minimo=5)
+        StockBodega.objects.create(bodega=bodega, tipo_consumible=tipo, cantidad=10)
+        self.assertEqual(stock_bajo_minimo().count(), 0)

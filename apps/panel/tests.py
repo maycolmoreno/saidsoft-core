@@ -10,7 +10,9 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.activos.models import Activo, Colaborador
+from apps.activos.models import (
+    Activo, Bodega, Colaborador, MovimientoInventario, OrdenCompra, TipoConsumible,
+)
 from apps.auditoria.models import EventoAuditoria, registrar_evento
 from apps.catalogo import crypto
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
@@ -1267,6 +1269,104 @@ class ActivosMultiTenantTests(TestCase):
     def test_activo_compartido_es_accesible(self):
         resp = self.client.get(reverse('panel:activo_detalle', args=[self.activo_compartido.pk]))
         self.assertEqual(resp.status_code, 200)
+
+
+class BodegaOrdenCompraMultiTenantTests(TestCase):
+    """Bodega/OrdenCompra/MovimientoInventario no tenían ningún campo unidad_negocio —
+    cualquier usuario autenticado veía las bodegas, compras y kardex de las tres
+    unidades de negocio sin filtro. Mismo criterio "compartida o del tenant" que
+    Activo/Colaborador/Script."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+
+        self.bodega_sg = Bodega.objects.create(codigo='BOD-SG', unidad_negocio=self.sg)
+        self.bodega_compartida = Bodega.objects.create(codigo='BOD-CENTRAL')
+
+        self.oc_sg = OrdenCompra.objects.create(
+            numero_oc='OC-SG-0001', proveedor='Proveedor SG', fecha_emision=date(2026, 1, 1),
+            unidad_negocio=self.sg,
+        )
+        self.oc_compartida = OrdenCompra.objects.create(
+            numero_oc='OC-GLOBAL-0001', proveedor='Proveedor Central', fecha_emision=date(2026, 1, 1),
+        )
+
+        tipo_consumible = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB')
+        self.movimiento_sg = MovimientoInventario.objects.create(
+            tipo_movimiento=MovimientoInventario.TipoMovimiento.INGRESO_CONSUMIBLE,
+            tipo_consumible=tipo_consumible, cantidad=1, bodega_destino=self.bodega_sg,
+        )
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_bodegas', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_bodegas_lista_oculta_la_de_otro_tenant_pero_muestra_compartida(self):
+        resp = self.client.get(reverse('panel:bodegas_lista'))
+        self.assertNotContains(resp, 'BOD-SG')
+        self.assertContains(resp, 'BOD-CENTRAL')
+
+    def test_forzar_ingreso_de_stock_en_bodega_de_otro_tenant_devuelve_403(self):
+        resp = self.client.get(reverse('panel:bodega_stock_ingresar', args=[self.bodega_sg.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_ordenes_compra_lista_oculta_la_de_otro_tenant_pero_muestra_compartida(self):
+        resp = self.client.get(reverse('panel:ordenes_compra_lista'))
+        self.assertNotContains(resp, 'OC-SG-0001')
+        self.assertContains(resp, 'OC-GLOBAL-0001')
+
+    def test_forzar_detalle_de_oc_de_otro_tenant_devuelve_403(self):
+        resp = self.client.get(reverse('panel:orden_compra_detalle', args=[self.oc_sg.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_oc_compartida_es_accesible(self):
+        resp = self.client.get(reverse('panel:orden_compra_detalle', args=[self.oc_compartida.pk]))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_movimientos_lista_no_muestra_kardex_de_otro_tenant(self):
+        resp = self.client.get(reverse('panel:movimientos_inventario_lista'))
+        self.assertNotContains(resp, 'BOD-SG')
+
+
+class ActivosAvisosTests(TestCase):
+    """/activos/avisos/ — panel de visibilidad v1 (sin correo): garantías, stock bajo
+    y anomalías red↔activo. Cubre que renderiza y que respeta el tenant scoping."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+
+        self.activo_garantia_sg = Activo.objects.create(
+            codigo='CR-DSK-0030', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg,
+            vencimiento_garantia=date.today() - timedelta(days=1),
+        )
+        self.activo_garantia_compartido = Activo.objects.create(
+            codigo='CR-DSK-0031', tipo=Activo.Tipo.DESKTOP,
+            vencimiento_garantia=date.today() - timedelta(days=1),
+        )
+
+        bodega_sg = Bodega.objects.create(codigo='BOD-AVISOS-SG', unidad_negocio=self.sg)
+        tipo_consumible = TipoConsumible.objects.create(codigo='TONER', nombre='Tóner', stock_minimo=5)
+        from apps.activos.models import StockBodega
+        StockBodega.objects.create(bodega=bodega_sg, tipo_consumible=tipo_consumible, cantidad=1)
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_avisos', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_renderiza_200(self):
+        resp = self.client.get(reverse('panel:activos_avisos'))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_garantias_oculta_la_de_otro_tenant_pero_muestra_compartida(self):
+        resp = self.client.get(reverse('panel:activos_avisos'))
+        self.assertNotContains(resp, 'CR-DSK-0030')
+        self.assertContains(resp, 'CR-DSK-0031')
+
+    def test_stock_bajo_no_muestra_bodega_de_otro_tenant(self):
+        resp = self.client.get(reverse('panel:activos_avisos'))
+        self.assertNotContains(resp, 'BOD-AVISOS-SG')
 
 
 class MantenimientoMultiTenantTests(TestCase):

@@ -9,7 +9,7 @@ submódulo se re-exporta aquí.
 
 from .activos import (
     activo_asignar, activo_baja, activo_consumible_entregar, activo_crear, activo_detalle,
-    activo_devolver, activo_reparacion_enviar, activo_reparacion_retorno, activos_lista,
+    activo_devolver, activo_reparacion_enviar, activo_reparacion_retorno, activos_avisos, activos_lista,
     bodega_stock_ingresar, bodegas_lista, colaborador_crear, colaboradores_lista,
     movimientos_inventario_lista, orden_compra_crear, orden_compra_detalle,
     orden_compra_linea_crear, orden_compra_linea_recibir, orden_compra_recibir, ordenes_compra_lista,
@@ -64,7 +64,7 @@ from .tenant import unidad_negocio_activar
 
 __all__ = [
     'activo_asignar', 'activo_baja', 'activo_consumible_entregar', 'activo_crear', 'activo_detalle',
-    'activo_devolver', 'activo_reparacion_enviar', 'activo_reparacion_retorno', 'activos_lista',
+    'activo_devolver', 'activo_reparacion_enviar', 'activo_reparacion_retorno', 'activos_avisos', 'activos_lista',
     'alerta_reconocer', 'alerta_resolver', 'alertas_lista', 'pos_errores_flota', 'regla_alerta_crear',
     'reglas_alerta_lista',
     'auditoria_lista',

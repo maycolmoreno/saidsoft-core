@@ -90,6 +90,7 @@ urlpatterns = [
     ),
 
     path('activos/', views.activos_lista, name='activos_lista'),
+    path('activos/avisos/', views.activos_avisos, name='activos_avisos'),
     path('activos/nuevo/', views.activo_crear, name='activo_crear'),
     path('activos/<int:pk>/', views.activo_detalle, name='activo_detalle'),
     path('activos/<int:pk>/asignar/', views.activo_asignar, name='activo_asignar'),

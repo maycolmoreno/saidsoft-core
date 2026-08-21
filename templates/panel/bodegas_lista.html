@@ -1,7 +1,10 @@
 {% extends "panel/base.html" %}
 {% block title %}Bodegas y stock · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold mb-6">Bodegas y stock de consumibles</h1>
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold">Bodegas y stock de consumibles</h1>
+    <a href="{% url 'panel:activos_avisos' %}" class="btn secondary">Avisos</a>
+</div>
 
 <div class="space-y-6">
 {% for b in bodegas %}
