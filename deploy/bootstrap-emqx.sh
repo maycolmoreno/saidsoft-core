@@ -55,14 +55,27 @@ crear_usuario() {
             # de nuevo después de cambiar una contraseña en .env deja a EMQX con la
             # vieja (encontrado rotando MQTT_PASSWORD_AGENTE/COMANDO_HMAC_SECRET tras
             # una exposición accidental en el repo, 11-ago-2026).
-            resp_put=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+            #
+            # El body del PUT es DISTINTO al del POST: EMQX (verificado contra 5.8.3,
+            # 20-ago-2026) rechaza "user_id" acá (400 unknown_fields — el id ya va en la
+            # URL, no en el body) y en cambio exige "is_superuser" explícito. Mandar el
+            # mismo body que el POST (como hacía esto antes) tira 400 en todos los
+            # usuarios siempre que ya existan — silencioso hasta que se corre esto una
+            # segunda vez, que es exactamente el caso de uso que este PUT existe para
+            # cubrir.
+            resp_put_body=$(mktemp)
+            resp_put=$(curl -s -o "$resp_put_body" -w "%{http_code}" -X PUT \
                 "$EMQX_API/authentication/password_based:built_in_database/users/$user" \
                 -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-                -d "{\"user_id\":\"$user\",\"password\":\"$pass\"}")
+                -d "{\"password\":\"$pass\",\"is_superuser\":false}")
             case "$resp_put" in
                 200|201|204) echo "  (ya existía, contraseña actualizada)" ;;
-                *) echo "  ERROR (HTTP $resp_put) actualizando contraseña de $user" >&2 ;;
+                *)
+                    echo "  ERROR (HTTP $resp_put) actualizando contraseña de $user:" >&2
+                    cat "$resp_put_body" >&2
+                    ;;
             esac
+            rm -f "$resp_put_body"
             ;;
         *) echo "  ERROR (HTTP $resp) creando $user" >&2 ;;
     esac
