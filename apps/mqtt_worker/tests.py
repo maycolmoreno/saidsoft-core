@@ -665,6 +665,22 @@ class ManejarSoftwareInstaladoTests(TestCase):
         self.estacion.refresh_from_db()
         self.assertIsNotNone(self.estacion.software_instalado_ultima_verificacion)
 
+    def test_bytes_nul_en_el_registro_de_windows_no_tumban_el_guardado(self):
+        # PostgreSQL rechaza bytes NUL (0x00) en columnas text — encontrado escaneando
+        # una estación real (algún instalador mal comportado los deja en el registro
+        # de Windows), SQLite (donde corre este test) los tolera, así que solo se
+        # detectó contra Postgres real. Debe limpiarse, no tumbar el bulk_create.
+        manejar_software_instalado(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'programas': [
+                {'nombre': 'Programa\x00Raro', 'version': '1.0\x00', 'fabricante': '\x00Acme'},
+            ],
+        })
+        detectado = SoftwareInstaladoDetectado.objects.get(estacion=self.estacion)
+        self.assertEqual(detectado.nombre, 'ProgramaRaro')
+        self.assertEqual(detectado.version, '1.0')
+        self.assertEqual(detectado.fabricante, 'Acme')
+
     def test_un_escaneo_nuevo_reemplaza_el_anterior_por_completo(self):
         manejar_software_instalado(self.estacion.codigo, {
             'token': self.estacion.token_enrolamiento,

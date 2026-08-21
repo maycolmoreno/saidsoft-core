@@ -399,11 +399,19 @@ def manejar_software_instalado(codigo_estacion: str, payload: dict) -> None:
 
     from apps.software.models import SoftwareInstaladoDetectado
 
+    def _limpiar(valor) -> str:
+        # Postgres rechaza bytes NUL (0x00) en columnas text — algunos instaladores
+        # mal comportados dejan uno en el registro de Windows (encontrado escaneando
+        # una estación real, 20-ago-2026: tumbaba el bulk_create COMPLETO, no solo esa
+        # fila). SQLite, donde corren los tests, los tolera — por eso no se veía antes
+        # de probar contra Postgres real.
+        return (valor or '').replace('\x00', '').strip()
+
     programas = payload.get('programas') or []
     detectados = []
     nombres_vistos = set()
     for p in programas:
-        nombre = (p.get('nombre') or '').strip()
+        nombre = _limpiar(p.get('nombre'))
         if not nombre or nombre in nombres_vistos:
             # El registro de Windows puede traer una misma entrada duplicada (32/64
             # bits) — unique_together=('estacion', 'nombre') no tolera duplicados en el
@@ -412,7 +420,7 @@ def manejar_software_instalado(codigo_estacion: str, payload: dict) -> None:
         nombres_vistos.add(nombre)
         detectados.append(SoftwareInstaladoDetectado(
             estacion=estacion, nombre=nombre,
-            version=(p.get('version') or '').strip(), fabricante=(p.get('fabricante') or '').strip(),
+            version=_limpiar(p.get('version')), fabricante=_limpiar(p.get('fabricante')),
         ))
 
     SoftwareInstaladoDetectado.objects.filter(estacion=estacion).delete()
