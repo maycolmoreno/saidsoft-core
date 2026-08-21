@@ -1091,6 +1091,23 @@ estar `Running`. Diagnosticado hasta acá:
   (logs del broker, `GET .../authentication/.../users/saidsof_agente`, o si hay algún
   límite de conexiones/rate-limit que esté rechazando reconexiones muy seguidas).
 
+**U. Mismo arreglo de §10-P aplicado a los formularios de scripts (20-ago-2026) — 🟢
+cerrado:** el usuario reportó que `/scripts/ejecutar-adhoc/` "no le gustaba" — al venir
+precargado desde el hand-off de "Instalar agente ahora" (`?estacion=5`, ver §9 "Monitoreo
+cruzado") con destino ya resuelto a una sola estación, el formulario seguía mostrando los
+tres `<select multiple size=6>` de grupos/farmacias/estaciones siempre visibles, sin
+ocultar los que no aplicaban — el mismo defecto que §10-P ya había corregido en
+`DespliegueForm`/`SolicitudInstalacionForm`/`PromoverDespliegueForm`, pero que se había
+quedado sin aplicar en `apps/scripts/forms.py` (`EjecutarScriptForm`, del que heredan
+`EjecutarScriptAdhocForm` y de cuyo mismo patrón de campos es `ScriptProgramadoForm`) —
+las tres vistas de esa app seguían en el `accion_form.html` genérico. Mismo arreglo, a
+las tres de una vez (comparten exactamente el mismo patrón `destino_tipo` +
+`grupos`/`farmacias`/`estaciones`, igual que la fila de §10-P agrupó sus tres):
+widgets a `CheckboxSelectMultiple`, plantillas dedicadas nuevas
+(`script_ejecutar_form.html`, `script_ejecutar_adhoc_form.html`,
+`script_programado_form.html`) con el mismo JS de mostrar/ocultar por destino + buscador
+de texto. Verificado con la suite completa de `apps.panel`/`apps.scripts` (122 tests OK)
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual

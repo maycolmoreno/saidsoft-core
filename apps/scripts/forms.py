@@ -43,13 +43,13 @@ class EjecutarScriptForm(forms.Form):
         choices=EjecucionScript.DestinoTipo.choices, widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
     grupos = forms.ModelMultipleChoiceField(
-        queryset=None, required=False, widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+        queryset=None, required=False, widget=forms.CheckboxSelectMultiple,
     )
     farmacias = forms.ModelMultipleChoiceField(
-        queryset=None, required=False, widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+        queryset=None, required=False, widget=forms.CheckboxSelectMultiple,
     )
     estaciones = forms.ModelMultipleChoiceField(
-        queryset=None, required=False, widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+        queryset=None, required=False, widget=forms.CheckboxSelectMultiple,
     )
     timeout_segundos = forms.IntegerField(
         initial=300, min_value=5, max_value=3600, widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),
@@ -96,9 +96,9 @@ class ScriptProgramadoForm(forms.ModelForm):
             'script': forms.Select(attrs={'class': INPUT_CLASS}),
             'unidad_negocio': forms.Select(attrs={'class': INPUT_CLASS}),
             'destino_tipo': forms.Select(attrs={'class': INPUT_CLASS}),
-            'grupos': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
-            'farmacias': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
-            'estaciones': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+            'grupos': forms.CheckboxSelectMultiple,
+            'farmacias': forms.CheckboxSelectMultiple,
+            'estaciones': forms.CheckboxSelectMultiple,
             'frecuencia_dias': forms.NumberInput(attrs={'class': INPUT_CLASS}),
             'timeout_segundos': forms.NumberInput(attrs={'class': INPUT_CLASS}),
             'fecha_proxima_ejecucion': forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),

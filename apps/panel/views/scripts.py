@@ -72,7 +72,7 @@ def script_ejecutar(request, pk):
     else:
         initial = {'unidad_negocio': script.unidad_negocio_id} if script.unidad_negocio_id else {}
         form = EjecutarScriptForm(initial=initial, user=request.user)
-    return render(request, 'panel/accion_form.html', {
+    return render(request, 'panel/script_ejecutar_form.html', {
         'form': form, 'titulo': f'Ejecutar "{script.nombre}"',
         'volver_url': reverse('panel:script_detalle', args=[pk]),
     })
@@ -109,7 +109,7 @@ def script_ejecutar_adhoc(request):
                 'estaciones': [estacion.pk],
             }
         form = EjecutarScriptAdhocForm(initial=initial, user=request.user)
-    return render(request, 'panel/accion_form.html', {
+    return render(request, 'panel/script_ejecutar_adhoc_form.html', {
         'form': form, 'titulo': 'Ejecutar script sin guardar en biblioteca',
         'subtitulo': 'Se guarda igual como un Script auditado (marcado ad-hoc), pero no aparece en la biblioteca.',
         'volver_url': reverse('panel:scripts_lista'),
@@ -179,6 +179,6 @@ def script_programado_crear(request):
             return redirect('panel:scripts_programados_lista')
     else:
         form = ScriptProgramadoForm(user=request.user)
-    return render(request, 'panel/accion_form.html', {
+    return render(request, 'panel/script_programado_form.html', {
         'form': form, 'titulo': 'Nueva programación', 'volver_url': reverse('panel:scripts_programados_lista'),
     })
