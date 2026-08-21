@@ -199,15 +199,14 @@ MESHCENTRAL_API_CONFIG = {
 
 # Sondeo SNMP a los Mikrotik de cada farmacia (ver apps.monitoreo.mikrotik) — solo
 # consumo total del enlace por sitio, el router no reparte tráfico por estación (sin
-# Queues por IP/MAC). Config global, no por farmacia: la flota (~600 sitios) tiene
-# configuración uniforme; si algún sitio real difiere, se agrega un override puntual
-# recién cuando aparezca el caso (Farmacia.ip_router es el único dato por sitio en v1).
-# Vacío = la sincronización no hace nada, sin romper el resto (mismo criterio que
-# EMQX_ADMIN_CONFIG/MESHCENTRAL_API_CONFIG).
+# Queues por IP/MAC). Nada de esto se configura por sitio más allá de
+# Farmacia.ip_router: ni la community (es el código de la farmacia en minúscula,
+# ej. "ml006") ni la interfaz WAN (se resuelve por SNMP contra la ruta por defecto
+# activa, no por nombre — confirmado que el nombre no es uniforme entre sitios
+# contra un router real de producción, 20-ago-2026). Sin ninguna Farmacia con
+# ip_router cargada, la sincronización simplemente no hace nada.
 MIKROTIK_SNMP_CONFIG = {
-    'COMUNIDAD': env('MIKROTIK_SNMP_COMUNIDAD', default=''),
     'PUERTO': env.int('MIKROTIK_SNMP_PUERTO', default=161),
-    'INTERFAZ_WAN': env('MIKROTIK_SNMP_INTERFAZ_WAN', default=''),  # ej. "ether1"
 }
 
 # API móvil (apps Flutter): Token Authentication de DRF, sin dependencias externas.

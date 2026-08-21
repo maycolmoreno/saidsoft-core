@@ -894,7 +894,7 @@ class AdaptadorMeshCentralTests(TestCase):
         self.assertTrue(estado.en_linea)
 
 
-@override_settings(MIKROTIK_SNMP_CONFIG={'COMUNIDAD': 'public', 'PUERTO': 161, 'INTERFAZ_WAN': 'ether1'})
+@override_settings(MIKROTIK_SNMP_CONFIG={'PUERTO': 161})
 class SincronizarAnchoBandaFarmaciasTests(TestCase):
     """Parte A del monitoreo proactivo de red (SNMP a Mikrotik) — el cliente SNMP se
     mockea siempre (_sondear_farmacia), nunca se sondea hardware real en tests."""
@@ -905,12 +905,19 @@ class SincronizarAnchoBandaFarmaciasTests(TestCase):
         self.con_ip = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg, ip_router='10.0.1.1')
         self.sin_ip = Farmacia.objects.create(codigo='ML002', grupo=grupo, unidad_negocio=sg)
 
-    def test_sin_config_no_hace_nada(self):
-        with override_settings(MIKROTIK_SNMP_CONFIG={'COMUNIDAD': '', 'PUERTO': 161, 'INTERFAZ_WAN': ''}):
-            with patch('apps.monitoreo.mikrotik._sondear_farmacia', new_callable=AsyncMock) as sondear:
-                n = sincronizar_ancho_banda_farmacias()
+    def test_sin_farmacias_con_ip_router_no_hace_nada(self):
+        self.con_ip.delete()
+        with patch('apps.monitoreo.mikrotik._sondear_farmacia', new_callable=AsyncMock) as sondear:
+            n = sincronizar_ancho_banda_farmacias()
         self.assertEqual(n, 0)
         sondear.assert_not_called()
+
+    def test_comunidad_se_deriva_del_codigo_de_farmacia_en_minuscula(self):
+        # Convención confirmada contra un router real de producción (20-ago-2026):
+        # la community SNMP de cada Mikrotik es el código de su farmacia en
+        # minúscula, no una community global compartida.
+        from apps.monitoreo.mikrotik import _comunidad_para
+        self.assertEqual(_comunidad_para(self.con_ip), 'ml001')
 
     def test_farmacia_sin_ip_router_no_se_sondea(self):
         with patch('apps.monitoreo.mikrotik._sondear_farmacia', new_callable=AsyncMock) as sondear:

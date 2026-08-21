@@ -334,10 +334,13 @@ vida — decisión explícita del usuario ante ese gap de datos).
 estación de arriba — el Mikrotik de cada farmacia (~600, uno por sitio) no reparte
 tráfico por equipo (sin Queues por IP/MAC), así que solo puede dar el consumo TOTAL
 del enlace del sitio. `apps/monitoreo/mikrotik.py` (Celery Beat cada 5 min, sin
-efecto si `MIKROTIK_SNMP_CONFIG` no está configurado) resuelve el `ifIndex` de la
-interfaz WAN por WALK sobre `ifDescr` (cacheado en proceso) y lee `ifHCInOctets`/
+efecto si `MIKROTIK_SNMP_INTERFAZ_WAN` no está configurado) resuelve el `ifIndex` de
+la interfaz WAN por WALK sobre `ifDescr` (cacheado en proceso) y lee `ifHCInOctets`/
 `ifHCOutOctets` (contadores de 64 bits, evita wraparound) de cada `Farmacia` con
-`ip_router` cargada — la tasa se calcula diferenciando contra la última
+`ip_router` cargada. La community SNMP no se configura en el servidor: es el código
+de la farmacia en minúscula (ej. `ml006` para ML006), convención confirmada contra un
+router real de producción — se deriva sola (`_comunidad_para`), no hace falta cargar
+ni distribuir ningún secreto compartido. La tasa se calcula diferenciando contra la última
 `MuestraRedFarmacia` persistida en base (no en memoria: este poller corre en un task
 de Celery que puede reiniciar entre corridas, a diferencia del agente de estación).
 Un router caído no interrumpe el resto de la corrida. **Solo visibilidad en v1**

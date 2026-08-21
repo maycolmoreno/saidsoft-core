@@ -11,6 +11,16 @@ pysnmp >=7 es asyncio-nativo (no hay API sincrónica) — se corre un loop propi
 del task de Celery (síncrono) con asyncio.run(), concurrencia acotada con un
 Semaphore (no ThreadPoolExecutor: no hace falta con un cliente async, mismo objetivo
 de no hacer 600 sondeos secuenciales en un solo Celery Beat).
+
+Nada de esto se configura por sitio más allá de `Farmacia.ip_router` — dos supuestos
+iniciales de diseño resultaron falsos al validar contra un router real de producción
+(ML006, 20-ago-2026), así que ambos se resuelven solos en vez de pedir un dato
+uniforme que no lo era:
+- La community SNMP no es compartida/global — es el código de la farmacia en
+  minúscula (ver `_comunidad_para`).
+- El nombre de la interfaz WAN tampoco es uniforme (en ML006 es "ether3_Telconet",
+  no "ether1") — se resuelve por SNMP contra la ruta por defecto activa (ver
+  `_resolver_indice_interfaz_wan`), no por nombre configurado.
 """
 import asyncio
 import logging
@@ -19,15 +29,20 @@ from django.conf import settings
 from django.utils import timezone
 
 from pysnmp.hlapi.v3arch.asyncio import (
-    CommunityData, ContextData, ObjectIdentity, ObjectType, SnmpEngine, UdpTransportTarget, get_cmd, walk_cmd,
+    CommunityData, ContextData, ObjectIdentity, ObjectType, SnmpEngine, UdpTransportTarget, get_cmd,
 )
 
 logger = logging.getLogger(__name__)
 
+# IP-MIB: ipRouteIfIndex de la ruta 0.0.0.0 (destino por defecto) — da directo el
+# ifIndex de la interfaz que el router está usando AHORA MISMO para salir a Internet,
+# sin necesitar saber su nombre. Estándar (RFC 1213), RouterOS lo expone para
+# compatibilidad aunque internamente use ipCidrRouteTable.
+_OID_IP_ROUTE_IF_INDEX_DEFAULT = '1.3.6.1.2.1.4.21.1.2.0.0.0.0'
+
 # IF-MIB: contadores de 64 bits ("HC" = high capacity), no los de 32 bits
 # (ifInOctets/ifOutOctets) — un enlace con tráfico sostenido puede dar la vuelta al
 # contador de 32 bits en minutos/horas; HC evita ese wraparound.
-_OID_IF_DESCR = '1.3.6.1.2.1.2.2.1.2'
 _OID_IF_HC_IN_OCTETS = '1.3.6.1.2.1.31.1.1.1.6'
 _OID_IF_HC_OUT_OCTETS = '1.3.6.1.2.1.31.1.1.1.10'
 
@@ -37,50 +52,52 @@ _OID_IF_HC_OUT_OCTETS = '1.3.6.1.2.1.31.1.1.1.10'
 # del servidor con 600 sockets UDP simultáneos.
 _MAX_SONDEOS_CONCURRENTES = 25
 
-# ifIndex ya resuelto por IP — se resuelve una sola vez por Mikrotik (vía WALK sobre
-# ifDescr) y se reusa en las corridas siguientes, no se repite el walk cada 5 min.
+# ifIndex de la interfaz WAN ya resuelto por IP — se resuelve una sola vez por
+# Mikrotik y se reusa en las corridas siguientes, no se repite el GET cada 5 min.
 _cache_indice_interfaz: dict[str, int] = {}
 
 
-def _config():
-    cfg = getattr(settings, 'MIKROTIK_SNMP_CONFIG', {})
-    comunidad = cfg.get('COMUNIDAD', '')
-    interfaz_wan = cfg.get('INTERFAZ_WAN', '')
-    if not (comunidad and interfaz_wan):
-        return None
-    return comunidad, cfg.get('PUERTO', 161), interfaz_wan
+def _puerto() -> int:
+    return getattr(settings, 'MIKROTIK_SNMP_CONFIG', {}).get('PUERTO', 161)
 
 
-async def _resolver_indice_interfaz(ip, comunidad, puerto, interfaz_wan):
-    """WALK sobre ifDescr para encontrar el ifIndex de `interfaz_wan` (ej. "ether1")
-    — se cachea en proceso una vez resuelto. Nunca lanza: ante cualquier error
-    devuelve None y loguea (un router caído/mal configurado no debe tumbar el resto
-    de la corrida, mismo criterio que
-    apps.mqtt_worker.emqx_admin.aprovisionar_credencial_estacion)."""
+def _comunidad_para(farmacia) -> str:
+    """La community SNMP de cada Mikrotik es el código de la farmacia en minúscula
+    (ej. "ml006" para ML006) — convención confirmada contra un router real de
+    producción (20-ago-2026), no una community global compartida como se había
+    asumido al diseñar esto. No hace falta cargar nada extra por sitio."""
+    return farmacia.codigo.lower()
+
+
+async def _resolver_indice_interfaz_wan(ip, comunidad, puerto):
+    """GET de ipRouteIfIndex para la ruta por defecto — da el ifIndex de la interfaz
+    WAN sin necesitar su nombre (que no es uniforme entre sitios, ver docstring del
+    módulo). Se cachea en proceso. Nunca lanza: ante cualquier error devuelve None y
+    loguea (un router caído/mal configurado no debe tumbar el resto de la corrida,
+    mismo criterio que apps.mqtt_worker.emqx_admin.aprovisionar_credencial_estacion).
+    """
     if ip in _cache_indice_interfaz:
         return _cache_indice_interfaz[ip]
     engine = SnmpEngine()
     try:
         target = await UdpTransportTarget.create((ip, puerto), timeout=3, retries=0)
-        async for errorIndication, errorStatus, errorIndex, varBinds in walk_cmd(
+        errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
             engine, CommunityData(comunidad), target, ContextData(),
-            ObjectType(ObjectIdentity(_OID_IF_DESCR)),
-        ):
-            if errorIndication or errorStatus:
-                logger.warning(
-                    'Mikrotik %s: error resolviendo ifIndex (%s).', ip, errorIndication or errorStatus,
-                )
-                return None
-            for oid, valor in varBinds:
-                if str(valor) == interfaz_wan:
-                    indice = int(str(oid).rsplit('.', 1)[-1])
-                    _cache_indice_interfaz[ip] = indice
-                    return indice
+            ObjectType(ObjectIdentity(_OID_IP_ROUTE_IF_INDEX_DEFAULT)),
+        )
     except Exception:
-        logger.warning('Mikrotik %s: excepción resolviendo ifIndex.', ip, exc_info=True)
+        logger.warning('Mikrotik %s: excepción resolviendo la interfaz WAN.', ip, exc_info=True)
         return None
-    logger.warning('Mikrotik %s: no se encontró la interfaz "%s" (ifDescr).', ip, interfaz_wan)
-    return None
+    if errorIndication or errorStatus:
+        logger.warning('Mikrotik %s: error resolviendo la interfaz WAN (%s).', ip, errorIndication or errorStatus)
+        return None
+    try:
+        indice = int(varBinds[0][1])
+    except (IndexError, ValueError, TypeError):
+        logger.warning('Mikrotik %s: respuesta SNMP con forma inesperada resolviendo la interfaz WAN.', ip)
+        return None
+    _cache_indice_interfaz[ip] = indice
+    return indice
 
 
 async def _leer_contadores(ip, comunidad, puerto, indice):
@@ -106,10 +123,11 @@ async def _leer_contadores(ip, comunidad, puerto, indice):
         return None
 
 
-async def _sondear_farmacia(farmacia, comunidad, puerto, interfaz_wan):
+async def _sondear_farmacia(farmacia, puerto):
     """(farmacia, bytes_recibidos, bytes_enviados) o None si no se pudo sondear —
     nunca lanza. Punto único que patchean los tests (evita hardware SNMP real)."""
-    indice = await _resolver_indice_interfaz(farmacia.ip_router, comunidad, puerto, interfaz_wan)
+    comunidad = _comunidad_para(farmacia)
+    indice = await _resolver_indice_interfaz_wan(farmacia.ip_router, comunidad, puerto)
     if indice is None:
         return None
     contadores = await _leer_contadores(farmacia.ip_router, comunidad, puerto, indice)
@@ -139,16 +157,10 @@ def sincronizar_ancho_banda_farmacias() -> int:
     """Celery Beat periódico (cada 5 min, ver CELERY_BEAT_SCHEDULE): sondea por SNMP
     el Mikrotik de cada Farmacia con `ip_router` cargada y guarda una MuestraRedFarmacia
     nueva por cada una que respondió. Un router caído/sin config no interrumpe el
-    resto de la corrida. Sin MIKROTIK_SNMP_CONFIG configurado, no hace nada (mismo
-    criterio que el resto de los `_CONFIG` opcionales del proyecto). Devuelve cuántas
-    farmacias se sondearon con éxito."""
+    resto de la corrida. Sin ninguna Farmacia con `ip_router` cargada, no hace nada.
+    Devuelve cuántas farmacias se sondearon con éxito."""
     from apps.catalogo.models import Farmacia
     from apps.monitoreo.models import MuestraRedFarmacia
-
-    config = _config()
-    if config is None:
-        return 0
-    comunidad, puerto, interfaz_wan = config
 
     # GenericIPAddressField normaliza '' a None al guardar (get_prep_value) — un
     # excluir aparte por '' no solo es redundante, en SQLite "columna = NULL" nunca es
@@ -158,13 +170,14 @@ def sincronizar_ancho_banda_farmacias() -> int:
     farmacias = list(Farmacia.objects.exclude(ip_router__isnull=True))
     if not farmacias:
         return 0
+    puerto = _puerto()
 
     async def _sondear_todas():
         semaforo = asyncio.Semaphore(_MAX_SONDEOS_CONCURRENTES)
 
         async def _con_limite(farmacia):
             async with semaforo:
-                return await _sondear_farmacia(farmacia, comunidad, puerto, interfaz_wan)
+                return await _sondear_farmacia(farmacia, puerto)
 
         return await asyncio.gather(*[_con_limite(f) for f in farmacias])
 
