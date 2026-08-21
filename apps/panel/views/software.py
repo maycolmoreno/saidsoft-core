@@ -10,7 +10,7 @@ from apps.cuentas.services import (
 )
 from apps.software.forms import AplicacionCatalogoForm, SolicitudInstalacionForm, VersionAplicacionForm
 from apps.software.models import AplicacionCatalogo, EstadoSolicitud, ResultadoInstalacion, SolicitudInstalacion
-from apps.software.services import publicar_solicitud
+from apps.software.services import estaciones_desactualizadas, publicar_solicitud
 
 
 @login_required
@@ -19,6 +19,33 @@ def aplicaciones_lista(request):
         AplicacionCatalogo.objects.filter(activo=True).prefetch_related('versiones'), request, 'unidad_negocio',
     ).order_by('nombre')
     return render(request, 'panel/aplicaciones_lista.html', {'aplicaciones': aplicaciones})
+
+
+@login_required
+def software_desactualizado_lista(request):
+    """Cruza el catálogo (AplicacionCatalogo.version_mas_reciente_conocida, cargada a
+    mano) contra el inventario de software detectado (R7) para avisar qué estaciones
+    quedaron con una versión vieja de una aplicación vigilada. Solo visibilidad v1
+    (decisión del usuario) — sin Alerta ni notificación todavía, mismo criterio que
+    Windows Update v1/Plan de energía v1/consumo de red por farmacia: probar primero
+    que el dato es útil, automatizar después."""
+    aplicaciones = scope_opcional_por_unidad_negocio_activa(
+        AplicacionCatalogo.objects.filter(activo=True).exclude(version_mas_reciente_conocida=''),
+        request, 'unidad_negocio',
+    ).order_by('nombre')
+
+    filas = []
+    for aplicacion in aplicaciones:
+        detectados = list(scope_por_unidad_negocio_activa(
+            estaciones_desactualizadas(aplicacion).select_related('estacion', 'estacion__farmacia'),
+            request, 'estacion__farmacia__unidad_negocio',
+        ).order_by('estacion__codigo'))
+        filas.append({'aplicacion': aplicacion, 'detectados': detectados})
+
+    return render(request, 'panel/software_desactualizado_lista.html', {
+        'filas': filas,
+        'total_estaciones_desactualizadas': sum(len(f['detectados']) for f in filas),
+    })
 
 
 @login_required

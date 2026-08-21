@@ -38,6 +38,12 @@ class AplicacionCatalogo(models.Model):
                   'ya está presente y qué versión tiene — evita reinstalar innecesariamente. '
                   'Sin implementar todavía del lado del agente (ver README).',
     )
+    version_mas_reciente_conocida = models.CharField(
+        max_length=50, blank=True,
+        help_text='Última versión conocida de esta aplicación, cargada a mano — se compara '
+                  'contra el inventario de software detectado (R7) para avisar qué estaciones '
+                  'quedaron atrás. Vacío = esta aplicación no se vigila por versión.',
+    )
     unidad_negocio = models.ForeignKey(
         UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='aplicaciones_catalogo',
         help_text='Vacío = aplicación compartida, visible e instalable por cualquier cliente. '

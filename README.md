@@ -512,6 +512,18 @@ por el agente desde antes de esta etapa — ver `EjecutorScript.cs` en `saidsoft
   `python manage.py generar_escaneos_programados`. Cada disparo queda auditado (una fila
   por `InventarioProgramado`, con la cantidad de estaciones notificadas — no una por
   estación, sería demasiado volumen para un job rutinario).
+- **Aviso de software desactualizado** (20-ago-2026 — pedido del usuario: "algo
+  parecido al agente de ESET que escanee las app y notifique una actualización").
+  Catálogo manual de versiones, no un feed externo: campo
+  `AplicacionCatalogo.version_mas_reciente_conocida`, cargado a mano en la ficha de la
+  app (vacío = esa app no se vigila). `apps.software.services.estaciones_desactualizadas`
+  cruza esa versión conocida contra `SoftwareInstaladoDetectado` (por nombre
+  `icontains`, ya que el nombre real del registro de Windows no siempre coincide letra
+  por letra con el del catálogo). Vista `/aplicaciones/desactualizadas/`: una tarjeta
+  por app vigilada con las estaciones que quedaron atrás. Solo visibilidad v1 — sin
+  `Alerta` ni notificación todavía, mismo criterio que Windows Update v1/Plan de
+  energía v1/red por farmacia (probar primero que el dato es útil, automatizar
+  después).
 
 ## Facturación por endpoint
 

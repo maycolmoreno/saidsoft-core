@@ -4,6 +4,7 @@
 <div class="flex items-center justify-between mb-6">
     <h1 class="text-xl font-semibold">Catálogo de software</h1>
     <div class="flex gap-3">
+        <a href="{% url 'panel:software_desactualizado_lista' %}" class="btn secondary">Desactualizado</a>
         <a href="{% url 'panel:solicitudes_instalacion_lista' %}" class="btn secondary">Solicitudes</a>
         <a href="{% url 'panel:aplicacion_crear' %}" class="btn primary">+ Nueva aplicación</a>
     </div>
@@ -17,6 +18,7 @@
                 <th class="text-left px-4 py-3">Fabricante</th>
                 <th class="text-left px-4 py-3">Categoría</th>
                 <th class="text-left px-4 py-3">Versiones</th>
+                <th class="text-left px-4 py-3">Última conocida</th>
                 <th class="text-left px-4 py-3">Unidad de negocio</th>
             </tr>
         </thead>
@@ -27,10 +29,11 @@
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.fabricante|default:"—" }}</td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.categoria|default:"—" }}</td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.versiones.all|length }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)] mono num">{{ a.version_mas_reciente_conocida|default:"—" }}</td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.unidad_negocio.codigo|default:"Todos (global)" }}</td>
             </tr>
         {% empty %}
-            <tr><td colspan="5" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin aplicaciones en el catálogo todavía. <a href="{% url 'panel:aplicacion_crear' %}" class="underline text-[var(--info)]">Agregar la primera</a>.</td></tr>
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin aplicaciones en el catálogo todavía. <a href="{% url 'panel:aplicacion_crear' %}" class="underline text-[var(--info)]">Agregar la primera</a>.</td></tr>
         {% endfor %}
         </tbody>
     </table>

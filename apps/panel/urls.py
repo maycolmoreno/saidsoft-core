@@ -168,6 +168,10 @@ urlpatterns = [
 
     # Catálogo de software
     path('aplicaciones/', views.aplicaciones_lista, name='aplicaciones_lista'),
+    path(
+        'aplicaciones/desactualizadas/', views.software_desactualizado_lista,
+        name='software_desactualizado_lista',
+    ),
     path('aplicaciones/nueva/', views.aplicacion_crear, name='aplicacion_crear'),
     path('aplicaciones/<int:pk>/', views.aplicacion_detalle, name='aplicacion_detalle'),
     path('aplicaciones/<int:pk>/versiones/nueva/', views.version_crear, name='version_crear'),

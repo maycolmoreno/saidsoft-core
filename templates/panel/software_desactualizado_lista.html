@@ -1,0 +1,72 @@
+{% extends "panel/base.html" %}
+{% block title %}Software desactualizado · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="mb-2">
+    <a href="{% url 'panel:aplicaciones_lista' %}" class="text-xs text-[var(--text-faint)]">← Catálogo de software</a>
+</div>
+<div class="mb-6">
+    <h1 class="text-xl font-semibold">Software desactualizado</h1>
+    <p class="text-sm text-[var(--text-faint)]" style="max-width:640px;">
+        Cruza el inventario de software detectado en cada estación (R7) contra la última versión
+        conocida de las aplicaciones vigiladas del catálogo. Solo visibilidad por ahora, sin alertas
+        automáticas — para vigilar una aplicación, cargale "Última versión conocida" en su ficha del catálogo.
+    </p>
+</div>
+
+{% if not filas %}
+<div class="card px-4 py-10 text-center text-[var(--text-faint)] text-sm">
+    Ninguna aplicación del catálogo tiene "Última versión conocida" cargada todavía —
+    <a href="{% url 'panel:aplicaciones_lista' %}" class="underline text-[var(--info)]">entrá al catálogo</a>
+    y completá ese campo en las que quieras vigilar.
+</div>
+{% else %}
+<div class="kpi-strip mb-8">
+    <div class="card kpi tone-warning">
+        <div class="kpi-label">Aplicaciones vigiladas</div>
+        <div class="kpi-value num">{{ filas|length }}</div>
+    </div>
+    <div class="card kpi tone-critical">
+        <div class="kpi-label">Estaciones con versión desactualizada</div>
+        <div class="kpi-value num">{{ total_estaciones_desactualizadas }}</div>
+    </div>
+</div>
+
+{% for fila in filas %}
+<div class="card mb-4" style="overflow:hidden;">
+    <div class="section-head px-4 py-3" style="background:var(--panel);">
+        <span class="label">
+            <h3>{{ fila.aplicacion.nombre }}</h3>
+        </span>
+        <span class="text-xs text-[var(--text-faint)]">
+            Última conocida: <span class="mono num">{{ fila.aplicacion.version_mas_reciente_conocida }}</span>
+        </span>
+        {% if fila.detectados %}
+        <span class="pill critical">{{ fila.detectados|length }} estación{{ fila.detectados|length|pluralize:"es" }}</span>
+        {% else %}
+        <span class="pill good">Al día</span>
+        {% endif %}
+    </div>
+    {% if fila.detectados %}
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Estación</th>
+                <th class="text-left px-4 py-3">Farmacia</th>
+                <th class="text-left px-4 py-3">Versión instalada</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for d in fila.detectados %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">{{ d.estacion.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)]">{{ d.estacion.farmacia.codigo }}</td>
+                <td class="px-4 py-3 mono num" style="color:var(--critical);">{{ d.version|default:"—" }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

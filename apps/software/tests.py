@@ -15,7 +15,8 @@ from .models import (
     VersionAplicacion,
 )
 from .services import (
-    generar_escaneo_programado, generar_escaneos_vencidos, publicar_solicitud, verificar_completado,
+    estaciones_desactualizadas, generar_escaneo_programado, generar_escaneos_vencidos, publicar_solicitud,
+    verificar_completado,
 )
 
 
@@ -143,6 +144,46 @@ class SoftwareInstaladoDetectadoTests(_BaseSoftwareTests):
         SoftwareInstaladoDetectado.objects.create(estacion=e1, nombre='Google Chrome', version='118.0')
         SoftwareInstaladoDetectado.objects.create(estacion=e2, nombre='Google Chrome', version='118.0')
         self.assertEqual(SoftwareInstaladoDetectado.objects.count(), 2)
+
+
+class EstacionesDesactualizadasTests(_BaseSoftwareTests):
+    """Cruza el inventario (R7) contra AplicacionCatalogo.version_mas_reciente_conocida
+    — cargada a mano, sin comparación semántica de versiones (ver docstring del
+    service)."""
+
+    def test_sin_version_conocida_no_vigila_nada(self):
+        estacion = self._crear_estacion('ML001-A')
+        SoftwareInstaladoDetectado.objects.create(estacion=estacion, nombre='Google Chrome', version='118.0')
+        self.assertFalse(estaciones_desactualizadas(self.aplicacion).exists())
+
+    def test_version_distinta_a_la_conocida_aparece_como_desactualizada(self):
+        self.aplicacion.version_mas_reciente_conocida = '128.0.0'
+        self.aplicacion.save(update_fields=['version_mas_reciente_conocida'])
+        estacion = self._crear_estacion('ML001-A')
+        SoftwareInstaladoDetectado.objects.create(estacion=estacion, nombre='Google Chrome', version='118.0')
+
+        resultado = list(estaciones_desactualizadas(self.aplicacion))
+        self.assertEqual(len(resultado), 1)
+        self.assertEqual(resultado[0].estacion, estacion)
+
+    def test_version_igual_a_la_conocida_no_aparece(self):
+        self.aplicacion.version_mas_reciente_conocida = '128.0.0'
+        self.aplicacion.save(update_fields=['version_mas_reciente_conocida'])
+        estacion = self._crear_estacion('ML001-A')
+        SoftwareInstaladoDetectado.objects.create(estacion=estacion, nombre='Google Chrome', version='128.0.0')
+
+        self.assertFalse(estaciones_desactualizadas(self.aplicacion).exists())
+
+    def test_matchea_por_nombre_parcial_no_exacto(self):
+        # El nombre real en el registro de Windows no siempre coincide letra por letra
+        # con el del catálogo (ej. sufijo "(64-bit)") — limitación de v1 aceptada.
+        self.aplicacion.version_mas_reciente_conocida = '128.0.0'
+        self.aplicacion.save(update_fields=['version_mas_reciente_conocida'])
+        estacion = self._crear_estacion('ML001-A')
+        SoftwareInstaladoDetectado.objects.create(
+            estacion=estacion, nombre='Google Chrome (64-bit)', version='118.0',
+        )
+        self.assertEqual(estaciones_desactualizadas(self.aplicacion).count(), 1)
 
 
 class GenerarEscaneoProgramadoTests(_BaseSoftwareTests):

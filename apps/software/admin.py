@@ -19,7 +19,10 @@ class VersionAplicacionInline(admin.TabularInline):
 
 @admin.register(AplicacionCatalogo)
 class AplicacionCatalogoAdmin(admin.ModelAdmin):
-    list_display = ('nombre', 'fabricante', 'categoria', 'unidad_negocio', 'activo', 'creado_por')
+    list_display = (
+        'nombre', 'fabricante', 'categoria', 'version_mas_reciente_conocida', 'unidad_negocio', 'activo',
+        'creado_por',
+    )
     list_filter = ('unidad_negocio', 'activo', 'categoria')
     search_fields = ('nombre', 'fabricante')
     autocomplete_fields = ('unidad_negocio',)

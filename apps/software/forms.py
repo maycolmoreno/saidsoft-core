@@ -11,17 +11,22 @@ INPUT_CLASS = 'w-full rounded-md border border-[var(--border)] bg-[var(--bg)] te
 class AplicacionCatalogoForm(forms.ModelForm):
     class Meta:
         model = AplicacionCatalogo
-        fields = ['nombre', 'fabricante', 'categoria', 'descripcion', 'comando_deteccion', 'unidad_negocio', 'activo']
+        fields = [
+            'nombre', 'fabricante', 'categoria', 'descripcion', 'comando_deteccion',
+            'version_mas_reciente_conocida', 'unidad_negocio', 'activo',
+        ]
         widgets = {
             'nombre': forms.TextInput(attrs={'class': INPUT_CLASS}),
             'fabricante': forms.TextInput(attrs={'class': INPUT_CLASS}),
             'categoria': forms.TextInput(attrs={'class': INPUT_CLASS}),
             'descripcion': forms.Textarea(attrs={'class': INPUT_CLASS, 'rows': 2}),
             'comando_deteccion': forms.Textarea(attrs={'class': f'{INPUT_CLASS} font-mono', 'rows': 4}),
+            'version_mas_reciente_conocida': forms.TextInput(attrs={'class': INPUT_CLASS}),
             'unidad_negocio': forms.Select(attrs={'class': INPUT_CLASS}),
         }
         help_texts = {
             'unidad_negocio': 'Vacío = aplicación compartida, visible para todos los clientes.',
+            'version_mas_reciente_conocida': 'Vacío = esta aplicación no se vigila por versión desactualizada.',
         }
 
     def __init__(self, *args, user=None, **kwargs):

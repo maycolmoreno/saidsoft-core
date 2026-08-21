@@ -1467,6 +1467,60 @@ class SoftwarePanelMultiTenantTests(TestCase):
         self.assertContains(resp, '>MIA</option>')
 
 
+class SoftwareDesactualizadoListaTests(TestCase):
+    """/aplicaciones/desactualizadas/ (R7 + catálogo): mismo criterio de tenant que
+    el resto del panel de software — una aplicación compartida es visible para
+    cualquier tenant, pero las estaciones desactualizadas que muestra deben quedar
+    acotadas a las farmacias del tenant activo del usuario."""
+
+    def setUp(self):
+        from apps.software.models import AplicacionCatalogo, SoftwareInstaladoDetectado
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001', version_objetivo='4.2.1')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.farmacia_mia = Farmacia.objects.create(codigo='MC001', grupo=grupo, unidad_negocio=self.mia)
+
+        creador = User.objects.create_user(username='creador_sw_desact', password='x')
+        self.app_vigilada = AplicacionCatalogo.objects.create(
+            nombre='Google Chrome', creado_por=creador, version_mas_reciente_conocida='128.0.0',
+        )
+        self.app_sin_vigilar = AplicacionCatalogo.objects.create(nombre='7-Zip', creado_por=creador)
+
+        self.estacion_sg = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia_sg, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.estacion_mia = Estacion.objects.create(
+            codigo='MC001-A', farmacia=self.farmacia_mia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        SoftwareInstaladoDetectado.objects.create(estacion=self.estacion_sg, nombre='Google Chrome', version='118.0')
+        SoftwareInstaladoDetectado.objects.create(estacion=self.estacion_mia, nombre='Google Chrome', version='120.0')
+
+        self.usuario_mia = User.objects.create_user(username='user_mia_desact', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.client.force_login(self.usuario_mia)
+
+    def test_renderiza_200(self):
+        resp = self.client.get(reverse('panel:software_desactualizado_lista'))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_app_sin_version_conocida_no_aparece_en_las_filas(self):
+        resp = self.client.get(reverse('panel:software_desactualizado_lista'))
+        nombres = [f['aplicacion'].nombre for f in resp.context['filas']]
+        self.assertNotIn('7-Zip', nombres)
+        self.assertIn('Google Chrome', nombres)
+
+    def test_no_muestra_estacion_desactualizada_de_otro_tenant(self):
+        resp = self.client.get(reverse('panel:software_desactualizado_lista'))
+        self.assertNotContains(resp, 'ML001-A')
+        self.assertContains(resp, 'MC001-A')
+
+    def test_total_estaciones_desactualizadas_solo_cuenta_el_tenant_activo(self):
+        resp = self.client.get(reverse('panel:software_desactualizado_lista'))
+        self.assertEqual(resp.context['total_estaciones_desactualizadas'], 1)
+
+
 class ReportesPorClienteTests(TestCase):
     def setUp(self):
         self.sg = UnidadNegocio.objects.get(codigo='SG')

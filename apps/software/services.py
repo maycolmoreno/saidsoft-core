@@ -178,3 +178,27 @@ def generar_escaneos_vencidos() -> int:
             )
             total += 1
     return total
+
+
+def estaciones_desactualizadas(aplicacion):
+    """QuerySet de SoftwareInstaladoDetectado donde el inventario (R7) detectó
+    `aplicacion` instalada con una versión que no coincide con
+    `aplicacion.version_mas_reciente_conocida`. Vacío si esa aplicación no tiene
+    versión cargada (no se vigila).
+
+    Match por nombre con `icontains` (no exacto): el nombre real del programa en el
+    registro de Windows no siempre coincide letra por letra con el nombre del
+    catálogo (ej. "Google Chrome" vs "Google Chrome (64-bit)") — limitación de v1,
+    aceptada explícitamente, mismo criterio que la deduplicación por mensaje exacto
+    de PosErrorDetectado.
+
+    No es comparación semántica de versiones (mayor/menor): solo "no coincide con la
+    última conocida" — comparar versiones de forma genérica y confiable (¿"9.5.1" es
+    mayor o menor que "9.10"?) es un problema mayor, fuera de alcance de v1."""
+    from .models import SoftwareInstaladoDetectado
+
+    if not aplicacion.version_mas_reciente_conocida:
+        return SoftwareInstaladoDetectado.objects.none()
+    return SoftwareInstaladoDetectado.objects.filter(
+        nombre__icontains=aplicacion.nombre,
+    ).exclude(version=aplicacion.version_mas_reciente_conocida)
