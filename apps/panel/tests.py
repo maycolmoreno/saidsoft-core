@@ -1686,6 +1686,11 @@ class SoftwarePanelMultiTenantTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia_sw', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='software', codename='view_aplicacioncatalogo'),
+            Permission.objects.get(content_type__app_label='software', codename='view_solicitudinstalacion'),
+            Permission.objects.get(content_type__app_label='software', codename='add_solicitudinstalacion'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_catalogo_oculta_app_privada_de_otro_tenant_pero_muestra_compartida(self):
@@ -1753,6 +1758,9 @@ class SoftwareDesactualizadoListaTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia_desact', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='software', codename='view_aplicacioncatalogo'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_renderiza_200(self):

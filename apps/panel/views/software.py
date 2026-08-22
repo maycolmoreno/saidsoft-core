@@ -1,5 +1,5 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -14,6 +14,7 @@ from apps.software.services import estaciones_desactualizadas, publicar_solicitu
 
 
 @login_required
+@permission_required('software.view_aplicacioncatalogo', raise_exception=True)
 def aplicaciones_lista(request):
     aplicaciones = scope_opcional_por_unidad_negocio_activa(
         AplicacionCatalogo.objects.filter(activo=True).prefetch_related('versiones'), request, 'unidad_negocio',
@@ -22,6 +23,7 @@ def aplicaciones_lista(request):
 
 
 @login_required
+@permission_required('software.view_aplicacioncatalogo', raise_exception=True)
 def software_desactualizado_lista(request):
     """Cruza el catálogo (AplicacionCatalogo.version_mas_reciente_conocida, cargada a
     mano) contra el inventario de software detectado (R7) para avisar qué estaciones
@@ -49,6 +51,7 @@ def software_desactualizado_lista(request):
 
 
 @login_required
+@permission_required('software.add_aplicacioncatalogo', raise_exception=True)
 def aplicacion_crear(request):
     if request.method == 'POST':
         form = AplicacionCatalogoForm(request.POST, user=request.user)
@@ -67,6 +70,7 @@ def aplicacion_crear(request):
 
 
 @login_required
+@permission_required('software.view_aplicacioncatalogo', raise_exception=True)
 def aplicacion_detalle(request, pk):
     aplicacion = get_object_or_404(AplicacionCatalogo, pk=pk)
     verificar_acceso(request.user, aplicacion.unidad_negocio)
@@ -75,6 +79,7 @@ def aplicacion_detalle(request, pk):
 
 
 @login_required
+@permission_required('software.add_versionaplicacion', raise_exception=True)
 def version_crear(request, pk):
     aplicacion = get_object_or_404(AplicacionCatalogo, pk=pk)
     verificar_acceso(request.user, aplicacion.unidad_negocio)
@@ -98,6 +103,7 @@ def version_crear(request, pk):
 
 
 @login_required
+@permission_required('software.view_solicitudinstalacion', raise_exception=True)
 def solicitudes_instalacion_lista(request):
     solicitudes = scope_por_unidad_negocio_activa(
         SolicitudInstalacion.objects.select_related('version_aplicacion__aplicacion', 'creado_por')
@@ -108,6 +114,7 @@ def solicitudes_instalacion_lista(request):
 
 
 @login_required
+@permission_required('software.add_solicitudinstalacion', raise_exception=True)
 def solicitud_instalacion_crear(request):
     if request.method == 'POST':
         form = SolicitudInstalacionForm(request.POST, user=request.user)
@@ -135,6 +142,7 @@ def solicitud_instalacion_crear(request):
 
 
 @login_required
+@permission_required('software.view_solicitudinstalacion', raise_exception=True)
 def solicitud_instalacion_detalle(request, pk):
     solicitud = get_object_or_404(
         SolicitudInstalacion.objects.select_related('version_aplicacion__aplicacion', 'creado_por')
@@ -146,6 +154,7 @@ def solicitud_instalacion_detalle(request, pk):
 
 
 @login_required
+@permission_required('software.view_solicitudinstalacion', raise_exception=True)
 def solicitud_instalacion_progreso_partial(request, pk):
     solicitud = get_object_or_404(SolicitudInstalacion, pk=pk)
     verificar_acceso(request.user, solicitud.unidad_negocio)
@@ -166,6 +175,7 @@ def solicitud_instalacion_progreso_partial(request, pk):
 
 
 @login_required
+@permission_required('software.change_solicitudinstalacion', raise_exception=True)
 @require_POST
 def solicitud_instalacion_publicar(request, pk):
     solicitud = get_object_or_404(SolicitudInstalacion, pk=pk)
