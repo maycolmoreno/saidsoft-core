@@ -1,5 +1,5 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -122,6 +122,7 @@ def despliegue_progreso_partial(request, pk):
 
 
 @login_required
+@permission_required('despliegues.aprobar_despliegue', raise_exception=True)
 @require_POST
 def despliegue_aprobar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)

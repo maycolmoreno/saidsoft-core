@@ -84,6 +84,16 @@ class Despliegue(models.Model):
     class Meta:
         db_table = 'despliegue'
         ordering = ['-fecha_creacion']
+        permissions = [
+            # Separado de "change" a propósito (AC-2, auditoría de gobernanza 22-ago-2026):
+            # la regla de cuatro ojos (quien crea no puede aprobar) verificaba el autor pero
+            # no el rol de quien aprueba — cualquier segundo usuario autenticado contaba
+            # como "los cuatro ojos". Este permiso, sin otorgar a ningún rol operativo por
+            # defecto (solo Administrador lo tiene vía el `None` de seed_permisos.py),
+            # hace que aprobar un cambio a toda la flota sea una decisión explícita de
+            # gobernanza, no cualquier segundo clic.
+            ('aprobar_despliegue', 'Puede aprobar un despliegue pendiente de aprobación'),
+        ]
 
     def __str__(self):
         return f'Despliegue {self.version} ({self.get_estado_display()})'

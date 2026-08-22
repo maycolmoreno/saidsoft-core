@@ -768,6 +768,58 @@ class DespliegueMultiTenantTests(TestCase):
         self.assertRedirects(resp, reverse('panel:despliegue_detalle', args=[despliegue.pk]))
 
 
+class DespliegueAprobarPermisoTests(TestCase):
+    """AC-2 de la auditoría de gobernanza (22-ago-2026): la regla de cuatro ojos
+    verificaba que el aprobador no fuera el autor, pero no exigía ningún permiso —
+    cualquier segundo usuario autenticado contaba como "los cuatro ojos". Ahora hace
+    falta el permiso despliegues.aprobar_despliegue, además de no ser el creador."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        creador = User.objects.create_user(username='creador_desp', password='x')
+        PerfilUsuario.objects.create(usuario=creador, acceso_todas_unidades=True)
+        self.despliegue = Despliegue.objects.create(
+            version='1.0.0', archivo=SimpleUploadedFile('pkg.zip', b'contenido'),
+            unidad_negocio=self.sg, destino_tipo=Despliegue.DestinoTipo.CADENA,
+            modo_aplicacion=Despliegue.ModoAplicacion.INMEDIATO,
+            estado=Despliegue.Estado.PENDIENTE_APROBACION, creado_por=creador,
+        )
+
+        self.usuario_sin_permiso = User.objects.create_user(username='sin_permiso', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_sin_permiso, acceso_todas_unidades=True)
+
+        self.usuario_con_permiso = User.objects.create_user(username='con_permiso', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_con_permiso, acceso_todas_unidades=True)
+        self.usuario_con_permiso.user_permissions.add(
+            Permission.objects.get(content_type__app_label='despliegues', codename='aprobar_despliegue'),
+        )
+
+    def test_usuario_sin_el_permiso_no_puede_aprobar(self):
+        self.client.force_login(self.usuario_sin_permiso)
+        resp = self.client.post(reverse('panel:despliegue_aprobar', args=[self.despliegue.pk]))
+        self.assertEqual(resp.status_code, 403)
+        self.despliegue.refresh_from_db()
+        self.assertEqual(self.despliegue.estado, Despliegue.Estado.PENDIENTE_APROBACION)
+
+    def test_usuario_con_el_permiso_puede_aprobar(self):
+        self.client.force_login(self.usuario_con_permiso)
+        resp = self.client.post(reverse('panel:despliegue_aprobar', args=[self.despliegue.pk]))
+        self.assertRedirects(resp, reverse('panel:despliegue_detalle', args=[self.despliegue.pk]))
+        self.despliegue.refresh_from_db()
+        self.assertEqual(self.despliegue.estado, Despliegue.Estado.APROBADO)
+
+    def test_el_creador_con_el_permiso_igual_no_puede_aprobar_el_propio(self):
+        creador = self.despliegue.creado_por
+        creador.user_permissions.add(
+            Permission.objects.get(content_type__app_label='despliegues', codename='aprobar_despliegue'),
+        )
+        self.client.force_login(creador)
+        resp = self.client.post(reverse('panel:despliegue_aprobar', args=[self.despliegue.pk]))
+        self.assertRedirects(resp, reverse('panel:despliegue_detalle', args=[self.despliegue.pk]))
+        self.despliegue.refresh_from_db()
+        self.assertEqual(self.despliegue.estado, Despliegue.Estado.PENDIENTE_APROBACION)
+
+
 class AlertaMultiTenantTests(TestCase):
     def setUp(self):
         self.sg = UnidadNegocio.objects.get(codigo='SG')
@@ -1430,6 +1482,9 @@ class AuditoriaMultiTenantTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia_audit', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='auditoria', codename='view_eventoauditoria'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_registrar_evento_deriva_unidad_negocio_del_objeto(self):
@@ -1446,6 +1501,15 @@ class AuditoriaMultiTenantTests(TestCase):
         contenido = resp.content.decode('utf-8-sig')
         self.assertNotIn('CR-DSK-0020', contenido)
         self.assertIn('orden_compra.crear', contenido)
+
+    def test_sin_el_permiso_view_eventoauditoria_devuelve_403(self):
+        # AC-1 de la auditoría de gobernanza (22-ago-2026): antes cualquier usuario
+        # logueado, sin importar su rol, podía leer la bitácora completa.
+        sin_permiso = User.objects.create_user(username='sin_permiso_audit', password='x')
+        PerfilUsuario.objects.create(usuario=sin_permiso).unidades_negocio.add(self.mia)
+        self.client.force_login(sin_permiso)
+        resp = self.client.get(reverse('panel:auditoria_lista'))
+        self.assertEqual(resp.status_code, 403)
 
 
 class ReporteCumplimientoMultiTenantTests(TestCase):
@@ -1469,6 +1533,9 @@ class ReporteCumplimientoMultiTenantTests(TestCase):
 
         self.usuario_sg = User.objects.create_user(username='user_sg_reportes', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_sg).unidades_negocio.add(self.sg)
+        self.usuario_sg.user_permissions.add(
+            Permission.objects.get(content_type__app_label='cumplimiento', codename='view_actividadcumplimiento'),
+        )
         self.client.force_login(self.usuario_sg)
 
     def test_csv_pidiendo_el_grupo_compartido_no_incluye_la_estacion_de_otro_tenant(self):
@@ -1638,6 +1705,9 @@ class ReportesPorClienteTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia_reportes', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='cumplimiento', codename='view_actividadcumplimiento'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_reporte_cumplimiento_service_filtra_por_unidad(self):

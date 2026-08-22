@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.db.models import Count
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -79,6 +79,7 @@ def reportes_index(request):
 
 
 @login_required
+@permission_required('cumplimiento.view_actividadcumplimiento', raise_exception=True)
 def reporte_cumplimiento_csv(request):
     from apps.panel import reportes
     visibles = unidades_negocio_visibles(request.user)
@@ -95,6 +96,7 @@ def reporte_cumplimiento_csv(request):
 
 
 @login_required
+@permission_required('despliegues.view_despliegue', raise_exception=True)
 def reporte_despliegue_csv(request, pk):
     from apps.panel import reportes
     despliegue = get_object_or_404(Despliegue, pk=pk)
@@ -105,6 +107,7 @@ def reporte_despliegue_csv(request, pk):
 
 
 @login_required
+@permission_required('auditoria.view_eventoauditoria', raise_exception=True)
 def reporte_auditoria_csv(request):
     from apps.panel import reportes
 
@@ -127,6 +130,7 @@ def reporte_auditoria_csv(request):
 
 
 @login_required
+@permission_required('activos.view_activo', raise_exception=True)
 def reporte_activos_csv(request):
     from apps.panel import reportes
     unidad = _resolver_unidad_negocio(request)
@@ -138,6 +142,7 @@ def reporte_activos_csv(request):
 
 
 @login_required
+@permission_required('monitoreo.view_alerta', raise_exception=True)
 def reporte_alertas_csv(request):
     from apps.panel import reportes
     unidad = _resolver_unidad_negocio(request)
@@ -163,6 +168,7 @@ def _resolver_periodo(request):
 
 
 @login_required
+@permission_required('facturacion.view_actividadmensualestacion', raise_exception=True)
 def reporte_facturacion_csv(request):
     from apps.panel import reportes
     unidad = _resolver_unidad_negocio(request)
@@ -175,6 +181,7 @@ def reporte_facturacion_csv(request):
 
 
 @login_required
+@permission_required('software.view_softwareinstaladodetectado', raise_exception=True)
 def reporte_software_instalado_csv(request):
     from apps.panel import reportes
     unidad = _resolver_unidad_negocio(request)
