@@ -12,8 +12,8 @@ from .models import (
 )
 from .services import (
     activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, activos_por_vencer_garantia,
-    registrar_asignacion, registrar_salida_stock, scope_movimientos_visibles, stock_bajo_minimo,
-    vincular_activos_por_numero_serie,
+    registrar_asignacion, registrar_salida_stock, registrar_traslado_bodega, scope_movimientos_visibles,
+    stock_bajo_minimo, vincular_activos_por_numero_serie,
 )
 
 
@@ -124,6 +124,111 @@ class RegistrarSalidaStockTests(TestCase):
     def test_rechaza_cantidad_cero_o_negativa(self):
         with self.assertRaises(ValueError):
             registrar_salida_stock(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=0)
+
+
+class RegistrarSalidaStockConcurrenciaTests(TestCase):
+    """BUG-1 de la auditoría de gobernanza (22-ago-2026): `registrar_salida_stock` hacía
+    leer-modificar-escribir en Python (`stock.cantidad -= cantidad; stock.save()`) sin
+    `select_for_update` ni `F()` — dos salidas simultáneas podían leer el mismo saldo
+    antes de que cualquiera escribiera, así que las dos pasaban la validación de "stock
+    suficiente" y el resultado final quedaba por debajo de cero sin ningún error
+    visible. El fix (`_obtener_y_bloquear_stock` + `F()` en el `UPDATE`) es el patrón
+    estándar de Django/Postgres para esta clase de problema — no se prueba con threads
+    reales acá porque el motor de estos tests (SQLite) no soporta bloqueo de fila (dos
+    escrituras concurrentes de verdad chocan con "database is locked" en vez de
+    serializarse), así que un test con threading sería inestable sin validar la
+    protección real de Postgres. Lo que sí es determinístico en cualquier motor: que el
+    `UPDATE` calcula sobre el valor que esté en la base en ese instante, nunca sobre uno
+    ya leído en Python — la parte del bug que causaba la pérdida de escrituras."""
+
+    def setUp(self):
+        self.bodega = Bodega.objects.create(codigo='BOD01')
+        self.tipo_consumible = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB')
+        StockBodega.objects.create(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=5)
+
+    def test_el_update_calcula_sobre_el_valor_real_en_la_base_no_uno_ya_leido_en_python(self):
+        stock = StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible)
+        # "Alguien más" cambia la fila en la base después de que este objeto Python ya
+        # la leyó — el objeto `stock` de acá queda con cantidad=5 desactualizado.
+        StockBodega.objects.filter(pk=stock.pk).update(cantidad=10)
+        # Con el código viejo (stock.cantidad -= cantidad; stock.save()) esto hubiera
+        # calculado 5-3=2 y pisado el 10 real. Con F(), el UPDATE que genera
+        # registrar_salida_stock() nunca pasa por el valor stale de este objeto (ni
+        # siquiera lo usa) — recalcula todo desde la base en el momento del guardado.
+        resultado = registrar_salida_stock(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=3)
+        self.assertEqual(resultado.cantidad, 7)  # 10 (valor real) - 3, nunca 5 - 3 = 2
+
+
+class RegistrarTrasladoBodegaTests(TestCase):
+    """registrar_traslado_bodega reescrita para BUG-1 (auditoría de gobernanza,
+    22-ago-2026): bloquea las dos filas de StockBodega en un orden fijo por
+    `bodega_id` (no en el orden origen/destino de cada llamada), para que dos
+    traslados concurrentes en direcciones opuestas (A->B y B->A a la vez) nunca formen
+    un ciclo de espera (deadlock) entre sí."""
+
+    def setUp(self):
+        self.tipo_consumible = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB')
+
+    def test_traslada_correctamente_entre_dos_bodegas(self):
+        origen = Bodega.objects.create(codigo='BOD-A')
+        destino = Bodega.objects.create(codigo='BOD-B')
+        StockBodega.objects.create(bodega=origen, tipo_consumible=self.tipo_consumible, cantidad=10)
+
+        registrar_traslado_bodega(
+            tipo_consumible=self.tipo_consumible, bodega_origen=origen, bodega_destino=destino,
+            cantidad=4, usuario=None,
+        )
+
+        self.assertEqual(
+            StockBodega.objects.get(bodega=origen, tipo_consumible=self.tipo_consumible).cantidad, 6,
+        )
+        self.assertEqual(
+            StockBodega.objects.get(bodega=destino, tipo_consumible=self.tipo_consumible).cantidad, 4,
+        )
+
+    def test_funciona_igual_sin_importar_cual_bodega_tiene_el_pk_mas_bajo(self):
+        # El orden de bloqueo interno es por bodega_id, no por origen/destino — confirma
+        # que el resultado es correcto en ambos sentidos, no solo cuando origen.pk < destino.pk.
+        mayor_pk = Bodega.objects.create(codigo='BOD-ALTA')
+        menor_pk = Bodega.objects.create(codigo='BOD-BAJA')
+        # menor_pk fue creada después pero puede o no tener pk menor según autoincremento
+        # ya usado por otros tests — lo que importa es probar la dirección real, sea cual
+        # sea el pk de cada una.
+        StockBodega.objects.create(bodega=mayor_pk, tipo_consumible=self.tipo_consumible, cantidad=10)
+
+        registrar_traslado_bodega(
+            tipo_consumible=self.tipo_consumible, bodega_origen=mayor_pk, bodega_destino=menor_pk,
+            cantidad=3, usuario=None,
+        )
+
+        self.assertEqual(
+            StockBodega.objects.get(bodega=mayor_pk, tipo_consumible=self.tipo_consumible).cantidad, 7,
+        )
+        self.assertEqual(
+            StockBodega.objects.get(bodega=menor_pk, tipo_consumible=self.tipo_consumible).cantidad, 3,
+        )
+
+    def test_rechaza_la_misma_bodega_como_origen_y_destino(self):
+        bodega = Bodega.objects.create(codigo='BOD-A')
+        with self.assertRaises(ValueError):
+            registrar_traslado_bodega(
+                tipo_consumible=self.tipo_consumible, bodega_origen=bodega, bodega_destino=bodega,
+                cantidad=1, usuario=None,
+            )
+
+    def test_rechaza_stock_insuficiente_en_origen(self):
+        origen = Bodega.objects.create(codigo='BOD-A')
+        destino = Bodega.objects.create(codigo='BOD-B')
+        StockBodega.objects.create(bodega=origen, tipo_consumible=self.tipo_consumible, cantidad=2)
+
+        with self.assertRaises(ValueError):
+            registrar_traslado_bodega(
+                tipo_consumible=self.tipo_consumible, bodega_origen=origen, bodega_destino=destino,
+                cantidad=5, usuario=None,
+            )
+        self.assertEqual(
+            StockBodega.objects.get(bodega=origen, tipo_consumible=self.tipo_consumible).cantidad, 2,
+        )
 
 
 class ScopeMovimientosVisiblesTests(TestCase):

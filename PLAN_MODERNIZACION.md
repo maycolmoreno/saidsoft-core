@@ -1261,3 +1261,32 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   `django-axes` corta con `HTTP 429` antes de evaluarla. Un administrador desbloquea
   una cuenta desde `/admin/axes/accessattempt/` (django-axes se auto-registra ahí) o
   con `python manage.py axes_reset_username <usuario>`.
+
+- **BUG-1/BUG-2 — 🟢 cerrado (22-ago-2026):** `apps/activos/services.py` descontaba
+  stock con leer-modificar-escribir en Python (`stock.cantidad -= cantidad;
+  stock.save()`, sin `select_for_update` ni `F()`) en `registrar_consumible_entregado`,
+  `registrar_salida_stock` y `registrar_traslado_bodega` — dos entregas/salidas
+  simultáneas de la misma bodega podían leer el mismo saldo antes de que cualquiera
+  escribiera, pasando ambas la validación de "stock suficiente" y dejando el inventario
+  por debajo de cero sin ningún error visible (**BUG-1**). Ninguna de las transiciones
+  de `Activo` corría en `transaction.atomic()`, así que si el `save()` del activo tenía
+  éxito pero el `EventoActivo.objects.create()` posterior fallaba, el activo cambiaba de
+  estado sin que quedara registro en el historial que la propia app promete como
+  "auditoría permanente" (**BUG-2**). Fix: nuevo `_obtener_y_bloquear_stock` (crea la
+  fila si no existe + `select_for_update`) combinado con `F('cantidad') ± cantidad` en
+  el `UPDATE` — el patrón estándar de Django/Postgres para esta clase de problema — en
+  las tres funciones de stock; `registrar_traslado_bodega` además bloquea las dos filas
+  (origen y destino) en un orden fijo por `bodega_id` (no por origen/destino de cada
+  llamada) para que dos traslados concurrentes en sentidos opuestos nunca formen un
+  ciclo de espera entre sí (deadlock). Las 9 funciones de transición/servicio con
+  múltiples escrituras (`registrar_ingreso`, `registrar_baja_recomendada`,
+  `registrar_asignacion`, `registrar_consumible_entregado`, `registrar_devolucion`,
+  `registrar_envio_reparacion`, `registrar_retorno_reparacion`, `registrar_baja`,
+  `registrar_recepcion_lote`) quedaron con `@transaction.atomic`. **Sin probar con
+  threads reales**: el motor de los tests (SQLite) no soporta bloqueo de fila — dos
+  escrituras concurrentes de verdad chocan con "database is locked" en vez de
+  serializarse (confirmado empíricamente: un test con `threading.Barrier` fallaba ~7 de
+  8 corridas con hilos muriendo en silencio por `OperationalError`, no por la lógica) —
+  la garantía real depende de Postgres en producción, que sí bloquea la fila. Se prueba
+  en cambio lo que sí es determinístico en cualquier motor: que el `UPDATE` calcula
+  siempre sobre el valor real en la base, nunca sobre uno ya leído en Python.

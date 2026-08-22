@@ -6,6 +6,7 @@ reutilicen igual.
 """
 import datetime
 
+from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
@@ -16,6 +17,16 @@ from apps.activos.models import (
 
 class ConcurrencyError(Exception):
     """Otra recepción/actualización tocó la misma línea entre lectura y guardado; reintenta."""
+
+
+def _obtener_y_bloquear_stock(bodega, tipo_consumible):
+    """Crea la fila de stock si no existe y la bloquea (`select_for_update`) para el
+    resto de la transacción — debe correr dentro de un `transaction.atomic()`. Sin
+    esto, dos entregas/salidas simultáneas de la misma bodega podían leer el mismo
+    saldo antes de que cualquiera de las dos escribiera, perdiendo una de las dos
+    actualizaciones en silencio (BUG-1 de la auditoría de gobernanza, 22-ago-2026)."""
+    StockBodega.objects.get_or_create(bodega=bodega, tipo_consumible=tipo_consumible)
+    return StockBodega.objects.select_for_update().get(bodega=bodega, tipo_consumible=tipo_consumible)
 
 
 def generar_codigo_activo(tipo: str) -> str:
@@ -31,6 +42,7 @@ def generar_codigo_activo(tipo: str) -> str:
     return f'CR-{tipo}-{ultimo_num + 1:04d}'
 
 
+@transaction.atomic
 def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
                        vencimiento_garantia, orden_compra, bodega, usuario,
                        categoria=None, procesador='', ram_gb=None, almacenamiento_gb=None,
@@ -58,6 +70,7 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
     return activo
 
 
+@transaction.atomic
 def registrar_baja_recomendada(*, activo, motivo, usuario):
     """Un mantenimiento recomienda dar de baja el activo; no cambia su estado.
 
@@ -75,6 +88,7 @@ def registrar_baja_recomendada(*, activo, motivo, usuario):
     )
 
 
+@transaction.atomic
 def registrar_asignacion(*, activo, colaborador, estado_fisico_entrega, usuario):
     if activo.estado != Activo.Estado.EN_BODEGA:
         raise ValueError('Solo se pueden asignar activos que están en bodega.')
@@ -105,6 +119,7 @@ def registrar_asignacion(*, activo, colaborador, estado_fisico_entrega, usuario)
     )
 
 
+@transaction.atomic
 def registrar_consumible_entregado(*, activo, tipo_consumible, cantidad, usuario):
     if activo.estado != Activo.Estado.ASIGNADO or not activo.colaborador_actual:
         raise ValueError('El activo debe estar asignado a un colaborador para entregarle consumibles.')
@@ -112,14 +127,13 @@ def registrar_consumible_entregado(*, activo, tipo_consumible, cantidad, usuario
     if bodega is None:
         raise ValueError('El activo no tiene bodega de origen registrada.')
 
-    stock, _ = StockBodega.objects.get_or_create(bodega=bodega, tipo_consumible=tipo_consumible)
+    stock = _obtener_y_bloquear_stock(bodega, tipo_consumible)
     if stock.cantidad < cantidad:
         raise ValueError(
             f'Stock insuficiente de {tipo_consumible.nombre} en {bodega.codigo} '
             f'({stock.cantidad} disponibles).',
         )
-    stock.cantidad -= cantidad
-    stock.save(update_fields=['cantidad'])
+    StockBodega.objects.filter(pk=stock.pk).update(cantidad=F('cantidad') - cantidad)
 
     EventoActivo.objects.create(
         activo=activo, tipo_evento=EventoActivo.TipoEvento.CONSUMIBLE_ENTREGADO, usuario=usuario,
@@ -130,6 +144,7 @@ def registrar_consumible_entregado(*, activo, tipo_consumible, cantidad, usuario
     )
 
 
+@transaction.atomic
 def registrar_devolucion(*, activo, estado_fisico_devolucion, usuario, requiere_reparacion=False):
     if activo.estado != Activo.Estado.ASIGNADO:
         raise ValueError('El activo no está asignado actualmente.')
@@ -148,6 +163,7 @@ def registrar_devolucion(*, activo, estado_fisico_devolucion, usuario, requiere_
     )
 
 
+@transaction.atomic
 def registrar_envio_reparacion(*, activo, motivo, detalle_motivo, usuario):
     if activo.estado == Activo.Estado.DADO_DE_BAJA:
         raise ValueError('Un activo dado de baja no puede enviarse a reparación.')
@@ -160,6 +176,7 @@ def registrar_envio_reparacion(*, activo, motivo, detalle_motivo, usuario):
     )
 
 
+@transaction.atomic
 def registrar_retorno_reparacion(*, activo, estado_fisico, usuario, proveedor_tecnico=''):
     if activo.estado != Activo.Estado.EN_REPARACION:
         raise ValueError('El activo no está en reparación.')
@@ -172,6 +189,7 @@ def registrar_retorno_reparacion(*, activo, estado_fisico, usuario, proveedor_te
     )
 
 
+@transaction.atomic
 def registrar_baja(*, activo, motivo, detalle_motivo, usuario):
     if activo.estado == Activo.Estado.DADO_DE_BAJA:
         raise ValueError('El activo ya está dado de baja.')
@@ -184,25 +202,27 @@ def registrar_baja(*, activo, motivo, detalle_motivo, usuario):
     )
 
 
+@transaction.atomic
 def registrar_ingreso_stock(*, bodega, tipo_consumible, cantidad):
-    stock, _ = StockBodega.objects.get_or_create(bodega=bodega, tipo_consumible=tipo_consumible)
-    stock.cantidad += cantidad
-    stock.save(update_fields=['cantidad'])
+    stock = _obtener_y_bloquear_stock(bodega, tipo_consumible)
+    StockBodega.objects.filter(pk=stock.pk).update(cantidad=F('cantidad') + cantidad)
+    stock.refresh_from_db(fields=['cantidad'])
     return stock
 
 
+@transaction.atomic
 def registrar_salida_stock(*, bodega, tipo_consumible, cantidad):
     """Descuenta stock sin destino (se consume, no se traslada) — usado por
     apps.mantenimiento al registrar un repuesto tomado de bodega."""
     if cantidad <= 0:
         raise ValueError('La cantidad a descontar debe ser mayor a cero.')
-    stock, _ = StockBodega.objects.get_or_create(bodega=bodega, tipo_consumible=tipo_consumible)
+    stock = _obtener_y_bloquear_stock(bodega, tipo_consumible)
     if stock.cantidad < cantidad:
         raise ValueError(
             f'Stock insuficiente de {tipo_consumible.nombre} en {bodega.codigo} ({stock.cantidad} disponibles).',
         )
-    stock.cantidad -= cantidad
-    stock.save(update_fields=['cantidad'])
+    StockBodega.objects.filter(pk=stock.pk).update(cantidad=F('cantidad') - cantidad)
+    stock.refresh_from_db(fields=['cantidad'])
     return stock
 
 
@@ -243,6 +263,7 @@ def _recalcular_estado_orden_compra(orden_compra):
         orden_compra.save(update_fields=['estado'])
 
 
+@transaction.atomic
 def registrar_recepcion_lote(*, detalle, cantidad, bodega, usuario, custodio_receptor=None, numero_lote=''):
     """Recibe `cantidad` unidades de una línea de OC; puede llamarse varias veces (recepción parcial).
 
@@ -292,21 +313,33 @@ def registrar_recepcion_lote(*, detalle, cantidad, bodega, usuario, custodio_rec
     return recepcion
 
 
+@transaction.atomic
 def registrar_traslado_bodega(*, tipo_consumible, bodega_origen, bodega_destino, cantidad, usuario, motivo=''):
     if bodega_origen == bodega_destino:
         raise ValueError('La bodega de origen y destino no pueden ser la misma.')
     if cantidad <= 0:
         raise ValueError('La cantidad a trasladar debe ser mayor a cero.')
 
-    origen, _ = StockBodega.objects.get_or_create(bodega=bodega_origen, tipo_consumible=tipo_consumible)
+    StockBodega.objects.get_or_create(bodega=bodega_origen, tipo_consumible=tipo_consumible)
+    StockBodega.objects.get_or_create(bodega=bodega_destino, tipo_consumible=tipo_consumible)
+    # Bloquear las dos filas en un orden fijo (por bodega_id, no en el orden
+    # origen/destino que use cada llamada): dos traslados concurrentes en direcciones
+    # opuestas (A->B y B->A al mismo tiempo) podrían si no formar un ciclo de espera
+    # (deadlock) — BUG-1 de la auditoría de gobernanza (22-ago-2026).
+    filas = {
+        fila.bodega_id: fila
+        for fila in StockBodega.objects.select_for_update().filter(
+            bodega__in=[bodega_origen, bodega_destino], tipo_consumible=tipo_consumible,
+        ).order_by('bodega_id')
+    }
+    origen = filas[bodega_origen.pk]
     if origen.cantidad < cantidad:
         raise ValueError(
             f'Stock insuficiente de {tipo_consumible.nombre} en {bodega_origen.codigo} '
             f'({origen.cantidad} disponibles).',
         )
-    origen.cantidad -= cantidad
-    origen.save(update_fields=['cantidad'])
-    registrar_ingreso_stock(bodega=bodega_destino, tipo_consumible=tipo_consumible, cantidad=cantidad)
+    StockBodega.objects.filter(pk=origen.pk).update(cantidad=F('cantidad') - cantidad)
+    StockBodega.objects.filter(pk=filas[bodega_destino.pk].pk).update(cantidad=F('cantidad') + cantidad)
 
     return MovimientoInventario.objects.create(
         tipo_movimiento=MovimientoInventario.TipoMovimiento.TRASLADO, tipo_consumible=tipo_consumible,
