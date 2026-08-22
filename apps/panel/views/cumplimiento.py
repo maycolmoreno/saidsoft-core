@@ -1,5 +1,5 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.core.exceptions import PermissionDenied
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -36,6 +36,7 @@ def _verificar_acceso_actividad(user, actividad):
 
 
 @login_required
+@permission_required('cumplimiento.view_actividadcumplimiento', raise_exception=True)
 def cumplimiento_lista(request):
     actividades = scope_opcional_por_unidad_negocio_activa(
         ActividadCumplimiento.objects.select_related('creado_por').prefetch_related('unidades_negocio'),
@@ -47,6 +48,7 @@ def cumplimiento_lista(request):
 
 
 @login_required
+@permission_required('cumplimiento.add_actividadcumplimiento', raise_exception=True)
 def cumplimiento_crear(request):
     if request.method == 'POST':
         form = ActividadCumplimientoForm(request.POST, user=request.user)
@@ -68,6 +70,7 @@ def cumplimiento_crear(request):
 
 
 @login_required
+@permission_required('cumplimiento.view_actividadcumplimiento', raise_exception=True)
 def cumplimiento_detalle(request, pk):
     actividad = get_object_or_404(ActividadCumplimiento, pk=pk)
     _verificar_acceso_actividad(request.user, actividad)
@@ -85,6 +88,7 @@ def cumplimiento_detalle(request, pk):
 
 
 @login_required
+@permission_required('cumplimiento.change_actividadcumplimiento', raise_exception=True)
 @require_POST
 def cumplimiento_resultado_completar(request, pk, resultado_pk):
     actividad = get_object_or_404(ActividadCumplimiento, pk=pk)

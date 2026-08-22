@@ -1,5 +1,5 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.db.models import Count, Max, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -15,6 +15,7 @@ from apps.monitoreo.models import Alerta, PosErrorDetectado, ReglaAlerta
 
 
 @login_required
+@permission_required('monitoreo.view_alerta', raise_exception=True)
 def alertas_lista(request):
     alertas = scope_por_unidad_negocio_activa(
         Alerta.objects.select_related('regla', 'estacion', 'estacion__farmacia'),
@@ -79,6 +80,7 @@ def _top_mensajes_pos_errores(request, *, q=''):
 
 
 @login_required
+@permission_required('monitoreo.view_poserrordetectado', raise_exception=True)
 def pos_errores_flota(request):
     """Rollup de errores del POS por mensaje exacto — a diferencia de agrupar por
     regla (arriba), esto distingue *qué* error puntual está afectando cuántas
@@ -98,6 +100,7 @@ def pos_errores_flota(request):
 
 
 @login_required
+@permission_required('monitoreo.change_alerta', raise_exception=True)
 @require_POST
 def alerta_reconocer(request, pk):
     alerta = get_object_or_404(Alerta.objects.select_related('estacion__farmacia'), pk=pk)
@@ -113,6 +116,7 @@ def alerta_reconocer(request, pk):
 
 
 @login_required
+@permission_required('monitoreo.change_alerta', raise_exception=True)
 @require_POST
 def alerta_resolver(request, pk):
     alerta = get_object_or_404(Alerta.objects.select_related('estacion__farmacia'), pk=pk)
@@ -127,6 +131,7 @@ def alerta_resolver(request, pk):
 
 
 @login_required
+@permission_required('monitoreo.view_reglaalerta', raise_exception=True)
 def reglas_alerta_lista(request):
     reglas = scope_opcional_por_unidad_negocio_activa(
         ReglaAlerta.objects.select_related('unidad_negocio'), request, 'unidad_negocio',
@@ -135,6 +140,7 @@ def reglas_alerta_lista(request):
 
 
 @login_required
+@permission_required('monitoreo.add_reglaalerta', raise_exception=True)
 def regla_alerta_crear(request):
     if request.method == 'POST':
         form = ReglaAlertaForm(request.POST, user=request.user)

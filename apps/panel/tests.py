@@ -568,6 +568,11 @@ class CumplimientoViewsTests(TestCase):
     def setUp(self):
         self.usuario = User.objects.create_user(username='u', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='cumplimiento', codename='view_actividadcumplimiento'),
+            Permission.objects.get(content_type__app_label='cumplimiento', codename='add_actividadcumplimiento'),
+            Permission.objects.get(content_type__app_label='cumplimiento', codename='change_actividadcumplimiento'),
+        )
         self.client.force_login(self.usuario)
 
         self.sg = UnidadNegocio.objects.get(codigo='SG')
@@ -883,6 +888,9 @@ class AlertaMultiTenantTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_usuario_de_otro_tenant_no_ve_la_alerta_en_el_listado(self):
@@ -912,6 +920,9 @@ class AlertasAgrupadasTests(TestCase):
         )
         self.usuario = User.objects.create_user(username='u_agrup', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
         self.client.force_login(self.usuario)
         self.regla = ReglaAlerta.objects.create(
             nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90, creado_por=self.usuario,
@@ -956,6 +967,9 @@ class AlertasAgrupadasTests(TestCase):
 
         usuario_sg_only = User.objects.create_user(username='u_sg_only', password='x')
         PerfilUsuario.objects.create(usuario=usuario_sg_only).unidades_negocio.add(self.sg)
+        usuario_sg_only.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
         self.client.force_login(usuario_sg_only)
 
         resp = self.client.get(reverse('panel:alertas_lista'), {'vista': 'agrupada'})
@@ -1002,6 +1016,9 @@ class PosErroresFlotaTests(TestCase):
         )
         usuario = User.objects.create_user(username='u_pos_flota', password='x')
         PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_poserrordetectado'),
+        )
         self.client.force_login(usuario)
 
     def test_agrupa_por_mensaje_exacto_entre_estaciones(self):
@@ -1052,6 +1069,9 @@ class PosErroresFlotaTests(TestCase):
 
         usuario_sg_only = User.objects.create_user(username='u_sg_only_pos', password='x')
         PerfilUsuario.objects.create(usuario=usuario_sg_only).unidades_negocio.add(self.sg)
+        usuario_sg_only.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_poserrordetectado'),
+        )
         self.client.force_login(usuario_sg_only)
 
         resp = self.client.get(reverse('panel:pos_errores_flota'))
@@ -1543,6 +1563,9 @@ class CumplimientoMultiTenantTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia_cump', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='cumplimiento', codename='view_actividadcumplimiento'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_lista_no_muestra_actividad_de_otro_tenant(self):
