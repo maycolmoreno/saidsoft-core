@@ -29,6 +29,12 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'axes',
+    # SEC-4 (auditoría 22-ago-2026): MFA con TOTP. OTPMiddleware NO se agrega a
+    # propósito — el chequeo se hace en el propio formulario de login
+    # (apps.cuentas.forms.LoginConOTPForm), así que no hace falta request.user.is_verified()
+    # en cada request; menos piezas moviéndose en el pipeline de auth.
+    'django_otp',
+    'django_otp.plugins.otp_totp',
     # apps propias
     'apps.catalogo',
     'apps.despliegues',
@@ -121,6 +127,20 @@ AXES_LOCKOUT_PARAMETERS = ['username']
 # misma IP (NAT), así que agregar 'ip_address' bloquearía a toda la farmacia por un
 # solo usuario con la contraseña mal. Elección deliberada, no un descuido.
 SILENCED_SYSTEM_CHECKS = ['axes.W006']
+
+# SEC-5 (auditoría 22-ago-2026): sin esto, Django usa su default (sesión de 2 semanas,
+# sobrevive el cierre del navegador) — una sesión de Administrador abierta y olvidada en
+# un PDV/kiosco de farmacia queda válida por semanas. SESSION_SAVE_EVERY_REQUEST hace
+# que sea un timeout por INACTIVIDAD, no un límite absoluto: cada request activo
+# extiende la expiración otras 8 horas, así que a alguien trabajando no lo desloguea a
+# mitad de turno; una sesión realmente abandonada sí expira.
+SESSION_COOKIE_AGE = 60 * 60 * 8  # 8 horas de inactividad
+SESSION_SAVE_EVERY_REQUEST = True
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+
+# Nombre que muestra la app autenticadora (Google Authenticator, Authy, etc.) junto al
+# usuario al escanear el QR de activación de MFA (SEC-4).
+OTP_TOTP_ISSUER = 'SAIDSOFT'
 
 # Internacionalización
 LANGUAGE_CODE = 'es-EC'

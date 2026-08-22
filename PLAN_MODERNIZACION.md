@@ -1473,3 +1473,67 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   procedimiento manual que se usó en ML006-A (verificar hash, detener servicio, copiar
   el `.exe`, arrancar) — mismo archivo ya compilado y entregado al usuario, sha256
   `c7777d1fc3193ab617fbc713dffe00f53eae466449e1a5b2ad60024579b9934`.
+
+- **SEC-5 — 🟢 cerrado (22-ago-2026):** no había ningún timeout de sesión configurado —
+  Django usaba su default (`SESSION_COOKIE_AGE` sin setear = 2 semanas,
+  `SESSION_EXPIRE_AT_BROWSER_CLOSE` default `False` = sobrevive el cierre del
+  navegador). Una sesión de Administrador olvidada abierta en un PDV/kiosco de farmacia
+  quedaba válida por semanas. Fix: `SESSION_COOKIE_AGE = 8 horas` +
+  `SESSION_SAVE_EVERY_REQUEST = True` (cada request activo la extiende — es un timeout
+  por INACTIVIDAD, no un límite absoluto: a alguien trabajando no lo desloguea a mitad
+  de turno) + `SESSION_EXPIRE_AT_BROWSER_CLOSE = True`. Verificado que la cookie en sí
+  no lleva `Max-Age` (se borra al cerrar el navegador, por diseño de Django cuando
+  `EXPIRE_AT_BROWSER_CLOSE=True`) pero la expiración real del lado servidor sigue
+  gobernada por `SESSION_COOKIE_AGE` (`request.session.get_expiry_age()`).
+
+- **SEC-6 — 🟢 cerrado (22-ago-2026):** de todo el código que habla con el broker MQTT,
+  solo `apps/mqtt_worker/management/commands/simular_agente.py` (herramienta de
+  desarrollo) nunca chequeaba `MQTT_CONFIG['USE_TLS']` — se conectaba siempre en plano,
+  a diferencia de `run_mqtt_worker.py` y de los tres publishers (`catalogo`/
+  `despliegues`/`software.services`), que sí lo respetan. Bajo riesgo real (solo se usa
+  contra un broker de desarrollo), pero inconsistente: si alguien lo apunta a un
+  `MQTT_HOST`/`PUERTO` de producción se conecta sin cifrar sin ningún aviso. Fix:
+  mismo `if conf['USE_TLS']: client.tls_set(ca_certs=conf['CA_CERT'] or None)` que ya
+  usa `run_mqtt_worker.py`. Hallazgo secundario relacionado: `deploy/.env.prod.example`
+  nunca declaraba `MQTT_USE_TLS`/`MQTT_CA_CERT` (en producción real vienen fijos por
+  `docker-compose.yml`, no del `.env`), y un comentario de la sección MeshCentral ya
+  hacía referencia a "`MQTT_CA_CERT` arriba" que en realidad no existía en la plantilla
+  — se agregaron ambas variables documentadas, aclarando que solo importan para
+  procesos corridos por fuera de los contenedores (p.ej. `simular_agente` a mano).
+
+- **SEC-4 — 🟢 cerrado (22-ago-2026):** no existía ningún segundo factor de
+  autenticación — login de usuario+contraseña, protegido solo por el bloqueo de
+  `django-axes` (SEC-3). Alcance elegido con el usuario: **MFA opcional por usuario**
+  (TOTP vía `django-otp`), no obligatorio para ningún rol todavía — decisión deliberada
+  para no bloquear a nadie con una migración forzada; los 2 superusuarios reales pueden
+  activarlo hoy mismo, y es el mismo mecanismo que se usaría después si se decide
+  volverlo obligatorio para el grupo Administrador.
+  - `django-otp` + `django_otp.plugins.otp_totp` en `INSTALLED_APPS`, sin
+    `OTPMiddleware` a propósito — el chequeo vive en el propio formulario de login
+    (`apps.cuentas.forms.LoginConOTPForm`, un `AuthenticationForm` con un campo
+    `otp_token` que valida contra `django_otp.match_token` recién después de que
+    `super().clean()` ya validó la contraseña), así que no hace falta
+    `request.user.is_verified()` en cada request — menos piezas moviéndose en el
+    pipeline de auth. Las migraciones de `otp_totp` vienen empaquetadas con la librería
+    (no hay migración nueva en el repo).
+  - Autoservicio en `/cuenta/mfa/` (`apps/panel/views/mfa.py`): un botón "Verificación
+    en dos pasos" en el pie del sidebar lleva al estado actual; activar genera un
+    `TOTPDevice` sin confirmar (no cuenta para el login todavía) y muestra su QR
+    (`qrcode`, generado en memoria, nunca se guarda a disco) + el secreto en base32 para
+    cargarlo a mano; confirma recién con un código real leído de la app. Desactivar
+    exige reingresar la contraseña (no alcanza con estar logueado) antes de borrar el
+    dispositivo — mismo criterio de "reautenticación para una acción sensible" que
+    cualquier flujo de seguridad estándar.
+  - **Nota real encontrada probando el flujo a mano antes de escribir los tests**:
+    `TOTPDevice` (django-otp) ya trae su propio throttling con backoff exponencial por
+    dispositivo (1s, 2s, 4s, 8s... tras cada fallo consecutivo,
+    `django_otp.models.ThrottlingMixin`, factor por default
+    `OTP_TOTP_THROTTLE_FACTOR=1`) — un código incorrecto no lo cuenta `django-axes`
+    (pasa por el formulario, no por el backend que axes envuelve), pero sí queda
+    acotada la fuerza bruta sobre el código igual por este mecanismo propio de la
+    librería, sin necesidad de agregar nada más acá.
+  - Suite completa verificada en verde (519 tests OK) + `check`/`makemigrations
+    --check --dry-run` limpios. Probado a mano de punta a punta contra un servidor de
+    desarrollo real antes de escribir los tests automatizados: login sin dispositivo
+    (sin cambios), enrolamiento con QR + confirmación, login exigiendo el código con
+    dispositivo confirmado, y desactivación con contraseña.

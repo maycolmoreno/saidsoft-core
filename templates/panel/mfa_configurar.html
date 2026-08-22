@@ -1,0 +1,36 @@
+{% extends "panel/base.html" %}
+{% block title %}Activar verificación en dos pasos · SAIDSOFT{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold mb-1">Activar verificación en dos pasos</h1>
+<p class="text-sm text-[var(--text-faint)] mb-6">
+    Escaneá este código con Google Authenticator, Authy o cualquier app compatible con TOTP.
+</p>
+
+<div class="card p-6 max-w-lg space-y-5">
+    {% if error %}
+    <p class="text-sm alert sev-critical px-3 py-2">{{ error }}</p>
+    {% endif %}
+
+    <img src="{{ qr_data_uri }}" alt="Código QR para activar la verificación en dos pasos" width="220" height="220"
+         style="border-radius:8px;">
+
+    <div>
+        <p class="text-xs text-[var(--text-faint)] mb-1">¿No podés escanearlo? Cargá esta clave a mano:</p>
+        <code class="text-sm mono px-3 py-2 rounded-md block" style="background:var(--bg);border:1px solid var(--border-soft);word-break:break-all;">{{ secreto_manual }}</code>
+    </div>
+
+    <form method="post" class="space-y-3 pt-2" style="border-top:1px solid var(--border-soft);">
+        {% csrf_token %}
+        <label class="block text-sm font-medium text-[var(--text-dim)]" for="id_token">
+            Código actual de la app
+        </label>
+        <input type="text" name="token" id="id_token" inputmode="numeric" autocomplete="one-time-code" required autofocus
+               class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+               style="border:1px solid var(--border);">
+        <div class="flex items-center gap-3 pt-2">
+            <button type="submit" class="btn primary" style="padding:10px 20px;">Confirmar y activar</button>
+            <a href="{% url 'panel:mfa_estado' %}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -7,7 +7,7 @@
         <p class="text-sm text-[var(--text-faint)] mb-6">Panel de gestión y despliegues</p>
         {% if form.errors %}
             <div class="mb-4 alert sev-critical text-sm px-4 py-2.5">
-                Usuario o contraseña incorrectos.
+                Usuario, contraseña o código de verificación incorrectos.
             </div>
         {% endif %}
         <form method="post">
@@ -18,9 +18,16 @@
                        class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
                        style="border:1px solid var(--border);">
             </div>
-            <div class="mb-6">
+            <div class="mb-4">
                 <label class="block text-sm font-medium text-[var(--text-dim)] mb-1" for="id_password">Contraseña</label>
                 <input type="password" name="password" id="id_password" required
+                       class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                       style="border:1px solid var(--border);">
+            </div>
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-[var(--text-dim)] mb-1" for="id_otp_token">Código de autenticación</label>
+                <input type="text" name="otp_token" id="id_otp_token" inputmode="numeric" autocomplete="one-time-code"
+                       placeholder="Solo si activaste la verificación en dos pasos"
                        class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
                        style="border:1px solid var(--border);">
             </div>

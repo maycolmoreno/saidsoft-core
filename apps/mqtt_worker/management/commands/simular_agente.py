@@ -51,6 +51,13 @@ class Command(BaseCommand):
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f'simulador-{codigo}')
         if conf['USERNAME']:
             client.username_pw_set(conf['USERNAME'], conf['PASSWORD'])
+        # SEC-6 (auditoría 22-ago-2026): a diferencia de run_mqtt_worker.py y de todos los
+        # publishers (apps.catalogo/despliegues/software.services), este simulador nunca
+        # chequeaba USE_TLS y se conectaba siempre en plano — inofensivo contra un broker
+        # de desarrollo sin TLS, pero si alguien lo apunta a producción (MQTT_HOST/PUERTO
+        # de un .env real) se conectaría sin cifrar sin ningún aviso.
+        if conf['USE_TLS']:
+            client.tls_set(ca_certs=conf['CA_CERT'] or None)
 
         def on_connect(c, userdata, flags, reason_code, properties=None):
             self.stdout.write(f'[{codigo}] Conectado. Suscribiendo a tópicos de despliegue...')

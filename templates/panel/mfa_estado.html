@@ -1,0 +1,34 @@
+{% extends "panel/base.html" %}
+{% block title %}Verificación en dos pasos · SAIDSOFT{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold mb-1">Verificación en dos pasos</h1>
+<p class="text-sm text-[var(--text-faint)] mb-6">
+    Además de tu contraseña, un código de 6 dígitos de una app autenticadora (Google
+    Authenticator, Authy, etc.) al iniciar sesión.
+</p>
+
+<div class="card p-6 max-w-lg space-y-4">
+    {% if activado %}
+    <p class="text-sm">
+        <span class="pill good">Activada</span>
+        Tu cuenta pide el código en cada inicio de sesión.
+    </p>
+    <form method="post" action="{% url 'panel:mfa_desactivar' %}" class="space-y-3 pt-2" style="border-top:1px solid var(--border-soft);">
+        {% csrf_token %}
+        <label class="block text-sm font-medium text-[var(--text-dim)]" for="id_password">
+            Confirmá tu contraseña para desactivarla
+        </label>
+        <input type="password" name="password" id="id_password" required
+               class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+               style="border:1px solid var(--border);">
+        <button type="submit" class="btn secondary">Desactivar</button>
+    </form>
+    {% else %}
+    <p class="text-sm">
+        <span class="pill neutral">Desactivada</span>
+        Hoy tu cuenta entra solo con usuario y contraseña.
+    </p>
+    <a href="{% url 'panel:mfa_configurar' %}" class="btn primary" style="padding:10px 20px;">Activar</a>
+    {% endif %}
+</div>
+{% endblock %}

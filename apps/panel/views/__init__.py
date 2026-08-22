@@ -43,6 +43,7 @@ from .mantenimiento import (
     mantenimiento_repuesto_agregar, mantenimientos_lista, mantenimientos_programados_lista,
     notificacion_marcar_leida, notificaciones_lista,
 )
+from .mfa import mfa_configurar, mfa_desactivar, mfa_estado
 from .monitoreo import (
     monitoreo_detalle, monitoreo_detalle_partial, monitoreo_lista, red_farmacias_lista, tendencia_flota,
     ventana_mantenimiento_crear, ventanas_mantenimiento_lista,

@@ -1017,3 +1017,40 @@ class AprovisionarCredencialEstacionTests(TestCase):
         with patch('apps.mqtt_worker.emqx_admin._peticion', side_effect=OSError('boom')):
             resultado = aprovisionar_credencial_estacion(self.estacion)
         self.assertIsNone(resultado)
+
+
+class SimularAgenteTlsTests(TestCase):
+    """SEC-6 (auditoría 22-ago-2026): a diferencia de run_mqtt_worker.py y de todos los
+    publishers, este comando de desarrollo nunca chequeaba MQTT_CONFIG['USE_TLS'] y se
+    conectaba siempre en plano."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'))
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def _correr(self):
+        from django.core.management import call_command
+        with patch('apps.mqtt_worker.management.commands.simular_agente.mqtt.Client') as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+            call_command('simular_agente', 'ML001-A', timeout=0)
+        return mock_client
+
+    @override_settings(MQTT_CONFIG={
+        'HOST': 'localhost', 'PORT': 8883, 'USERNAME': '', 'PASSWORD': '', 'USE_TLS': True,
+        'CA_CERT': '/app/deploy/certs/cert.pem', 'CLIENT_ID_PANEL': 'p', 'CLIENT_ID_WORKER': 'w',
+    })
+    def test_con_use_tls_activo_configura_tls(self):
+        mock_client = self._correr()
+        mock_client.tls_set.assert_called_once_with(ca_certs='/app/deploy/certs/cert.pem')
+
+    @override_settings(MQTT_CONFIG={
+        'HOST': 'localhost', 'PORT': 1883, 'USERNAME': '', 'PASSWORD': '', 'USE_TLS': False,
+        'CA_CERT': '', 'CLIENT_ID_PANEL': 'p', 'CLIENT_ID_WORKER': 'w',
+    })
+    def test_sin_use_tls_no_configura_tls(self):
+        mock_client = self._correr()
+        mock_client.tls_set.assert_not_called()

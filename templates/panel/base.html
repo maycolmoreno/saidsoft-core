@@ -143,6 +143,7 @@
 
         <div class="sidebar-foot">
             <span class="lbl">{{ user.username }}</span>
+            <a href="{% url 'panel:mfa_estado' %}" class="lbl">Verificación en dos pasos</a>
             <form method="post" action="{% url 'panel:logout' %}">
                 {% csrf_token %}
                 <button type="submit" class="lbl" style="background:none;border:none;color:inherit;cursor:pointer;font:inherit;">Salir</button>

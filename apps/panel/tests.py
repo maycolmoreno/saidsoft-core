@@ -11,6 +11,8 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from django_otp.oath import totp
+from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from apps.activos.models import (
     Activo, Bodega, Colaborador, MovimientoInventario, OrdenCompra, TipoConsumible,
@@ -2093,3 +2095,110 @@ class BloqueoPorIntentosFallidosTests(TestCase):
             self._intentar_login('contraseña-incorrecta')
         resp = self._intentar_login('ContrasenaValida123!')
         self.assertEqual(resp.status_code, 302)
+
+
+class ExpiracionDeSesionTests(TestCase):
+    """SEC-5 de la auditoría de gobernanza (22-ago-2026): antes no había ningún timeout
+    de sesión configurado — Django usaba su default (2 semanas, sobrevive el cierre del
+    navegador). Ahora es un timeout por INACTIVIDAD de 8 horas (SESSION_SAVE_EVERY_REQUEST
+    hace que cada request activo la extienda, así que no es un límite absoluto de sesión)."""
+
+    def test_settings_de_expiracion_configuradas(self):
+        self.assertEqual(settings.SESSION_COOKIE_AGE, 60 * 60 * 8)
+        self.assertTrue(settings.SESSION_SAVE_EVERY_REQUEST)
+        self.assertTrue(settings.SESSION_EXPIRE_AT_BROWSER_CLOSE)
+
+    def test_la_sesion_real_expira_segun_session_cookie_age(self):
+        # Con SESSION_EXPIRE_AT_BROWSER_CLOSE=True la cookie en sí no lleva Max-Age (se
+        # borra al cerrar el navegador, a propósito) — lo que hay que verificar es la
+        # expiración del lado servidor, que sigue gobernada por SESSION_COOKIE_AGE.
+        User.objects.create_user(username='u_sesion', password='ContrasenaValida123!')
+        resp = self.client.post(reverse('panel:login'), {'username': 'u_sesion', 'password': 'ContrasenaValida123!'})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(self.client.session.get_expiry_age(), settings.SESSION_COOKIE_AGE)
+
+
+class MfaTests(TestCase):
+    """SEC-4 de la auditoría de gobernanza (22-ago-2026): MFA opcional por usuario
+    (TOTP, django-otp) — ver apps.cuentas.forms.LoginConOTPForm y
+    apps.panel.views.mfa. Sin dispositivo confirmado, el login sigue exactamente igual
+    que antes (regresión cero para quien no lo activó)."""
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_mfa', password='ContrasenaValida123!')
+
+    def _login(self, **extra):
+        datos = {'username': 'u_mfa', 'password': 'ContrasenaValida123!'}
+        datos.update(extra)
+        return self.client.post(reverse('panel:login'), datos)
+
+    def test_sin_dispositivo_el_login_funciona_igual_que_antes(self):
+        resp = self._login()
+        self.assertEqual(resp.status_code, 302)
+
+    def test_mfa_estado_requiere_login(self):
+        resp = self.client.get(reverse('panel:mfa_estado'))
+        self.assertEqual(resp.status_code, 302)  # redirige a login, no 200
+
+    def test_configurar_crea_dispositivo_sin_confirmar_y_no_afecta_el_login(self):
+        self.client.force_login(self.usuario)
+        resp = self.client.get(reverse('panel:mfa_configurar'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(TOTPDevice.objects.filter(user=self.usuario, confirmed=False).exists())
+
+        self.client.logout()
+        resp = self._login()  # un dispositivo sin confirmar no debe exigir código
+        self.assertEqual(resp.status_code, 302)
+
+    def test_confirmar_con_codigo_valido_activa_el_dispositivo(self):
+        self.client.force_login(self.usuario)
+        self.client.get(reverse('panel:mfa_configurar'))
+        dispositivo = TOTPDevice.objects.get(user=self.usuario)
+        codigo = str(totp(dispositivo.bin_key)).zfill(6)
+
+        resp = self.client.post(reverse('panel:mfa_configurar'), {'token': codigo})
+        self.assertRedirects(resp, reverse('panel:mfa_estado'))
+        dispositivo.refresh_from_db()
+        self.assertTrue(dispositivo.confirmed)
+        self.assertTrue(EventoAuditoria.objects.filter(accion='usuario.mfa_activar', usuario=self.usuario).exists())
+
+    def test_confirmar_con_codigo_invalido_no_activa(self):
+        self.client.force_login(self.usuario)
+        self.client.get(reverse('panel:mfa_configurar'))
+        resp = self.client.post(reverse('panel:mfa_configurar'), {'token': '000000'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(TOTPDevice.objects.get(user=self.usuario).confirmed)
+
+    def test_con_dispositivo_confirmado_sin_codigo_el_login_falla(self):
+        TOTPDevice.objects.create(user=self.usuario, confirmed=True, name='default')
+        resp = self._login()  # sin otp_token
+        self.assertEqual(resp.status_code, 200)  # re-renderiza el form, no redirige
+        self.assertFalse(resp.wsgi_request.user.is_authenticated)
+
+    def test_con_dispositivo_confirmado_codigo_incorrecto_el_login_falla(self):
+        TOTPDevice.objects.create(user=self.usuario, confirmed=True, name='default')
+        resp = self._login(otp_token='000000')
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.wsgi_request.user.is_authenticated)
+
+    def test_con_dispositivo_confirmado_codigo_correcto_el_login_funciona(self):
+        # Dispositivo propio (no compartido con los otros dos tests de esta clase):
+        # TOTPDevice throttlea con backoff exponencial tras un intento fallido (1s por
+        # default, ver django_otp.models.ThrottlingMixin) — un código correcto justo
+        # después de uno incorrecto en el mismo dispositivo fallaría por el throttle,
+        # no por el código en sí.
+        dispositivo = TOTPDevice.objects.create(user=self.usuario, confirmed=True, name='default')
+        codigo = str(totp(dispositivo.bin_key)).zfill(6)
+        resp = self._login(otp_token=codigo)
+        self.assertEqual(resp.status_code, 302)
+
+    def test_desactivar_exige_confirmar_password(self):
+        TOTPDevice.objects.create(user=self.usuario, confirmed=True, name='default')
+        self.client.force_login(self.usuario)
+
+        self.client.post(reverse('panel:mfa_desactivar'), {'password': 'incorrecta'})
+        self.assertTrue(TOTPDevice.objects.filter(user=self.usuario).exists())
+
+        self.client.post(reverse('panel:mfa_desactivar'), {'password': 'ContrasenaValida123!'})
+        self.assertFalse(TOTPDevice.objects.filter(user=self.usuario).exists())
+        self.assertTrue(EventoAuditoria.objects.filter(accion='usuario.mfa_desactivar', usuario=self.usuario).exists())
