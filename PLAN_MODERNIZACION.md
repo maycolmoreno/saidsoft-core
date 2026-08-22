@@ -1166,15 +1166,25 @@ usuario pidió una revisión completa del proyecto de cara a gobernanza ITIL e I
 Anexo A de ISO 27001 y las prácticas de ITIL 4, con un orden de remediación acordado con
 el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta sección:
 
-- **OPS-1 — 🟢 cerrado (22-ago-2026):** `deploy/backup.sh` usaba `docker compose` (sintaxis
-  v2, con espacio) para el `pg_dump`/`tar` del respaldo diario, pero el servidor de
-  producción corre Compose **v1** (todo el resto de `README-produccion.md` usa
-  `docker-compose` con guion) — en v1 ese subcomando no existe, así que las dos líneas
-  del respaldo fallaban en la ejecución. Si el cron de las 2 AM estaba instalado, venía
-  fallando desde el primer día sin ningún respaldo real de la base de datos. Corregidas
-  las dos invocaciones (`docker-compose -f docker-compose.yml exec -T ...`) y las mismas
-  dos referencias sueltas en `README-produccion.md` (líneas 227/237, instrucciones de
-  MeshCentral). **Pendiente de verificar en el servidor real**: confirmar si el cron
-  estaba instalado y si hay algún `.sql.gz` previo en el destino configurado, y correr el
-  script a mano una vez para confirmar que el `.sql.gz` resultante restaura sobre una
-  base vacía.
+- **OPS-1 — 🟢 cerrado y validado en producción (22-ago-2026):** `deploy/backup.sh` usaba
+  `docker compose` (sintaxis v2, con espacio) para el `pg_dump`/`tar` del respaldo diario,
+  pero el servidor de producción corre Compose **v1** (todo el resto de
+  `README-produccion.md` usa `docker-compose` con guion) — en v1 ese subcomando no existe.
+  Corregidas las dos invocaciones y las mismas dos referencias sueltas en
+  `README-produccion.md` (líneas 227/237, instrucciones de MeshCentral). **Verificado
+  contra el servidor real (`glpi@glpi-NUC11TNKv5`)**: resultó ser peor de lo asumido — no
+  era que el cron fallara en silencio, **nunca existió ningún cron de respaldo** (crontab
+  de `glpi` vacío, `/etc/cron.d/` sin entrada propia, `root` sin crontab, ningún
+  `.sql.gz` en el filesystem). De paso se confirmó que `glpi` es miembro del grupo
+  `docker` (no hace falta `sudo` para `docker-compose`, se venía usando por costumbre).
+  Corrida manual del script ya arreglado: generó `db_20260822_103238.sql.gz` (84K) y
+  `media_20260822_103238.tar.gz` (644M), ambos con integridad `gzip -t` OK — el único
+  aviso fue de `pg_dump` sobre FKs circulares en las tablas internas de TimescaleDB
+  (`hypertable`/`chunk`/`continuous_agg`), conocido y no bloqueante, pero a tener en
+  cuenta si algún día se restaura con `--disable-triggers`. Instalado el cron en el
+  crontab propio de `glpi` (sin root): `0 2 * * * cd
+  /home/glpi/Documentos/Said/saidsoft-core && sh deploy/backup.sh
+  /home/glpi/backups/saidsoft >> /home/glpi/backups/saidsoft-backup.log 2>&1`, con el
+  daemon `cron` confirmado `active`. **Pendiente, no bloqueante**: probar una
+  restauración real de `db_*.sql.gz` sobre una base vacía (ver OPS-2) y mover los
+  respaldos fuera del servidor.
