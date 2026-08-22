@@ -1,5 +1,5 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -23,6 +23,7 @@ from apps.cuentas.services import (
 
 
 @login_required
+@permission_required('activos.view_colaborador', raise_exception=True)
 def colaboradores_lista(request):
     colaboradores = scope_opcional_por_unidad_negocio_activa(
         Colaborador.objects.order_by('nombre'), request, 'unidad_negocio',
@@ -31,6 +32,7 @@ def colaboradores_lista(request):
 
 
 @login_required
+@permission_required('activos.add_colaborador', raise_exception=True)
 def colaborador_crear(request):
     if request.method == 'POST':
         form = ColaboradorForm(request.POST, user=request.user)
@@ -49,6 +51,7 @@ def colaborador_crear(request):
 
 
 @login_required
+@permission_required('activos.view_colaborador', raise_exception=True)
 def visita_tecnica_lista(request):
     """Agrupa colaboradores y sus activos asignados por ubicación (agencia/local).
 
@@ -83,6 +86,7 @@ def visita_tecnica_lista(request):
 
 
 @login_required
+@permission_required('activos.view_ordencompra', raise_exception=True)
 def ordenes_compra_lista(request):
     ordenes = scope_opcional_por_unidad_negocio_activa(
         OrdenCompra.objects.prefetch_related('bodegas_destino'), request, 'unidad_negocio',
@@ -91,6 +95,7 @@ def ordenes_compra_lista(request):
 
 
 @login_required
+@permission_required('activos.add_ordencompra', raise_exception=True)
 def orden_compra_crear(request):
     if request.method == 'POST':
         form = OrdenCompraForm(request.POST, user=request.user)
@@ -108,6 +113,7 @@ def orden_compra_crear(request):
 
 
 @login_required
+@permission_required('activos.view_ordencompra', raise_exception=True)
 def orden_compra_detalle(request, pk):
     oc = get_object_or_404(
         OrdenCompra.objects.prefetch_related(
@@ -122,6 +128,7 @@ def orden_compra_detalle(request, pk):
 
 
 @login_required
+@permission_required('activos.add_ordencompradetalle', raise_exception=True)
 def orden_compra_linea_crear(request, pk):
     oc = get_object_or_404(OrdenCompra, pk=pk)
     verificar_acceso(request.user, oc.unidad_negocio)
@@ -147,6 +154,7 @@ def orden_compra_linea_crear(request, pk):
 
 
 @login_required
+@permission_required('activos.add_recepcionlote', raise_exception=True)
 def orden_compra_linea_recibir(request, pk):
     detalle = get_object_or_404(OrdenCompraDetalle.objects.select_related('orden_compra'), pk=pk)
     verificar_acceso(request.user, detalle.orden_compra.unidad_negocio)
@@ -183,6 +191,7 @@ def orden_compra_linea_recibir(request, pk):
 
 
 @login_required
+@permission_required('activos.view_movimientoinventario', raise_exception=True)
 def movimientos_inventario_lista(request):
     movimientos = activos_services.scope_movimientos_visibles(
         MovimientoInventario.objects.select_related(
@@ -210,6 +219,7 @@ def movimientos_inventario_lista(request):
 
 
 @login_required
+@permission_required('activos.change_ordencompra', raise_exception=True)
 def orden_compra_recibir(request, pk):
     oc = get_object_or_404(OrdenCompra, pk=pk)
     verificar_acceso(request.user, oc.unidad_negocio)
@@ -234,6 +244,7 @@ def orden_compra_recibir(request, pk):
 
 
 @login_required
+@permission_required('activos.view_activo', raise_exception=True)
 def activos_lista(request):
     activos = scope_opcional_por_unidad_negocio_activa(
         Activo.objects.select_related('bodega_actual', 'colaborador_actual', 'marca', 'categoria'),
@@ -260,6 +271,7 @@ def activos_lista(request):
 
 
 @login_required
+@permission_required('activos.add_activo', raise_exception=True)
 def activo_crear(request):
     if request.method == 'POST':
         form = ActivoIngresoForm(request.POST, user=request.user)
@@ -290,6 +302,7 @@ def activo_crear(request):
 
 
 @login_required
+@permission_required('activos.view_activo', raise_exception=True)
 def activo_detalle(request, pk):
     activo = get_object_or_404(
         Activo.objects.select_related(
@@ -303,6 +316,7 @@ def activo_detalle(request, pk):
 
 
 @login_required
+@permission_required('activos.change_activo', raise_exception=True)
 def activo_asignar(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
     verificar_acceso(request.user, activo.unidad_negocio)
@@ -328,6 +342,7 @@ def activo_asignar(request, pk):
 
 
 @login_required
+@permission_required('activos.change_activo', raise_exception=True)
 def activo_devolver(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
     verificar_acceso(request.user, activo.unidad_negocio)
@@ -354,6 +369,7 @@ def activo_devolver(request, pk):
 
 
 @login_required
+@permission_required('activos.change_activo', raise_exception=True)
 def activo_reparacion_enviar(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
     verificar_acceso(request.user, activo.unidad_negocio)
@@ -379,6 +395,7 @@ def activo_reparacion_enviar(request, pk):
 
 
 @login_required
+@permission_required('activos.change_activo', raise_exception=True)
 def activo_reparacion_retorno(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
     verificar_acceso(request.user, activo.unidad_negocio)
@@ -404,6 +421,7 @@ def activo_reparacion_retorno(request, pk):
 
 
 @login_required
+@permission_required('activos.change_activo', raise_exception=True)
 def activo_baja(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
     verificar_acceso(request.user, activo.unidad_negocio)
@@ -430,6 +448,7 @@ def activo_baja(request, pk):
 
 
 @login_required
+@permission_required('activos.change_activo', raise_exception=True)
 def activo_consumible_entregar(request, pk):
     activo = get_object_or_404(Activo, pk=pk)
     verificar_acceso(request.user, activo.unidad_negocio)
@@ -460,6 +479,7 @@ def activo_consumible_entregar(request, pk):
 
 
 @login_required
+@permission_required('activos.view_bodega', raise_exception=True)
 def bodegas_lista(request):
     bodegas = scope_opcional_por_unidad_negocio_activa(
         Bodega.objects.prefetch_related('stock__tipo_consumible'), request, 'unidad_negocio',
@@ -468,6 +488,7 @@ def bodegas_lista(request):
 
 
 @login_required
+@permission_required('activos.change_stockbodega', raise_exception=True)
 def bodega_stock_ingresar(request, pk):
     bodega = get_object_or_404(Bodega, pk=pk)
     verificar_acceso(request.user, bodega.unidad_negocio)
@@ -495,6 +516,7 @@ def bodega_stock_ingresar(request, pk):
 
 
 @login_required
+@permission_required('activos.view_activo', raise_exception=True)
 def activos_avisos(request):
     """Panel de visibilidad v1 (sin correo/Alerta todavía, decisión del usuario):
     garantías vencidas/por vencer, stock de consumibles bajo mínimo, y las anomalías

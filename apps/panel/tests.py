@@ -1343,6 +1343,10 @@ class ActivosMultiTenantTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia_activos', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='view_colaborador'),
+            Permission.objects.get(content_type__app_label='activos', codename='view_activo'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_colaboradores_lista_oculta_los_de_otro_tenant_pero_muestra_compartidos(self):
@@ -1362,6 +1366,33 @@ class ActivosMultiTenantTests(TestCase):
     def test_activo_compartido_es_accesible(self):
         resp = self.client.get(reverse('panel:activo_detalle', args=[self.activo_compartido.pk]))
         self.assertEqual(resp.status_code, 200)
+
+
+class ActivosVistasPermisoTests(TestCase):
+    """AC-1 de la auditoría de gobernanza (22-ago-2026): las 22 vistas de activos.py
+    solo pedían sesión iniciada. Cubre que un usuario sin rol quede afuera."""
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='sin_rol_act', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.activo = Activo.objects.create(codigo='CR-DSK-0099', tipo=Activo.Tipo.DESKTOP)
+        self.client.force_login(self.usuario)
+
+    def test_lista_sin_permiso_devuelve_403(self):
+        self.assertEqual(self.client.get(reverse('panel:activos_lista')).status_code, 403)
+
+    def test_crear_sin_permiso_devuelve_403(self):
+        self.assertEqual(self.client.get(reverse('panel:activo_crear')).status_code, 403)
+
+    def test_detalle_sin_permiso_devuelve_403(self):
+        resp = self.client.get(reverse('panel:activo_detalle', args=[self.activo.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_baja_sin_permiso_devuelve_403(self):
+        resp = self.client.post(reverse('panel:activo_baja', args=[self.activo.pk]))
+        self.assertEqual(resp.status_code, 403)
+        self.activo.refresh_from_db()
+        self.assertNotEqual(self.activo.estado, Activo.Estado.DADO_DE_BAJA)
 
 
 class BodegaOrdenCompraMultiTenantTests(TestCase):
@@ -1393,6 +1424,11 @@ class BodegaOrdenCompraMultiTenantTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia_bodegas', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='view_bodega'),
+            Permission.objects.get(content_type__app_label='activos', codename='view_ordencompra'),
+            Permission.objects.get(content_type__app_label='activos', codename='view_movimientoinventario'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_bodegas_lista_oculta_la_de_otro_tenant_pero_muestra_compartida(self):
@@ -1446,6 +1482,9 @@ class ActivosAvisosTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia_avisos', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='view_activo'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_renderiza_200(self):
