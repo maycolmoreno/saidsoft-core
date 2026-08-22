@@ -1537,3 +1537,36 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
     desarrollo real antes de escribir los tests automatizados: login sin dispositivo
     (sin cambios), enrolamiento con QR + confirmación, login exigiendo el código con
     dispositivo confirmado, y desactivación con contraseña.
+
+- **OPS-2 — 🟡 parcialmente cerrado (22-ago-2026):** de los tres huecos que dejó
+  documentados el cierre de OPS-1 (backups sin cifrar, sin copia fuera del servidor, y
+  nunca se había probado restaurar uno real), se cerraron los dos que no dependen de
+  definir infraestructura nueva:
+  - **Cifrado**: `deploy/backup.sh` cifra `db_*.sql.gz`/`media_*.tar.gz` con GPG
+    (AES256 simétrico) usando `BACKUP_ENCRYPTION_PASSPHRASE` de `.env` — el script se
+    niega a correr si falta la variable, en vez de dejar un backup sin cifrar por
+    descuido. `umask 077` en todo el script, así que incluso el archivo intermedio sin
+    cifrar (se borra apenas termina de cifrarse) nunca queda legible por otro usuario
+    del sistema. Passphrase real generada en el servidor con `openssl rand -base64 32`
+    y agregada a `deploy/.env` (nunca impresa en ningún mensaje ni commit).
+  - **Restauración probada de verdad, por primera vez**: nuevo `deploy/restaurar-backup.sh`
+    — descifra, descomprime y restaura contra una base `restore_test` por default
+    (nunca contra la real sin pasar su nombre explícitamente Y escribirlo de nuevo como
+    confirmación). Corrida real contra el backup recién generado
+    (`db_20260822_183404.sql.gz.gpg`): **109/109 tablas, 2/2 filas en `auth_user`,
+    5/5 filas en `estacion`** — coincide exactamente con la base real (`bd_saidsof`).
+    Los avisos de `pg_dump` sobre FKs circulares en tablas internas de TimescaleDB
+    (`hypertable`/`chunk`/`continuous_agg`, ya conocidos desde OPS-1) no impidieron una
+    restauración limpia — no hizo falta `--disable-triggers`, quedan solo como avisos.
+    También se verificó el candado de seguridad: pasando `bd_saidsof` como destino y
+    respondiendo cualquier cosa que no sea exactamente ese nombre, el script cancela
+    sin tocar nada (código de salida 1). Se aprovechó para borrar los dos backups
+    viejos sin cifrar que había dejado la prueba manual de OPS-1
+    (`db_20260822_103238.sql.gz`/`media_20260822_103238.tar.gz`) — no tenía sentido
+    cifrar los nuevos y dejar esos dos en texto plano al lado.
+  - **Sigue sin cerrar: copia fuera del servidor.** El servidor sí tiene salida a
+    internet y trae `rsync`/`gpg` instalados (no `rclone` ni un CLI de object storage),
+    así que técnicamente es viable — pero el destino (¿otro servidor propio por SSH?
+    ¿un bucket S3/Backblaze?) es una decisión de infraestructura que le corresponde al
+    usuario, no algo que se pueda inventar acá. Preguntado explícitamente (22-ago-2026):
+    todavía no hay un destino definido. Queda como ítem propio para cuando se decida.
