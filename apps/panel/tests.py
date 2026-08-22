@@ -17,7 +17,7 @@ from apps.activos.models import (
 )
 from apps.auditoria.models import EventoAuditoria, registrar_evento
 from apps.catalogo import crypto
-from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
+from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
 from apps.cuentas.models import PerfilUsuario
 from apps.cumplimiento.models import (
     ActividadCumplimiento, ResultadoCumplimientoEstacion, TipoObjetivoCumplimiento,
@@ -589,6 +589,65 @@ class EstacionMesaDeAyudaVsSoporteTecnicoTests(TestCase):
             self.client.post(reverse('panel:estaciones_aprobar_lote'), {'estacion_ids': [self.estacion.pk]}).status_code,
             403,
         )
+
+
+class EstacionActualizarAgenteTests(TestCase):
+    """Actualización remota del agente desde el panel: mismo permiso propio
+    (catalogo.actualizar_agente_estacion) que las demás acciones de riesgo sobre una
+    estación (aprobar/reiniciar) — ver seed_permisos.py."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE, version_agente='agente-prueba-0.1',
+        )
+        creador = User.objects.create_user(username='creador_va', password='x')
+        self.version = VersionAgente.objects.create(
+            version='agente-prueba-0.2', ejecutable=SimpleUploadedFile('agente.exe', b'contenido-falso'),
+            creado_por=creador,
+        )
+
+        self.sin_permiso = User.objects.create_user(username='sin_permiso_va', password='x')
+        PerfilUsuario.objects.create(usuario=self.sin_permiso, acceso_todas_unidades=True)
+
+        self.con_permiso = User.objects.create_user(username='con_permiso_va', password='x')
+        PerfilUsuario.objects.create(usuario=self.con_permiso, acceso_todas_unidades=True)
+        self.con_permiso.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='actualizar_agente_estacion'),
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
+
+    def test_sin_el_permiso_devuelve_403(self):
+        self.client.force_login(self.sin_permiso)
+        resp = self.client.post(reverse('panel:estacion_actualizar_agente_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_con_el_permiso_envia_la_actualizacion(self):
+        self.client.force_login(self.con_permiso)
+        with patch('apps.panel.views.estaciones.enviar_actualizacion_agente', return_value=True) as mock_enviar:
+            resp = self.client.post(reverse('panel:estacion_actualizar_agente_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_called_once_with(self.estacion, self.version)
+        self.assertTrue(EventoAuditoria.objects.filter(accion='estacion.actualizar_agente').exists())
+
+    def test_sin_ninguna_version_de_agente_cargada_no_envia_nada(self):
+        self.version.delete()
+        self.client.force_login(self.con_permiso)
+        with patch('apps.panel.views.estaciones.enviar_actualizacion_agente') as mock_enviar:
+            resp = self.client.post(reverse('panel:estacion_actualizar_agente_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_not_called()
+
+    def test_estacion_offline_no_envia_nada(self):
+        self.estacion.estado_conexion = Estacion.EstadoConexion.OFFLINE
+        self.estacion.save(update_fields=['estado_conexion'])
+        self.client.force_login(self.con_permiso)
+        with patch('apps.panel.views.estaciones.enviar_actualizacion_agente') as mock_enviar:
+            self.client.post(reverse('panel:estacion_actualizar_agente_solicitar', args=[self.estacion.pk]))
+        mock_enviar.assert_not_called()
 
 
 class CumplimientoViewsTests(TestCase):

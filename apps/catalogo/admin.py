@@ -9,7 +9,7 @@ from django.urls import path, reverse
 from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_por_unidad_negocio
 
-from .models import Estacion, Farmacia, Grupo, UnidadNegocio
+from .models import Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
 from .services import importar_farmacias_desde_csv
 
 
@@ -151,3 +151,18 @@ class EstacionAdmin(admin.ModelAdmin):
     @admin.action(description='Desactivar monitoreo de recursos (CPU/RAM/disco)')
     def desactivar_monitoreo_recursos(self, request, queryset):
         self._cambiar_monitoreo_recursos(request, queryset, activar=False)
+
+
+@admin.register(VersionAgente)
+class VersionAgenteAdmin(admin.ModelAdmin):
+    list_display = ('version', 'tamanio_bytes', 'creado_por', 'fecha_creacion')
+    readonly_fields = ('sha256', 'tamanio_bytes', 'creado_por', 'fecha_creacion')
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.creado_por = request.user
+        super().save_model(request, obj, form, change)
+        registrar_evento(
+            usuario=request.user, accion='version_agente.crear' if not change else 'version_agente.editar',
+            objeto=obj,
+        )

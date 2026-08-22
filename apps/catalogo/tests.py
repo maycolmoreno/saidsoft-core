@@ -4,16 +4,19 @@ import tempfile
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from apps.catalogo import crypto
-from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
+from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
 from apps.catalogo.services import (
-    enviar_comando, enviar_script, firmar_payload, generar_comando_instalacion_meshcentral,
-    obtener_clave_bitlocker_descifrada, resolver_estaciones, url_escritorio_remoto_meshcentral,
-    url_grabaciones_meshcentral, url_terminal_remoto_meshcentral, validar_destino_unidad_negocio,
+    enviar_actualizacion_agente, enviar_comando, enviar_script, firmar_payload,
+    generar_comando_instalacion_meshcentral, obtener_clave_bitlocker_descifrada, resolver_estaciones,
+    url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
+    validar_destino_unidad_negocio,
 )
 
 MESHCENTRAL_CONFIG_TEST = {
@@ -478,6 +481,58 @@ class ScriptFirmadoTests(TestCase):
         firma_esperada = firmar_payload(
             comando='ejecutar_script', ejecucion_id=1, resultado_id=2, tipo_script='powershell',
             timeout_segundos=60, contenido='Write-Host hola',
+            estacion='ML001-A', timestamp=payload['timestamp'],
+        )
+        self.assertEqual(payload['firma'], firma_esperada)
+
+
+class VersionAgenteTests(TestCase):
+    """Actualización remota del agente desde el panel: VersionAgente es el equivalente
+    de VersionAplicacion (software) pero para el propio binario del agente."""
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u', password='x')
+
+    def test_calcula_sha256_y_tamanio_al_guardar(self):
+        version = VersionAgente.objects.create(
+            version='agente-prueba-0.2', ejecutable=SimpleUploadedFile('agente.exe', b'contenido-falso'),
+            creado_por=self.usuario,
+        )
+        self.assertTrue(version.sha256)
+        self.assertEqual(version.tamanio_bytes, len(b'contenido-falso'))
+
+    def test_no_recalcula_el_hash_si_ya_existe(self):
+        version = VersionAgente.objects.create(
+            version='agente-prueba-0.2', ejecutable=SimpleUploadedFile('agente.exe', b'contenido-falso'),
+            creado_por=self.usuario,
+        )
+        hash_original = version.sha256
+        version.notas = 'build de prueba'
+        version.save()
+        self.assertEqual(version.sha256, hash_original)
+
+
+class EnviarActualizacionAgenteTests(TestCase):
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'))
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+        usuario = User.objects.create_user(username='u', password='x')
+        self.version = VersionAgente.objects.create(
+            version='agente-prueba-0.2', ejecutable=SimpleUploadedFile('agente.exe', b'contenido-falso'),
+            creado_por=usuario,
+        )
+
+    def test_el_payload_lleva_estacion_timestamp_y_firma_valida(self):
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            enviar_actualizacion_agente(self.estacion, self.version)
+        payload = json.loads(mock_single.call_args.args[1])
+        self.assertEqual(payload['comando'], 'actualizar_agente')
+        self.assertEqual(payload['estacion'], 'ML001-A')
+        self.assertEqual(payload['version'], 'agente-prueba-0.2')
+        self.assertEqual(payload['sha256'], self.version.sha256)
+        firma_esperada = firmar_payload(
+            comando='actualizar_agente', version=payload['version'], url=payload['url'], sha256=payload['sha256'],
             estacion='ML001-A', timestamp=payload['timestamp'],
         )
         self.assertEqual(payload['firma'], firma_esperada)

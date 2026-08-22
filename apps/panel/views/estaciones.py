@@ -5,17 +5,26 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from apps.auditoria.models import registrar_evento
-from apps.catalogo.models import Estacion, Grupo
+from apps.catalogo.models import Estacion, Grupo, VersionAgente
 from apps.catalogo.services import (
-    enviar_comando, obtener_clave_bitlocker_descifrada, url_escritorio_remoto_meshcentral,
-    url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
+    enviar_actualizacion_agente, enviar_comando, obtener_clave_bitlocker_descifrada,
+    url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
 from apps.monitoreo.services import ventana_mantenimiento_activa
 
 
 def _render_info_modal(request, estacion, **extra):
-    contexto = {'estacion': estacion, 'ventana_mantenimiento': ventana_mantenimiento_activa(estacion), **extra}
+    ultima_version_agente = VersionAgente.objects.order_by('-fecha_creacion').first()
+    agente_desactualizado = bool(
+        ultima_version_agente and estacion.version_agente
+        and estacion.version_agente != ultima_version_agente.version,
+    )
+    contexto = {
+        'estacion': estacion, 'ventana_mantenimiento': ventana_mantenimiento_activa(estacion),
+        'ultima_version_agente': ultima_version_agente, 'agente_desactualizado': agente_desactualizado,
+        **extra,
+    }
     return render(request, 'panel/estacion_info_modal.html', contexto)
 
 
@@ -144,6 +153,34 @@ def estacion_windows_update_solicitar(request, pk):
         registrar_evento(usuario=request.user, accion='estacion.escanear_actualizaciones', objeto=estacion, request=request)
         solicitado_wu = True
     return _render_info_modal(request, estacion, solicitado_wu=solicitado_wu)
+
+
+@login_required
+@permission_required('catalogo.actualizar_agente_estacion', raise_exception=True)
+@require_POST
+def estacion_actualizar_agente_solicitar(request, pk):
+    """Dispara la actualización remota del agente a la última VersionAgente cargada —
+    el agente se detiene, reemplaza su propio ejecutable y vuelve a arrancar solo (ver
+    agente-prueba/agente_prueba.py). Acción de riesgo: si el reemplazo falla a mitad de
+    camino, la estación queda sin agente hasta arreglarla a mano (queda un .bak junto al
+    ejecutable para poder revertir)."""
+    estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
+    version = VersionAgente.objects.order_by('-fecha_creacion').first()
+    solicitado_agente = False
+    error_agente = ''
+    if not version:
+        error_agente = 'No hay ninguna versión de agente cargada todavía (Admin → Versiones de agente).'
+    elif estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        error_agente = 'La estación no está aprobada.'
+    elif estacion.estado_conexion != Estacion.EstadoConexion.ONLINE:
+        error_agente = f'{estacion.codigo} no está en línea; no se envió la actualización.'
+    elif enviar_actualizacion_agente(estacion, version):
+        registrar_evento(usuario=request.user, accion='estacion.actualizar_agente', objeto=estacion, request=request)
+        solicitado_agente = True
+    else:
+        error_agente = f'No se pudo enviar la actualización a {estacion.codigo} (broker MQTT no disponible).'
+    return _render_info_modal(request, estacion, solicitado_agente=solicitado_agente, error_agente=error_agente)
 
 
 @login_required

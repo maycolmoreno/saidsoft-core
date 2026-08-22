@@ -72,6 +72,7 @@ PERMISOS_LITERALES = {
         ('catalogo', 'aprobar_estacion'),
         ('catalogo', 'reiniciar_estacion'),
         ('catalogo', 'escanear_actualizaciones_estacion'),
+        ('catalogo', 'actualizar_agente_estacion'),
         # ver_clave_bitlocker y supervision_auditoria_estacion quedan fuera a propósito,
         # mismo criterio que el resto del proyecto (ver comentarios en catalogo/models.py):
         # son más sensibles que el resto y se otorgan persona por persona, no por grupo.

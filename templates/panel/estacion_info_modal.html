@@ -35,6 +35,15 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
         Escaneo de software instalado solicitado — esta ventana se refresca sola cuando el equipo responda.
     </div>
     {% endif %}
+    {% if solicitado_agente %}
+    <div class="mb-4 text-xs px-3 py-2 rounded-md alert sev-info">
+        Actualización de agente enviada — la estación se reconecta sola con la versión nueva
+        en un par de minutos si todo salió bien.
+    </div>
+    {% endif %}
+    {% if error_agente %}
+    <div class="mb-4 text-xs px-3 py-2 rounded-md alert sev-critical">{{ error_agente }}</div>
+    {% endif %}
 
     <div class="field-grid">
         <div class="field">
@@ -144,6 +153,47 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
         <p class="text-xs text-[var(--text-faint)]">La estación debe estar aprobada y en línea para escanear.</p>
         {% endif %}
     </div>
+
+    {% if perms.catalogo.actualizar_agente_estacion %}
+    <div class="section-divider">
+        <div class="section-head">
+            <span class="label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+                <h3>Agente</h3>
+            </span>
+            {% if not estacion.version_agente %}
+            <span class="pill neutral">Nunca reportado</span>
+            {% elif agente_desactualizado %}
+            <span class="pill warning">Desactualizado</span>
+            {% else %}
+            <span class="pill good">Al día</span>
+            {% endif %}
+        </div>
+
+        <p class="text-xs text-[var(--text-faint)] mb-2">
+            Versión reportada: <span class="mono">{{ estacion.version_agente|default:"—" }}</span>
+            {% if ultima_version_agente %}
+            · última disponible: <span class="mono">{{ ultima_version_agente.version }}</span>
+            {% endif %}
+        </p>
+
+        {% if not ultima_version_agente %}
+        <p class="text-xs text-[var(--text-dim)] mb-2">No hay ninguna versión de agente cargada todavía.</p>
+        {% elif not agente_desactualizado %}
+        <p class="text-xs text-[var(--text-dim)] mb-2">Ya tiene la última versión disponible.</p>
+        {% elif estacion.estado_aprobacion == 'aprobada' and estacion.estado_conexion == 'online' %}
+        <form hx-post="{% url 'panel:estacion_actualizar_agente_solicitar' estacion.pk %}"
+              hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+              hx-target="#modal-info-content" hx-swap="innerHTML"
+              hx-confirm="Esto detiene y reemplaza el agente de {{ estacion.codigo }}. ¿Confirmás?">
+            {% csrf_token %}
+            <button type="submit" class="btn secondary">Actualizar a {{ ultima_version_agente.version }}</button>
+        </form>
+        {% else %}
+        <p class="text-xs text-[var(--text-faint)]">La estación debe estar aprobada y en línea para actualizar el agente.</p>
+        {% endif %}
+    </div>
+    {% endif %}
 
     <div class="section-divider">
         <div class="section-head">

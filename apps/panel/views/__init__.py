@@ -29,10 +29,11 @@ from .despliegues import (
     despliegues_lista,
 )
 from .estaciones import (
-    estacion_aprobar, estacion_bitlocker_ver_clave, estacion_info_modal, estacion_info_solicitar,
-    estacion_meshcentral_escritorio, estacion_meshcentral_terminal, estacion_meshcentral_vincular,
-    estacion_rechazar, estacion_reiniciar, estacion_software_instalado_solicitar, estacion_supervision_grabaciones,
-    estacion_windows_update_solicitar, estaciones_aprobar_lote, estaciones_lista, estaciones_pendientes_partial,
+    estacion_actualizar_agente_solicitar, estacion_aprobar, estacion_bitlocker_ver_clave, estacion_info_modal,
+    estacion_info_solicitar, estacion_meshcentral_escritorio, estacion_meshcentral_terminal,
+    estacion_meshcentral_vincular, estacion_rechazar, estacion_reiniciar, estacion_software_instalado_solicitar,
+    estacion_supervision_grabaciones, estacion_windows_update_solicitar, estaciones_aprobar_lote, estaciones_lista,
+    estaciones_pendientes_partial,
 )
 from .mantenimiento import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,

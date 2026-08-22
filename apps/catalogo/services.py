@@ -102,6 +102,28 @@ def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script
     })
 
 
+def enviar_actualizacion_agente(estacion, version_agente) -> bool:
+    """Publica la orden de actualizar el agente de `estacion` a `version_agente`
+    (apps.catalogo.models.VersionAgente). El agente se detiene, reemplaza su propio
+    ejecutable y vuelve a arrancar solo (ver agente-prueba/agente_prueba.py,
+    `_verificar_y_actualizar_agente`/`_aplicar_actualizacion_agente`).
+
+    Un agente anterior a esta función no sabe interpretar "actualizar_agente" y lo
+    ignora — la primera actualización de cada estación existente hay que instalarla a
+    mano; de ahí en adelante ya la puede disparar este mismo comando desde el panel.
+    """
+    timestamp = int(time.time())
+    url = settings.ARCHIVOS_BASE_URL.rstrip('/') + version_agente.ejecutable.url
+    firma = firmar_payload(
+        comando='actualizar_agente', version=version_agente.version, url=url, sha256=version_agente.sha256,
+        estacion=estacion.codigo, timestamp=timestamp,
+    )
+    return _publicar_comando(estacion, {
+        'comando': 'actualizar_agente', 'version': version_agente.version, 'url': url,
+        'sha256': version_agente.sha256, 'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
+    })
+
+
 def resolver_estaciones(destino_tipo, *, unidad_negocio, grupos=None, farmacias=None, estaciones=None):
     """Resuelve el queryset de Estacion aprobada para un destino_tipo/grupos/farmacias/estaciones,
     siempre acotado a `unidad_negocio` (el tenant del Despliegue/EjecucionScript que llama).

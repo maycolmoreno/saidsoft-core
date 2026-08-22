@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.1'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.2'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -503,6 +503,8 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
             self._verificar_y_escanear_actualizaciones(payload)
         elif comando == 'consultar_software_instalado':
             self._verificar_y_consultar_software_instalado(payload)
+        elif comando == 'actualizar_agente':
+            self._verificar_y_actualizar_agente(payload)
         else:
             logging.info('Comando "%s" recibido — no implementado en este agente de prueba.', comando)
 
@@ -783,6 +785,90 @@ ConvertTo-Json -Compress -InputObject @($programas)
         )
         datos = json.loads(salida) if salida.strip() else []
         return datos if isinstance(datos, list) else [datos]
+
+    # --- auto-actualización del agente ---
+    NOMBRE_SERVICIO = 'SaidsoftAgente'  # debe coincidir con ServicioAgenteSaidsoft._svc_name_
+
+    def _verificar_y_actualizar_agente(self, payload):
+        if not self._firma_valida(
+            'actualizar_agente', payload,
+            comando='actualizar_agente', version=payload.get('version'), url=payload.get('url'),
+            sha256=payload.get('sha256'), estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+        ):
+            return
+        # En un hilo aparte: la descarga y el reemplazo no deben bloquear el loop de MQTT.
+        threading.Thread(target=self._aplicar_actualizacion_agente, args=(payload,), daemon=True).start()
+
+    def _aplicar_actualizacion_agente(self, payload):
+        version_nueva = payload.get('version', '?')
+        if not getattr(sys, 'frozen', False):
+            logging.error(
+                'Actualización de agente a %s: no corre como ejecutable empaquetado '
+                '(modo consola/desarrollo) — se ignora, solo se auto-actualiza corriendo como servicio.',
+                version_nueva,
+            )
+            return
+        try:
+            ruta_nueva = self._descargar(payload['url'])
+            hash_local = self._sha256_de(ruta_nueva)
+            if hash_local.lower() != payload['sha256'].lower():
+                logging.error(
+                    'Actualización de agente a %s: SHA-256 no coincide (esperado %s, obtenido %s) — se descarta.',
+                    version_nueva, payload['sha256'], hash_local,
+                )
+                return
+        except Exception:
+            logging.exception('No se pudo descargar la actualización de agente a %s', version_nueva)
+            return
+
+        exe_actual = sys.executable
+        script_swap = self._generar_script_swap(exe_actual, ruta_nueva, version_nueva)
+        logging.info(
+            'Actualización de agente a %s: lanzando script de reemplazo (%s). El servicio "%s" se '
+            'reinicia solo en unos segundos.', version_nueva, script_swap, self.NOMBRE_SERVICIO,
+        )
+        # DETACHED_PROCESS: sigue vivo después de que el servicio actual se detenga (el
+        # propio script es quien detiene el servicio vía Stop-Service, no este proceso —
+        # un servicio de Windows no puede pararse a sí mismo desde adentro más que
+        # devolviendo el control a SvcDoRun, que es justo lo que Stop-Service dispara).
+        subprocess.Popen(
+            ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script_swap],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )
+
+    def _generar_script_swap(self, exe_actual: str, exe_nuevo: str, version_nueva: str) -> str:
+        """PowerShell separado del proceso del agente: espera a que el servicio quede
+        Stopped (recién ahí el .exe actual suelta su lock de archivo), reemplaza el
+        binario (con .bak por si hay que revertir a mano) y vuelve a arrancar el
+        servicio. Se autoborra al terminar."""
+        exe_bak = exe_actual + '.bak'
+        log_swap = os.path.join(tempfile.gettempdir(), 'saidsoft-agente-update.log')
+        script = f'''
+$ErrorActionPreference = 'Stop'
+"$(Get-Date -Format s) - Actualizando a {version_nueva}..." | Out-File -FilePath '{log_swap}' -Append
+try {{
+    Stop-Service -Name '{self.NOMBRE_SERVICIO}' -Force -ErrorAction SilentlyContinue
+    $intentos = 0
+    while ((Get-Service -Name '{self.NOMBRE_SERVICIO}').Status -ne 'Stopped' -and $intentos -lt 30) {{
+        Start-Sleep -Seconds 1
+        $intentos++
+    }}
+    if (Test-Path '{exe_bak}') {{ Remove-Item '{exe_bak}' -Force }}
+    Copy-Item '{exe_actual}' '{exe_bak}' -Force
+    Copy-Item '{exe_nuevo}' '{exe_actual}' -Force
+    Start-Service -Name '{self.NOMBRE_SERVICIO}'
+    "$(Get-Date -Format s) - Actualización a {version_nueva} aplicada." | Out-File -FilePath '{log_swap}' -Append
+}} catch {{
+    "$(Get-Date -Format s) - ERROR actualizando a {version_nueva}: $_" | Out-File -FilePath '{log_swap}' -Append
+    try {{ Start-Service -Name '{self.NOMBRE_SERVICIO}' -ErrorAction SilentlyContinue }} catch {{}}
+}}
+Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+'''
+        ruta_script = os.path.join(tempfile.gettempdir(), f'saidsoft-agente-update-{int(time.time())}.ps1')
+        with open(ruta_script, 'w', encoding='utf-8') as f:
+            f.write(script)
+        return ruta_script
 
     # --- software (catálogo) ---
     def _manejar_software(self, payload):

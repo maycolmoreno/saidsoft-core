@@ -1,3 +1,6 @@
+import hashlib
+
+from django.conf import settings
 from django.core.validators import RegexValidator
 from django.db import models
 
@@ -264,6 +267,9 @@ class Estacion(models.Model):
             ('aprobar_estacion', 'Puede aprobar o rechazar el enrolamiento de una estación'),
             ('reiniciar_estacion', 'Puede reiniciar remotamente una estación'),
             ('escanear_actualizaciones_estacion', 'Puede disparar un escaneo de Windows Update en una estación'),
+            # Reemplaza el binario del agente en caliente (se detiene, se reemplaza a sí
+            # mismo, vuelve a arrancar) — mismo nivel de riesgo que reiniciar_estacion.
+            ('actualizar_agente_estacion', 'Puede actualizar remotamente el agente de una estación'),
         ]
 
     def __str__(self):
@@ -291,6 +297,56 @@ class Estacion(models.Model):
             return None
         from apps.monitoreo.models import EstadoDispositivo
         return self.estados_dispositivo.filter(fuente=EstadoDispositivo.Fuente.MESHCENTRAL).first()
+
+
+def ruta_ejecutable_agente(instance, filename):
+    return f'agente/{instance.version}/{filename}'
+
+
+class VersionAgente(models.Model):
+    """Un build concreto del ejecutable del agente (agente-prueba/agente_prueba.py,
+    compilado con PyInstaller vía build.ps1), subido a mano después de cada cambio de
+    código del agente. Mismo patrón que apps.software.models.VersionAplicacion: el
+    hash se calcula acá al guardar — el agente nunca debe confiar en uno que le llegue
+    por otro lado (SEC-1).
+
+    Sin auto-actualización todavía la primera vez: un agente que no entiende el comando
+    "actualizar_agente" (cualquiera anterior a esta función) no puede aplicarlo solo —
+    la primera actualización de cada estación existente hay que instalarla a mano; de
+    ahí en adelante, ya la puede disparar el botón del panel.
+    """
+    version = models.CharField(max_length=30, unique=True)
+    ejecutable = models.FileField(upload_to=ruta_ejecutable_agente)
+    sha256 = models.CharField(max_length=64, blank=True, editable=False)
+    tamanio_bytes = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
+    notas = models.TextField(blank=True, help_text='Qué cambió en este build (opcional).')
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='versiones_agente_creadas',
+    )
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'version_agente'
+        ordering = ['-fecha_creacion']
+        verbose_name = 'Versión de agente'
+        verbose_name_plural = 'Versiones de agente'
+
+    def __str__(self):
+        return self.version
+
+    def calcular_sha256(self):
+        hasher = hashlib.sha256()
+        self.ejecutable.seek(0)
+        for chunk in self.ejecutable.chunks():
+            hasher.update(chunk)
+        self.ejecutable.seek(0)
+        return hasher.hexdigest()
+
+    def save(self, *args, **kwargs):
+        if self.ejecutable and not self.sha256:
+            self.sha256 = self.calcular_sha256()
+            self.tamanio_bytes = self.ejecutable.size
+        super().save(*args, **kwargs)
 
 
 class ClaveRecuperacionBitLocker(models.Model):

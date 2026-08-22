@@ -1400,15 +1400,60 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   de esta auditoría, este cambio no es solo del lado servidor: cambia el protocolo entre
   servidor y agente. Si se reconstruye/reinicia el `web`/`worker` de producción con este
   código, el servidor empieza a firmar con `estacion`+`timestamp`, pero **todos los
-  agentes ya instalados en las ~1.800 estaciones reales siguen validando con el esquema
-  viejo** — la firma no va a coincidir y esos agentes van a rechazar *todo* comando
-  (reiniciar, scripts, despliegues, instalación de software) hasta que cada estación
-  reciba el agente nuevo. Confirmado con el usuario (22-ago-2026): **hoy no existe ningún
-  mecanismo de actualización masiva** para un agente ya instalado — el GPO Computer
-  Startup Script (`deploy/docs/desplegar-agente-gpo.ps1`) es idempotente a propósito y
-  sale sin hacer nada si el servicio ya existe, así que solo cubre altas nuevas, no
-  reemplazar el binario en una estación que ya lo tiene corriendo. Este ítem queda **código
-  completo, commiteado y pusheado (`9742064`), pero sin desplegar** hasta que exista un
-  plan de rollout del agente (nuevo mecanismo de update masivo, o aceptar una ventana de
-  reemplazo manual estación por estación). Retomar este despliegue es un ítem propio, no
-  implícito en "seguir con el orden de la auditoría".
+  agentes ya instalados siguen validando con el esquema viejo** — la firma no va a
+  coincidir y esos agentes van a rechazar *todo* comando (reiniciar, scripts,
+  despliegues, instalación de software) hasta que cada estación reciba el agente nuevo.
+  Aclarado con el usuario (22-ago-2026): el piloto real hoy son solo **5 estaciones**
+  con el agente instalado (no las ~1.800 de la capacidad de diseño), así que una
+  actualización manual puntual es perfectamente viable — pero el usuario pidió no
+  depender de eso hacia adelante y en cambio construir la actualización remota desde el
+  panel (ver ítem siguiente). Este commit (`9742064`) queda **código completo,
+  commiteado y pusheado, pero sin desplegar** hasta que las 5 estaciones tengan el
+  agente nuevo (ver secuencia de despliegue en el ítem "Actualización remota del agente
+  desde el panel", más abajo).
+
+- **Actualización remota del agente desde el panel — 🟡 código listo, pendiente de
+  secuenciar con SEC-1 (22-ago-2026):** no era un hallazgo de la auditoría original,
+  surgió como bloqueante directo de SEC-1: para desplegar la firma HMAC nueva hacía
+  falta alguna forma de llevar el agente de las estaciones reales al mismo esquema, y
+  hoy no existía ninguna (el GPO Computer Startup Script,
+  `deploy/docs/desplegar-agente-gpo.ps1`, es idempotente a propósito — sale sin hacer
+  nada si el servicio ya existe, así que solo cubre altas nuevas, no reemplazar el
+  binario de una estación que ya lo tiene corriendo). Con el piloto en 5 estaciones el
+  usuario decidió construir el mecanismo real en vez de resolverlo a mano una vez más:
+
+  - **Modelo** `apps.catalogo.models.VersionAgente` (mismo patrón que
+    `apps.software.models.VersionAplicacion`: el `.exe` compilado con
+    `agente-prueba/build.ps1` se sube a mano por el admin, el sha256 se calcula acá al
+    guardar, nunca se confía en uno que llegue por otro lado).
+  - **Comando nuevo** `actualizar_agente` (`apps.catalogo.services.enviar_actualizacion_agente`),
+    mismo esquema de firma que el resto de SEC-1 (`estacion`+`timestamp`).
+  - **Botón "Actualizar agente"** en el modal de la estación, permiso propio
+    `catalogo.actualizar_agente_estacion` (mismo nivel de riesgo que
+    `reiniciar_estacion`/`aprobar_estacion`, otorgado a Soporte Técnico en
+    `seed_permisos.py`) — visible solo si hay una `VersionAgente` más nueva que la que
+    la estación reportó (`Estacion.version_agente`, ya existía y ya se actualiza en cada
+    heartbeat, no hizo falta ningún campo nuevo para saber si la actualización aplicó).
+  - **Lado agente**: nuevo handler que descarga el `.exe`, verifica el sha256, y lanza un
+    script PowerShell **separado y desatachado** que hace lo que el propio proceso no
+    puede hacerse a sí mismo (hasta soltar el lock de su propio ejecutable): espera a que
+    el servicio de Windows quede `Stopped` (lo detiene él, vía `Stop-Service` — un
+    servicio no puede pararse solo desde adentro más que devolviendo el control a
+    `SvcDoRun`, que es justo lo que `Stop-Service` dispara), reemplaza el binario
+    (guardando un `.bak` para poder revertir a mano si algo sale mal) y vuelve a
+    arrancarlo. `VERSION_AGENTE_PRUEBA` subió a `agente-prueba-0.2` para este build (SEC-1
+    + esta función, empaquetadas juntas).
+  - **Bootstrap con un huevo y la gallina, resuelto a mano una única vez**: un agente
+    anterior a este cambio no entiende el comando `actualizar_agente` (ni el esquema de
+    firma de SEC-1) — no hay forma de que el panel lo actualice a sí mismo la primera
+    vez. Secuencia real de despliegue, en orden estricto:
+    1. Compilar el nuevo `.exe` (`build.ps1`) e instalarlo a mano en las 5 estaciones del
+       piloto (reemplazo directo del servicio, sin pasar por el panel — es la única vez
+       que hace falta).
+    2. Recién ahí desplegar el servidor (`git pull` + migrar + reconstruir
+       `web`/`worker`/etc. + reiniciar) — para entonces las 5 estaciones ya entienden el
+       esquema nuevo, así que no se rompe nada.
+    3. Subir ese mismo `.exe` como la primera `VersionAgente` en el admin, para que de
+       ahí en adelante cualquier actualización futura salga por el botón del panel.
+  - Suite completa verificada en verde (506 tests OK) + `check`/`makemigrations --check
+    --dry-run` limpios. Migración `0019` (nuevo modelo + permiso).
