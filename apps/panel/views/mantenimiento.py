@@ -1,5 +1,5 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
@@ -18,6 +18,7 @@ from apps.mantenimiento.tasks import generar_informe_pdf_task
 
 
 @login_required
+@permission_required('mantenimiento.view_mantenimiento', raise_exception=True)
 def mantenimientos_lista(request):
     mantenimientos = scope_opcional_por_unidad_negocio_activa(
         Mantenimiento.objects.select_related('cliente', 'tecnico'), request, 'cliente__unidad_negocio',
@@ -35,6 +36,7 @@ def mantenimientos_lista(request):
 
 
 @login_required
+@permission_required('mantenimiento.add_mantenimiento', raise_exception=True)
 def mantenimiento_crear(request):
     if request.method == 'POST':
         form = MantenimientoManualForm(request.POST)
@@ -64,6 +66,7 @@ def mantenimiento_crear(request):
 
 
 @login_required
+@permission_required('mantenimiento.view_mantenimiento', raise_exception=True)
 def mantenimiento_detalle(request, pk):
     mantenimiento = get_object_or_404(
         Mantenimiento.objects.select_related('cliente', 'tecnico', 'mantenimiento_programado'),
@@ -88,6 +91,7 @@ def mantenimiento_detalle(request, pk):
 
 
 @login_required
+@permission_required('mantenimiento.change_mantenimiento', raise_exception=True)
 def mantenimiento_iniciar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
     verificar_acceso(request.user, mantenimiento.unidad_negocio)
@@ -104,6 +108,7 @@ def mantenimiento_iniciar(request, pk):
 
 
 @login_required
+@permission_required('mantenimiento.change_mantenimiento', raise_exception=True)
 def mantenimiento_checklist_actualizar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
     verificar_acceso(request.user, mantenimiento.unidad_negocio)
@@ -121,6 +126,7 @@ def mantenimiento_checklist_actualizar(request, pk):
 
 
 @login_required
+@permission_required('mantenimiento.change_mantenimiento', raise_exception=True)
 def mantenimiento_cerrar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
     verificar_acceso(request.user, mantenimiento.unidad_negocio)
@@ -150,6 +156,7 @@ def mantenimiento_cerrar(request, pk):
 
 
 @login_required
+@permission_required('mantenimiento.change_mantenimiento', raise_exception=True)
 def mantenimiento_cancelar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
     verificar_acceso(request.user, mantenimiento.unidad_negocio)
@@ -177,6 +184,7 @@ def mantenimiento_cancelar(request, pk):
 
 
 @login_required
+@permission_required('mantenimiento.view_mantenimientoprogramado', raise_exception=True)
 def mantenimientos_programados_lista(request):
     programados = scope_opcional_por_unidad_negocio_activa(
         MantenimientoProgramado.objects.select_related('equipo', 'tecnico'), request, 'equipo__unidad_negocio',
@@ -185,6 +193,7 @@ def mantenimientos_programados_lista(request):
 
 
 @login_required
+@permission_required('mantenimiento.add_mantenimientoprogramado', raise_exception=True)
 def mantenimiento_programado_crear(request):
     if request.method == 'POST':
         form = MantenimientoProgramadoForm(request.POST)
@@ -204,6 +213,7 @@ def mantenimiento_programado_crear(request):
 
 
 @login_required
+@permission_required('mantenimiento.change_mantenimiento', raise_exception=True)
 def mantenimiento_firmar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
     verificar_acceso(request.user, mantenimiento.unidad_negocio)
@@ -229,6 +239,7 @@ def mantenimiento_firmar(request, pk):
 
 
 @login_required
+@permission_required('mantenimiento.change_mantenimiento', raise_exception=True)
 def mantenimiento_imagen_adjuntar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
     verificar_acceso(request.user, mantenimiento.unidad_negocio)
@@ -252,6 +263,7 @@ def mantenimiento_imagen_adjuntar(request, pk):
 
 
 @login_required
+@permission_required('mantenimiento.change_mantenimiento', raise_exception=True)
 def mantenimiento_repuesto_agregar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
     verificar_acceso(request.user, mantenimiento.unidad_negocio)
@@ -281,6 +293,7 @@ def mantenimiento_repuesto_agregar(request, pk):
 
 
 @login_required
+@permission_required('mantenimiento.view_mantenimiento', raise_exception=True)
 def mantenimiento_orden_trabajo(request, pk):
     """Orden de trabajo imprimible (Ctrl+P del navegador) — vista rápida sin esperar a la
     generación async del PDF (ver mantenimiento_generar_informe_pdf/informe_pdf)."""
@@ -304,6 +317,7 @@ def mantenimiento_orden_trabajo(request, pk):
 
 
 @login_required
+@permission_required('mantenimiento.change_mantenimiento', raise_exception=True)
 def mantenimiento_generar_informe_pdf(request, pk):
     """Encola la generación del PDF (apps.mantenimiento.tasks.generar_informe_pdf_task).
     En dev (CELERY_TASK_ALWAYS_EAGER) queda listo antes del redirect; en producción el
@@ -321,6 +335,7 @@ def mantenimiento_generar_informe_pdf(request, pk):
 
 
 @login_required
+@permission_required('mantenimiento.view_actividadplanificada', raise_exception=True)
 def actividades_planificadas_lista(request):
     actividades = ActividadPlanificada.objects.filter(activo=True).select_related(
         'tecnico', 'equipo', 'ubicacion',
@@ -341,6 +356,7 @@ def actividades_planificadas_lista(request):
 
 
 @login_required
+@permission_required('mantenimiento.add_actividadplanificada', raise_exception=True)
 def actividad_planificada_crear(request):
     if request.method == 'POST':
         form = ActividadPlanificadaForm(request.POST)
@@ -366,6 +382,7 @@ def actividad_planificada_crear(request):
 
 
 @login_required
+@permission_required('mantenimiento.change_actividadplanificada', raise_exception=True)
 def actividad_planificada_completar(request, pk):
     actividad = get_object_or_404(ActividadPlanificada, pk=pk)
     if request.method == 'POST':

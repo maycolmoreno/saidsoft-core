@@ -617,6 +617,10 @@ class CumplimientoViewsTests(TestCase):
 class MantenimientoCrearViewTests(TestCase):
     def setUp(self):
         self.usuario = User.objects.create_user(username='u', password='x')
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='mantenimiento', codename='add_mantenimiento'),
+            Permission.objects.get(content_type__app_label='mantenimiento', codename='view_mantenimiento'),
+        )
         self.client.force_login(self.usuario)
         self.equipo = Activo.objects.create(codigo='CR-DSK-0099', tipo=Activo.Tipo.DESKTOP)
         self.cliente = Colaborador.objects.create(nombre='Ana', cedula='9999')
@@ -1512,6 +1516,9 @@ class MantenimientoMultiTenantTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia_mant', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='mantenimiento', codename='view_mantenimiento'),
+        )
         self.client.force_login(self.usuario_mia)
 
     def test_lista_no_muestra_mantenimiento_de_otro_tenant(self):
