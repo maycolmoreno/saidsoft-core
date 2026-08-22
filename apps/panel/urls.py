@@ -166,6 +166,7 @@ urlpatterns = [
     path('ejecuciones/', views.ejecuciones_lista, name='ejecuciones_lista'),
     path('ejecuciones/<int:pk>/', views.ejecucion_detalle, name='ejecucion_detalle'),
     path('ejecuciones/<int:pk>/progreso/', views.ejecucion_progreso_partial, name='ejecucion_progreso_partial'),
+    path('ejecuciones/<int:pk>/aprobar/', views.ejecucion_aprobar, name='ejecucion_aprobar'),
 
     # Catálogo de software
     path('aplicaciones/', views.aplicaciones_lista, name='aplicaciones_lista'),

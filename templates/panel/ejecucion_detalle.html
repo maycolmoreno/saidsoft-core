@@ -6,6 +6,19 @@
 </div>
 <p class="text-sm text-[var(--text-faint)] mb-6">{{ ejecucion.get_destino_tipo_display }} · timeout {{ ejecucion.timeout_segundos }}s · {{ ejecucion.fecha_creacion|date:"d/m/Y H:i" }}</p>
 
+{% if ejecucion.estado == 'pendiente_aprobacion' %}
+<div class="flex items-center gap-3 mb-6">
+    {% if perms.scripts.aprobar_ejecucionscript and ejecucion.creado_por_id != request.user.id %}
+    <form method="post" action="{% url 'panel:ejecucion_aprobar' ejecucion.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="btn primary" style="background:var(--good);">Aprobar</button>
+    </form>
+    {% else %}
+    <span class="text-sm text-[var(--text-faint)] italic">Esperando aprobación de otro usuario (regla de cuatro ojos) antes de enviarse a las estaciones.</span>
+    {% endif %}
+</div>
+{% endif %}
+
 <div id="progreso-wrap"
      hx-get="{% url 'panel:ejecucion_progreso_partial' ejecucion.pk %}"
      hx-trigger="load, every 4s"

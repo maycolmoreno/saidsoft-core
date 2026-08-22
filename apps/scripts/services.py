@@ -12,6 +12,14 @@ from apps.catalogo.services import enviar_script, resolver_estaciones
 
 from .models import EjecucionScript, ResultadoEjecucionScript, Script
 
+# Correr código arbitrario contra toda la cadena/grupos/farmacias es la misma superficie
+# de riesgo que un Despliegue a esos destinos: requiere aprobación de un segundo usuario
+# (regla de cuatro ojos, permiso `aprobar_ejecucionscript`). ESTACIONES queda afuera
+# porque ya es un destino angosto (p.ej. instalar el agente en una sola estación puntual).
+DESTINOS_QUE_REQUIEREN_APROBACION = {
+    EjecucionScript.DestinoTipo.CADENA, EjecucionScript.DestinoTipo.GRUPOS, EjecucionScript.DestinoTipo.FARMACIAS,
+}
+
 
 def crear_script_adhoc(*, nombre, tipo, contenido, unidad_negocio, usuario):
     return Script.objects.create(
@@ -21,11 +29,25 @@ def crear_script_adhoc(*, nombre, tipo, contenido, unidad_negocio, usuario):
 
 
 def registrar_ejecucion_script(*, script, destino_tipo, usuario, unidad_negocio, timeout_segundos=300,
-                                grupos=None, farmacias=None, estaciones=None, parametros=None, programado=None):
+                                grupos=None, farmacias=None, estaciones=None, parametros=None, programado=None,
+                                omitir_aprobacion=False):
+    # Las ejecuciones generadas por un ScriptProgramado ya pasaron su propio control de
+    # cuatro ojos al crear la política (permiso scripts.add_scriptprogramado) — exigir
+    # aprobación en cada disparo automático rompería la recurrencia sin agregar gobernanza real.
+    # `omitir_aprobacion` es para comandos de gestión que ya corren con acceso de shell al
+    # servidor de producción (p.ej. cambiar_nodo_pos) — ese acceso es un control más fuerte
+    # que el permiso del panel que esta aprobación reemplaza, así que exigirla ahí también
+    # sería gobernanza de cartón, no real.
+    requiere_aprobacion = (
+        not omitir_aprobacion and programado is None and destino_tipo in DESTINOS_QUE_REQUIEREN_APROBACION
+    )
     ejecucion = EjecucionScript(
         script=script, contenido_snapshot=script.contenido, destino_tipo=destino_tipo,
         unidad_negocio=unidad_negocio, timeout_segundos=timeout_segundos, programado=programado,
         parametros=parametros or {}, creado_por=usuario,
+        estado=(
+            EjecucionScript.Estado.PENDIENTE_APROBACION if requiere_aprobacion else EjecucionScript.Estado.PENDIENTE
+        ),
     )
     ejecucion.save()
     if destino_tipo == EjecucionScript.DestinoTipo.GRUPOS:
@@ -35,8 +57,17 @@ def registrar_ejecucion_script(*, script, destino_tipo, usuario, unidad_negocio,
     elif destino_tipo == EjecucionScript.DestinoTipo.ESTACIONES:
         ejecucion.estaciones.set(estaciones or [])
 
+    if not requiere_aprobacion:
+        _publicar_ejecucion(ejecucion)
+    return ejecucion
+
+
+def _publicar_ejecucion(ejecucion):
+    """Resuelve el destino y envía el script por MQTT a cada estación. Se llama al crear
+    una ejecución que no necesita aprobación, y desde `aprobar_ejecucion_script` una vez
+    que un segundo usuario aprobó una que sí la necesitaba."""
     estaciones_destino = resolver_estaciones(
-        destino_tipo, unidad_negocio=unidad_negocio, grupos=ejecucion.grupos.all(),
+        ejecucion.destino_tipo, unidad_negocio=ejecucion.unidad_negocio, grupos=ejecucion.grupos.all(),
         farmacias=ejecucion.farmacias.all(), estaciones=ejecucion.estaciones.all(),
     )
     resultados = ResultadoEjecucionScript.objects.bulk_create([
@@ -47,7 +78,7 @@ def registrar_ejecucion_script(*, script, destino_tipo, usuario, unidad_negocio,
     for resultado in resultados:
         enviado = enviar_script(
             resultado.estacion, ejecucion_id=ejecucion.pk, resultado_id=resultado.pk,
-            tipo_script=script.tipo, contenido=ejecucion.contenido_snapshot,
+            tipo_script=ejecucion.script.tipo, contenido=ejecucion.contenido_snapshot,
             timeout_segundos=ejecucion.timeout_segundos,
         )
         resultado.estado = (
@@ -57,6 +88,17 @@ def registrar_ejecucion_script(*, script, destino_tipo, usuario, unidad_negocio,
         resultado.save(update_fields=['estado', 'fecha_envio'])
 
     recalcular_estado_ejecucion(ejecucion)
+
+
+def aprobar_ejecucion_script(*, ejecucion, usuario):
+    if ejecucion.estado != EjecucionScript.Estado.PENDIENTE_APROBACION:
+        raise ValueError('Esta ejecución ya no está pendiente de aprobación.')
+    if ejecucion.creado_por_id == usuario.id:
+        raise ValueError('Quien crea la ejecución no puede aprobarla (regla de cuatro ojos).')
+    ejecucion.aprobado_por = usuario
+    ejecucion.estado = EjecucionScript.Estado.PENDIENTE
+    ejecucion.save(update_fields=['aprobado_por', 'estado'])
+    _publicar_ejecucion(ejecucion)
     return ejecucion
 
 

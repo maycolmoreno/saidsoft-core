@@ -52,8 +52,9 @@ from .reportes import (
     reportes_index,
 )
 from .scripts import (
-    ejecucion_detalle, ejecucion_progreso_partial, ejecuciones_lista, script_crear, script_detalle,
-    script_ejecutar, script_ejecutar_adhoc, script_programado_crear, scripts_lista, scripts_programados_lista,
+    ejecucion_aprobar, ejecucion_detalle, ejecucion_progreso_partial, ejecuciones_lista, script_crear,
+    script_detalle, script_ejecutar, script_ejecutar_adhoc, script_programado_crear, scripts_lista,
+    scripts_programados_lista,
 )
 from .software import (
     aplicacion_crear, aplicacion_detalle, aplicaciones_lista, software_desactualizado_lista,

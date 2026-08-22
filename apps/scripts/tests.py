@@ -8,7 +8,7 @@ from django.utils import timezone
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
 from .models import EjecucionScript, Script, ScriptProgramado, TipoScript
-from .services import generar_ejecucion_programada
+from .services import aprobar_ejecucion_script, generar_ejecucion_programada, registrar_ejecucion_script
 
 
 class GenerarEjecucionProgramadaTests(TestCase):
@@ -57,6 +57,92 @@ class GenerarEjecucionProgramadaTests(TestCase):
         self.programado.save(update_fields=['activo'])
         call_command('generar_ejecuciones_programadas')
         self.assertFalse(EjecucionScript.objects.filter(programado=self.programado).exists())
+
+
+class RegistrarEjecucionScriptAprobacionTests(TestCase):
+    """AC-3: destinos amplios (cadena/grupos/farmacias) quedan pendientes de aprobación
+    y no se publican hasta que un segundo usuario las apruebe; destinos angostos
+    (estaciones puntuales) y las ejecuciones generadas por ScriptProgramado siguen
+    publicándose de inmediato, igual que antes de esta regla."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.grupo = grupo
+        self.creador = User.objects.create_user(username='creador', password='x')
+        self.aprobador = User.objects.create_user(username='aprobador', password='x')
+        self.script = Script.objects.create(
+            nombre='Actualizar winget', tipo=TipoScript.POWERSHELL, contenido='winget upgrade --all',
+            creado_por=self.creador,
+        )
+
+    def test_destino_cadena_queda_pendiente_de_aprobacion_sin_publicar(self):
+        ejecucion = registrar_ejecucion_script(
+            script=self.script, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
+            unidad_negocio=self.sg, usuario=self.creador,
+        )
+        self.assertEqual(ejecucion.estado, EjecucionScript.Estado.PENDIENTE_APROBACION)
+        self.assertEqual(ejecucion.resultados.count(), 0)
+
+    def test_destino_estaciones_no_requiere_aprobacion(self):
+        ejecucion = registrar_ejecucion_script(
+            script=self.script, destino_tipo=EjecucionScript.DestinoTipo.ESTACIONES,
+            unidad_negocio=self.sg, usuario=self.creador, estaciones=[self.estacion],
+        )
+        self.assertNotEqual(ejecucion.estado, EjecucionScript.Estado.PENDIENTE_APROBACION)
+        self.assertEqual(ejecucion.resultados.count(), 1)
+
+    def test_ejecucion_programada_no_requiere_aprobacion_aunque_el_destino_sea_amplio(self):
+        programado = ScriptProgramado.objects.create(
+            script=self.script, unidad_negocio=self.sg, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
+            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.now().date(), creado_por=self.creador,
+        )
+        ejecucion = generar_ejecucion_programada(programado=programado)
+        self.assertNotEqual(ejecucion.estado, EjecucionScript.Estado.PENDIENTE_APROBACION)
+        self.assertEqual(ejecucion.resultados.count(), 1)
+
+    def test_omitir_aprobacion_publica_de_inmediato(self):
+        ejecucion = registrar_ejecucion_script(
+            script=self.script, destino_tipo=EjecucionScript.DestinoTipo.GRUPOS,
+            unidad_negocio=self.sg, usuario=self.creador, grupos=[self.grupo], omitir_aprobacion=True,
+        )
+        self.assertNotEqual(ejecucion.estado, EjecucionScript.Estado.PENDIENTE_APROBACION)
+        self.assertEqual(ejecucion.resultados.count(), 1)
+
+    def test_aprobar_publica_la_ejecucion(self):
+        ejecucion = registrar_ejecucion_script(
+            script=self.script, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
+            unidad_negocio=self.sg, usuario=self.creador,
+        )
+        aprobar_ejecucion_script(ejecucion=ejecucion, usuario=self.aprobador)
+        ejecucion.refresh_from_db()
+        self.assertEqual(ejecucion.aprobado_por, self.aprobador)
+        self.assertNotEqual(ejecucion.estado, EjecucionScript.Estado.PENDIENTE_APROBACION)
+        self.assertEqual(ejecucion.resultados.count(), 1)
+
+    def test_creador_no_puede_aprobar_su_propia_ejecucion(self):
+        ejecucion = registrar_ejecucion_script(
+            script=self.script, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
+            unidad_negocio=self.sg, usuario=self.creador,
+        )
+        with self.assertRaises(ValueError):
+            aprobar_ejecucion_script(ejecucion=ejecucion, usuario=self.creador)
+        ejecucion.refresh_from_db()
+        self.assertEqual(ejecucion.estado, EjecucionScript.Estado.PENDIENTE_APROBACION)
+        self.assertEqual(ejecucion.resultados.count(), 0)
+
+    def test_no_se_puede_aprobar_dos_veces(self):
+        ejecucion = registrar_ejecucion_script(
+            script=self.script, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
+            unidad_negocio=self.sg, usuario=self.creador,
+        )
+        aprobar_ejecucion_script(ejecucion=ejecucion, usuario=self.aprobador)
+        with self.assertRaises(ValueError):
+            aprobar_ejecucion_script(ejecucion=ejecucion, usuario=self.aprobador)
 
 
 class GenerarEjecucionesProgramadasTaskTests(TestCase):

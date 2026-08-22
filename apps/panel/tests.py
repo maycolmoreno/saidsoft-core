@@ -865,6 +865,62 @@ class DespliegueAprobarPermisoTests(TestCase):
         self.assertEqual(self.despliegue.estado, Despliegue.Estado.PENDIENTE_APROBACION)
 
 
+class EjecucionScriptAprobarPermisoTests(TestCase):
+    """AC-3 de la auditoría de gobernanza (22-ago-2026): ejecutar un script contra toda
+    la cadena/grupos/farmacias no tenía ninguna aprobación de un segundo usuario, a
+    diferencia de un Despliegue al mismo destino. Mismo patrón que DespliegueAprobarPermisoTests:
+    permiso scripts.aprobar_ejecucionscript + regla de cuatro ojos (creador != aprobador)."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.creador = User.objects.create_user(username='creador_ejec', password='x')
+        PerfilUsuario.objects.create(usuario=self.creador, acceso_todas_unidades=True)
+        script = Script.objects.create(
+            nombre='Actualizar winget', tipo=TipoScript.POWERSHELL, contenido='winget upgrade --all',
+            creado_por=self.creador,
+        )
+        self.ejecucion = EjecucionScript.objects.create(
+            script=script, contenido_snapshot=script.contenido, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
+            unidad_negocio=self.sg, estado=EjecucionScript.Estado.PENDIENTE_APROBACION, creado_por=self.creador,
+        )
+
+        self.usuario_sin_permiso = User.objects.create_user(username='sin_permiso_ejec', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_sin_permiso, acceso_todas_unidades=True)
+
+        self.usuario_con_permiso = User.objects.create_user(username='con_permiso_ejec', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario_con_permiso, acceso_todas_unidades=True)
+        self.usuario_con_permiso.user_permissions.add(
+            Permission.objects.get(content_type__app_label='scripts', codename='aprobar_ejecucionscript'),
+            Permission.objects.get(content_type__app_label='scripts', codename='view_ejecucionscript'),
+        )
+
+    def test_usuario_sin_el_permiso_no_puede_aprobar(self):
+        self.client.force_login(self.usuario_sin_permiso)
+        resp = self.client.post(reverse('panel:ejecucion_aprobar', args=[self.ejecucion.pk]))
+        self.assertEqual(resp.status_code, 403)
+        self.ejecucion.refresh_from_db()
+        self.assertEqual(self.ejecucion.estado, EjecucionScript.Estado.PENDIENTE_APROBACION)
+
+    def test_usuario_con_el_permiso_puede_aprobar_y_publica_la_ejecucion(self):
+        self.client.force_login(self.usuario_con_permiso)
+        resp = self.client.post(reverse('panel:ejecucion_aprobar', args=[self.ejecucion.pk]))
+        self.assertRedirects(resp, reverse('panel:ejecucion_detalle', args=[self.ejecucion.pk]))
+        self.ejecucion.refresh_from_db()
+        self.assertNotEqual(self.ejecucion.estado, EjecucionScript.Estado.PENDIENTE_APROBACION)
+        self.assertEqual(self.ejecucion.aprobado_por, self.usuario_con_permiso)
+
+    def test_el_creador_con_el_permiso_igual_no_puede_aprobar_la_propia(self):
+        self.creador.user_permissions.add(
+            Permission.objects.get(content_type__app_label='scripts', codename='aprobar_ejecucionscript'),
+            Permission.objects.get(content_type__app_label='scripts', codename='view_ejecucionscript'),
+        )
+        self.client.force_login(self.creador)
+        resp = self.client.post(reverse('panel:ejecucion_aprobar', args=[self.ejecucion.pk]))
+        self.assertRedirects(resp, reverse('panel:ejecucion_detalle', args=[self.ejecucion.pk]))
+        self.ejecucion.refresh_from_db()
+        self.assertEqual(self.ejecucion.estado, EjecucionScript.Estado.PENDIENTE_APROBACION)
+
+
 class DespliegueVistasPermisoTests(TestCase):
     """AC-1 de la auditoría de gobernanza (22-ago-2026): 9 de las 9 vistas de
     despliegues.py no pedían ningún permiso, solo sesión iniciada. Cubre que un

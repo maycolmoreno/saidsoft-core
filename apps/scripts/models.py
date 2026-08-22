@@ -53,6 +53,7 @@ class EjecucionScript(models.Model):
         ESTACIONES = 'estaciones', 'Estaciones específicas'
 
     class Estado(models.TextChoices):
+        PENDIENTE_APROBACION = 'pendiente_aprobacion', 'Pendiente de aprobación'
         PENDIENTE = 'pendiente', 'Pendiente'
         EN_PROGRESO = 'en_progreso', 'En progreso'
         COMPLETADO = 'completado', 'Completado'
@@ -80,16 +81,28 @@ class EjecucionScript(models.Model):
 
     timeout_segundos = models.PositiveIntegerField(default=300)
     parametros = models.JSONField(default=dict, blank=True)
-    estado = models.CharField(max_length=15, choices=Estado.choices, default=Estado.PENDIENTE)
+    estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.PENDIENTE)
 
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='ejecuciones_script_creadas',
+    )
+    aprobado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='ejecuciones_script_aprobadas',
     )
     fecha_creacion = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'ejecucion_script'
         ordering = ['-fecha_creacion']
+        permissions = [
+            # Ejecutar un script contra toda la cadena/grupos/farmacias es la misma
+            # superficie de riesgo que un Despliegue a esos destinos — mismo patrón de
+            # cuatro ojos (aprobar_despliegue): quien crea la ejecución no puede
+            # aprobarla. Los destinos angostos (una estación puntual) no pasan por acá,
+            # ver DESTINOS_QUE_REQUIEREN_APROBACION en apps.scripts.services.
+            ('aprobar_ejecucionscript', 'Puede aprobar una ejecución de script pendiente de aprobación'),
+        ]
 
     def __str__(self):
         return f'Ejecución #{self.pk} de "{self.script.nombre}" ({self.get_estado_display()})'

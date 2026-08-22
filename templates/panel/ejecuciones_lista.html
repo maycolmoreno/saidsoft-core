@@ -22,7 +22,7 @@
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ e.script.nombre }}</td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ e.get_destino_tipo_display }}</td>
                 <td class="px-4 py-3 text-xs">
-                    <span class="pill {% if e.estado == 'completado' %}good{% elif e.estado == 'con_errores' %}critical{% elif e.estado == 'en_progreso' %}warning{% else %}neutral{% endif %}">
+                    <span class="pill {% if e.estado == 'completado' %}good{% elif e.estado == 'con_errores' %}critical{% elif e.estado == 'en_progreso' or e.estado == 'pendiente_aprobacion' %}warning{% else %}neutral{% endif %}">
                         {{ e.get_estado_display }}
                     </span>
                 </td>

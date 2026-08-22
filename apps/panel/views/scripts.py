@@ -2,6 +2,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.views.decorators.http import require_POST
 
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion
@@ -57,7 +58,14 @@ def _crear_ejecucion(request, form, script):
         grupos=d['grupos'], farmacias=d['farmacias'], estaciones=d['estaciones'], usuario=request.user,
     )
     registrar_evento(usuario=request.user, accion='script.ejecutar', objeto=script, request=request)
-    messages.success(request, f'Ejecución #{ejecucion.pk} lanzada contra {ejecucion.resultados.count()} estación(es).')
+    if ejecucion.estado == EjecucionScript.Estado.PENDIENTE_APROBACION:
+        messages.warning(
+            request,
+            f'Ejecución #{ejecucion.pk} creada, pendiente de aprobación por tratarse de un destino amplio '
+            '(regla de cuatro ojos) — otro usuario con permiso debe aprobarla antes de enviarse a las estaciones.',
+        )
+    else:
+        messages.success(request, f'Ejecución #{ejecucion.pk} lanzada contra {ejecucion.resultados.count()} estación(es).')
     return ejecucion
 
 
@@ -145,6 +153,22 @@ def ejecucion_progreso_partial(request, pk):
     return render(request, 'panel/ejecucion_progreso_partial.html', {
         'ejecucion': ejecucion, 'resultados': resultados,
     })
+
+
+@login_required
+@permission_required('scripts.aprobar_ejecucionscript', raise_exception=True)
+@require_POST
+def ejecucion_aprobar(request, pk):
+    ejecucion = get_object_or_404(EjecucionScript, pk=pk)
+    verificar_acceso(request.user, ejecucion.unidad_negocio)
+    try:
+        scripts_services.aprobar_ejecucion_script(ejecucion=ejecucion, usuario=request.user)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
+        registrar_evento(usuario=request.user, accion='ejecucionscript.aprobar', objeto=ejecucion, request=request)
+        messages.success(request, f'Ejecución #{ejecucion.pk} aprobada y enviada a las estaciones.')
+    return redirect('panel:ejecucion_detalle', pk=pk)
 
 
 @login_required

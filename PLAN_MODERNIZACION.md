@@ -1317,3 +1317,30 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   la garantía real depende de Postgres en producción, que sí bloquea la fila. Se prueba
   en cambio lo que sí es determinístico en cualquier motor: que el `UPDATE` calcula
   siempre sobre el valor real en la base, nunca sobre uno ya leído en Python.
+
+- **AC-3 — 🟢 cerrado (22-ago-2026):** `EjecucionScript` (código arbitrario contra la
+  flota) no tenía ninguna aprobación de un segundo usuario para destinos amplios —
+  cualquiera con `scripts.add_ejecucionscript` podía correr un script contra toda la
+  cadena de un solo clic, a diferencia de `Despliegue` al mismo destino (que sí exige
+  `aprobar_despliegue`, ver AC-2). Mismo patrón exacto: nuevo estado
+  `EjecucionScript.Estado.PENDIENTE_APROBACION`, FK `aprobado_por`, permiso
+  `scripts.aprobar_ejecucionscript` (migración `0005`), y `apps.scripts.services` separa
+  la resolución de destino/envío MQTT en `_publicar_ejecucion()` para poder llamarla
+  tanto al crear una ejecución que no necesita aprobación como desde la nueva
+  `aprobar_ejecucion_script()` una vez aprobada — que aplica la misma regla de cuatro
+  ojos que `despliegue_aprobar` (creador ≠ aprobador). `DESTINOS_QUE_REQUIEREN_APROBACION
+  = {CADENA, GRUPOS, FARMACIAS}`: `ESTACIONES` queda afuera por ser ya un destino
+  angosto (p.ej. instalar el agente en una sola estación). Dos casos que **no** deben
+  pasar por la aprobación, ambos ya cubiertos antes de tocar código de producción real:
+  las ejecuciones que genera un `ScriptProgramado` vencido (`programado is not None` —
+  esa política ya pasó su propio control al crearse, exigir aprobación en cada disparo
+  automático rompería la recurrencia), y el comando de management `cambiar_nodo_pos`
+  (nuevo parámetro `omitir_aprobacion=True` en `registrar_ejecucion_script`) — ya
+  requiere acceso de shell al servidor de producción, un control más fuerte que el
+  permiso de panel que esta aprobación reemplaza; sin este segundo caso, el comando
+  (usado en vivo esta misma sesión para cambios de nodo POS) habría dejado de publicar
+  sus ejecuciones sin ningún aviso. `aprobar_ejecucionscript` no se otorga a ningún rol
+  operativo en `seed_permisos.py` por defecto, mismo criterio que `aprobar_despliegue`
+  (solo Administrador vía permisos totales) — quién aprueba qué es una decisión de
+  gobernanza persona por persona, no de rol. Suite completa verificada en verde (491
+  tests OK) + `check`/`makemigrations --check --dry-run` limpios.
