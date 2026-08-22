@@ -26,11 +26,11 @@ cd "$DIR"
 FECHA=$(date +%Y%m%d_%H%M%S)
 
 echo "Respaldando base de datos..."
-docker compose -f docker-compose.yml exec -T db \
+docker-compose -f docker-compose.yml exec -T db \
     pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" | gzip > "$DESTINO/db_$FECHA.sql.gz"
 
 echo "Respaldando media (paquetes de despliegue, imágenes de mantenimiento, etc.)..."
-docker compose -f docker-compose.yml exec -T web \
+docker-compose -f docker-compose.yml exec -T web \
     tar czf - -C /app/media . > "$DESTINO/media_$FECHA.tar.gz"
 
 echo "Retención: borrando respaldos locales de más de 14 días en $DESTINO..."

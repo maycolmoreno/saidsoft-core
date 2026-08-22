@@ -1160,8 +1160,21 @@ dedicada nueva `ventana_mantenimiento_form.html` con el mismo JS de mostrar/ocul
 destino + buscador de texto, reemplazando el `accion_form.html` genérico. Verificado con
 `apps.panel`/`apps.monitoreo` (202 tests OK)
 
-**Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
-`Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
-definido todavía), verificación automática de cumplimiento (v1 es atestación manual
-por decisión, ver `apps/cumplimiento/services.py`), temperatura de CPU en monitoreo
-(siempre `null`, sin sensor confiable disponible).
+**Y. Auditoría de gobernanza ITIL/ISO 27001 (21-ago-2026) — remediación en curso:** el
+usuario pidió una revisión completa del proyecto de cara a gobernanza ITIL e ISO/IEC
+27001. Se armó un informe (Artifact) con 16 hallazgos priorizados y su mapeo contra el
+Anexo A de ISO 27001 y las prácticas de ITIL 4, con un orden de remediación acordado con
+el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta sección:
+
+- **OPS-1 — 🟢 cerrado (22-ago-2026):** `deploy/backup.sh` usaba `docker compose` (sintaxis
+  v2, con espacio) para el `pg_dump`/`tar` del respaldo diario, pero el servidor de
+  producción corre Compose **v1** (todo el resto de `README-produccion.md` usa
+  `docker-compose` con guion) — en v1 ese subcomando no existe, así que las dos líneas
+  del respaldo fallaban en la ejecución. Si el cron de las 2 AM estaba instalado, venía
+  fallando desde el primer día sin ningún respaldo real de la base de datos. Corregidas
+  las dos invocaciones (`docker-compose -f docker-compose.yml exec -T ...`) y las mismas
+  dos referencias sueltas en `README-produccion.md` (líneas 227/237, instrucciones de
+  MeshCentral). **Pendiente de verificar en el servidor real**: confirmar si el cron
+  estaba instalado y si hay algún `.sql.gz` previo en el destino configurado, y correr el
+  script a mano una vez para confirmar que el `.sql.gz` resultante restaura sobre una
+  base vacía.

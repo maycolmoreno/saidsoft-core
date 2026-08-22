@@ -224,7 +224,7 @@ cp deploy/meshcentral/config.json.example deploy/meshcentral/config.json
 
 Pasos (probados de punta a punta contra un despliegue real, no solo compilados):
 
-1. Levantar: `docker compose -f deploy/docker-compose.yml up -d meshcentral`. La
+1. Levantar: `docker-compose -f deploy/docker-compose.yml up -d meshcentral`. La
    primera vez genera certificados propios, tarda uno o dos minutos.
 2. Entrar a `https://<IP-o-dominio>:8083` (certificado self-signed — aceptar la
    advertencia del navegador) y crear la primera cuenta: **queda como administrador
@@ -234,7 +234,7 @@ Pasos (probados de punta a punta contra un despliegue real, no solo compilados):
    un agente ("Add Agent" → cualquier link de descarga), el Mesh ID queda en la URL
    (parámetro `meshid=`, una cadena larga) — copiarlo.
 4. Poner ese Mesh ID en `MESHCENTRAL_MESH_ID` de `deploy/.env` y reiniciar `web`
-   (`docker compose -f deploy/docker-compose.yml up -d web`).
+   (`docker-compose -f deploy/docker-compose.yml up -d web`).
 5. Instalar el agente en una estación piloto desde el panel ("Instalar agente ahora")
    y verificar que aparece en el device group de la consola de MeshCentral. Copiar su
    Node ID (visible en la URL al entrar a su ficha) y pegarlo en la sección "Acceso
