@@ -1209,5 +1209,11 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   la deuda de performance que `config/urls.py` ya señalaba (cada descarga ocupaba un
   worker de gunicorn) — `ARCHIVOS_BASE_URL` no necesitó cambiar. En el `.env` real:
   `CSRF_TRUSTED_ORIGINS` a `https://10.111.6.20:8084`, `SECURE_SSL_REDIRECT`/
-  `COOKIES_SOLO_HTTPS` a `True`. `docker-compose config` limpio localmente antes de
-  desplegar (con `deploy/.env.prod.example` como stand-in de secretos).
+  `COOKIES_SOLO_HTTPS` a `True`. **Validado contra el servidor real**: `docker-compose
+  config` limpio con el `.env` real, `down`+`up -d` completo de los 10 contenedores
+  (9 + `nginx` nuevo) sin errores, `worker` reconectó limpio a EMQX
+  (`[MQTT] Conectado al broker`) tras el reinicio. `http://10.111.6.20:8080/` → 301 a
+  `https://.../`; `https://10.111.6.20:8084/login/` → 200, con `Strict-Transport-
+  Security` presente y la cookie `csrftoken` con flag `Secure`; `http://10.111.6.20:
+  8080/media/...` → sirve directo sin redirect, confirmando que las descargas de los
+  agentes no se rompieron.
