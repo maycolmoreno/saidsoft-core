@@ -1457,3 +1457,19 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
        ahí en adelante cualquier actualización futura salga por el botón del panel.
   - Suite completa verificada en verde (506 tests OK) + `check`/`makemigrations --check
     --dry-run` limpios. Migración `0019` (nuevo modelo + permiso).
+
+  **Estado real del rollout (22-ago-2026, actualizado en vivo):** el servidor **ya está
+  desplegado** en producción con el esquema de firma nuevo (deploy hecho el mismo día,
+  ver commit `f9dc18a`). De las 5 estaciones del piloto, **solo ML006-A** tiene el
+  agente actualizado a `agente-prueba-0.2` (confirmado por heartbeat real). El usuario
+  decidió dejar la actualización de **MC001-B, MC001-C, ML016-A y ML016-B** para más
+  adelante. Mientras sigan en `agente-prueba-0.1`: el heartbeat/enrolamiento no se ve
+  afectado (no usa `COMANDO_HMAC_SECRET`), pero **cualquier comando que el panel les
+  envíe se va a rechazar en silencio** — reiniciar, ejecutar script, despliegue,
+  instalación de software, e incluso el propio `actualizar_agente` — porque su firma
+  no ata `estación`+`timestamp` como la que el servidor ya manda. No es un bug: es el
+  costo conocido de haber desplegado el servidor antes de terminar el rollout del
+  agente en las 4 estaciones restantes. Pendiente: repetir en esas 4 el mismo
+  procedimiento manual que se usó en ML006-A (verificar hash, detener servicio, copiar
+  el `.exe`, arrancar) — mismo archivo ya compilado y entregado al usuario, sha256
+  `c7777d1fc3193ab617fbc713dffe00f53eae466449e1a5b2ad60024579b9934`.
