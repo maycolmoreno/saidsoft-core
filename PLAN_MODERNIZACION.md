@@ -1217,3 +1217,27 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   Security` presente y la cookie `csrftoken` con flag `Secure`; `http://10.111.6.20:
   8080/media/...` → sirve directo sin redirect, confirmando que las descargas de los
   agentes no se rompieron.
+
+- **AC-1/AC-2 — 🟢 cerrado (22-ago-2026):** de las 114 vistas del panel, 97 solo pedían
+  sesión iniciada — cualquier usuario autenticado podía leer la bitácora completa de
+  auditoría, aprobar/publicar despliegues a toda la flota, dar de baja activos, correr
+  scripts, etc. **AC-2** primero: nuevo permiso `despliegues.aprobar_despliegue`
+  (`Meta.permissions`, migración `0006`), separado de `change_despliegue` — la regla de
+  cuatro ojos verificaba que el aprobador no fuera el autor pero no exigía ningún rol,
+  así que cualquier segundo usuario autenticado contaba como "los cuatro ojos"; ahora
+  hace falta el permiso, sin otorgarlo a ningún rol operativo por defecto. **AC-1**
+  después, módulo por módulo (`auditoria.py`, `reportes.py`, `despliegues.py`,
+  `activos.py`, `mantenimiento.py`, `software.py`, `alertas.py`, `cumplimiento.py`):
+  `@permission_required` con los permisos `view`/`add`/`change` que Django ya crea
+  automáticamente por modelo, siguiendo el mismo mapeo que `seed_permisos.py` ya usa
+  para Técnico/Bodeguero/Auditor donde existía, y sin inventar ningún permiso custom
+  nuevo salvo el de AC-2. Quedaron a propósito solo con `login_required` las vistas de
+  datos estrictamente personales (`notificaciones_lista`/`notificacion_marcar_leida`,
+  filtradas por `usuario=request.user`). **Verificado que no rompe nada hoy**: los dos
+  únicos usuarios reales de producción (`romo`, `prueba`) son superusuarios sin grupo —
+  `has_perm()` siempre es `True` para superusuarios, así que ningún acceso actual se ve
+  afectado; el valor se activa el día que se creen usuarios reales con roles limitados
+  (Mesa de Ayuda, Bodeguero, etc.). Suite completa verificada en verde en cada módulo
+  (474 tests OK al cierre) — varias docenas de tests existentes necesitaron que su
+  `setUp` otorgara explícitamente el permiso nuevo al usuario de prueba (antes pasaban
+  solo por el scoping de tenant, que seguía siendo necesario pero ya no suficiente).
