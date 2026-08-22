@@ -3,3 +3,4 @@
 # forzar LF siempre evita el clásico "exec: /entrypoint.sh: permission denied"
 # / "bad interpreter" por CRLF colado en el shebang.
 *.sh text eol=lf
+*.conf text eol=lf
