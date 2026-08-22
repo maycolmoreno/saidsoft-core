@@ -1345,7 +1345,7 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   gobernanza persona por persona, no de rol. Suite completa verificada en verde (491
   tests OK) + `check`/`makemigrations --check --dry-run` limpios.
 
-- **SEC-1 — 🟢 cerrado (22-ago-2026):** la firma HMAC de los comandos del panel al
+- **SEC-1 — 🟡 código listo, DESPLIEGUE PENDIENTE (22-ago-2026):** la firma HMAC de los comandos del panel al
   agente (`apps.catalogo.services.firmar_payload`) no ataba estación ni timestamp — para
   los comandos sin parámetros (`reiniciar`, `consultar_info`, `escanear_actualizaciones`,
   `consultar_software_instalado`) el mensaje firmado era un string **constante**
@@ -1395,3 +1395,20 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   que esto es la única forma real de probar que no se rompió sin una estación física.
   Suite completa verificada en verde (499 tests OK) + `check`/`makemigrations --check
   --dry-run` limpios. Sin migración: es código puro, sin cambios de modelo.
+
+  **⚠️ NO DESPLEGAR EN EL SERVIDOR TODAVÍA.** A diferencia de todos los ítems anteriores
+  de esta auditoría, este cambio no es solo del lado servidor: cambia el protocolo entre
+  servidor y agente. Si se reconstruye/reinicia el `web`/`worker` de producción con este
+  código, el servidor empieza a firmar con `estacion`+`timestamp`, pero **todos los
+  agentes ya instalados en las ~1.800 estaciones reales siguen validando con el esquema
+  viejo** — la firma no va a coincidir y esos agentes van a rechazar *todo* comando
+  (reiniciar, scripts, despliegues, instalación de software) hasta que cada estación
+  reciba el agente nuevo. Confirmado con el usuario (22-ago-2026): **hoy no existe ningún
+  mecanismo de actualización masiva** para un agente ya instalado — el GPO Computer
+  Startup Script (`deploy/docs/desplegar-agente-gpo.ps1`) es idempotente a propósito y
+  sale sin hacer nada si el servicio ya existe, así que solo cubre altas nuevas, no
+  reemplazar el binario en una estación que ya lo tiene corriendo. Este ítem queda **código
+  completo, commiteado y pusheado (`9742064`), pero sin desplegar** hasta que exista un
+  plan de rollout del agente (nuevo mecanismo de update masivo, o aceptar una ventana de
+  reemplazo manual estación por estación). Retomar este despliegue es un ítem propio, no
+  implícito en "seguir con el orden de la auditoría".
