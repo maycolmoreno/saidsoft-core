@@ -49,9 +49,9 @@ class VentanaMantenimientoForm(forms.ModelForm):
         widgets = {
             'unidad_negocio': forms.Select(attrs={'class': INPUT_CLASS}),
             'destino_tipo': forms.Select(attrs={'class': INPUT_CLASS}),
-            'grupos': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
-            'farmacias': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
-            'estaciones': forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+            'grupos': forms.CheckboxSelectMultiple,
+            'farmacias': forms.CheckboxSelectMultiple,
+            'estaciones': forms.CheckboxSelectMultiple,
             'desde': forms.DateTimeInput(attrs={'class': INPUT_CLASS, 'type': 'datetime-local'}),
             'hasta': forms.DateTimeInput(attrs={'class': INPUT_CLASS, 'type': 'datetime-local'}),
             'motivo': forms.TextInput(attrs={'class': INPUT_CLASS}),

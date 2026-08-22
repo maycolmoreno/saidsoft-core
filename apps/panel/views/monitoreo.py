@@ -120,7 +120,7 @@ def ventana_mantenimiento_crear(request):
             return redirect('panel:ventanas_mantenimiento_lista')
     else:
         form = VentanaMantenimientoForm(user=request.user)
-    return render(request, 'panel/accion_form.html', {
+    return render(request, 'panel/ventana_mantenimiento_form.html', {
         'form': form, 'titulo': 'Nueva ventana de mantenimiento',
         'volver_url': reverse('panel:ventanas_mantenimiento_lista'),
     })

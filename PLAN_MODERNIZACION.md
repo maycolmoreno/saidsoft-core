@@ -1150,6 +1150,16 @@ tarea de Celery Beat `sincronizar-meshcentral` (cada 15 min, completa
 evento en vivo no traiga el nombre. Ya no hace falta el paso manual salvo para estaciones
 instaladas antes de este cambio. Verificado con la suite completa (462 tests OK)
 
+**X. Mismo arreglo de §10-P/§10-U aplicado a "Nueva ventana de mantenimiento"
+(21-ago-2026) — 🟢 cerrado:** el usuario reportó el mismo defecto en
+`/monitoreo/mantenimiento/nueva/` (M2) — `VentanaMantenimientoForm` compartía
+exactamente el mismo patrón `destino_tipo` + `grupos`/`farmacias`/`estaciones` que ya se
+había corregido en despliegue/solicitud de instalación/scripts, pero se había quedado
+afuera de esas dos rondas. Mismo arreglo: widgets a `CheckboxSelectMultiple`, plantilla
+dedicada nueva `ventana_mantenimiento_form.html` con el mismo JS de mostrar/ocultar por
+destino + buscador de texto, reemplazando el `accion_form.html` genérico. Verificado con
+`apps.panel`/`apps.monitoreo` (202 tests OK)
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual

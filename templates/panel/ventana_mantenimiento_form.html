@@ -1,0 +1,117 @@
+{% extends "panel/base.html" %}
+{% block title %}{{ titulo }} · SAIDSOFT{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold mb-1">{{ titulo }}</h1>
+{% if subtitulo %}<p class="text-sm text-[var(--text-faint)] mb-6">{{ subtitulo }}</p>{% endif %}
+
+<form method="post" class="card p-6 max-w-2xl space-y-5">
+    {% csrf_token %}
+
+    {% for error in form.non_field_errors %}
+    <p class="text-sm px-3 py-2 rounded-md" style="background:var(--critical-dim, rgba(220,38,38,.12)); color:var(--critical);">{{ error }}</p>
+    {% endfor %}
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Cliente (unidad de negocio)</label>
+        {{ form.unidad_negocio }}
+        {% for error in form.unidad_negocio.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    </div>
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Motivo</label>
+        {{ form.motivo }}
+        {% for error in form.motivo.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+        <div>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Desde</label>
+            {{ form.desde }}
+            {% for error in form.desde.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Hasta</label>
+            {{ form.hasta }}
+            {% for error in form.hasta.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+    </div>
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Destino</label>
+        {{ form.destino_tipo }}
+        {% for error in form.destino_tipo.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    </div>
+
+    <div class="space-y-4">
+        <div data-destino-campo="grupos" hidden>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Grupos</label>
+            <input type="text" placeholder="Buscar grupo…" class="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] mb-2" data-checklist-buscar>
+            <div class="max-h-56 overflow-y-auto rounded-md border border-[var(--border)] p-2 space-y-1" data-checklist>
+                {{ form.grupos }}
+            </div>
+            {% for error in form.grupos.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+        <div data-destino-campo="farmacias" hidden>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Farmacias</label>
+            <input type="text" placeholder="Buscar farmacia…" class="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] mb-2" data-checklist-buscar>
+            <div class="max-h-56 overflow-y-auto rounded-md border border-[var(--border)] p-2 space-y-1" data-checklist>
+                {{ form.farmacias }}
+            </div>
+            {% for error in form.farmacias.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+        <div data-destino-campo="estaciones" hidden>
+            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Estaciones</label>
+            <input type="text" placeholder="Buscar estación…" class="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] mb-2" data-checklist-buscar>
+            <div class="max-h-56 overflow-y-auto rounded-md border border-[var(--border)] p-2 space-y-1" data-checklist>
+                {{ form.estaciones }}
+            </div>
+            {% for error in form.estaciones.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+        </div>
+        <p class="text-xs text-[var(--text-faint)]" data-destino-vacio>Elegí un destino arriba para ver a quién aplica.</p>
+        <p class="text-xs text-[var(--text-faint)]" data-destino-cadena hidden>Se aplica a toda la cadena de la unidad de negocio — no hace falta elegir nada más abajo.</p>
+    </div>
+
+    <div class="flex items-center gap-2">
+        {{ form.activo }}
+        <label class="text-sm font-medium text-[var(--text-dim)]">Activa</label>
+    </div>
+
+    <div class="flex items-center gap-3 pt-2">
+        <button type="submit" class="btn primary" style="padding:10px 20px;">Crear ventana</button>
+        <a href="{{ volver_url }}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
+    </div>
+</form>
+
+<script>
+(function () {
+    // Mismo patrón que despliegue_form.html/solicitud_instalacion_form.html — ver el
+    // comentario en script_ejecutar_adhoc_form.html para el motivo del cambio.
+    var select = document.getElementById('id_destino_tipo');
+    var campos = document.querySelectorAll('[data-destino-campo]');
+    var vacio = document.querySelector('[data-destino-vacio]');
+    var cadena = document.querySelector('[data-destino-cadena]');
+
+    function actualizar() {
+        var actual = select.value;
+        campos.forEach(function (campo) {
+            campo.hidden = campo.dataset.destinoCampo !== actual;
+        });
+        vacio.hidden = actual !== '';
+        cadena.hidden = actual !== 'cadena';
+    }
+
+    select.addEventListener('change', actualizar);
+    actualizar();
+
+    document.querySelectorAll('[data-checklist-buscar]').forEach(function (input) {
+        var lista = input.nextElementSibling;
+        input.addEventListener('input', function () {
+            var q = input.value.toLowerCase();
+            lista.querySelectorAll('label').forEach(function (label) {
+                label.style.display = label.textContent.toLowerCase().includes(q) ? '' : 'none';
+            });
+        });
+    });
+})();
+</script>
+{% endblock %}
