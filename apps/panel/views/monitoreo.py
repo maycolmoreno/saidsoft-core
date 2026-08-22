@@ -35,6 +35,7 @@ def _clasificar(valor, umbral_warning, umbral_critico):
 
 
 @login_required
+@permission_required('monitoreo.view_muestrametrica', raise_exception=True)
 def monitoreo_lista(request):
     servidores = scope_por_unidad_negocio_activa(
         Estacion.objects
@@ -56,6 +57,7 @@ def monitoreo_lista(request):
 
 
 @login_required
+@permission_required('monitoreo.view_muestrametrica', raise_exception=True)
 def monitoreo_detalle(request, pk):
     estacion = get_object_or_404(
         Estacion.objects.select_related('farmacia', 'farmacia__grupo'),
@@ -66,6 +68,7 @@ def monitoreo_detalle(request, pk):
 
 
 @login_required
+@permission_required('monitoreo.view_muestrametrica', raise_exception=True)
 def monitoreo_detalle_partial(request, pk):
     from apps.monitoreo.graficos import construir_grafico
 
@@ -97,6 +100,7 @@ def monitoreo_detalle_partial(request, pk):
 
 
 @login_required
+@permission_required('monitoreo.view_ventanamantenimiento', raise_exception=True)
 def ventanas_mantenimiento_lista(request):
     ventanas = scope_por_unidad_negocio_activa(
         VentanaMantenimiento.objects.select_related('unidad_negocio').order_by('-desde'),
@@ -140,6 +144,7 @@ def _semanas_recientes(n=12):
 
 
 @login_required
+@permission_required('monitoreo.view_alerta', raise_exception=True)
 def tendencia_flota(request):
     """M5 del roadmap de monitoreo: series semanales a nivel de flota (no por
     estación) — alertas abiertas/resueltas por severidad y promedio de CPU/RAM/disco
@@ -217,6 +222,7 @@ def tendencia_flota(request):
 
 
 @login_required
+@permission_required('monitoreo.view_muestraredfarmacia', raise_exception=True)
 def red_farmacias_lista(request):
     """Consumo de ancho de banda por FARMACIA (Parte A del monitoreo proactivo de
     red, ver PLAN_MODERNIZACION.md §9) — sondeado por SNMP al Mikrotik de cada sitio

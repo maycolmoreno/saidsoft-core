@@ -43,13 +43,16 @@ class EstacionMeshCentralTests(TestCase):
             estado_conexion=Estacion.EstadoConexion.ONLINE,
         )
 
+        ver_estacion = Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion')
+
         self.usuario_sin_permiso = User.objects.create_user(username='sin_permiso', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_sin_permiso, acceso_todas_unidades=True)
+        self.usuario_sin_permiso.user_permissions.add(ver_estacion)
 
         self.usuario_con_permiso = User.objects.create_user(username='con_permiso', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_con_permiso, acceso_todas_unidades=True)
         permiso = Permission.objects.get(content_type__app_label='catalogo', codename='acceso_remoto_estacion')
-        self.usuario_con_permiso.user_permissions.add(permiso)
+        self.usuario_con_permiso.user_permissions.add(permiso, ver_estacion)
 
     def test_vincular_requiere_permiso(self):
         self.client.force_login(self.usuario_sin_permiso)
@@ -295,6 +298,7 @@ class EstacionSoftwareInstaladoSolicitarTests(TestCase):
         PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
         self.usuario.user_permissions.add(
             Permission.objects.get(content_type__app_label='catalogo', codename='consultar_info_estacion'),
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
         )
         self.client.force_login(self.usuario)
 
@@ -341,6 +345,9 @@ class EstacionPowerPlanModalTests(TestCase):
         )
         usuario = User.objects.create_user(username='u_power', password='x')
         PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
         self.client.force_login(usuario)
 
         resp = self.client.get(reverse('panel:estacion_info_modal', args=[estacion.pk]))
@@ -361,6 +368,9 @@ class EstacionPosErroresModalTests(TestCase):
         )
         usuario = User.objects.create_user(username='u_pos_modal', password='x')
         PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
         self.client.force_login(usuario)
 
         resp = self.client.get(reverse('panel:estacion_info_modal', args=[estacion.pk]))
@@ -377,6 +387,9 @@ class EstacionPosErroresModalTests(TestCase):
         )
         usuario = User.objects.create_user(username='u_pos_modal2', password='x')
         PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
         self.client.force_login(usuario)
 
         resp = self.client.get(reverse('panel:estacion_info_modal', args=[estacion.pk]))
@@ -401,6 +414,9 @@ class MonitoreoDiscoTests(TestCase):
         MuestraMetrica.objects.create(estacion=self.estacion, disco_total_gb=200.0, disco_libre_gb=20.0)
         usuario = User.objects.create_user(username='u_disco', password='x')
         PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_muestrametrica'),
+        )
         self.client.force_login(usuario)
 
     def test_lista_muestra_pct_de_disco_usado(self):
@@ -430,6 +446,9 @@ class MonitoreoRedTests(TestCase):
         MuestraMetrica.objects.create(estacion=self.estacion, red_recibido_kbps=1200.0, red_enviado_kbps=300.5)
         usuario = User.objects.create_user(username='u_red', password='x')
         PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_muestrametrica'),
+        )
         self.client.force_login(usuario)
 
     def test_lista_muestra_kbps_totales(self):
@@ -458,6 +477,9 @@ class RedFarmaciasListaTests(TestCase):
         self.farmacia_sin_ip = Farmacia.objects.create(codigo='ML002', grupo=grupo, unidad_negocio=self.sg)
         usuario = User.objects.create_user(username='u_red_farmacia', password='x')
         PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_muestraredfarmacia'),
+        )
         self.client.force_login(usuario)
 
     def test_farmacia_sin_ip_router_no_aparece(self):
@@ -483,6 +505,9 @@ class RedFarmaciasListaTests(TestCase):
 
         usuario_sg_only = User.objects.create_user(username='u_sg_only_red', password='x')
         PerfilUsuario.objects.create(usuario=usuario_sg_only).unidades_negocio.add(self.sg)
+        usuario_sg_only.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_muestraredfarmacia'),
+        )
         self.client.force_login(usuario_sg_only)
 
         resp = self.client.get(reverse('panel:red_farmacias_lista'))
@@ -513,7 +538,7 @@ class EstacionMesaDeAyudaVsSoporteTecnicoTests(TestCase):
 
         self.soporte_tecnico = User.objects.create_user(username='soporte_tec', password='x')
         PerfilUsuario.objects.create(usuario=self.soporte_tecnico, acceso_todas_unidades=True)
-        for codename in ('consultar_info_estacion', 'aprobar_estacion', 'reiniciar_estacion'):
+        for codename in ('consultar_info_estacion', 'aprobar_estacion', 'reiniciar_estacion', 'view_estacion'):
             self.soporte_tecnico.user_permissions.add(
                 Permission.objects.get(content_type__app_label='catalogo', codename=codename),
             )
@@ -713,6 +738,9 @@ class MultiTenantAislamientoTests(TestCase):
 
         self.usuario_sg = User.objects.create_user(username='user_sg', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_sg).unidades_negocio.add(self.sg)
+        self.usuario_sg.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
         self.client.force_login(self.usuario_sg)
 
     def test_lista_de_estaciones_no_muestra_las_de_otro_tenant(self):
@@ -1102,6 +1130,9 @@ class VentanaMantenimientoPanelTests(TestCase):
 
         self.usuario_mia = User.objects.create_user(username='user_mia_vm', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_ventanamantenimiento'),
+        )
 
     def test_usuario_de_otro_tenant_no_ve_la_ventana(self):
         self.client.force_login(self.usuario_mia)
@@ -1118,6 +1149,7 @@ class VentanaMantenimientoPanelTests(TestCase):
         PerfilUsuario.objects.create(usuario=operador, acceso_todas_unidades=True)
         operador.user_permissions.add(
             Permission.objects.get(content_type__app_label='monitoreo', codename='add_ventanamantenimiento'),
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_ventanamantenimiento'),
         )
         self.client.force_login(operador)
         resp = self.client.post(reverse('panel:ventana_mantenimiento_crear'), {
@@ -1154,6 +1186,9 @@ class VentanaMantenimientoPanelTests(TestCase):
     def test_modal_de_estacion_muestra_aviso_de_mantenimiento(self):
         usuario_sg = User.objects.create_user(username='user_sg_vm', password='x')
         PerfilUsuario.objects.create(usuario=usuario_sg).unidades_negocio.add(self.sg)
+        usuario_sg.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
         self.client.force_login(usuario_sg)
         resp = self.client.get(reverse('panel:estacion_info_modal', args=[self.estacion_sg.pk]))
         self.assertContains(resp, 'En mantenimiento hasta')
@@ -1163,6 +1198,9 @@ class VentanaMantenimientoPanelTests(TestCase):
         self.ventana_sg.save(update_fields=['hasta'])
         usuario_sg = User.objects.create_user(username='user_sg_vm2', password='x')
         PerfilUsuario.objects.create(usuario=usuario_sg).unidades_negocio.add(self.sg)
+        usuario_sg.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
         self.client.force_login(usuario_sg)
         resp = self.client.get(reverse('panel:estacion_info_modal', args=[self.estacion_sg.pk]))
         self.assertNotContains(resp, 'En mantenimiento hasta')
@@ -1185,6 +1223,9 @@ class TendenciaFlotaTests(TestCase):
         )
         self.usuario = User.objects.create_user(username='u_tendencia', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
         self.client.force_login(self.usuario)
 
     def test_cuenta_alertas_abiertas_de_esta_semana_por_severidad(self):
@@ -1275,6 +1316,9 @@ class TendenciaFlotaTests(TestCase):
 
         usuario_sg_only = User.objects.create_user(username='u_sg_only_tendencia', password='x')
         PerfilUsuario.objects.create(usuario=usuario_sg_only).unidades_negocio.add(self.sg)
+        usuario_sg_only.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
         self.client.force_login(usuario_sg_only)
 
         resp = self.client.get(reverse('panel:tendencia_flota'))
@@ -1299,6 +1343,7 @@ class ScriptProgramadoMultiTenantTests(TestCase):
         PerfilUsuario.objects.create(usuario=self.usuario_mia).unidades_negocio.add(self.mia)
         self.usuario_mia.user_permissions.add(
             Permission.objects.get(content_type__app_label='scripts', codename='add_scriptprogramado'),
+            Permission.objects.get(content_type__app_label='scripts', codename='view_scriptprogramado'),
         )
         self.client.force_login(self.usuario_mia)
 

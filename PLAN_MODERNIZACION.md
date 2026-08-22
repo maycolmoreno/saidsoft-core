@@ -1242,6 +1242,33 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   `setUp` otorgara explícitamente el permiso nuevo al usuario de prueba (antes pasaban
   solo por el scoping de tenant, que seguía siendo necesario pero ya no suficiente).
 
+- **AC-1 — corrección (22-ago-2026):** el cierre anterior no fue completo — al planear
+  AC-3 se releyó `scripts.py` y aparecieron 6 de sus 10 vistas sin `@permission_required`
+  (`scripts_lista`, `script_detalle`, `ejecuciones_lista`, `ejecucion_detalle`,
+  `ejecucion_progreso_partial`, `scripts_programados_lista`), y un `awk` sobre todos los
+  módulos de `apps/panel/views/*.py` (buscando `@login_required` sin
+  `@permission_required` a continuación) confirmó que el barrido original también se
+  había saltado `estaciones.py` (`estaciones_lista`, `estaciones_pendientes_partial`,
+  `estacion_info_modal`) y `monitoreo.py` (`monitoreo_lista`, `monitoreo_detalle`,
+  `monitoreo_detalle_partial`, `ventanas_mantenimiento_lista`, `tendencia_flota`,
+  `red_farmacias_lista`). Mismo tratamiento que el resto de AC-1: `view_<modelo>` de
+  Django en cada una (`scripts.view_script`, `scripts.view_ejecucionscript`,
+  `scripts.view_scriptprogramado`, `catalogo.view_estacion`, `monitoreo.view_muestrametrica`,
+  `monitoreo.view_ventanamantenimiento`, `monitoreo.view_alerta`,
+  `monitoreo.view_muestraredfarmacia`), sin permisos nuevos. Un caso no obvio: como
+  `estacion_aprobar`/`estacion_rechazar` reusan `estaciones_pendientes_partial(request)`
+  como llamada directa a función (no vía `redirect`), el nuevo `@permission_required` de
+  esa vista se evalúa también dentro de ellas — un rol de Soporte Técnico con
+  `aprobar_estacion` pero sin `view_estacion` quedaba bloqueado al aprobar/rechazar una
+  estación pendiente. Esto expuso que `seed_permisos.py` (los Groups reales que se
+  usarán el día que se creen usuarios no-superusuario) tampoco otorgaba `view_estacion`
+  a ningún rol operativo del piloto RMM — se corrigió ahí mismo, no solo en los tests:
+  `catalogo.estacion.view` sumado a Mesa de Ayuda, Soporte Técnico y Operador RMM (este
+  último también ganó `monitoreo.muestrametrica/alerta/muestraredfarmacia.view`, sin los
+  cuales su propio rol no podría ver el tablero de monitoreo de flota que administra).
+  Suite completa verificada en verde (481 tests OK) + `check`/`makemigrations --check
+  --dry-run` limpios tras el ajuste.
+
 - **SEC-3 — 🟢 cerrado (22-ago-2026):** `/login/` y `/admin/` aceptaban fuerza bruta
   ilimitada, sin bloqueo ni alerta — sin `django-axes` ni control equivalente en
   `requirements.txt`. Se agregó `django-axes` (`axes` en `INSTALLED_APPS`,

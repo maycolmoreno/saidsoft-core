@@ -32,17 +32,26 @@ ROLES = {
         ('scripts', 'script', ['view', 'add', 'change']),
         ('scripts', 'ejecucionscript', ['view', 'add']),
         ('monitoreo', 'ventanamantenimiento', ['view', 'add', 'change']),
+        # Sin esto no puede ni listar estaciones ni ver el tablero de monitoreo de flota
+        # que su propio rol implica — sumado tras el cierre de AC-1 (ver PLAN_MODERNIZACION.md).
+        ('catalogo', 'estacion', ['view']),
+        ('monitoreo', 'muestrametrica', ['view']),
+        ('monitoreo', 'alerta', ['view']),
+        ('monitoreo', 'muestraredfarmacia', ['view']),
     ],
     # Modelo de soporte del piloto RMM (no viene de InvTICS): mesa de ayuda = primera línea,
     # solo diagnóstico sobre el PDV; soporte técnico = segunda línea, con las acciones de
     # riesgo (reiniciar, aprobar enrolamiento, parchar, correr scripts). Cada agente real
     # tiene su propio usuario (auth.User) en vez de compartir credenciales — todas las
     # acciones quedan atribuidas vía apps.auditoria.registrar_evento.
-    'Mesa de Ayuda': [],
+    'Mesa de Ayuda': [
+        ('catalogo', 'estacion', ['view']),
+    ],
     'Soporte Técnico': [
         ('scripts', 'script', ['view', 'add']),
         ('scripts', 'ejecucionscript', ['view', 'add']),
         ('scripts', 'scriptprogramado', ['view', 'add', 'change']),
+        ('catalogo', 'estacion', ['view']),
     ],
 }
 

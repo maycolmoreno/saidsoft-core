@@ -20,6 +20,7 @@ def _render_info_modal(request, estacion, **extra):
 
 
 @login_required
+@permission_required('catalogo.view_estacion', raise_exception=True)
 def estaciones_lista(request):
     estaciones = scope_por_unidad_negocio_activa(
         Estacion.objects.select_related('farmacia', 'farmacia__grupo').order_by('codigo'),
@@ -47,6 +48,7 @@ def estaciones_lista(request):
 
 
 @login_required
+@permission_required('catalogo.view_estacion', raise_exception=True)
 def estaciones_pendientes_partial(request, aviso=''):
     pendientes = scope_por_unidad_negocio(
         Estacion.objects.select_related('farmacia', 'farmacia__grupo').filter(
@@ -105,6 +107,7 @@ def estacion_reiniciar(request, pk):
 
 
 @login_required
+@permission_required('catalogo.view_estacion', raise_exception=True)
 def estacion_info_modal(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
     verificar_acceso(request.user, estacion.farmacia.unidad_negocio)

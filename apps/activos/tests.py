@@ -45,7 +45,7 @@ class SeedPermisosTests(TestCase):
         call_command('seed_permisos')
         grupo = Group.objects.get(name='Mesa de Ayuda')
         codenames = set(grupo.permissions.values_list('codename', flat=True))
-        self.assertEqual(codenames, {'acceso_remoto_estacion', 'consultar_info_estacion'})
+        self.assertEqual(codenames, {'acceso_remoto_estacion', 'consultar_info_estacion', 'view_estacion'})
 
     def test_soporte_tecnico_tiene_acciones_de_riesgo_pero_no_bitlocker_ni_grabaciones(self):
         call_command('seed_permisos')

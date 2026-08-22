@@ -13,6 +13,7 @@ from apps.scripts.models import EjecucionScript, Script, ScriptProgramado, TipoS
 
 
 @login_required
+@permission_required('scripts.view_script', raise_exception=True)
 def scripts_lista(request):
     scripts = scope_scripts_visibles_activa(
         Script.objects.filter(es_adhoc=False), request,
@@ -40,6 +41,7 @@ def script_crear(request):
 
 
 @login_required
+@permission_required('scripts.view_script', raise_exception=True)
 def script_detalle(request, pk):
     script = get_object_or_404(Script, pk=pk)
     verificar_acceso(request.user, script.unidad_negocio)
@@ -117,6 +119,7 @@ def script_ejecutar_adhoc(request):
 
 
 @login_required
+@permission_required('scripts.view_ejecucionscript', raise_exception=True)
 def ejecuciones_lista(request):
     ejecuciones = scope_por_unidad_negocio_activa(
         EjecucionScript.objects.select_related('script', 'creado_por').order_by('-fecha_creacion'),
@@ -126,6 +129,7 @@ def ejecuciones_lista(request):
 
 
 @login_required
+@permission_required('scripts.view_ejecucionscript', raise_exception=True)
 def ejecucion_detalle(request, pk):
     ejecucion = get_object_or_404(EjecucionScript.objects.select_related('script'), pk=pk)
     verificar_acceso(request.user, ejecucion.unidad_negocio)
@@ -133,6 +137,7 @@ def ejecucion_detalle(request, pk):
 
 
 @login_required
+@permission_required('scripts.view_ejecucionscript', raise_exception=True)
 def ejecucion_progreso_partial(request, pk):
     ejecucion = get_object_or_404(EjecucionScript, pk=pk)
     verificar_acceso(request.user, ejecucion.unidad_negocio)
@@ -143,6 +148,7 @@ def ejecucion_progreso_partial(request, pk):
 
 
 @login_required
+@permission_required('scripts.view_scriptprogramado', raise_exception=True)
 def scripts_programados_lista(request):
     programados = list(scope_por_unidad_negocio_activa(
         ScriptProgramado.objects.select_related('script', 'unidad_negocio').order_by('fecha_proxima_ejecucion'),
