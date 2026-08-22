@@ -70,6 +70,9 @@ sh deploy/bootstrap-emqx.sh
 # 7. Backups: sí van por cron del host (necesitan orquestar `docker compose` desde
 #    afuera del stack) — agregar al crontab:
 #    0 2 * * * cd /ruta/al/proyecto && sh deploy/backup.sh /ruta/a/backups >> /var/log/saidsoft-backup.log 2>&1
+#    Requiere BACKUP_ENCRYPTION_PASSPHRASE en deploy/.env (ver .env.prod.example) — sin
+#    eso el script no corre. Los .sql.gz/.tar.gz quedan cifrados con GPG (AES256); para
+#    restaurar/probar un backup ver deploy/restaurar-backup.sh.
 
 # 8. (Opcional) Acceso remoto — configurar MeshCentral, ver sección abajo.
 ```
@@ -383,9 +386,11 @@ confirmar el flujo completo (grabar → listar en "Recordings" → reproducir).
   `/saidsof/agente/+/pos_errores/` para `worker` — una sola corrida de
   `bootstrap-emqx.sh` cubre las dos reglas nuevas (software_instalado + pos_errores),
   no hace falta correrlo dos veces.
-- **Respaldos**: `deploy/backup.sh` (pg_dump + media, con retención de 14 días
-  locales), pensado para el cron del host — ver paso 7 arriba. No reemplaza una copia
-  fuera del servidor.
+- **Respaldos**: `deploy/backup.sh` (pg_dump + media, cifrados con GPG, retención de 14
+  días locales), pensado para el cron del host — ver paso 7 arriba. Restaurar/probar un
+  backup: `deploy/restaurar-backup.sh` (contra una base de prueba por default, nunca
+  pisa la real sin confirmación explícita). Sigue sin reemplazar una copia fuera del
+  servidor — pendiente (OPS-2 de la auditoría de gobernanza, ver PLAN_MODERNIZACION.md).
 - **Bug real encontrado en producción (20-ago-2026): `docker-compose down` + `up`
   "pierde" las credenciales MQTT de EMQX aunque el volumen `emqx_data` sea con
   nombre y sobreviva.** El servicio `emqx` no tenía `hostname` fijo — cada
