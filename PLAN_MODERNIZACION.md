@@ -1188,3 +1188,26 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   daemon `cron` confirmado `active`. **Pendiente, no bloqueante**: probar una
   restauración real de `db_*.sql.gz` sobre una base vacía (ver OPS-2) y mover los
   respaldos fuera del servidor.
+
+- **SEC-2 — 🟢 cerrado (22-ago-2026):** el panel se servía por HTTP plano
+  (`http://10.111.6.20:8080`), con `SECURE_SSL_REDIRECT`/`COOKIES_SOLO_HTTPS` en `False`
+  en el `.env` real del servidor — confirmado (no solo inferido) leyendo el `.env` real.
+  Sin dominio propio, se agregó un servicio `nginx` (`deploy/nginx/nginx.conf`) que
+  termina TLS con el mismo certificado autofirmado que ya usa EMQX
+  (`deploy/certs/cert.pem`, ya tenía `IP:10.111.6.20` en el SAN — no hizo falta
+  regenerarlo). `web` (gunicorn) dejó de publicar puerto al host (`expose: 8000` en vez
+  de `ports:`), solo nginx lo alcanza por red interna de Docker. HTTPS en el puerto
+  **8084** (dentro del rango 8080-8085 ya abierto en firewall, cero cambios de red);
+  8080 sigue respondiendo pero solo redirige a HTTPS.
+  **Hallazgo real encontrado al implementarlo** (no en la auditoría original): `/media/`
+  (de donde los ~1.935 agentes bajan paquetes de despliegue e instaladores, sin
+  autenticación por diseño — ver `config/urls.py`) se resuelve con `urllib` puro del
+  lado del agente, que no confía en el certificado autofirmado del panel. Redirigir
+  ciegamente todo a HTTPS habría roto la descarga de despliegues de toda la flota en
+  producción. Se ajustó nginx para servir `/media/` sin cifrar y sin redirect (no hay
+  credenciales en ese path) directo desde el volumen `media_data`, resolviendo de paso
+  la deuda de performance que `config/urls.py` ya señalaba (cada descarga ocupaba un
+  worker de gunicorn) — `ARCHIVOS_BASE_URL` no necesitó cambiar. En el `.env` real:
+  `CSRF_TRUSTED_ORIGINS` a `https://10.111.6.20:8084`, `SECURE_SSL_REDIRECT`/
+  `COOKIES_SOLO_HTTPS` a `True`. `docker-compose config` limpio localmente antes de
+  desplegar (con `deploy/.env.prod.example` como stand-in de secretos).

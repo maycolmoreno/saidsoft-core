@@ -1,10 +1,12 @@
 # Stack de producción de SAIDSOFT: panel web + worker MQTT + TimescaleDB + EMQX.
 # Copiar deploy/.env.prod.example a deploy/.env y completar antes de levantar.
-#   docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+#   docker-compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
 #
-# El servidor central va detrás de un proxy TLS (traefik/nginx/caddy) que termina HTTPS
-# para el panel; aquí el web expone 8000 en la red interna. EMQX sí termina su propio TLS
-# en 8883 (los agentes hablan MQTT sobre TLS directamente contra EMQX).
+# El panel va detrás de un proxy TLS (servicio `nginx`, 22-ago-2026 — ver
+# PLAN_MODERNIZACION.md §10-Y/SEC-2) que termina HTTPS con un certificado autofirmado;
+# `web` (gunicorn) ya no publica puerto al host, solo se lo ve dentro de la red de
+# Docker. EMQX termina su propio TLS en 8883 (los agentes hablan MQTT sobre TLS
+# directamente contra EMQX, sin pasar por nginx).
 
 x-app: &app-build
   build:
@@ -137,8 +139,24 @@ services:
         condition: service_started
       redis:
         condition: service_started
+    # Sin publicar puerto al host (22-ago-2026, SEC-2): antes exponía 8080 sin cifrar
+    # directo desde gunicorn — ahora el único punto de entrada es `nginx` (TLS), que lo
+    # alcanza por red interna de Docker vía "web:8000".
+    expose:
+      - "8000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+      - media_data:/app/media:ro   # sirve /media/ directo (descargas de agentes, sin auth)
+    depends_on:
+      - web
     ports:
-      - "8080:8000"   # remapeado a 8080 (rango 8080-8085 abierto en firewall); detrás de proxy TLS en prod real
+      - "8080:80"    # HTTP: solo /media/ (agentes) sin redirect; todo lo demás -> HTTPS
+      - "8084:443"   # HTTPS: dentro del rango 8080-8085 ya abierto en firewall
 
   worker:
     <<: *app-build

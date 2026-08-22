@@ -18,10 +18,18 @@ orquestados con Docker Compose. Reemplaza el SQLite y el broker `amqtt` de desar
 
 ## Requisitos del servidor
 
-- Docker Engine + Docker Compose v2.
-- Un proxy TLS delante (traefik/nginx/caddy) que termine HTTPS para el panel y reenvíe
-  a `web:8000` con la cabecera `X-Forwarded-Proto: https` (Django ya la respeta).
+- Docker Engine + Docker Compose (v1 o v2 — ver nota más abajo sobre diferencias reales
+  encontradas con v1).
 - Specs sugeridas para ~1.800 equipos: 8 vCPU / 16 GB RAM / SSD (ver PLAN_MODERNIZACION.md).
+
+El proxy TLS delante del panel (servicio `nginx`, 22-ago-2026 — ver PLAN_MODERNIZACION.md
+§10-Y/SEC-2) ya viene incluido en `docker-compose.yml`, no hay que traer uno propio.
+Publica el panel en **HTTPS por el puerto 8084** con el mismo certificado autofirmado que
+usa EMQX (`deploy/certs/cert.pem`) — sin dominio, no hay otra opción real. El puerto 8080
+sigue respondiendo pero solo redirige a HTTPS, salvo `/media/` (paquetes de despliegue e
+instaladores), que se sirve sin cifrar a propósito porque no requiere autenticación y así
+ningún agente de la flota necesita confiar en el certificado autofirmado solo para bajar
+un archivo.
 
 ## Pasos
 
@@ -31,15 +39,20 @@ cp deploy/.env.prod.example deploy/.env
 #    Editar deploy/.env: SECRET_KEY, ALLOWED_HOSTS, contraseñas de BD/EMQX, etc.
 python -c "from django.core.management.utils import get_random_secret_key as k; print(k())"  # para SECRET_KEY
 
-# 2. Certificado TLS para EMQX
-sh deploy/certs/generar-certs-dev.sh        # self-signed para arrancar…
-#    …en producción, reemplazar deploy/certs/{cert,key}.pem por certificados reales
-#    y distribuir el CA a los agentes.
+# 2. Certificado TLS — lo comparten EMQX (8883) y el proxy `nginx` delante del panel
+#    (8084, ver PLAN_MODERNIZACION.md §10-Y/SEC-2). Pasarle la IP o dominio real del
+#    servidor en el SAN, si no los agentes/navegadores rechazan el cert por
+#    "certificate is not valid for '<ip>'":
+sh deploy/certs/generar-certs-dev.sh IP:x.x.x.x   # o DNS:tu-dominio, self-signed sin dominio
+#    …en producción con dominio real, reemplazar deploy/certs/{cert,key}.pem por
+#    certificados de una CA real (Let's Encrypt u otra) y distribuir el CA a los agentes.
 
 # 3. Levantar el stack (migraciones y collectstatic corren solos en el arranque del web)
 docker-compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
 
-# 4. Crear el superusuario del panel
+# 4. Crear el superusuario del panel — acceder después en https://<IP-o-dominio>:8084
+#    (certificado autofirmado sin dominio: aceptar la advertencia del navegador la
+#    primera vez, igual que con MeshCentral en el 8083)
 docker-compose -f deploy/docker-compose.yml exec web python manage.py createsuperuser
 
 # 5. Sembrar usuarios MQTT y definir ACLs en EMQX (siembra usuarios y reglas por
