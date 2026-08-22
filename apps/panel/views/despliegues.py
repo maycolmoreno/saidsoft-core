@@ -13,6 +13,7 @@ from ..forms import DespliegueForm, PromoverDespliegueForm
 
 
 @login_required
+@permission_required('despliegues.view_despliegue', raise_exception=True)
 def despliegues_lista(request):
     despliegues = scope_por_unidad_negocio_activa(
         Despliegue.objects.select_related('creado_por', 'aprobado_por').order_by('-fecha_creacion'),
@@ -22,6 +23,7 @@ def despliegues_lista(request):
 
 
 @login_required
+@permission_required('despliegues.add_despliegue', raise_exception=True)
 def despliegue_crear(request):
     if request.method == 'POST':
         form = DespliegueForm(request.POST, request.FILES, user=request.user)
@@ -40,6 +42,7 @@ def despliegue_crear(request):
 
 
 @login_required
+@permission_required('despliegues.view_despliegue', raise_exception=True)
 def despliegue_detalle(request, pk):
     despliegue = get_object_or_404(
         Despliegue.objects
@@ -61,6 +64,7 @@ def despliegue_detalle(request, pk):
 
 
 @login_required
+@permission_required('despliegues.add_despliegue', raise_exception=True)
 def despliegue_promover(request, pk):
     origen = get_object_or_404(Despliegue, pk=pk)
     verificar_acceso(request.user, origen.unidad_negocio)
@@ -97,6 +101,7 @@ def despliegue_promover(request, pk):
 
 
 @login_required
+@permission_required('despliegues.view_despliegue', raise_exception=True)
 def despliegue_progreso_partial(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
     verificar_acceso(request.user, despliegue.unidad_negocio)
@@ -141,6 +146,7 @@ def despliegue_aprobar(request, pk):
 
 
 @login_required
+@permission_required('despliegues.change_despliegue', raise_exception=True)
 @require_POST
 def despliegue_publicar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
@@ -166,6 +172,7 @@ def despliegue_publicar(request, pk):
 
 
 @login_required
+@permission_required('despliegues.change_despliegue', raise_exception=True)
 @require_POST
 def despliegue_pausar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
@@ -179,6 +186,7 @@ def despliegue_pausar(request, pk):
 
 
 @login_required
+@permission_required('despliegues.change_despliegue', raise_exception=True)
 @require_POST
 def despliegue_reanudar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)

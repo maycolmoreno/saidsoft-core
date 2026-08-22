@@ -737,6 +737,10 @@ class DespliegueMultiTenantTests(TestCase):
         # cruce unidad_negocio vs. farmacias elegidas), no por el recorte del queryset.
         self.usuario = User.objects.create_user(username='soporte2', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='despliegues', codename='add_despliegue'),
+            Permission.objects.get(content_type__app_label='despliegues', codename='view_despliegue'),
+        )
         self.client.force_login(self.usuario)
 
     def test_crear_despliegue_rechaza_farmacia_de_otra_unidad_negocio(self):
@@ -792,6 +796,7 @@ class DespliegueAprobarPermisoTests(TestCase):
         PerfilUsuario.objects.create(usuario=self.usuario_con_permiso, acceso_todas_unidades=True)
         self.usuario_con_permiso.user_permissions.add(
             Permission.objects.get(content_type__app_label='despliegues', codename='aprobar_despliegue'),
+            Permission.objects.get(content_type__app_label='despliegues', codename='view_despliegue'),
         )
 
     def test_usuario_sin_el_permiso_no_puede_aprobar(self):
@@ -812,12 +817,48 @@ class DespliegueAprobarPermisoTests(TestCase):
         creador = self.despliegue.creado_por
         creador.user_permissions.add(
             Permission.objects.get(content_type__app_label='despliegues', codename='aprobar_despliegue'),
+            Permission.objects.get(content_type__app_label='despliegues', codename='view_despliegue'),
         )
         self.client.force_login(creador)
         resp = self.client.post(reverse('panel:despliegue_aprobar', args=[self.despliegue.pk]))
         self.assertRedirects(resp, reverse('panel:despliegue_detalle', args=[self.despliegue.pk]))
         self.despliegue.refresh_from_db()
         self.assertEqual(self.despliegue.estado, Despliegue.Estado.PENDIENTE_APROBACION)
+
+
+class DespliegueVistasPermisoTests(TestCase):
+    """AC-1 de la auditoría de gobernanza (22-ago-2026): 9 de las 9 vistas de
+    despliegues.py no pedían ningún permiso, solo sesión iniciada. Cubre que un
+    usuario sin rol quede afuera de las acciones básicas (listar/crear/publicar)."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.usuario = User.objects.create_user(username='sin_rol_desp', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        otro = User.objects.create_user(username='otro_creador_desp', password='x')
+        self.despliegue = Despliegue.objects.create(
+            version='1.0.0', archivo=SimpleUploadedFile('pkg.zip', b'contenido'),
+            unidad_negocio=self.sg, destino_tipo=Despliegue.DestinoTipo.CADENA,
+            modo_aplicacion=Despliegue.ModoAplicacion.INMEDIATO, estado=Despliegue.Estado.APROBADO,
+            creado_por=otro,
+        )
+        self.client.force_login(self.usuario)
+
+    def test_lista_sin_permiso_devuelve_403(self):
+        self.assertEqual(self.client.get(reverse('panel:despliegues_lista')).status_code, 403)
+
+    def test_crear_sin_permiso_devuelve_403(self):
+        self.assertEqual(self.client.get(reverse('panel:despliegue_crear')).status_code, 403)
+
+    def test_detalle_sin_permiso_devuelve_403(self):
+        resp = self.client.get(reverse('panel:despliegue_detalle', args=[self.despliegue.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_publicar_sin_permiso_devuelve_403(self):
+        resp = self.client.post(reverse('panel:despliegue_publicar', args=[self.despliegue.pk]))
+        self.assertEqual(resp.status_code, 403)
+        self.despliegue.refresh_from_db()
+        self.assertEqual(self.despliegue.estado, Despliegue.Estado.APROBADO)
 
 
 class AlertaMultiTenantTests(TestCase):

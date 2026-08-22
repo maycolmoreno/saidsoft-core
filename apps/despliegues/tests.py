@@ -2,7 +2,7 @@ import importlib
 import json
 from unittest.mock import patch
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Permission, User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import clear_url_caches, resolve
@@ -291,6 +291,9 @@ class DespliegueReanudarVistaTests(_BaseDespliegueTests):
         super().setUp()
         self.aprobador = User.objects.create_user(username='aprobador', password='x')
         PerfilUsuario.objects.create(usuario=self.aprobador, acceso_todas_unidades=True)
+        self.aprobador.user_permissions.add(
+            Permission.objects.get(content_type__app_label='despliegues', codename='change_despliegue'),
+        )
 
     def test_reanudar_republica_y_marca_freno_omitido(self):
         despliegue = self._crear_despliegue(estado=Despliegue.Estado.PAUSADO)
