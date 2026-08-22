@@ -1241,3 +1241,23 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   (474 tests OK al cierre) — varias docenas de tests existentes necesitaron que su
   `setUp` otorgara explícitamente el permiso nuevo al usuario de prueba (antes pasaban
   solo por el scoping de tenant, que seguía siendo necesario pero ya no suficiente).
+
+- **SEC-3 — 🟢 cerrado (22-ago-2026):** `/login/` y `/admin/` aceptaban fuerza bruta
+  ilimitada, sin bloqueo ni alerta — sin `django-axes` ni control equivalente en
+  `requirements.txt`. Se agregó `django-axes` (`axes` en `INSTALLED_APPS`,
+  `AxesBackend` primero en `AUTHENTICATION_BACKENDS` con `ModelBackend` como
+  fallback — sin él ningún login válido funcionaría, `AxesBackend` no verifica
+  contraseña, solo bloqueo—, y `AxesMiddleware` último en `MIDDLEWARE`, como pide su
+  documentación oficial). `AXES_FAILURE_LIMIT = 5`, `AXES_COOLOFF_TIME = 1` (hora).
+  **Decisión deliberada, no el default de la librería**: `AXES_LOCKOUT_PARAMETERS =
+  ['username']` (sin `'ip_address'`, con el warning `axes.W006` silenciado a
+  propósito) — varias estaciones de una misma farmacia salen a internet por la misma
+  IP (NAT), así que bloquear también por IP dejaría afuera a toda la farmacia por un
+  solo usuario con la contraseña mal; bloquear solo por cuenta protege exactamente lo
+  que hay que proteger sin ese efecto colateral. De paso, `MinimumLengthValidator` subió
+  de 8 (default de Django) a 12 caracteres. Verificado con un login real de punta a
+  punta (no `force_login`, que no pasa por los backends de autenticación): tras
+  `AXES_FAILURE_LIMIT` intentos fallidos, ni la contraseña correcta entra —
+  `django-axes` corta con `HTTP 429` antes de evaluarla. Un administrador desbloquea
+  una cuenta desde `/admin/axes/accessattempt/` (django-axes se auto-registra ahí) o
+  con `python manage.py axes_reset_username <usuario>`.

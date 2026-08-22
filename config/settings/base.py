@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     # terceros
     'rest_framework',
     'rest_framework.authtoken',
+    'axes',
     # apps propias
     'apps.catalogo',
     'apps.despliegues',
@@ -53,6 +54,11 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # SEC-3 de la auditoría de gobernanza (22-ago-2026): sin esto, /login/ y /admin/
+    # aceptaban fuerza bruta ilimitada, sin bloqueo ni alerta. Debe ir último (doc.
+    # oficial de django-axes): necesita ver la respuesta ya armada por el resto del
+    # stack de auth para decidir si cuenta como intento fallido.
+    'axes.middleware.AxesMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -85,10 +91,36 @@ DATABASES = {
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    # 12, no el default de Django (8) — SEC-3 de la auditoría de gobernanza (22-ago-2026).
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator', 'OPTIONS': {'min_length': 12}},
     {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
+
+# AxesBackend primero: intercepta el intento de login para contar fallos/bloquear ANTES
+# de que ModelBackend siquiera valide la contraseña. Sin ModelBackend como fallback,
+# ningún login válido funcionaría (AxesBackend no verifica credenciales, solo el
+# bloqueo). SEC-3 de la auditoría de gobernanza (22-ago-2026).
+AUTHENTICATION_BACKENDS = [
+    'axes.backends.AxesBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
+# Bloqueo por intentos fallidos (django-axes) — SEC-3: antes /login/ y /admin/
+# aceptaban fuerza bruta ilimitada, sin bloqueo ni alerta.
+AXES_FAILURE_LIMIT = 5
+AXES_COOLOFF_TIME = 1  # horas
+# Por username, no por IP: varias estaciones/oficinas de una misma farmacia salen a
+# internet por la misma IP (NAT) — bloquear por IP dejaría afuera a todo el mundo por
+# un solo usuario con la contraseña mal. Bloquear por username protege la cuenta
+# atacada sin afectar a nadie más.
+AXES_LOCKOUT_PARAMETERS = ['username']
+# axes.W006 avisa que sin 'ip_address' en AXES_LOCKOUT_PARAMETERS se puede evitar el
+# límite rotando de IP — variante válida para la mayoría de sitios, pero acá justo lo
+# contrario es el riesgo real: varias estaciones de una misma farmacia salen por la
+# misma IP (NAT), así que agregar 'ip_address' bloquearía a toda la farmacia por un
+# solo usuario con la contraseña mal. Elección deliberada, no un descuido.
+SILENCED_SYSTEM_CHECKS = ['axes.W006']
 
 # Internacionalización
 LANGUAGE_CODE = 'es-EC'

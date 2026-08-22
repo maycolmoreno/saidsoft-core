@@ -11,3 +11,4 @@ celery>=5.4
 redis>=5.0
 xhtml2pdf>=0.2.16
 pysnmp>=7.1
+django-axes>=8.3

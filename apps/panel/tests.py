@@ -1,5 +1,7 @@
 import csv
 import io
+
+from django.conf import settings
 from datetime import date, timedelta
 from unittest.mock import patch
 
@@ -1900,3 +1902,34 @@ class ReportesPorClienteTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, self.mia.codigo)
         self.assertNotContains(resp, 'ML001')
+
+
+class BloqueoPorIntentosFallidosTests(TestCase):
+    """SEC-3 de la auditoría de gobernanza (22-ago-2026): antes /login/ aceptaba fuerza
+    bruta ilimitada. django-axes bloquea la CUENTA (no la IP, ver AXES_LOCKOUT_PARAMETERS
+    en settings — varias estaciones de una farmacia salen por la misma IP/NAT) tras
+    AXES_FAILURE_LIMIT intentos fallidos, incluso si el siguiente intento trae la
+    contraseña correcta."""
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='con_password_valida', password='ContrasenaValida123!')
+
+    def _intentar_login(self, password):
+        return self.client.post(reverse('panel:login'), {
+            'username': 'con_password_valida', 'password': password,
+        })
+
+    def test_bloquea_la_cuenta_tras_el_limite_de_intentos_fallidos(self):
+        for _ in range(settings.AXES_FAILURE_LIMIT):
+            self._intentar_login('contraseña-incorrecta')
+        # Ya bloqueada: ni con la contraseña correcta entra — django-axes corta acá
+        # con 429 (Too Many Requests), sin llegar a evaluar la contraseña.
+        resp = self._intentar_login('ContrasenaValida123!')
+        self.assertEqual(resp.status_code, 429)
+        self.assertFalse(resp.wsgi_request.user.is_authenticated)
+
+    def test_no_bloquea_antes_de_alcanzar_el_limite(self):
+        for _ in range(settings.AXES_FAILURE_LIMIT - 1):
+            self._intentar_login('contraseña-incorrecta')
+        resp = self._intentar_login('ContrasenaValida123!')
+        self.assertEqual(resp.status_code, 302)
