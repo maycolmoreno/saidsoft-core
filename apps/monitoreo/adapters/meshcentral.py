@@ -32,8 +32,15 @@ Puntos clave del protocolo:
   cada vez que cambia la conectividad de un nodo — de ahí que este adaptador no necesite
   polling propio, solo mantener la conexión abierta (ver run_meshcentral_worker).
 - `nodeid` viaja completo (ej. "node/<domain>/<hash>"); `Estacion.meshcentral_node_id`
-  guarda solo el `<hash>` final (se copia a mano desde la consola web) — `_id_corto()`
-  normaliza antes de comparar.
+  guarda solo el `<hash>` final — `_id_corto()` normaliza antes de comparar.
+- **Auto-vínculo por nombre** (21-ago-2026): `apps.catalogo.services.
+  generar_comando_instalacion_meshcentral` instala el agente con
+  `--agentName=<código de la estación>`, así que el `name` que trae cada nodo (en el
+  snapshot y, cuando el evento lo incluye, también en `nodeconnect`) coincide con
+  `Estacion.codigo`. `_vincular_por_nombre` usa ese match para completar
+  `meshcentral_node_id` sola la primera vez que el nodo aparece — ya no hace falta
+  copiarlo a mano desde la consola web salvo para estaciones instaladas antes de este
+  cambio (o cuyo agente se haya nombrado distinto).
 """
 import base64
 import json
@@ -42,6 +49,7 @@ import threading
 
 import websocket
 from django.conf import settings
+from django.utils import timezone
 
 from apps.catalogo.models import Estacion
 from apps.monitoreo.adapters.base import FuenteMonitoreo
@@ -100,12 +108,31 @@ class AdaptadorMeshCentral(FuenteMonitoreo):
         }))
         return ws
 
-    def _registrar_nodo(self, nodeid: str, conn: int) -> int:
+    def _vincular_por_nombre(self, nodeid: str, nombre: str):
+        """Auto-vínculo: `generar_comando_instalacion_meshcentral` nombra el agente con
+        el código de la estación (`--agentName`), así que si el nombre del nodo
+        coincide con una estación que todavía no tiene `meshcentral_node_id`, se
+        vincula sola — sin esto había que copiarlo a mano desde la consola de
+        MeshCentral cada vez. Nunca pisa un vínculo ya existente (`meshcentral_node_id=''`
+        en el filtro)."""
+        if not nombre:
+            return None
+        estacion = Estacion.objects.filter(codigo=nombre, meshcentral_node_id='').first()
+        if estacion is None:
+            return None
+        estacion.meshcentral_node_id = _id_corto(nodeid)
+        estacion.meshcentral_vinculado_en = timezone.now()
+        estacion.save(update_fields=['meshcentral_node_id', 'meshcentral_vinculado_en'])
+        logger.info('MeshCentral: %s vinculada automáticamente a %s', estacion.codigo, nodeid)
+        return estacion
+
+    def _registrar_nodo(self, nodeid: str, conn: int, nombre: str = '') -> int:
         estacion = Estacion.objects.filter(meshcentral_node_id=_id_corto(nodeid)).first()
         if estacion is None:
-            # Estación sin vincular todavía (el vínculo sigue siendo manual, ver
-            # Estacion.meshcentral_node_id) — no es un error, simplemente no participa
-            # del cruce hasta que alguien la vincule desde el panel.
+            estacion = self._vincular_por_nombre(nodeid, nombre)
+        if estacion is None:
+            # Estación sin vincular todavía y sin nombre que matchee — no es un error,
+            # simplemente no participa del cruce hasta que se vincule (a mano o sola).
             return 0
         registrar_estado_dispositivo(
             estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL,
@@ -115,7 +142,7 @@ class AdaptadorMeshCentral(FuenteMonitoreo):
 
     def _procesar_nodes(self, msg: dict) -> int:
         nodos = [n for lista in (msg.get('nodes') or {}).values() for n in lista]
-        return sum(self._registrar_nodo(n.get('_id', ''), n.get('conn', 0)) for n in nodos)
+        return sum(self._registrar_nodo(n.get('_id', ''), n.get('conn', 0), n.get('name', '')) for n in nodos)
 
     def _procesar_mensaje(self, msg: dict) -> None:
         if msg.get('action') != 'event':
@@ -123,7 +150,7 @@ class AdaptadorMeshCentral(FuenteMonitoreo):
         evento = msg.get('event') or {}
         if evento.get('action') != 'nodeconnect':
             return
-        self._registrar_nodo(evento.get('nodeid', ''), evento.get('conn', 0))
+        self._registrar_nodo(evento.get('nodeid', ''), evento.get('conn', 0), evento.get('name', ''))
 
     def _solicitar_nodes(self, ws, *, reintentos: int = 2, timeout_por_intento: int = 8) -> int:
         """Pide `{"action":"nodes"}` y espera la respuesta, procesando de paso

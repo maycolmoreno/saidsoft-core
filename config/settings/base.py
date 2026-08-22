@@ -254,6 +254,13 @@ CELERY_BEAT_SCHEDULE = {
         # EstadoDispositivo ya se actualiza en tiempo real, esto solo evalúa el cruce.
         'schedule': 60.0 * 7,
     },
+    'sincronizar-meshcentral': {
+        'task': 'apps.monitoreo.tasks.sincronizar_meshcentral_task',
+        # Cada 15 min: red de seguridad del resync que ya hace run_meshcentral_worker
+        # al (re)conectar — cubre el auto-vínculo por nombre de una estación instalada
+        # mientras el worker lleva mucho tiempo conectado sin caerse.
+        'schedule': 60.0 * 15,
+    },
     'generar-ejecuciones-programadas': {
         'task': 'apps.scripts.tasks.generar_ejecuciones_programadas_task',
         'schedule': 60.0 * 60 * 24,  # diario — el propio filtro por fecha lo hace seguro de repetir

@@ -214,10 +214,15 @@ def generar_comando_instalacion_meshcentral(estacion) -> str:
         # y el proceso termina solo). Con "-fullinstall" sí se puede usar "-Wait": el
         # proceso vuelve al terminar la instalación (confirmado en MC001-C), no se queda
         # corriendo como el agente persistente.
+        # "--agentName=<código>" (formato validado por codigo_estacion_validator,
+        # [A-Z0-9]+-[A-Z0-9]+ — seguro de interpolar sin comillas/escapes) hace que el
+        # nodo aparezca en MeshCentral con el mismo código que la estación, para que
+        # apps.monitoreo.adapters.meshcentral._vincular_por_nombre lo enlace solo, sin
+        # tener que copiar el node_id a mano desde la consola web.
         '$ruta = Join-Path $env:TEMP "meshagent.exe"; '
         f'curl.exe -k -sS -o $ruta "{url_instalador}"; '
         'if (-not (Test-Path $ruta)) { throw "No se pudo descargar el agente MeshCentral (curl.exe)." }; '
-        'Start-Process -FilePath $ruta -ArgumentList "-fullinstall" -Wait; '
+        f'Start-Process -FilePath $ruta -ArgumentList "-fullinstall","--agentName={estacion.codigo}" -Wait; '
         'Remove-Item $ruta -Force -ErrorAction SilentlyContinue'
     )
 

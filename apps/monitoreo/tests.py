@@ -773,6 +773,45 @@ class AdaptadorMeshCentralTests(TestCase):
         self.assertEqual(procesados, 0)
         self.assertFalse(EstadoDispositivo.objects.exists())
 
+    def test_registrar_nodo_vincula_automaticamente_por_nombre(self):
+        # generar_comando_instalacion_meshcentral instala con --agentName=<código> —
+        # si el nombre del nodo coincide con una estación sin vincular, se enlaza sola.
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX002')
+        farmacia = Farmacia.objects.create(codigo='MC001', grupo=grupo, unidad_negocio=sg)
+        estacion_nueva = Estacion.objects.create(codigo='MC001-C', farmacia=farmacia)
+
+        procesados = self.adaptador._registrar_nodo('node/domain0/nuevoNodeId', 1, 'MC001-C')
+
+        self.assertEqual(procesados, 1)
+        estacion_nueva.refresh_from_db()
+        self.assertEqual(estacion_nueva.meshcentral_node_id, 'nuevoNodeId')
+        self.assertIsNotNone(estacion_nueva.meshcentral_vinculado_en)
+        self.assertTrue(
+            EstadoDispositivo.objects.filter(estacion=estacion_nueva, fuente=EstadoDispositivo.Fuente.MESHCENTRAL).exists(),
+        )
+
+    def test_registrar_nodo_no_pisa_un_vinculo_existente(self):
+        # self.estacion ya tiene meshcentral_node_id='abc123' — un nombre que
+        # coincidiera con su código no debería reemplazar ese vínculo.
+        self.estacion.codigo = 'NOMBRE-DUPLICADO'
+        self.estacion.save(update_fields=['codigo'])
+
+        procesados = self.adaptador._registrar_nodo('node/domain0/otroNodeId', 1, 'NOMBRE-DUPLICADO')
+
+        self.assertEqual(procesados, 0)
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.meshcentral_node_id, 'abc123')
+
+    def test_registrar_nodo_sin_nombre_no_intenta_vincular(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX002')
+        farmacia = Farmacia.objects.create(codigo='MC001', grupo=grupo, unidad_negocio=sg)
+        Estacion.objects.create(codigo='MC001-C', farmacia=farmacia)
+
+        procesados = self.adaptador._registrar_nodo('node/domain0/nuevoNodeId', 1, '')
+        self.assertEqual(procesados, 0)
+
     def test_procesar_mensaje_nodeconnect_actualiza_estado(self):
         self.adaptador._procesar_mensaje({
             'action': 'event',

@@ -97,6 +97,12 @@ class MeshCentralServiciosTests(TestCase):
         self.assertIn('-fullinstall', comando)
         self.assertIn('-Wait', comando)
 
+    def test_generar_comando_nombra_el_agente_como_la_estacion(self):
+        # Para que apps.monitoreo.adapters.meshcentral._vincular_por_nombre pueda
+        # enlazar el node_id solo, sin copiarlo a mano de la consola de MeshCentral.
+        comando = generar_comando_instalacion_meshcentral(self.estacion)
+        self.assertIn(f'--agentName={self.estacion.codigo}', comando)
+
     def test_urls_remotas_none_sin_node_id(self):
         self.assertIsNone(url_escritorio_remoto_meshcentral(self.estacion))
         self.assertIsNone(url_terminal_remoto_meshcentral(self.estacion))

@@ -45,3 +45,17 @@ def sincronizar_ancho_banda_farmacias_task():
     configurado (ver apps.monitoreo.mikrotik)."""
     exitosas = sincronizar_ancho_banda_farmacias()
     return f'{exitosas} farmacia(s) sondeada(s) por SNMP.'
+
+
+@shared_task(name='apps.monitoreo.tasks.sincronizar_meshcentral_task')
+def sincronizar_meshcentral_task():
+    """Cada 15 min (ver CELERY_BEAT_SCHEDULE) — respaldo del resync que ya hace
+    run_meshcentral_worker al (re)conectar (ver AdaptadorMeshCentral.sincronizar_todo).
+    Sin esto, una estación instalada mientras el worker lleva mucho tiempo conectado
+    sin caerse podía quedar sin auto-vincular si el evento nodeconnect en vivo no traía
+    el nombre del nodo — este resync completo es la red de seguridad. Sin efecto si
+    MESHCENTRAL_API_CONFIG no está configurado."""
+    from apps.monitoreo.adapters.meshcentral import AdaptadorMeshCentral
+
+    procesados = AdaptadorMeshCentral().sincronizar_todo()
+    return f'{procesados} nodo(s) de MeshCentral sincronizado(s).'

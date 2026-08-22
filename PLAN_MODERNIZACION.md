@@ -1134,9 +1134,24 @@ después de correrlo. **Lección**: un proceso que queda corriendo no prueba que
 instalación silenciosa funcionó — hay que confirmar el efecto real (servicio registrado,
 ubicación final), no solo que el `.exe` no crasheó
 
+**W. Auto-vínculo Activo/MeshCentral↔panel por nombre del agente (21-ago-2026) — 🟢
+cerrado:** surgió de paso al validar el fix de §10-V — el usuario pidió no tener que abrir
+la consola de MeshCentral y copiar el `node_id` a mano cada vez que instala un agente
+nuevo. `generar_comando_instalacion_meshcentral` ahora instala con
+`--agentName=<código de la estación>` (flag de `meshagent.exe -fullinstall`, revelado por
+`meshagent.exe --help` durante el diagnóstico de §10-V) — el nodo aparece en MeshCentral
+con el mismo nombre que `Estacion.codigo`. `apps.monitoreo.adapters.meshcentral.
+AdaptadorMeshCentral._vincular_por_nombre` usa ese match para completar
+`Estacion.meshcentral_node_id` sola la primera vez que ve el nodo (snapshot inicial o
+`nodeconnect` si el evento trae el nombre), sin pisar nunca un vínculo ya existente. Nueva
+tarea de Celery Beat `sincronizar-meshcentral` (cada 15 min, completa
+`AdaptadorMeshCentral.sincronizar_todo()`, que ya existía pero solo se llamaba al
+(re)conectar el worker de larga duración) como red de seguridad para el caso en que el
+evento en vivo no traiga el nombre. Ya no hace falta el paso manual salvo para estaciones
+instaladas antes de este cambio. Verificado con la suite completa (462 tests OK)
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual
-por decisión, ver `apps/cumplimiento/services.py`), sincronización automática
-MeshCentral↔panel (vínculo manual de `node_id`), temperatura de CPU en monitoreo
+por decisión, ver `apps/cumplimiento/services.py`), temperatura de CPU en monitoreo
 (siempre `null`, sin sensor confiable disponible).

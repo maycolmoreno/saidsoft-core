@@ -664,12 +664,21 @@ docker run -d --name meshcentral \
    producción) para que `MESHCENTRAL_CONFIG` tome el valor nuevo.
 
 **Vincular una estación**: desde su ficha en el panel (botón "Instalar agente ahora"), se
-prellena un script ad-hoc de Scripts RMM que descarga e instala el agente de MeshCentral en
-modo silencioso (`installflags=2`, solo servicio, sin UI) vía el endpoint
-`/meshagents?id=<arch>&meshid=<mesh_id>&installflags=2` que expone MeshCentral. Tras
-instalarse, el dispositivo aparece en la consola de MeshCentral con un `node_id` propio; ese
-`node_id` se copia a mano al panel (no hay sincronización automática contra la API de
-MeshCentral todavía — ver `apps/catalogo/models.py::Estacion.meshcentral_node_id`).
+prellena un script ad-hoc de Scripts RMM que descarga e instala el agente de MeshCentral vía
+el endpoint `/meshagents?id=<arch>&meshid=<mesh_id>&installflags=2` que expone MeshCentral.
+Corre con `-fullinstall --agentName=<código de la estación>` (21-ago-2026 — ver `apps.
+catalogo.services.generar_comando_instalacion_meshcentral`): `-fullinstall` es el único modo
+en que `meshagent.exe` completa la instalación real cuando lo lanza un servicio de Windows
+sin sesión interactiva (corrido sin argumentos se queda corriendo suelto, sin registrar
+servicio ni copiarse a Program Files — diagnosticado en producción real, `MC001-C`); `Start-
+Process ... -Wait` es correcto con ese flag porque el proceso sí termina al completar.
+`--agentName` nombra el nodo en MeshCentral igual que el código de la estación, para que
+`apps.monitoreo.adapters.meshcentral._vincular_por_nombre` complete solo el
+`Estacion.meshcentral_node_id` la primera vez que el nodo aparece (en el snapshot inicial o
+en `nodeconnect` si trae el nombre) — respaldado por una tarea de Celery Beat cada 15 min
+(`sincronizar-meshcentral`) por si el evento en vivo no llegó a tiempo. Ya no hace falta
+copiar el `node_id` a mano salvo para estaciones instaladas antes de este cambio, o si el
+agente se nombró distinto.
 
 **Permisos**: el botón y las tres vistas nuevas exigen el permiso Django
 `catalogo.acceso_remoto_estacion` (el primer permiso *custom*, no-CRUD, del proyecto — hasta
