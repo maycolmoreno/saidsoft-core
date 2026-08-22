@@ -184,8 +184,11 @@ def generar_comando_instalacion_meshcentral(estacion) -> str:
     """One-liner de PowerShell para instalar el agente de MeshCentral en `estacion`.
 
     Pensado para pegarse tal cual en el ejecutor ad-hoc de Scripts RMM
-    (apps/scripts). Descarga el instalador silencioso (installflags=2 =
-    solo servicio, sin UI) del device group configurado en MESHCENTRAL_CONFIG.
+    (apps/scripts), y por eso lo dispara el servicio SaidsoftAgente en Session 0
+    (sin sesión interactiva) — corre con "-fullinstall", el único modo en que
+    meshagent.exe completa la instalación real en ese contexto (ver comentario
+    abajo). Descarga el instalador (installflags=2, ver MESHCENTRAL_CONFIG) del
+    device group configurado.
     """
     conf = settings.MESHCENTRAL_CONFIG
     url_instalador = (
@@ -202,19 +205,19 @@ def generar_comando_instalacion_meshcentral(estacion) -> str:
         # Framework que usa PowerShell 5.1) sí la baja bien con -k (salta verificación del
         # certificado autofirmado, equivalente al ServerCertificateValidationCallback de
         # antes).
-        # NO usar "-Wait": meshagent.exe, una vez que se instala como servicio, SE
-        # CONVIERTE en el agente persistente (queda corriendo para siempre por diseño)
-        # — "-Wait" nunca vuelve, y la ejecución del script se queda "en progreso"
-        # hasta el timeout aunque la instalación ya haya funcionado (reproducido
-        # instalando de verdad en MC001-C, ver PLAN_MODERNIZACION.md §9/§10). Se lanza
-        # sin esperar y se le da un margen fijo para que termine de auto-instalarse
-        # antes de intentar limpiar el temporal (best-effort: el propio instalador
-        # suele mover/borrar ese archivo solo, por eso el ErrorAction).
+        # "-fullinstall" es obligatorio: corrido sin argumentos, meshagent.exe NUNCA
+        # completa la instalación real cuando lo lanza un servicio de Windows sin sesión
+        # interactiva (Session 0) — se queda corriendo como proceso suelto desde el
+        # temporal, sin registrar el servicio "Mesh Agent" ni copiarse a Program Files
+        # (reproducido y diagnosticado en MC001-C: corrido a mano SIN el flag, igual de
+        # roto; con "-fullinstall" copia a Program Files, registra e inicia el servicio,
+        # y el proceso termina solo). Con "-fullinstall" sí se puede usar "-Wait": el
+        # proceso vuelve al terminar la instalación (confirmado en MC001-C), no se queda
+        # corriendo como el agente persistente.
         '$ruta = Join-Path $env:TEMP "meshagent.exe"; '
         f'curl.exe -k -sS -o $ruta "{url_instalador}"; '
         'if (-not (Test-Path $ruta)) { throw "No se pudo descargar el agente MeshCentral (curl.exe)." }; '
-        'Start-Process -FilePath $ruta; '
-        'Start-Sleep -Seconds 10; '
+        'Start-Process -FilePath $ruta -ArgumentList "-fullinstall" -Wait; '
         'Remove-Item $ruta -Force -ErrorAction SilentlyContinue'
     )
 

@@ -1111,6 +1111,29 @@ widgets a `CheckboxSelectMultiple`, plantillas dedicadas nuevas
 `script_programado_form.html`) con el mismo JS de mostrar/ocultar por destino + buscador
 de texto. Verificado con la suite completa de `apps.panel`/`apps.scripts` (122 tests OK)
 
+**V. `meshagent.exe` corrido sin argumentos nunca instala de verdad desde una sesión no
+interactiva (21-ago-2026) — 🟢 cerrado, validado contra hardware real (`MC001-C`):**
+al probar la instalación en una estación nueva se vio la ejecución quedarse "en progreso"
+sin resolver. Primer diagnóstico (parcial, incompleto): se asumió que `meshagent.exe`, al
+convertirse en el agente persistente, nunca terminaba el proceso, así que se sacó el
+`-Wait` de `Start-Process` (commit `fc00cad`) — corrigió el cuelgue de la ejecución, pero
+`Get-CimInstance Win32_Service` confirmó que **en realidad nunca se instalaba nada**: dos
+procesos `meshagent` sueltos corriendo desde `C:\WINDOWS\TEMP`, sin servicio "Mesh Agent"
+registrado ni copia en Program Files. Causa real: corrido sin argumentos, el instalador de
+MeshCentral no completa su rutina de auto-instalación (copiarse a Program Files, registrar
+el servicio, arrancarlo) cuando lo lanza un proceso de Session 0 (el servicio de Windows
+`SaidsoftAgente`, sin sesión interactiva) — confirmado corriendo el mismo `.exe` a mano
+como Administrador (sesión interactiva normal), donde sí instaló bien. `meshagent.exe
+--help` reveló el flag correcto: `-fullinstall` (copia a Program Files, instala e inicia el
+servicio, y termina el proceso al completar — a diferencia de correrlo sin argumentos).
+Con `-fullinstall`, `-Wait` es correcto y necesario (el proceso sí vuelve). Fix final:
+`Start-Process -FilePath $ruta -ArgumentList "-fullinstall" -Wait` en
+`generar_comando_instalacion_meshcentral` — confirmado en MC001-C: `Get-CimInstance
+Win32_Service` mostró `Mesh Agent | Running | C:\Program Files\Mesh Agent\MeshAgent.exe`
+después de correrlo. **Lección**: un proceso que queda corriendo no prueba que una
+instalación silenciosa funcionó — hay que confirmar el efecto real (servicio registrado,
+ubicación final), no solo que el `.exe` no crasheó
+
 **Diferido a propósito (diseño v1, no deuda):** sync de RRHH (`SyncEjecucion`,
 `Colaborador.origen_sync` — esquema listo, sin conector porque no hay sistema de RRHH
 definido todavía), verificación automática de cumplimiento (v1 es atestación manual
