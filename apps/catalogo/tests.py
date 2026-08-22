@@ -1,5 +1,7 @@
 import io
+import json
 import tempfile
+from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 from django.core.exceptions import ValidationError
@@ -9,9 +11,9 @@ from django.test import TestCase, override_settings
 from apps.catalogo import crypto
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.catalogo.services import (
-    generar_comando_instalacion_meshcentral, obtener_clave_bitlocker_descifrada, resolver_estaciones,
-    url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
-    validar_destino_unidad_negocio,
+    enviar_comando, enviar_script, firmar_payload, generar_comando_instalacion_meshcentral,
+    obtener_clave_bitlocker_descifrada, resolver_estaciones, url_escritorio_remoto_meshcentral,
+    url_grabaciones_meshcentral, url_terminal_remoto_meshcentral, validar_destino_unidad_negocio,
 )
 
 MESHCENTRAL_CONFIG_TEST = {
@@ -413,3 +415,69 @@ class EstacionAdminMonitoreoEnLoteTests(TestCase):
         self.assertTrue(
             EventoAuditoria.objects.filter(accion='estacion.monitoreo_activar', usuario=self.admin_user).exists(),
         )
+
+
+class ComandoFirmadoTests(TestCase):
+    """SEC-1 (auditoría 22-ago-2026): la firma HMAC de un comando sin parámetros
+    (`enviar_comando`) era un string constante ("reiniciar", "consultar_info", ...) —
+    la misma firma servía para siempre y para cualquier estación. Ahora `estacion` y
+    `timestamp` entran a la firma, y el agente valida ambos (ver agente-prueba/agente_prueba.py)."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'))
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+        self.otra_estacion = Estacion.objects.create(codigo='ML001-B', farmacia=farmacia)
+
+    def _publicar(self, estacion, comando):
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            enviar_comando(estacion, comando)
+        return mock_single.call_args.args[1]  # (topico, payload_json, ...)
+
+    def test_el_payload_lleva_estacion_timestamp_y_firma_valida(self):
+        payload = json.loads(self._publicar(self.estacion, 'reiniciar'))
+        self.assertEqual(payload['estacion'], 'ML001-A')
+        self.assertIn('timestamp', payload)
+        firma_esperada = firmar_payload(comando='reiniciar', estacion='ML001-A', timestamp=payload['timestamp'])
+        self.assertEqual(payload['firma'], firma_esperada)
+
+    def test_la_firma_no_es_constante_entre_invocaciones(self):
+        # Antes del fix, firmar_payload(comando='reiniciar') no dependía de nada más:
+        # la firma de dos invocaciones cualquiera era exactamente la misma.
+        payload_1 = json.loads(self._publicar(self.estacion, 'reiniciar'))
+        payload_2 = json.loads(self._publicar(self.estacion, 'reiniciar'))
+        # Incluso repitiendo la misma estación, si el timestamp cambia la firma cambia.
+        if payload_1['timestamp'] != payload_2['timestamp']:
+            self.assertNotEqual(payload_1['firma'], payload_2['firma'])
+
+    def test_la_firma_de_una_estacion_no_sirve_para_otra(self):
+        payload = json.loads(self._publicar(self.estacion, 'reiniciar'))
+        # Reconstruir la firma que el agente de OTRA estación calcularía (su propio
+        # código en vez del que venía en el mensaje) no matchea la que llegó.
+        firma_para_otra = firmar_payload(
+            comando='reiniciar', estacion=self.otra_estacion.codigo, timestamp=payload['timestamp'],
+        )
+        self.assertNotEqual(payload['firma'], firma_para_otra)
+
+
+class ScriptFirmadoTests(TestCase):
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'))
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+
+    def test_el_payload_lleva_estacion_timestamp_y_firma_valida(self):
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            enviar_script(
+                self.estacion, ejecucion_id=1, resultado_id=2, tipo_script='powershell',
+                contenido='Write-Host hola', timeout_segundos=60,
+            )
+        payload = json.loads(mock_single.call_args.args[1])
+        self.assertEqual(payload['estacion'], 'ML001-A')
+        self.assertIn('timestamp', payload)
+        firma_esperada = firmar_payload(
+            comando='ejecutar_script', ejecucion_id=1, resultado_id=2, tipo_script='powershell',
+            timeout_segundos=60, contenido='Write-Host hola',
+            estacion='ML001-A', timestamp=payload['timestamp'],
+        )
+        self.assertEqual(payload['firma'], firma_esperada)

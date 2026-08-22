@@ -57,6 +57,17 @@ ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
 VERSION_AGENTE_PRUEBA = 'agente-prueba-0.1'
 
+# SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
+# cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
+# script, despliegue o instalación de software) alcanzaba para reproducirlo indefinidamente
+# más tarde. No es a prueba de replay dentro de la ventana (MQTT QoS0 fire-and-forget no
+# da pie a un nonce de un solo uso sin estado compartido), pero acota el daño a mensajes
+# capturados hace menos de 2 minutos, y en ejecutar_script/despliegue/software el par de
+# ids (resultado_id/despliegue_id/solicitud_id) ya actúa como nonce natural: reenviar el
+# mismo mensaje dentro de la ventana produce un reporte de estado duplicado sobre un
+# resultado que el servidor probablemente ya cerró.
+VENTANA_TIMESTAMP_SEGUNDOS = 120
+
 
 def _configurar_logging_archivo(ruta_log: str = ARCHIVO_LOG):
     """Solo archivo, sin StreamHandler(stdout) — usado por servicio_windows.py, que no
@@ -108,6 +119,13 @@ def firmar(secreto: str, **campos) -> str:
     return hmac.new(secreto.encode(), mensaje.encode(), hashlib.sha256).hexdigest()
 
 
+def timestamp_en_ventana(timestamp, ventana_segundos: int = VENTANA_TIMESTAMP_SEGUNDOS) -> bool:
+    try:
+        return abs(time.time() - float(timestamp)) <= ventana_segundos
+    except (TypeError, ValueError):
+        return False
+
+
 class AgentePrueba:
     def __init__(self, args):
         self.args = args
@@ -147,6 +165,33 @@ class AgentePrueba:
 
     def _token(self) -> str:
         return self.identidad.get('token', '')
+
+    def _firma_valida(self, tipo_mensaje: str, payload: dict, **campos) -> bool:
+        """Valida firma HMAC + ventana de timestamp de un mensaje entrante (comando,
+        ejecutar_script, despliegue o software) — ver VENTANA_TIMESTAMP_SEGUNDOS.
+        `campos` debe pasarse en el mismo orden que el servidor los firmó. Cuando
+        `campos` incluye 'estacion' (comandos dirigidos a una sola estación, no los
+        mensajes de despliegue/software que son legítimamente para varias), además
+        exige que coincida con este agente — defensa en profundidad contra un mensaje
+        capturado de OTRA estación y reenviado a este tópico (p.ej. vía la credencial
+        MQTT compartida que todavía no se angostó por ACL, ver PLAN_MODERNIZACION.md)."""
+        firma_esperada = firmar(self.args.hmac_secret, **campos)
+        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
+            logging.error('Firma HMAC inválida en %s — se ignora (posible suplantación).', tipo_mensaje)
+            return False
+        if 'estacion' in campos and campos['estacion'] != self.args.codigo:
+            logging.error(
+                '%s destinado a otra estación (%s) — se ignora (posible reenvío cruzado).',
+                tipo_mensaje, campos['estacion'],
+            )
+            return False
+        if not timestamp_en_ventana(payload.get('timestamp')):
+            logging.error(
+                '%s con timestamp fuera de ventana (posible mensaje reenviado/capturado) — se ignora.',
+                tipo_mensaje,
+            )
+            return False
+        return True
 
     # --- ciclo de conexión ---
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
@@ -462,14 +507,13 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
             logging.info('Comando "%s" recibido — no implementado en este agente de prueba.', comando)
 
     def _verificar_y_ejecutar_script(self, payload):
-        firma_esperada = firmar(
-            self.args.hmac_secret,
+        valido = self._firma_valida(
+            'comando ejecutar_script', payload,
             comando='ejecutar_script', ejecucion_id=payload['ejecucion_id'], resultado_id=payload['resultado_id'],
             tipo_script=payload['tipo_script'], timeout_segundos=payload['timeout_segundos'],
-            contenido=payload['contenido'],
+            contenido=payload['contenido'], estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
         )
-        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
-            logging.error('Firma HMAC inválida en comando ejecutar_script — se ignora (posible suplantación).')
+        if not valido:
             return
 
         resultado_id = payload['resultado_id']
@@ -515,9 +559,10 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
         # Mismo esquema de firma que ejecutar_script — aunque este comando solo lee
         # info (no ejecuta nada), igual conviene no responder a un "consultar_info"
         # forjado por cualquiera que pueda publicar en el tópico.
-        firma_esperada = firmar(self.args.hmac_secret, comando='consultar_info')
-        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
-            logging.error('Firma HMAC inválida en comando consultar_info — se ignora (posible suplantación).')
+        if not self._firma_valida(
+            'comando consultar_info', payload,
+            comando='consultar_info', estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+        ):
             return
 
         info = self._consultar_info_equipo()
@@ -590,9 +635,10 @@ try {
         # reinicia el equipo Windows completo (no el servicio del agente) — el botón
         # del panel avisa "interrumpe cualquier venta en curso en esa caja", y es
         # fire-and-forget: el servidor no espera ninguna confirmación de vuelta.
-        firma_esperada = firmar(self.args.hmac_secret, comando='reiniciar')
-        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
-            logging.error('Firma HMAC inválida en comando reiniciar — se ignora (posible suplantación).')
+        if not self._firma_valida(
+            'comando reiniciar', payload,
+            comando='reiniciar', estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+        ):
             return
 
         logging.warning('Reinicio del equipo solicitado desde el panel — reiniciando en 10s.')
@@ -605,9 +651,10 @@ try {
     def _verificar_y_escanear_actualizaciones(self, payload):
         # Mismo esquema de firma que consultar_info/reiniciar: solo el nombre del
         # comando, sin campos extra.
-        firma_esperada = firmar(self.args.hmac_secret, comando='escanear_actualizaciones')
-        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
-            logging.error('Firma HMAC inválida en comando escanear_actualizaciones — se ignora (posible suplantación).')
+        if not self._firma_valida(
+            'comando escanear_actualizaciones', payload,
+            comando='escanear_actualizaciones', estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+        ):
             return
         # En un hilo aparte: Windows Update puede tardar varios minutos en responder, y
         # eso no debe bloquear el heartbeat ni la recepción de otros mensajes MQTT —
@@ -687,11 +734,11 @@ try {
     # --- inventario de software instalado (bajo demanda) ---
     def _verificar_y_consultar_software_instalado(self, payload):
         # Mismo esquema de firma que consultar_info/escanear_actualizaciones.
-        firma_esperada = firmar(self.args.hmac_secret, comando='consultar_software_instalado')
-        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
-            logging.error(
-                'Firma HMAC inválida en comando consultar_software_instalado — se ignora (posible suplantación).',
-            )
+        if not self._firma_valida(
+            'comando consultar_software_instalado', payload,
+            comando='consultar_software_instalado',
+            estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+        ):
             return
         # En un hilo aparte, igual que escanear_actualizaciones: en equipos con mucho
         # software instalado, leer el registro completo puede tardar más de lo que
@@ -739,7 +786,21 @@ ConvertTo-Json -Compress -InputObject @($programas)
 
     # --- software (catálogo) ---
     def _manejar_software(self, payload):
-        solicitud_id = payload['solicitud_id']
+        solicitud_id = payload.get('solicitud_id')
+        if not self._firma_valida(
+            'instalación de software', payload,
+            comando='instalar_software', solicitud_id=payload.get('solicitud_id'),
+            aplicacion=payload.get('aplicacion'), version=payload.get('version'), accion=payload.get('accion'),
+            url=payload.get('url'), sha256=payload.get('sha256'),
+            comando_instalacion_silenciosa=payload.get('comando_instalacion_silenciosa'),
+            comando_desinstalacion=payload.get('comando_desinstalacion'),
+            argumentos_adicionales=payload.get('argumentos_adicionales'),
+            comando_deteccion=payload.get('comando_deteccion'), timestamp=payload.get('timestamp'),
+        ):
+            if solicitud_id is not None:
+                self._reportar_instalacion(solicitud_id, 'error', detalle='Firma HMAC inválida o mensaje expirado.')
+            return
+
         accion = payload.get('accion', 'instalar')
 
         if accion == 'desinstalar':
@@ -829,7 +890,17 @@ ConvertTo-Json -Compress -InputObject @($programas)
 
     # --- despliegues de POS ---
     def _manejar_despliegue(self, payload):
-        despliegue_id = payload['despliegue_id']
+        despliegue_id = payload.get('despliegue_id')
+        if not self._firma_valida(
+            'despliegue', payload,
+            comando='desplegar', despliegue_id=payload.get('despliegue_id'), version=payload.get('version'),
+            url=payload.get('url'), sha256=payload.get('sha256'), modo_aplicacion=payload.get('modo_aplicacion'),
+            ventana_fecha_hora=payload.get('ventana_fecha_hora'), timestamp=payload.get('timestamp'),
+        ):
+            if despliegue_id is not None:
+                self._reportar_despliegue(despliegue_id, 'error', detalle='Firma HMAC inválida o mensaje expirado.')
+            return
+
         if not (self.args.pos_carpeta_instalacion and self.args.pos_nombre_proceso
                 and self.args.pos_comando_iniciar):
             self._reportar_despliegue(

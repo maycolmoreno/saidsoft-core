@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 
 import paho.mqtt.publish as mqtt_publish
 from django.conf import settings
@@ -61,9 +62,20 @@ def enviar_comando(estacion, comando: str) -> bool:
     el comando se pierde (correcto para "reiniciar ahora" — no queremos que un
     reinicio pendiente se dispare solo al reconectar más tarde). Devuelve True
     si se pudo publicar (no confirma que el agente lo haya recibido/aplicado).
+
+    `estacion` y `timestamp` entran a la firma (SEC-1, auditoría 22-ago-2026):
+    sin ellos, el mensaje firmado de un comando sin parámetros es un string fijo
+    ("reiniciar", "consultar_info", ...) — la misma firma sirve para siempre y
+    para cualquier estación, así que capturar un solo mensaje MQTT alcanza para
+    reproducirlo indefinidamente. El agente valida ambos: rechaza si el código
+    de estación no es el suyo (además de que el topic ya lo acota) y si el
+    timestamp cae fuera de una ventana corta.
     """
-    firma = firmar_payload(comando=comando)
-    return _publicar_comando(estacion, {'comando': comando, 'firma': firma})
+    timestamp = int(time.time())
+    firma = firmar_payload(comando=comando, estacion=estacion.codigo, timestamp=timestamp)
+    return _publicar_comando(estacion, {
+        'comando': comando, 'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
+    })
 
 
 def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script: str,
@@ -72,15 +84,21 @@ def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script
 
     El agente responde el progreso (recibido/ejecutando/completado/error/timeout)
     en el tópico `script_estado`, manejado por `apps.mqtt_worker.services.manejar_estado_script`.
+
+    Mismo agregado de `estacion`/`timestamp` a la firma que `enviar_comando` (SEC-1)
+    — acá ya variaba por invocación (ejecucion_id/resultado_id), pero nada impedía
+    reenviar más tarde el mismo mensaje capturado tal cual.
     """
+    timestamp = int(time.time())
     firma = firmar_payload(
         comando='ejecutar_script', ejecucion_id=ejecucion_id, resultado_id=resultado_id,
         tipo_script=tipo_script, timeout_segundos=timeout_segundos, contenido=contenido,
+        estacion=estacion.codigo, timestamp=timestamp,
     )
     return _publicar_comando(estacion, {
         'comando': 'ejecutar_script', 'ejecucion_id': ejecucion_id, 'resultado_id': resultado_id,
         'tipo_script': tipo_script, 'contenido': contenido, 'timeout_segundos': timeout_segundos,
-        'firma': firma,
+        'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
     })
 
 

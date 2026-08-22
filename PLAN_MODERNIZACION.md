@@ -1344,3 +1344,54 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   (solo Administrador vía permisos totales) — quién aprueba qué es una decisión de
   gobernanza persona por persona, no de rol. Suite completa verificada en verde (491
   tests OK) + `check`/`makemigrations --check --dry-run` limpios.
+
+- **SEC-1 — 🟢 cerrado (22-ago-2026):** la firma HMAC de los comandos del panel al
+  agente (`apps.catalogo.services.firmar_payload`) no ataba estación ni timestamp — para
+  los comandos sin parámetros (`reiniciar`, `consultar_info`, `escanear_actualizaciones`,
+  `consultar_software_instalado`) el mensaje firmado era un string **constante**
+  ("reiniciar", etc.), así que la firma era la misma para siempre y para cualquier
+  estación: capturar un solo mensaje MQTT alcanzaba para reproducirlo indefinidamente.
+  Al revisar el fix se encontró algo peor y más amplio que el hallazgo original: los
+  mensajes de **Despliegue** (`apps/despliegues/services.py`) y **SolicitudInstalacion**
+  de software (`apps/software/services.py`) — los que le dicen a un agente qué paquete
+  descargar e instalar en el POS — **no tenían ninguna firma**, ni siquiera la débil de
+  los comandos. Solo los protegía la ACL del broker EMQX, y el `sha256` del payload lo
+  pone quien arma el mensaje, así que no probaba autenticidad, solo detectaba corrupción
+  de transporte.
+
+  **Fix, mismo esquema en los tres:** `estacion` + `timestamp` (epoch) entran a la firma
+  de `enviar_comando`/`enviar_script` (mensajes dirigidos a una sola estación, vía su
+  propio tópico); `despliegue`/`instalar_software` suman `timestamp` a la firma pero
+  **no** `estacion` — sus mensajes son legítimamente broadcast a un tópico de
+  grupo/farmacia/cadena (varias estaciones a la vez), así que atar una sola estación no
+  aplica ahí; el resto de los campos del payload (url, sha256, versión, modo de
+  aplicación...) sí entran a la firma, cerrando la manipulación de contenido. El agente
+  (`agente-prueba/agente_prueba.py`, único agente vigente — no hay agente C# en este
+  repo ni en ningún otro lado accesible) gana un helper común `_firma_valida()` usado en
+  los 6 tipos de mensaje: reconstruye la firma con los mismos campos, y además rechaza
+  si (a) el campo `estacion` del mensaje no coincide con el código de esta estación
+  (defensa en profundidad — el tópico ya lo acota, pero la credencial MQTT compartida
+  con ACL `/saidsof/#` que usan las estaciones aún no migradas la haría insuficiente por
+  sí sola, ver `deploy/bootstrap-emqx.sh`) o (b) el `timestamp` cae fuera de una ventana
+  de `VENTANA_TIMESTAMP_SEGUNDOS = 120` segundos.
+
+  **Riesgo residual documentado, no resuelto acá:** `COMANDO_HMAC_SECRET` es una única
+  clave **global** compartida por las ~1.800 estaciones (no hay secreto por estación
+  para esto, a diferencia de las credenciales MQTT que sí son por estación desde
+  `emqx_admin.py`). Atar estación+timestamp cierra el replay y la manipulación de
+  contenido, pero no evita que un agente comprometido (que por diseño conoce el secreto
+  global para poder validar sus propios comandos) fabrique un mensaje válido "para otra
+  estación" con solo poner el código que quiera — para cerrar eso haría falta una clave
+  HMAC por estación, un cambio más grande que se deja para una ronda aparte si se decide
+  priorizarlo. Tampoco se tocó acá el otro hallazgo relacionado que quedó anotado
+  durante la investigación: la migración a ACL por estación en EMQX está completa en
+  código pero el corte real de la credencial compartida (`deploy/emqx-narrow-acl-agente.sh`)
+  es un paso manual que el propio repo documenta como pendiente hasta confirmar que toda
+  la flota migró — mientras tanto, esa credencial compartida sigue con ACL `/saidsof/#`
+  ("todo"). Verificado con un script que importa `firmar_payload` del servidor y
+  `firmar()` del agente por separado y confirma que producen el mismo hex para los 4
+  tipos de mensaje (comando, ejecutar_script, desplegar, instalar_software) con los
+  mismos campos — la firma es un contrato entre dos implementaciones independientes, así
+  que esto es la única forma real de probar que no se rompió sin una estación física.
+  Suite completa verificada en verde (499 tests OK) + `check`/`makemigrations --check
+  --dry-run` limpios. Sin migración: es código puro, sin cambios de modelo.

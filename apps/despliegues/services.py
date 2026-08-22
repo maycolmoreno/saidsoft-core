@@ -7,11 +7,14 @@ disparada por un humano.
 """
 import json
 import logging
+import time
 from dataclasses import dataclass
 
 import paho.mqtt.publish as mqtt_publish
 from django.conf import settings
 from django.utils import timezone
+
+from apps.catalogo.services import firmar_payload
 
 from .models import Despliegue, EventoDespliegue, ResultadoDespliegue
 
@@ -36,7 +39,20 @@ def _topicos_para(despliegue: Despliegue) -> list[str]:
 
 
 def _payload(despliegue: Despliegue) -> dict:
-    return {
+    # SEC-1 (auditoría 22-ago-2026): este mensaje le dice al agente qué paquete
+    # descargar e instalar sobre el POS — antes no llevaba ninguna firma, así que
+    # cualquiera con permiso de publish en el tópico (o que capturara/reenviara un
+    # mensaje viejo) podía forzar la instalación de un paquete arbitrario, con el
+    # `sha256` puesto por el propio emisor del mensaje (no sirve como prueba de
+    # autenticidad, solo detecta corrupción de transporte). No lleva `estacion`
+    # porque este mismo payload puede ir a un tópico de grupo/farmacia/cadena
+    # (varias estaciones a la vez) — el `timestamp` sí entra a la firma para acotar
+    # el reenvío de un despliegue viejo (p.ej. un downgrade a una versión vulnerable).
+    ventana_fecha_hora = (
+        despliegue.ventana_fecha_hora.isoformat() if despliegue.ventana_fecha_hora else None
+    )
+    timestamp = int(time.time())
+    campos = {
         'despliegue_id': despliegue.id,
         'version': despliegue.version,
         # rstrip('/'): archivo.url ya empieza con '/', así que un ARCHIVOS_BASE_URL
@@ -46,12 +62,16 @@ def _payload(despliegue: Despliegue) -> dict:
         'url': settings.ARCHIVOS_BASE_URL.rstrip('/') + despliegue.archivo.url,
         'sha256': despliegue.sha256,
         'modo_aplicacion': despliegue.modo_aplicacion,
-        'ventana_fecha_hora': (
-            despliegue.ventana_fecha_hora.isoformat() if despliegue.ventana_fecha_hora else None
-        ),
+        'ventana_fecha_hora': ventana_fecha_hora,
+    }
+    firma = firmar_payload(comando='desplegar', **campos, timestamp=timestamp)
+    return {
+        **campos,
+        'timestamp': timestamp,
         # El agente intentará descargar del caché de su farmacia antes que del central
         # (best-effort: si el caché no tiene el paquete o falla, cae al central).
         'usar_cache': settings.DESPLIEGUE_USAR_CACHE,
+        'firma': firma,
     }
 
 

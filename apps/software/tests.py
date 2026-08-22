@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
+from apps.catalogo.services import firmar_payload
 
 from .models import (
     AplicacionCatalogo, DestinoTipo, EstadoSolicitud, EventoInstalacion, InventarioProgramado,
@@ -58,6 +60,50 @@ class VersionAplicacionTests(_BaseSoftwareTests):
         self.version.comando_desinstalacion = 'msiexec /x {archivo} /qn'
         self.version.save()
         self.assertEqual(self.version.sha256, hash_original)
+
+
+class PublicarSolicitudFirmaTests(_BaseSoftwareTests):
+    """SEC-1 (auditoría 22-ago-2026): mismo hueco que apps.despliegues — el mensaje de
+    instalación de software no llevaba ninguna firma HMAC."""
+
+    def test_el_payload_lleva_timestamp_y_firma_valida(self):
+        solicitud = self._crear_solicitud()
+        solicitud.estaciones.set([self._crear_estacion('ML001-A')])
+
+        with patch('apps.software.services.mqtt_publish.multiple') as mock_multiple:
+            publicar_solicitud(solicitud)
+
+        payload = json.loads(mock_multiple.call_args.args[0][0]['payload'])
+        self.assertIn('timestamp', payload)
+        self.assertIn('firma', payload)
+        firma_esperada = firmar_payload(
+            comando='instalar_software', solicitud_id=payload['solicitud_id'], aplicacion=payload['aplicacion'],
+            version=payload['version'], accion=payload['accion'], url=payload['url'], sha256=payload['sha256'],
+            comando_instalacion_silenciosa=payload['comando_instalacion_silenciosa'],
+            comando_desinstalacion=payload['comando_desinstalacion'],
+            argumentos_adicionales=payload['argumentos_adicionales'],
+            comando_deteccion=payload['comando_deteccion'], timestamp=payload['timestamp'],
+        )
+        self.assertEqual(payload['firma'], firma_esperada)
+
+    def test_manipular_el_payload_invalida_la_firma(self):
+        solicitud = self._crear_solicitud()
+        solicitud.estaciones.set([self._crear_estacion('ML001-A')])
+
+        with patch('apps.software.services.mqtt_publish.multiple') as mock_multiple:
+            publicar_solicitud(solicitud)
+
+        payload = json.loads(mock_multiple.call_args.args[0][0]['payload'])
+        payload['url'] = 'https://atacante.example.com/malicioso.msi'
+        firma_recalculada = firmar_payload(
+            comando='instalar_software', solicitud_id=payload['solicitud_id'], aplicacion=payload['aplicacion'],
+            version=payload['version'], accion=payload['accion'], url=payload['url'], sha256=payload['sha256'],
+            comando_instalacion_silenciosa=payload['comando_instalacion_silenciosa'],
+            comando_desinstalacion=payload['comando_desinstalacion'],
+            argumentos_adicionales=payload['argumentos_adicionales'],
+            comando_deteccion=payload['comando_deteccion'], timestamp=payload['timestamp'],
+        )
+        self.assertNotEqual(payload['firma'], firma_recalculada)
 
 
 class PublicarSolicitudTests(_BaseSoftwareTests):

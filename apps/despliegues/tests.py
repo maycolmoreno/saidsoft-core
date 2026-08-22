@@ -11,6 +11,8 @@ from django.views.static import serve
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
 
+from apps.catalogo.services import firmar_payload
+
 from .models import Despliegue, EventoDespliegue, ResultadoDespliegue
 from .services import evaluar_freno_automatico, publicar_despliegue, reintentar_despliegue, verificar_completado
 
@@ -42,6 +44,46 @@ class _BaseDespliegueTests(TestCase):
 
     def _resultado(self, despliegue, estacion, estado):
         return ResultadoDespliegue.objects.create(despliegue=despliegue, estacion=estacion, estado=estado)
+
+
+class PublicarDespliegueFirmaTests(_BaseDespliegueTests):
+    """SEC-1 (auditoría 22-ago-2026): el mensaje de despliegue no llevaba ninguna
+    firma HMAC — cualquiera con permiso de publish en el tópico podía forzar la
+    instalación de un paquete arbitrario. Ahora lleva `timestamp` + `firma`, y el
+    agente reconstruye la misma firma que apps.catalogo.services.firmar_payload."""
+
+    def test_el_payload_lleva_timestamp_y_firma_valida(self):
+        despliegue = self._crear_despliegue()
+        despliegue.estaciones.set([self._crear_estacion('ML001-A')])
+
+        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+            publicar_despliegue(despliegue)
+
+        payload = json.loads(mock_multiple.call_args.args[0][0]['payload'])
+        self.assertIn('timestamp', payload)
+        self.assertIn('firma', payload)
+        firma_esperada = firmar_payload(
+            comando='desplegar', despliegue_id=payload['despliegue_id'], version=payload['version'],
+            url=payload['url'], sha256=payload['sha256'], modo_aplicacion=payload['modo_aplicacion'],
+            ventana_fecha_hora=payload['ventana_fecha_hora'], timestamp=payload['timestamp'],
+        )
+        self.assertEqual(payload['firma'], firma_esperada)
+
+    def test_manipular_el_payload_invalida_la_firma(self):
+        despliegue = self._crear_despliegue()
+        despliegue.estaciones.set([self._crear_estacion('ML001-A')])
+
+        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+            publicar_despliegue(despliegue)
+
+        payload = json.loads(mock_multiple.call_args.args[0][0]['payload'])
+        payload['url'] = 'https://atacante.example.com/malicioso.zip'  # simula un mensaje alterado/reenviado
+        firma_recalculada = firmar_payload(
+            comando='desplegar', despliegue_id=payload['despliegue_id'], version=payload['version'],
+            url=payload['url'], sha256=payload['sha256'], modo_aplicacion=payload['modo_aplicacion'],
+            ventana_fecha_hora=payload['ventana_fecha_hora'], timestamp=payload['timestamp'],
+        )
+        self.assertNotEqual(payload['firma'], firma_recalculada)
 
 
 class PublicarDespliegueTests(_BaseDespliegueTests):

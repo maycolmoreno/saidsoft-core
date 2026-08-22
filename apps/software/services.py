@@ -7,12 +7,15 @@ la publicación falla por completo (antes eso generaba auditoría falsa en despl
 """
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 
 import paho.mqtt.publish as mqtt_publish
 from django.conf import settings
 from django.utils import timezone
+
+from apps.catalogo.services import firmar_payload
 
 from .models import DestinoTipo, EstadoSolicitud, EventoInstalacion, ResultadoInstalacion, SolicitudInstalacion
 
@@ -37,8 +40,12 @@ def _topicos_para(solicitud: SolicitudInstalacion) -> list[str]:
 
 
 def _payload(solicitud: SolicitudInstalacion) -> dict:
+    # SEC-1 (auditoría 22-ago-2026): mismo hueco y mismo fix que apps.despliegues.services
+    # ._payload — este mensaje también le dice al agente qué instalador correr, y no
+    # llevaba ninguna firma. Ver ese docstring para el razonamiento completo.
     va = solicitud.version_aplicacion
-    return {
+    timestamp = int(time.time())
+    campos = {
         'solicitud_id': solicitud.id,
         'aplicacion': va.aplicacion.nombre,
         'version': va.version,
@@ -51,9 +58,15 @@ def _payload(solicitud: SolicitudInstalacion) -> dict:
         'comando_desinstalacion': va.comando_desinstalacion,
         'argumentos_adicionales': va.argumentos_adicionales,
         'comando_deteccion': va.aplicacion.comando_deteccion,
+    }
+    firma = firmar_payload(comando='instalar_software', **campos, timestamp=timestamp)
+    return {
+        **campos,
+        'timestamp': timestamp,
         # Mismo mecanismo de caché por farmacia que ya usan los despliegues: clave para
         # no saturar el enlace de datos con instaladores pesados hacia 600 farmacias.
         'usar_cache': settings.DESPLIEGUE_USAR_CACHE,
+        'firma': firma,
     }
 
 
