@@ -50,8 +50,8 @@ from .monitoreo import (
 )
 from .reportes import (
     reporte_activos_csv, reporte_alertas_csv, reporte_auditoria_csv, reporte_cliente_resumen,
-    reporte_cumplimiento_csv, reporte_despliegue_csv, reporte_facturacion_csv, reporte_software_instalado_csv,
-    reportes_index,
+    reporte_cumplimiento_csv, reporte_despliegue_csv, reporte_facturacion_csv, reporte_mantenimiento_csv,
+    reporte_software_instalado_csv, reportes_index,
 )
 from .scripts import (
     ejecucion_aprobar, ejecucion_detalle, ejecucion_progreso_partial, ejecuciones_lista, script_crear,
@@ -97,7 +97,8 @@ __all__ = [
     'orden_compra_crear', 'orden_compra_detalle', 'orden_compra_linea_crear',
     'orden_compra_linea_recibir', 'orden_compra_recibir', 'ordenes_compra_lista', 'recepcion_lote_anular',
     'reporte_activos_csv', 'reporte_alertas_csv', 'reporte_auditoria_csv', 'reporte_cliente_resumen',
-    'reporte_cumplimiento_csv', 'reporte_despliegue_csv', 'reporte_facturacion_csv', 'reporte_software_instalado_csv',
+    'reporte_cumplimiento_csv', 'reporte_despliegue_csv', 'reporte_facturacion_csv', 'reporte_mantenimiento_csv',
+    'reporte_software_instalado_csv',
     'reportes_index',
     'ejecucion_detalle', 'ejecucion_progreso_partial', 'ejecuciones_lista', 'script_crear',
     'script_detalle', 'script_ejecutar', 'script_ejecutar_adhoc', 'script_programado_crear',

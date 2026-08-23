@@ -86,6 +86,7 @@ urlpatterns = [
         'reportes/software-instalado.csv', views.reporte_software_instalado_csv,
         name='reporte_software_instalado_csv',
     ),
+    path('reportes/mantenimiento.csv', views.reporte_mantenimiento_csv, name='reporte_mantenimiento_csv'),
 
     # Módulo de Activos
     path('colaboradores/', views.colaboradores_lista, name='colaboradores_lista'),

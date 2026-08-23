@@ -18,6 +18,7 @@ from apps.catalogo.models import Estacion
 from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa
 from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
 from apps.facturacion.services import estaciones_facturables
+from apps.mantenimiento.models import Mantenimiento
 from apps.monitoreo.models import Alerta
 
 
@@ -225,6 +226,45 @@ def reporte_software_instalado(salida, unidad_negocio, nombre_filtro: str = ''):
     ]
     _escribir(salida, [
         'programa', 'version', 'fabricante', 'grupo', 'farmacia', 'estacion', 'detectado_en',
+    ], filas)
+
+
+def reporte_mantenimiento(salida, unidad_negocio, desde=None, hasta=None):
+    """Mantenimientos de una unidad de negocio en un rango de fechas (por
+    `fecha_creacion`), con su equipo principal, técnico, resultado y costo de repuestos
+    -- primer reporte CSV de este módulo (antes solo existía el informe PDF por
+    mantenimiento individual, sin una vista consolidada)."""
+    mantenimientos = (
+        Mantenimiento.objects
+        .filter(cliente__unidad_negocio=unidad_negocio)
+        .select_related('cliente', 'tecnico')
+        .prefetch_related('equipos__equipo')
+        .order_by('-fecha_creacion')
+    )
+    if desde:
+        mantenimientos = mantenimientos.filter(fecha_creacion__gte=desde)
+    if hasta:
+        mantenimientos = mantenimientos.filter(fecha_creacion__lt=hasta)
+
+    filas = []
+    for m in mantenimientos:
+        principal = next((me.equipo for me in m.equipos.all() if me.es_principal), None)
+        filas.append([
+            m.pk,
+            m.get_tipo_origen_display(),
+            m.tipo_mantenimiento,
+            m.cliente.nombre if m.cliente else '',
+            principal.codigo if principal else '',
+            m.tecnico.username if m.tecnico else '',
+            m.get_estado_interno_display(),
+            m.get_resultado_tecnico_display() if m.resultado_tecnico else '',
+            m.fecha_creacion.strftime('%Y-%m-%d %H:%M:%S'),
+            m.fecha_cierre.strftime('%Y-%m-%d %H:%M:%S') if m.fecha_cierre else '',
+            m.costo_total_repuestos,
+        ])
+    _escribir(salida, [
+        'id', 'origen', 'tipo', 'cliente', 'equipo_principal', 'tecnico', 'estado',
+        'resultado', 'creado', 'cerrado', 'costo_repuestos',
     ], filas)
 
 

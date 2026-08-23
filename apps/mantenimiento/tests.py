@@ -477,3 +477,102 @@ class RegistrarRepuestoUtilizadoTests(TestCase):
         self.mantenimiento.refresh_from_db()
         if self.mantenimiento.informe_pdf:
             self.mantenimiento.informe_pdf.delete(save=False)
+
+
+class ResumenMantenimientoPeriodoTests(TestCase):
+    """KPIs del resumen por cliente (docs/proceso-mantenimiento-ti.md, brecha #2:
+    dashboard/reportes -- 23-ago-2026). Todo calculado al vuelo, sin tablas nuevas."""
+
+    def setUp(self):
+        from apps.catalogo.models import UnidadNegocio
+
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.usuario = User.objects.create_user(username='u_kpi', password='x')
+        self.colaborador = Colaborador.objects.create(nombre='Ana', cedula='9101', unidad_negocio=self.mia)
+        self.equipo = Activo.objects.create(codigo='CR-DSK-0300', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.mia)
+        self.desde = timezone.now() - timedelta(days=30)
+        self.hasta = timezone.now() + timedelta(days=1)
+
+    def _kpis(self):
+        from apps.mantenimiento.services import resumen_mantenimiento_periodo
+        return resumen_mantenimiento_periodo(self.mia, self.desde, self.hasta)
+
+    def test_cuenta_total_y_cerrados_del_periodo(self):
+        crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.usuario, cliente=self.colaborador,
+            tipo_mantenimiento='correctivo', descripcion='Falla', fecha_programada=timezone.now(),
+            usuario=self.usuario,
+        )
+        m2 = crear_mantenimiento_manual(
+            equipos=[Activo.objects.create(codigo='CR-DSK-0301', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.mia)],
+            tecnico=self.usuario, cliente=self.colaborador, tipo_mantenimiento='correctivo',
+            descripcion='Falla', fecha_programada=timezone.now(), usuario=self.usuario,
+        )
+        cerrar_mantenimiento(mantenimiento=m2, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.usuario)
+
+        kpis = self._kpis()
+        self.assertEqual(kpis['total_periodo'], 2)
+        self.assertEqual(kpis['cerrados_periodo'], 1)
+
+    def test_no_cuenta_mantenimientos_de_otra_unidad_de_negocio(self):
+        from apps.catalogo.models import UnidadNegocio
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        colaborador_sg = Colaborador.objects.create(nombre='Luis', cedula='9102', unidad_negocio=sg)
+        crear_mantenimiento_manual(
+            equipos=[Activo.objects.create(codigo='CR-DSK-0302', tipo=Activo.Tipo.DESKTOP, unidad_negocio=sg)],
+            tecnico=self.usuario, cliente=colaborador_sg, tipo_mantenimiento='correctivo',
+            descripcion='Falla', fecha_programada=timezone.now(), usuario=self.usuario,
+        )
+        self.assertEqual(self._kpis()['total_periodo'], 0)
+
+    def test_mttr_es_el_promedio_de_horas_entre_creacion_y_cierre(self):
+        mantenimiento = Mantenimiento.objects.create(
+            cliente=self.colaborador, descripcion='Falla', fecha_programada=timezone.now(),
+        )
+        # Simula una intervención de 4 horas.
+        Mantenimiento.objects.filter(pk=mantenimiento.pk).update(
+            fecha_creacion=timezone.now() - timedelta(hours=4),
+        )
+        mantenimiento.refresh_from_db()
+        cerrar_mantenimiento(mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.usuario)
+
+        self.assertAlmostEqual(self._kpis()['mttr_horas'], 4.0, delta=0.05)
+
+    def test_sin_mantenimientos_cerrados_mttr_es_none(self):
+        crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.usuario, cliente=self.colaborador,
+            tipo_mantenimiento='correctivo', descripcion='Falla', fecha_programada=timezone.now(),
+            usuario=self.usuario,
+        )
+        self.assertIsNone(self._kpis()['mttr_horas'])
+
+    def test_costo_repuestos_suma_solo_los_del_periodo(self):
+        mantenimiento = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.usuario, cliente=self.colaborador,
+            tipo_mantenimiento='correctivo', descripcion='Falla', fecha_programada=timezone.now(),
+            usuario=self.usuario,
+        )
+        tipo_consumible = TipoConsumible.objects.create(codigo='FUENTE2', nombre='Fuente de poder')
+        registrar_repuesto_utilizado(
+            mantenimiento=mantenimiento, tipo_consumible=tipo_consumible, cantidad=2,
+            costo_unitario=15, usuario=self.usuario,
+        )
+        self.assertEqual(self._kpis()['costo_repuestos_periodo'], 30)
+
+    def test_equipos_requieren_reemplazo_cuenta_baja_recomendada_no_dados_de_baja(self):
+        self.equipo.baja_recomendada = True
+        self.equipo.save(update_fields=['baja_recomendada'])
+        Activo.objects.create(
+            codigo='CR-DSK-0303', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.mia,
+            baja_recomendada=True, estado=Activo.Estado.DADO_DE_BAJA,
+        )
+        self.assertEqual(self._kpis()['equipos_requieren_reemplazo'], 1)
+
+    def test_atrasados_ahora_cuenta_mantenimientos_abiertos_hace_mas_de_3_dias(self):
+        crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.usuario, cliente=self.colaborador,
+            tipo_mantenimiento='correctivo', descripcion='Falla',
+            fecha_programada=timezone.now() - timedelta(days=10), usuario=self.usuario,
+        )
+        self.assertEqual(self._kpis()['atrasados_ahora'], 1)

@@ -2139,6 +2139,46 @@ class ReportesPorClienteTests(TestCase):
         self.assertEqual(len(filas), 1)
         self.assertEqual(filas[0][0], 'Google Chrome')
 
+    def test_reporte_mantenimiento_service_filtra_por_unidad(self):
+        from apps.panel.reportes import reporte_mantenimiento
+
+        colaborador_mia = Colaborador.objects.create(nombre='Ana MIA', cedula='9001', unidad_negocio=self.mia)
+        colaborador_sg = Colaborador.objects.create(nombre='Luis SG', cedula='9002', unidad_negocio=self.sg)
+        Mantenimiento.objects.create(
+            cliente=colaborador_mia, descripcion='Falla MIA', fecha_programada=timezone.now(),
+        )
+        Mantenimiento.objects.create(
+            cliente=colaborador_sg, descripcion='Falla SG', fecha_programada=timezone.now(),
+        )
+        salida = io.StringIO()
+        reporte_mantenimiento(salida, self.mia)
+        salida.seek(0)
+        filas = list(csv.reader(salida))[1:]
+        self.assertEqual(len(filas), 1)
+        self.assertEqual(filas[0][3], 'Ana MIA')
+
+    def test_reporte_mantenimiento_csv_requiere_permiso(self):
+        resp = self.client.get(reverse('panel:reporte_mantenimiento_csv'), {'unidad_negocio': self.mia.pk})
+        self.assertEqual(resp.status_code, 403)
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(content_type__app_label='mantenimiento', codename='view_mantenimiento'),
+        )
+        resp = self.client.get(reverse('panel:reporte_mantenimiento_csv'), {'unidad_negocio': self.mia.pk})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_reporte_cliente_resumen_incluye_kpis_de_mantenimiento(self):
+        colaborador_mia = Colaborador.objects.create(nombre='Ana MIA', cedula='9003', unidad_negocio=self.mia)
+        mantenimiento = Mantenimiento.objects.create(
+            cliente=colaborador_mia, descripcion='Falla', fecha_programada=timezone.now(),
+        )
+        from apps.mantenimiento.services import cerrar_mantenimiento
+        from apps.mantenimiento.models import ResultadoTecnico
+        cerrar_mantenimiento(mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.usuario_mia)
+
+        resp = self.client.get(reverse('panel:reporte_cliente_resumen'), {'unidad_negocio': self.mia.pk})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Mantenimientos del período')
+
     def test_reporte_cumplimiento_csv_sin_parametro_no_muestra_todo(self):
         resp = self.client.get(reverse('panel:reporte_cumplimiento_csv'))
         contenido = resp.content.decode('utf-8-sig')

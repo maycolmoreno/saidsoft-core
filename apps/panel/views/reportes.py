@@ -15,6 +15,7 @@ from apps.cuentas.services import (
 )
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
 from apps.facturacion.services import resumen_facturacion
+from apps.mantenimiento import services as mantenimiento_services
 from apps.monitoreo.models import Alerta, ReglaAlerta
 
 
@@ -194,6 +195,19 @@ def reporte_software_instalado_csv(request):
 
 
 @login_required
+@permission_required('mantenimiento.view_mantenimiento', raise_exception=True)
+def reporte_mantenimiento_csv(request):
+    from apps.panel import reportes
+    unidad = _resolver_unidad_negocio(request)
+    if unidad is None:
+        return redirect('panel:reportes_index')
+    desde, hasta = _rango_fechas(request)
+    resp = _csv_response(reportes.nombre_archivo(f'mantenimiento_{unidad.codigo}'))
+    reportes.reporte_mantenimiento(resp, unidad, desde=desde, hasta=hasta)
+    return resp
+
+
+@login_required
 def reporte_cliente_resumen(request):
     unidades_negocio = unidades_negocio_visibles(request.user)
     unidad = _resolver_unidad_negocio(request)
@@ -233,6 +247,8 @@ def reporte_cliente_resumen(request):
     # mes en curso) aunque el usuario haya pedido un rango de fechas más amplio.
     endpoints_facturables = resumen_facturacion(unidad, desde.year, desde.month)
 
+    resumen_mantenimiento = mantenimiento_services.resumen_mantenimiento_periodo(unidad, desde, hasta)
+
     return render(request, 'panel/reporte_cliente.html', {
         'unidad': unidad,
         'unidades_negocio': unidades_negocio,
@@ -255,4 +271,5 @@ def reporte_cliente_resumen(request):
         'total_activos': sum(item['total'] for item in activos_por_estado),
         'endpoints_facturables': endpoints_facturables,
         'periodo_facturacion': desde,
+        'resumen_mantenimiento': resumen_mantenimiento,
     })

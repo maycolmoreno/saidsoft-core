@@ -30,6 +30,7 @@
     <a href="{% url 'panel:reporte_alertas_csv' %}?unidad_negocio={{ unidad.pk }}&desde={{ desde|date:'Y-m-d' }}&hasta={{ hasta|date:'Y-m-d' }}" class="btn secondary">Alertas (CSV)</a>
     <a href="{% url 'panel:reporte_cumplimiento_csv' %}?unidad_negocio={{ unidad.pk }}" class="btn secondary">Cumplimiento (CSV)</a>
     <a href="{% url 'panel:reporte_facturacion_csv' %}?unidad_negocio={{ unidad.pk }}&periodo={{ desde|date:'Y-m' }}" class="btn secondary">Facturación (CSV)</a>
+    <a href="{% url 'panel:reporte_mantenimiento_csv' %}?unidad_negocio={{ unidad.pk }}&desde={{ desde|date:'Y-m-d' }}&hasta={{ hasta|date:'Y-m-d' }}" class="btn secondary">Mantenimiento (CSV)</a>
     {% endif %}
 </form>
 
@@ -82,6 +83,16 @@ artefacto que se imprime/entrega, no parte de la UI del panel.
     <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Facturación por endpoint</h3>
     <table class="w-full text-sm mb-6">
         <tr><td class="py-1 pr-4" style="color:#94a3b8;">Endpoints facturables ({{ periodo_facturacion|date:"F Y" }})</td><td class="py-1">{{ endpoints_facturables }}</td></tr>
+    </table>
+
+    <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Mantenimiento</h3>
+    <table class="w-full text-sm mb-6">
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Mantenimientos del período</td><td class="py-1">{{ resumen_mantenimiento.total_periodo }}</td></tr>
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Cerrados en el período</td><td class="py-1">{{ resumen_mantenimiento.cerrados_periodo }}</td></tr>
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Atrasados actualmente</td><td class="py-1">{{ resumen_mantenimiento.atrasados_ahora }}</td></tr>
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">MTTR (horas)</td><td class="py-1">{{ resumen_mantenimiento.mttr_horas|default:"—" }}</td></tr>
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Costo de repuestos del período</td><td class="py-1">${{ resumen_mantenimiento.costo_repuestos_periodo }}</td></tr>
+        <tr><td class="py-1 pr-4" style="color:#94a3b8;">Equipos que requieren reemplazo</td><td class="py-1">{{ resumen_mantenimiento.equipos_requieren_reemplazo }}</td></tr>
     </table>
 
     <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Inventario de activos</h3>

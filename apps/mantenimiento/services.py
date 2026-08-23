@@ -6,6 +6,7 @@ crea el EventoMantenimiento inmutable correspondiente.
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import Avg, DurationField, ExpressionWrapper, F, Sum
 from django.utils import timezone
 
 from apps.activos import services as activos_services
@@ -435,3 +436,42 @@ def notificar_mantenimientos_proximos_y_atrasados() -> dict:
         creadas_atrasados += 1
 
     return {'proximos': creadas_proximos, 'atrasados': creadas_atrasados}
+
+
+# --- KPIs (para el resumen por cliente y el reporte CSV) ---
+#
+# apps.mantenimiento nunca tuvo un dashboard propio -- todo lo de acá se calcula al
+# vuelo sobre datos que ya se venían capturando (Mantenimiento/RepuestoUtilizado), no
+# hace falta ningún campo ni tabla nueva. Fórmulas tal como quedaron documentadas en
+# docs/proceso-mantenimiento-ti.md (22-ago-2026).
+
+def resumen_mantenimiento_periodo(unidad_negocio, desde, hasta):
+    """KPIs de mantenimiento de una unidad de negocio en un rango de fechas
+    [desde, hasta) -- mismo contrato que apps.facturacion.services.resumen_facturacion."""
+    del_periodo = Mantenimiento.objects.filter(
+        cliente__unidad_negocio=unidad_negocio, fecha_creacion__gte=desde, fecha_creacion__lt=hasta,
+    )
+    cerrados_periodo = del_periodo.filter(estado_interno=Mantenimiento.EstadoInterno.CERRADO)
+
+    mttr = cerrados_periodo.annotate(
+        duracion=ExpressionWrapper(F('fecha_cierre') - F('fecha_creacion'), output_field=DurationField()),
+    ).aggregate(promedio=Avg('duracion'))['promedio']
+
+    costo_repuestos = RepuestoUtilizado.objects.filter(
+        mantenimiento__cliente__unidad_negocio=unidad_negocio,
+        mantenimiento__fecha_creacion__gte=desde, mantenimiento__fecha_creacion__lt=hasta,
+    ).aggregate(total=Sum(F('cantidad') * F('costo_unitario')))['total'] or 0
+
+    atrasados_ahora = mantenimientos_atrasados().filter(cliente__unidad_negocio=unidad_negocio).count()
+    requieren_reemplazo = Activo.objects.filter(
+        unidad_negocio=unidad_negocio, baja_recomendada=True,
+    ).exclude(estado=Activo.Estado.DADO_DE_BAJA).count()
+
+    return {
+        'total_periodo': del_periodo.count(),
+        'cerrados_periodo': cerrados_periodo.count(),
+        'atrasados_ahora': atrasados_ahora,
+        'mttr_horas': round(mttr.total_seconds() / 3600, 1) if mttr else None,
+        'costo_repuestos_periodo': costo_repuestos,
+        'equipos_requieren_reemplazo': requieren_reemplazo,
+    }
