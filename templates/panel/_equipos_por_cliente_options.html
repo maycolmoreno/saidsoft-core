@@ -1,0 +1,5 @@
+{% for activo in equipos %}
+<option value="{{ activo.pk }}">{{ activo.codigo }} — {{ activo.get_tipo_display }}{% if activo.modelo %} {{ activo.modelo }}{% endif %}</option>
+{% empty %}
+<option value="" disabled>Este cliente no tiene equipos asignados.</option>
+{% endfor %}

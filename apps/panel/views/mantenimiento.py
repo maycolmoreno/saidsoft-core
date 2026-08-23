@@ -3,6 +3,7 @@ from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
+from apps.activos.models import Activo, Colaborador
 from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa, verificar_acceso
 from apps.mantenimiento import services as mantenimiento_services
@@ -50,6 +51,25 @@ def mantenimientos_lista(request):
         'estados': Mantenimiento.EstadoInterno.choices,
         'filtro_estado': estado or '',
     })
+
+
+@login_required
+@permission_required('mantenimiento.add_mantenimiento', raise_exception=True)
+def equipos_por_cliente_partial(request):
+    """Partial HTMX consumido por MantenimientoManualForm.cliente (ver
+    apps.mantenimiento.forms): repuebla las <option> de `equipos` con los activos
+    asignados al cliente elegido, sin recargar la página. Antes "nuevo mantenimiento"
+    mostraba todos los equipos de cualquier persona en un único selector, sin relación
+    con el cliente elegido."""
+    cliente_id = request.GET.get('cliente')
+    equipos = Activo.objects.none()
+    if cliente_id:
+        colaborador = get_object_or_404(Colaborador, pk=cliente_id)
+        verificar_acceso(request.user, colaborador.unidad_negocio)
+        equipos = Activo.objects.filter(
+            colaborador_actual_id=cliente_id,
+        ).exclude(estado=Activo.Estado.DADO_DE_BAJA).order_by('codigo')
+    return render(request, 'panel/_equipos_por_cliente_options.html', {'equipos': equipos})
 
 
 @login_required

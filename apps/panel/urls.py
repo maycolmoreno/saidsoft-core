@@ -124,6 +124,7 @@ urlpatterns = [
     # Módulo de Mantenimiento
     path('mantenimientos/', views.mantenimientos_lista, name='mantenimientos_lista'),
     path('mantenimientos/nuevo/', views.mantenimiento_crear, name='mantenimiento_crear'),
+    path('mantenimientos/equipos-por-cliente/', views.equipos_por_cliente_partial, name='equipos_por_cliente_partial'),
     path('mantenimientos/<int:pk>/', views.mantenimiento_detalle, name='mantenimiento_detalle'),
     path('mantenimientos/<int:pk>/iniciar/', views.mantenimiento_iniciar, name='mantenimiento_iniciar'),
     path(

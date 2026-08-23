@@ -576,3 +576,41 @@ class ResumenMantenimientoPeriodoTests(TestCase):
             fecha_programada=timezone.now() - timedelta(days=10), usuario=self.usuario,
         )
         self.assertEqual(self._kpis()['atrasados_ahora'], 1)
+
+
+class MantenimientoManualFormTests(TestCase):
+    """El cliente va primero: `equipos` se filtra a lo que tiene asignado ese
+    colaborador -- antes se elegían por separado, sin ninguna relación entre sí
+    (23-ago-2026)."""
+
+    def setUp(self):
+        from apps.mantenimiento.forms import MantenimientoManualForm
+
+        self.Form = MantenimientoManualForm
+        self.cliente = Colaborador.objects.create(nombre='Ana', cedula='9201')
+        self.otro_cliente = Colaborador.objects.create(nombre='Luis', cedula='9202')
+        self.equipo_de_ana = Activo.objects.create(
+            codigo='CR-DSK-0400', tipo=Activo.Tipo.DESKTOP, colaborador_actual=self.cliente,
+        )
+        self.equipo_de_luis = Activo.objects.create(
+            codigo='CR-DSK-0401', tipo=Activo.Tipo.DESKTOP, colaborador_actual=self.otro_cliente,
+        )
+
+    def test_formulario_sin_enviar_no_ofrece_ningun_equipo(self):
+        form = self.Form()
+        self.assertEqual(form.fields['equipos'].queryset.count(), 0)
+
+    def test_formulario_enviado_solo_ofrece_equipos_del_cliente_elegido(self):
+        form = self.Form(data={'cliente': self.cliente.pk})
+        queryset = form.fields['equipos'].queryset
+        self.assertIn(self.equipo_de_ana, queryset)
+        self.assertNotIn(self.equipo_de_luis, queryset)
+
+    def test_no_se_puede_enviar_un_equipo_de_otro_cliente(self):
+        form = self.Form(data={
+            'cliente': self.cliente.pk, 'equipos': [self.equipo_de_luis.pk],
+            'estado_general': EstadoGeneralEquipo.OPERATIVO, 'descripcion': 'x',
+            'fecha_programada': timezone.now(),
+        })
+        self.assertFalse(form.is_valid())
+        self.assertIn('equipos', form.errors)

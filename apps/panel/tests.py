@@ -716,8 +716,10 @@ class MantenimientoCrearViewTests(TestCase):
             Permission.objects.get(content_type__app_label='mantenimiento', codename='view_mantenimiento'),
         )
         self.client.force_login(self.usuario)
-        self.equipo = Activo.objects.create(codigo='CR-DSK-0099', tipo=Activo.Tipo.DESKTOP)
         self.cliente = Colaborador.objects.create(nombre='Ana', cedula='9999')
+        self.equipo = Activo.objects.create(
+            codigo='CR-DSK-0099', tipo=Activo.Tipo.DESKTOP, colaborador_actual=self.cliente,
+        )
         self.tipo_preventivo = TipoMantenimiento.objects.get(codigo='preventivo')
 
     def _post_valido(self):
@@ -740,6 +742,32 @@ class MantenimientoCrearViewTests(TestCase):
         resp = self._post_valido()
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'Ya hay un mantenimiento abierto')
+
+    def test_partial_equipos_por_cliente_devuelve_solo_los_del_cliente(self):
+        otro_cliente = Colaborador.objects.create(nombre='Luis', cedula='9998')
+        Activo.objects.create(codigo='CR-DSK-0098', tipo=Activo.Tipo.DESKTOP, colaborador_actual=otro_cliente)
+        resp = self.client.get(
+            reverse('panel:equipos_por_cliente_partial'), {'cliente': self.cliente.pk},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'CR-DSK-0099')
+        self.assertNotContains(resp, 'CR-DSK-0098')
+
+    def test_partial_sin_cliente_no_devuelve_equipos(self):
+        resp = self.client.get(reverse('panel:equipos_por_cliente_partial'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'no tiene equipos asignados')
+
+    def test_partial_de_cliente_de_otro_tenant_da_403(self):
+        from apps.catalogo.models import UnidadNegocio
+        from apps.cuentas.models import PerfilUsuario
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        mia = UnidadNegocio.objects.get(codigo='MIA')
+        PerfilUsuario.objects.create(usuario=self.usuario).unidades_negocio.add(mia)
+        cliente_sg = Colaborador.objects.create(nombre='Otro', cedula='9997', unidad_negocio=sg)
+        resp = self.client.get(reverse('panel:equipos_por_cliente_partial'), {'cliente': cliente_sg.pk})
+        self.assertEqual(resp.status_code, 403)
 
 
 class MantenimientoApiCrearTests(TestCase):

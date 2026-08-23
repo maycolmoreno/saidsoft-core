@@ -37,11 +37,11 @@ from .estaciones import (
 )
 from .mantenimiento import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,
-    mantenimiento_cancelar, mantenimiento_cerrar, mantenimiento_checklist_actualizar, mantenimiento_crear,
-    mantenimiento_detalle, mantenimiento_firmar, mantenimiento_generar_informe_pdf, mantenimiento_iniciar,
-    mantenimiento_imagen_adjuntar, mantenimiento_orden_trabajo, mantenimiento_programado_crear,
-    mantenimiento_repuesto_agregar, mantenimientos_lista, mantenimientos_programados_lista,
-    notificacion_marcar_leida, notificaciones_lista,
+    equipos_por_cliente_partial, mantenimiento_cancelar, mantenimiento_cerrar, mantenimiento_checklist_actualizar,
+    mantenimiento_crear, mantenimiento_detalle, mantenimiento_firmar, mantenimiento_generar_informe_pdf,
+    mantenimiento_iniciar, mantenimiento_imagen_adjuntar, mantenimiento_orden_trabajo,
+    mantenimiento_programado_crear, mantenimiento_repuesto_agregar, mantenimientos_lista,
+    mantenimientos_programados_lista, notificacion_marcar_leida, notificaciones_lista,
 )
 from .mfa import mfa_configurar, mfa_desactivar, mfa_estado
 from .monitoreo import (
@@ -86,6 +86,7 @@ __all__ = [
     'estaciones_aprobar_lote', 'estaciones_lista', 'estaciones_pendientes_partial',
     'mfa_configurar', 'mfa_desactivar', 'mfa_estado',
     'actividad_planificada_completar', 'actividad_planificada_crear', 'actividades_planificadas_lista',
+    'equipos_por_cliente_partial',
     'mantenimiento_cancelar', 'mantenimiento_cerrar', 'mantenimiento_checklist_actualizar',
     'mantenimiento_crear', 'mantenimiento_detalle', 'mantenimiento_firmar', 'mantenimiento_generar_informe_pdf',
     'mantenimiento_iniciar', 'mantenimiento_imagen_adjuntar', 'mantenimiento_orden_trabajo',

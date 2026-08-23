@@ -1,5 +1,6 @@
 from django import forms
 from django.contrib.auth import get_user_model
+from django.urls import reverse_lazy
 
 from apps.activos.models import Activo, Bodega, Colaborador, TipoConsumible, Ubicacion
 
@@ -14,14 +15,23 @@ User = get_user_model()
 
 
 class MantenimientoManualForm(forms.Form):
-    equipos = forms.ModelMultipleChoiceField(
-        queryset=Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA).order_by('codigo'),
-        widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
-        help_text='Selecciona uno o varios equipos cubiertos por este mantenimiento.',
-    )
+    """El cliente va primero a propósito: `equipos` se filtra a los activos asignados a
+    ese colaborador (ver __init__) -- antes se elegían por separado y se podía armar un
+    mantenimiento con equipos de cualquier persona, sin relación con el cliente elegido."""
     cliente = forms.ModelChoiceField(
         queryset=Colaborador.objects.filter(activo=True),
-        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        widget=forms.Select(attrs={
+            'class': INPUT_CLASS,
+            'hx-get': reverse_lazy('panel:equipos_por_cliente_partial'),
+            'hx-target': '#id_equipos',
+            'hx-trigger': 'change',
+            'hx-swap': 'innerHTML',
+        }),
+    )
+    equipos = forms.ModelMultipleChoiceField(
+        queryset=Activo.objects.none(),
+        widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
+        help_text='Solo se listan los equipos asignados al cliente elegido arriba.',
     )
     tecnico = forms.ModelChoiceField(
         queryset=User.objects.filter(is_active=True).order_by('username'), required=False,
@@ -47,6 +57,20 @@ class MantenimientoManualForm(forms.Form):
         label='Vincular a plan preventivo (opcional)',
         help_text='Si se elige, al cerrar este mantenimiento se recalcula la próxima fecha del plan.',
     )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Sin cliente elegido todavía (primera carga de la página), `equipos` empieza
+        # vacío -- el HTMX del campo `cliente` lo repuebla en el navegador sin recargar
+        # la página. Al reenviar el formulario (incluyendo un reintento tras un error
+        # que no sea de validación, ver mantenimiento_crear), se vuelve a resolver
+        # desde el cliente ya elegido para que la validación del backend no dependa de
+        # lo que haya quedado pintado en el navegador.
+        cliente_id = self.data.get('cliente') if self.is_bound else None
+        if cliente_id:
+            self.fields['equipos'].queryset = Activo.objects.filter(
+                colaborador_actual_id=cliente_id,
+            ).exclude(estado=Activo.Estado.DADO_DE_BAJA).order_by('codigo')
 
 
 class CerrarMantenimientoForm(forms.Form):
