@@ -385,10 +385,15 @@ class Activo(models.Model):
         CAMARA = 'CAM', 'Cámara/CCTV'
 
     class Estado(models.TextChoices):
+        # BUG-3 de la auditoría de gobernanza (22-ago-2026): EN_TRANSITO estuvo acá desde
+        # siempre sin que ninguna transición del ciclo de vida (ver services.py) lo
+        # asignara ni ninguna vista lo leyera — no existe el concepto de "activo
+        # individual en tránsito entre sedes" en este dominio (MovimientoInventario ya
+        # cubre traslados, pero de consumibles, no de activos individuales). Eliminado
+        # tras confirmar 0 filas con este valor en producción.
         EN_BODEGA = 'en_bodega', 'En bodega'
         ASIGNADO = 'asignado', 'Asignado'
         EN_REPARACION = 'en_reparacion', 'En reparación'
-        EN_TRANSITO = 'en_transito', 'En tránsito'
         DADO_DE_BAJA = 'dado_de_baja', 'Dado de baja'
 
     class EstadoFisico(models.TextChoices):

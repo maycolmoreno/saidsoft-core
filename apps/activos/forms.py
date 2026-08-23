@@ -214,3 +214,39 @@ class StockIngresoForm(forms.Form):
         queryset=TipoConsumible.objects.all(), widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
     cantidad = forms.IntegerField(min_value=1, widget=forms.NumberInput(attrs={'class': INPUT_CLASS}))
+
+
+class AjusteStockForm(forms.Form):
+    """BUG-3 de la auditoría de gobernanza (22-ago-2026): MovimientoInventario.TipoMovimiento.AJUSTE
+    existía en las choices desde siempre pero nada lo generaba nunca — un ajuste de
+    inventario (conteo físico, merma, error de carga) es una operación real de
+    cualquier bodega, así que quedaba una corrección de stock que solo se podía hacer
+    tocando la base a mano."""
+    tipo_consumible = forms.ModelChoiceField(
+        queryset=TipoConsumible.objects.all(), widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
+    cantidad_delta = forms.IntegerField(
+        widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),
+        help_text='Positivo si sobró (se encontró más de lo registrado); negativo si faltó (merma/pérdida).',
+    )
+    motivo = forms.CharField(
+        max_length=200, widget=forms.TextInput(attrs={'class': INPUT_CLASS}),
+        help_text='Obligatorio: a diferencia de un ingreso o un traslado, un ajuste no tiene ningún '
+                  'documento de respaldo (una OC, otra bodega) — esto es lo único que explica el cambio.',
+    )
+
+    def clean_cantidad_delta(self):
+        valor = self.cleaned_data['cantidad_delta']
+        if valor == 0:
+            raise forms.ValidationError('La cantidad del ajuste no puede ser cero.')
+        return valor
+
+
+class AnularRecepcionForm(forms.Form):
+    """BUG-3: RecepcionLote.Estado.ANULADO existía desde siempre pero nada lo asignaba
+    — no había forma de revertir una recepción mal cargada (cantidad o lote
+    equivocado) salvo tocando la base a mano."""
+    motivo = forms.CharField(
+        max_length=200, required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}),
+        help_text='Por qué se anula esta recepción (opcional).',
+    )

@@ -101,6 +101,7 @@ urlpatterns = [
         'ordenes-compra/lineas/<int:pk>/recibir/', views.orden_compra_linea_recibir,
         name='orden_compra_linea_recibir',
     ),
+    path('recepciones-lote/<int:pk>/anular/', views.recepcion_lote_anular, name='recepcion_lote_anular'),
 
     path('activos/', views.activos_lista, name='activos_lista'),
     path('activos/avisos/', views.activos_avisos, name='activos_avisos'),
@@ -115,6 +116,7 @@ urlpatterns = [
 
     path('bodegas/', views.bodegas_lista, name='bodegas_lista'),
     path('bodegas/<int:pk>/stock/ingresar/', views.bodega_stock_ingresar, name='bodega_stock_ingresar'),
+    path('bodegas/<int:pk>/stock/ajustar/', views.bodega_ajuste_stock, name='bodega_ajuste_stock'),
 
     path('movimientos-inventario/', views.movimientos_inventario_lista, name='movimientos_inventario_lista'),
 

@@ -348,6 +348,90 @@ def registrar_traslado_bodega(*, tipo_consumible, bodega_origen, bodega_destino,
     )
 
 
+@transaction.atomic
+def registrar_ajuste_inventario(*, bodega, tipo_consumible, cantidad_delta, motivo, usuario):
+    """Corrige el stock de una bodega sin pasar por una recepción ni un traslado —
+    conteo físico, merma, error de carga (BUG-3 de la auditoría de gobernanza,
+    22-ago-2026: MovimientoInventario.TipoMovimiento.AJUSTE existía en las choices
+    desde siempre, pero nada lo generaba nunca).
+
+    `cantidad_delta` positivo = sobró (se encontró más de lo registrado); negativo =
+    faltó (merma/pérdida) — nunca cero. `motivo` es obligatorio: a diferencia de un
+    ingreso o un traslado, un ajuste no tiene ningún documento de respaldo que
+    explique el cambio por sí solo.
+    """
+    if cantidad_delta == 0:
+        raise ValueError('La cantidad del ajuste no puede ser cero.')
+    if not motivo.strip():
+        raise ValueError('Un ajuste de inventario necesita un motivo.')
+
+    stock = _obtener_y_bloquear_stock(bodega, tipo_consumible)
+    if stock.cantidad + cantidad_delta < 0:
+        raise ValueError(
+            f'El ajuste dejaría el stock de {tipo_consumible.nombre} en {bodega.codigo} en negativo '
+            f'({stock.cantidad} disponibles, ajuste de {cantidad_delta}).',
+        )
+    StockBodega.objects.filter(pk=stock.pk).update(cantidad=F('cantidad') + cantidad_delta)
+
+    return MovimientoInventario.objects.create(
+        tipo_movimiento=MovimientoInventario.TipoMovimiento.AJUSTE, tipo_consumible=tipo_consumible,
+        cantidad=cantidad_delta,
+        bodega_destino=bodega if cantidad_delta > 0 else None,
+        bodega_origen=bodega if cantidad_delta < 0 else None,
+        realizado_por=usuario, motivo=motivo,
+    )
+
+
+@transaction.atomic
+def anular_recepcion_lote(*, recepcion, usuario, motivo=''):
+    """Revierte una RecepcionLote mal cargada (cantidad o lote equivocado) — BUG-3:
+    RecepcionLote.Estado.ANULADO existía en las choices desde siempre, pero nada lo
+    asignaba nunca. Retrocede OrdenCompraDetalle.cantidad_recibida/estado con el mismo
+    compare-and-swap manual que registrar_recepcion_lote, y si era un consumible
+    descuenta el stock que había ingresado — nunca borra la recepción original, deja
+    un MovimientoInventario de ajuste a la baja como contrapartida (el kardex nunca
+    borra una fila).
+    """
+    if recepcion.estado == RecepcionLote.Estado.ANULADO:
+        raise ValueError('Esta recepción ya está anulada.')
+
+    detalle = recepcion.orden_compra_detalle
+    nueva_cantidad_recibida = detalle.cantidad_recibida - recepcion.cantidad_recibida
+    nuevo_estado = (
+        OrdenCompraDetalle.Estado.COMPLETO if nueva_cantidad_recibida == detalle.cantidad_solicitada
+        else OrdenCompraDetalle.Estado.PARCIAL if nueva_cantidad_recibida > 0
+        else OrdenCompraDetalle.Estado.PENDIENTE
+    )
+    filas = OrdenCompraDetalle.objects.filter(pk=detalle.pk, version=detalle.version).update(
+        cantidad_recibida=nueva_cantidad_recibida, estado=nuevo_estado, version=F('version') + 1,
+    )
+    if filas == 0:
+        raise ConcurrencyError(
+            'La línea fue modificada por otra recepción; recarga la orden de compra e intenta de nuevo.',
+        )
+    detalle.refresh_from_db()
+
+    if detalle.tipo_item == OrdenCompraDetalle.TipoItem.CONSUMIBLE and detalle.tipo_consumible:
+        stock = _obtener_y_bloquear_stock(recepcion.bodega_destino, detalle.tipo_consumible)
+        if stock.cantidad < recepcion.cantidad_recibida:
+            raise ValueError(
+                f'No se puede anular: ya se usó parte de ese stock ({stock.cantidad} disponibles, '
+                f'se necesitan {recepcion.cantidad_recibida} para revertir la recepción).',
+            )
+        StockBodega.objects.filter(pk=stock.pk).update(cantidad=F('cantidad') - recepcion.cantidad_recibida)
+        MovimientoInventario.objects.create(
+            tipo_movimiento=MovimientoInventario.TipoMovimiento.AJUSTE, tipo_consumible=detalle.tipo_consumible,
+            cantidad=-recepcion.cantidad_recibida, bodega_origen=recepcion.bodega_destino,
+            recepcion_lote=recepcion, realizado_por=usuario,
+            motivo=motivo or f'Anulación de recepción {recepcion.numero_lote or recepcion.uuid}',
+        )
+
+    recepcion.estado = RecepcionLote.Estado.ANULADO
+    recepcion.save(update_fields=['estado'])
+    _recalcular_estado_orden_compra(detalle.orden_compra)
+    return recepcion
+
+
 def scope_movimientos_visibles(queryset, user):
     """`MovimientoInventario` no tiene su propio `unidad_negocio` — se escopa por la(s)
     bodega(s) involucradas (`bodega_origen`/`bodega_destino`, uno de los dos puede ser

@@ -7,12 +7,12 @@ from django.utils import timezone
 
 from apps.activos import services as activos_services
 from apps.activos.forms import (
-    ActivoIngresoForm, AsignacionForm, BajaForm, ColaboradorForm, ConsumibleEntregadoForm,
-    DevolucionForm, EnvioReparacionForm, OrdenCompraForm, OrdenCompraLineaForm,
+    ActivoIngresoForm, AjusteStockForm, AnularRecepcionForm, AsignacionForm, BajaForm, ColaboradorForm,
+    ConsumibleEntregadoForm, DevolucionForm, EnvioReparacionForm, OrdenCompraForm, OrdenCompraLineaForm,
     RecepcionLoteForm, RecibirOrdenCompraForm, RetornoReparacionForm, StockIngresoForm,
 )
 from apps.activos.models import (
-    Activo, Bodega, Colaborador, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, Ubicacion,
+    Activo, Bodega, Colaborador, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, RecepcionLote, Ubicacion,
 )
 from apps.activos.services import ConcurrencyError
 from apps.auditoria.models import registrar_evento
@@ -187,6 +187,43 @@ def orden_compra_linea_recibir(request, pk):
         'form': form, 'titulo': f'Recibir línea de OC {detalle.orden_compra.numero_oc}',
         'subtitulo': f'{detalle} — pendiente: {detalle.cantidad_solicitada - detalle.cantidad_recibida}',
         'volver_url': reverse('panel:orden_compra_detalle', args=[detalle.orden_compra_id]),
+    })
+
+
+@login_required
+@permission_required('activos.change_recepcionlote', raise_exception=True)
+def recepcion_lote_anular(request, pk):
+    """BUG-3 de la auditoría de gobernanza (22-ago-2026): antes no había forma de
+    revertir una recepción mal cargada salvo tocando la base a mano."""
+    recepcion = get_object_or_404(
+        RecepcionLote.objects.select_related('orden_compra', 'orden_compra_detalle'), pk=pk,
+    )
+    verificar_acceso(request.user, recepcion.orden_compra.unidad_negocio)
+    if recepcion.estado == RecepcionLote.Estado.ANULADO:
+        messages.error(request, 'Esta recepción ya está anulada.')
+        return redirect('panel:orden_compra_detalle', pk=recepcion.orden_compra_id)
+    if request.method == 'POST':
+        form = AnularRecepcionForm(request.POST)
+        if form.is_valid():
+            try:
+                activos_services.anular_recepcion_lote(
+                    recepcion=recepcion, usuario=request.user, motivo=form.cleaned_data['motivo'],
+                )
+            except (ValueError, ConcurrencyError) as exc:
+                form.add_error(None, str(exc))
+            else:
+                registrar_evento(
+                    usuario=request.user, accion='recepcion_lote.anular', objeto=recepcion.orden_compra,
+                    request=request,
+                )
+                messages.success(request, 'Recepción anulada.')
+                return redirect('panel:orden_compra_detalle', pk=recepcion.orden_compra_id)
+    else:
+        form = AnularRecepcionForm()
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': f'Anular recepción de {recepcion.orden_compra.numero_oc}',
+        'subtitulo': str(recepcion),
+        'volver_url': reverse('panel:orden_compra_detalle', args=[recepcion.orden_compra_id]),
     })
 
 
@@ -511,6 +548,44 @@ def bodega_stock_ingresar(request, pk):
         form = StockIngresoForm()
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': f'Ingresar consumibles a {bodega.codigo}',
+        'volver_url': reverse('panel:bodegas_lista'),
+    })
+
+
+@login_required
+@permission_required('activos.change_stockbodega', raise_exception=True)
+def bodega_ajuste_stock(request, pk):
+    """BUG-3 de la auditoría de gobernanza (22-ago-2026): antes no había forma de
+    corregir el stock (conteo físico, merma) salvo tocando la base a mano — mismo
+    permiso que el ingreso simple, ambos modifican StockBodega directamente."""
+    bodega = get_object_or_404(Bodega, pk=pk)
+    verificar_acceso(request.user, bodega.unidad_negocio)
+    if request.method == 'POST':
+        form = AjusteStockForm(request.POST)
+        if form.is_valid():
+            try:
+                activos_services.registrar_ajuste_inventario(
+                    bodega=bodega, tipo_consumible=form.cleaned_data['tipo_consumible'],
+                    cantidad_delta=form.cleaned_data['cantidad_delta'], motivo=form.cleaned_data['motivo'],
+                    usuario=request.user,
+                )
+            except ValueError as exc:
+                form.add_error(None, str(exc))
+            else:
+                registrar_evento(
+                    usuario=request.user, accion='stock.ajustar', objeto=bodega,
+                    detalle={'tipo_consumible': form.cleaned_data['tipo_consumible'].nombre,
+                             'cantidad_delta': form.cleaned_data['cantidad_delta'],
+                             'motivo': form.cleaned_data['motivo']},
+                    request=request,
+                )
+                messages.success(request, f'Ajuste registrado en {bodega.codigo}.')
+                return redirect('panel:bodegas_lista')
+    else:
+        form = AjusteStockForm()
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': f'Ajustar stock de {bodega.codigo}',
+        'subtitulo': 'Corrige el stock por conteo físico, merma o error de carga — queda registrado en el kardex.',
         'volver_url': reverse('panel:bodegas_lista'),
     })
 

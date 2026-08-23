@@ -67,7 +67,14 @@
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ d.get_estado_display }}</td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
                     {% for r in d.recepciones.all %}
-                        <div>{{ r.cantidad_recibida }} en {{ r.bodega_destino.codigo }} ({{ r.fecha_recepcion|date:"d/m/Y" }})</div>
+                        <div>
+                            {{ r.cantidad_recibida }} en {{ r.bodega_destino.codigo }} ({{ r.fecha_recepcion|date:"d/m/Y" }})
+                            {% if r.estado == 'anulado' %}
+                            <span class="pill critical" style="font-size:0.6rem;">Anulada</span>
+                            {% else %}
+                            <a href="{% url 'panel:recepcion_lote_anular' r.pk %}" class="hover:underline">Anular</a>
+                            {% endif %}
+                        </div>
                     {% empty %}—{% endfor %}
                 </td>
                 <td class="px-4 py-3 text-right">

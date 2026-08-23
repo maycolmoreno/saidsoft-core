@@ -8,12 +8,14 @@ from django.utils import timezone
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
 from .models import (
-    Activo, Bodega, Cargo, Colaborador, Departamento, EventoActivo, StockBodega, TipoConsumible,
+    Activo, Bodega, Cargo, Colaborador, Departamento, EventoActivo, MovimientoInventario, OrdenCompra,
+    OrdenCompraDetalle, RecepcionLote, StockBodega, TipoConsumible,
 )
 from .services import (
     activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, activos_por_vencer_garantia,
-    registrar_asignacion, registrar_salida_stock, registrar_traslado_bodega, scope_movimientos_visibles,
-    stock_bajo_minimo, vincular_activos_por_numero_serie,
+    anular_recepcion_lote, registrar_ajuste_inventario, registrar_asignacion, registrar_recepcion_lote,
+    registrar_salida_stock, registrar_traslado_bodega, scope_movimientos_visibles, stock_bajo_minimo,
+    vincular_activos_por_numero_serie,
 )
 
 
@@ -229,6 +231,131 @@ class RegistrarTrasladoBodegaTests(TestCase):
         self.assertEqual(
             StockBodega.objects.get(bodega=origen, tipo_consumible=self.tipo_consumible).cantidad, 2,
         )
+
+
+class RegistrarAjusteInventarioTests(TestCase):
+    """BUG-3 de la auditoría de gobernanza (22-ago-2026):
+    MovimientoInventario.TipoMovimiento.AJUSTE existía en las choices desde siempre
+    pero nada lo generaba nunca."""
+
+    def setUp(self):
+        self.tipo_consumible = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB')
+        self.bodega = Bodega.objects.create(codigo='BOD-A')
+        StockBodega.objects.create(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=10)
+
+    def test_ajuste_positivo_suma_stock_y_deja_movimiento_en_bodega_destino(self):
+        movimiento = registrar_ajuste_inventario(
+            bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad_delta=3,
+            motivo='Conteo físico: sobraron 3 unidades', usuario=None,
+        )
+        self.assertEqual(
+            StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible).cantidad, 13,
+        )
+        self.assertEqual(movimiento.tipo_movimiento, MovimientoInventario.TipoMovimiento.AJUSTE)
+        self.assertEqual(movimiento.bodega_destino, self.bodega)
+        self.assertIsNone(movimiento.bodega_origen)
+
+    def test_ajuste_negativo_resta_stock_y_deja_movimiento_en_bodega_origen(self):
+        registrar_ajuste_inventario(
+            bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad_delta=-4,
+            motivo='Merma detectada en conteo físico', usuario=None,
+        )
+        self.assertEqual(
+            StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible).cantidad, 6,
+        )
+        movimiento = MovimientoInventario.objects.get()
+        self.assertEqual(movimiento.bodega_origen, self.bodega)
+        self.assertIsNone(movimiento.bodega_destino)
+
+    def test_rechaza_cantidad_cero(self):
+        with self.assertRaises(ValueError):
+            registrar_ajuste_inventario(
+                bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad_delta=0,
+                motivo='algo', usuario=None,
+            )
+
+    def test_rechaza_sin_motivo(self):
+        with self.assertRaises(ValueError):
+            registrar_ajuste_inventario(
+                bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad_delta=1,
+                motivo='   ', usuario=None,
+            )
+
+    def test_rechaza_si_deja_el_stock_en_negativo(self):
+        with self.assertRaises(ValueError):
+            registrar_ajuste_inventario(
+                bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad_delta=-20,
+                motivo='merma grande', usuario=None,
+            )
+        self.assertEqual(
+            StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible).cantidad, 10,
+        )
+
+
+class AnularRecepcionLoteTests(TestCase):
+    """BUG-3: RecepcionLote.Estado.ANULADO existía en las choices desde siempre pero
+    nada lo asignaba nunca — no había forma de revertir una recepción mal cargada."""
+
+    def setUp(self):
+        self.tipo_consumible = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB')
+        self.bodega = Bodega.objects.create(codigo='BOD-A')
+        self.oc = OrdenCompra.objects.create(numero_oc='OC-0001', proveedor='ACME', fecha_emision='2026-01-01')
+        self.detalle = OrdenCompraDetalle.objects.create(
+            orden_compra=self.oc, tipo_item=OrdenCompraDetalle.TipoItem.CONSUMIBLE,
+            tipo_consumible=self.tipo_consumible, cantidad_solicitada=10,
+        )
+
+    def test_anular_revierte_stock_y_cantidad_recibida(self):
+        recepcion = registrar_recepcion_lote(detalle=self.detalle, cantidad=6, bodega=self.bodega, usuario=None)
+        self.assertEqual(
+            StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible).cantidad, 6,
+        )
+        self.detalle.refresh_from_db()
+        self.assertEqual(self.detalle.cantidad_recibida, 6)
+        self.assertEqual(self.detalle.estado, OrdenCompraDetalle.Estado.PARCIAL)
+
+        anular_recepcion_lote(recepcion=recepcion, usuario=None, motivo='Cantidad mal cargada')
+
+        self.assertEqual(
+            StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible).cantidad, 0,
+        )
+        self.detalle.refresh_from_db()
+        self.assertEqual(self.detalle.cantidad_recibida, 0)
+        self.assertEqual(self.detalle.estado, OrdenCompraDetalle.Estado.PENDIENTE)
+        recepcion.refresh_from_db()
+        self.assertEqual(recepcion.estado, RecepcionLote.Estado.ANULADO)
+        movimiento_reverso = MovimientoInventario.objects.get(recepcion_lote=recepcion, tipo_movimiento=MovimientoInventario.TipoMovimiento.AJUSTE)
+        self.assertEqual(movimiento_reverso.cantidad, -6)
+
+    def test_anular_una_de_dos_recepciones_deja_la_linea_en_parcial(self):
+        recepcion_1 = registrar_recepcion_lote(detalle=self.detalle, cantidad=4, bodega=self.bodega, usuario=None)
+        self.detalle.refresh_from_db()
+        registrar_recepcion_lote(detalle=self.detalle, cantidad=3, bodega=self.bodega, usuario=None)
+
+        anular_recepcion_lote(recepcion=recepcion_1, usuario=None)
+
+        self.detalle.refresh_from_db()
+        self.assertEqual(self.detalle.cantidad_recibida, 3)
+        self.assertEqual(self.detalle.estado, OrdenCompraDetalle.Estado.PARCIAL)
+        self.assertEqual(
+            StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible).cantidad, 3,
+        )
+
+    def test_no_se_puede_anular_dos_veces(self):
+        recepcion = registrar_recepcion_lote(detalle=self.detalle, cantidad=6, bodega=self.bodega, usuario=None)
+        anular_recepcion_lote(recepcion=recepcion, usuario=None)
+        with self.assertRaises(ValueError):
+            anular_recepcion_lote(recepcion=recepcion, usuario=None)
+
+    def test_no_se_puede_anular_si_el_stock_ya_se_uso(self):
+        recepcion = registrar_recepcion_lote(detalle=self.detalle, cantidad=6, bodega=self.bodega, usuario=None)
+        # Se consume parte de ese stock antes de intentar anular la recepción.
+        registrar_salida_stock(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=4)
+
+        with self.assertRaises(ValueError):
+            anular_recepcion_lote(recepcion=recepcion, usuario=None)
+        recepcion.refresh_from_db()
+        self.assertNotEqual(recepcion.estado, RecepcionLote.Estado.ANULADO)
 
 
 class ScopeMovimientosVisiblesTests(TestCase):

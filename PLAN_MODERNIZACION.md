@@ -1570,3 +1570,39 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
     ¿un bucket S3/Backblaze?) es una decisión de infraestructura que le corresponde al
     usuario, no algo que se pueda inventar acá. Preguntado explícitamente (22-ago-2026):
     todavía no hay un destino definido. Queda como ítem propio para cuando se decida.
+
+- **BUG-3 — 🟢 cerrado (22-ago-2026):** tres estados/tipos declarados en choices de
+  `apps/activos/models.py` desde siempre pero nunca asignados por ningún código ni
+  leídos por ninguna vista: `Activo.Estado.EN_TRANSITO`, `MovimientoInventario.TipoMovimiento.AJUSTE`,
+  `RecepcionLote.Estado.ANULADO`. Confirmado con un barrido completo del repo (cero
+  coincidencias fuera de la propia declaración y su reflejo literal en migraciones) y,
+  antes de tocar nada, confirmado también **cero filas en la base de producción** con
+  cualquiera de los tres valores — ninguno de los tres cambios necesitó migración de
+  datos.
+  - **`AJUSTE` — implementado.** Nuevo `apps.activos.services.registrar_ajuste_inventario(
+    bodega, tipo_consumible, cantidad_delta, motivo, usuario)`: corrige el stock de una
+    bodega por conteo físico/merma sin pasar por una recepción ni un traslado.
+    `cantidad_delta` positivo o negativo (nunca cero), `motivo` obligatorio — a
+    diferencia de un ingreso o un traslado, un ajuste no tiene ningún documento de
+    respaldo que explique el cambio por sí solo. Botón "Ajustar stock" nuevo en
+    `bodegas_lista.html`, mismo permiso que el ingreso simple (`activos.change_stockbodega`,
+    ambos tocan `StockBodega` directamente).
+  - **`ANULADO` — implementado.** Nuevo `apps.activos.services.anular_recepcion_lote(
+    recepcion, usuario, motivo)`: revierte una `RecepcionLote` mal cargada (cantidad o
+    lote equivocado) — retrocede `OrdenCompraDetalle.cantidad_recibida`/`estado` con el
+    mismo compare-and-swap manual que ya usa `registrar_recepcion_lote`, y si era un
+    consumible descuenta el stock que había ingresado, dejando un `MovimientoInventario`
+    de ajuste a la baja como contrapartida (nunca borra la recepción original — el
+    kardex nunca borra una fila). Rechaza anular si ya se anuló antes o si parte de ese
+    stock ya se usó/trasladó (el descuento dejaría el stock en negativo). Link "Anular"
+    nuevo junto a cada recepción en `orden_compra_detalle.html`, permiso
+    `activos.change_recepcionlote`.
+  - **`EN_TRANSITO` — eliminado.** No existe el concepto de "activo individual en
+    tránsito entre sedes" en este dominio (`MovimientoInventario` ya cubre traslados,
+    pero de consumibles, no de activos individuales) — mantenerlo como choice sin
+    ninguna lógica detrás solo generaba confusión (el reporte de conteo por estado
+    mostraba "En tránsito: 0" siempre, no porque no hubiera tránsitos reales sino
+    porque el estado era inalcanzable). Migración `0018` (simple `AlterField`, sin
+    datos que migrar).
+  - Suite completa verificada en verde (534 tests OK) + `check`/`makemigrations
+    --check --dry-run` limpios.

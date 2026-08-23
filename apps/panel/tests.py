@@ -15,7 +15,8 @@ from django_otp.oath import totp
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from apps.activos.models import (
-    Activo, Bodega, Colaborador, MovimientoInventario, OrdenCompra, TipoConsumible,
+    Activo, Bodega, Colaborador, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, RecepcionLote,
+    StockBodega, TipoConsumible,
 )
 from apps.auditoria.models import EventoAuditoria, registrar_evento
 from apps.catalogo import crypto
@@ -1581,6 +1582,98 @@ class ActivosVistasPermisoTests(TestCase):
         self.assertEqual(resp.status_code, 403)
         self.activo.refresh_from_db()
         self.assertNotEqual(self.activo.estado, Activo.Estado.DADO_DE_BAJA)
+
+
+class BodegaAjusteStockViewTests(TestCase):
+    """BUG-3 de la auditoría de gobernanza (22-ago-2026): botón nuevo para
+    MovimientoInventario.TipoMovimiento.AJUSTE, mismo permiso que ingresar stock."""
+
+    def setUp(self):
+        self.bodega = Bodega.objects.create(codigo='BOD-A')
+        self.tipo_consumible = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB')
+        StockBodega.objects.create(bodega=self.bodega, tipo_consumible=self.tipo_consumible, cantidad=10)
+
+        self.sin_permiso = User.objects.create_user(username='sin_permiso_ajuste', password='x')
+        PerfilUsuario.objects.create(usuario=self.sin_permiso, acceso_todas_unidades=True)
+
+        self.con_permiso = User.objects.create_user(username='con_permiso_ajuste', password='x')
+        PerfilUsuario.objects.create(usuario=self.con_permiso, acceso_todas_unidades=True)
+        self.con_permiso.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='change_stockbodega'),
+            Permission.objects.get(content_type__app_label='activos', codename='view_bodega'),
+        )
+
+    def test_sin_permiso_devuelve_403(self):
+        self.client.force_login(self.sin_permiso)
+        resp = self.client.post(reverse('panel:bodega_ajuste_stock', args=[self.bodega.pk]), {
+            'tipo_consumible': self.tipo_consumible.pk, 'cantidad_delta': -3, 'motivo': 'merma',
+        })
+        self.assertEqual(resp.status_code, 403)
+
+    def test_con_permiso_registra_el_ajuste(self):
+        self.client.force_login(self.con_permiso)
+        resp = self.client.post(reverse('panel:bodega_ajuste_stock', args=[self.bodega.pk]), {
+            'tipo_consumible': self.tipo_consumible.pk, 'cantidad_delta': -3, 'motivo': 'Merma en conteo físico',
+        })
+        self.assertRedirects(resp, reverse('panel:bodegas_lista'))
+        self.assertEqual(StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible).cantidad, 7)
+        self.assertTrue(EventoAuditoria.objects.filter(accion='stock.ajustar').exists())
+
+    def test_sin_motivo_no_registra_nada(self):
+        self.client.force_login(self.con_permiso)
+        resp = self.client.post(reverse('panel:bodega_ajuste_stock', args=[self.bodega.pk]), {
+            'tipo_consumible': self.tipo_consumible.pk, 'cantidad_delta': -3, 'motivo': '',
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(StockBodega.objects.get(bodega=self.bodega, tipo_consumible=self.tipo_consumible).cantidad, 10)
+
+
+class RecepcionLoteAnularViewTests(TestCase):
+    """BUG-3: revertir una recepción mal cargada desde el panel."""
+
+    def setUp(self):
+        self.bodega = Bodega.objects.create(codigo='BOD-A')
+        self.tipo_consumible = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB')
+        self.oc = OrdenCompra.objects.create(numero_oc='OC-0001', proveedor='ACME', fecha_emision=date(2026, 1, 1))
+        self.detalle = OrdenCompraDetalle.objects.create(
+            orden_compra=self.oc, tipo_item=OrdenCompraDetalle.TipoItem.CONSUMIBLE,
+            tipo_consumible=self.tipo_consumible, cantidad_solicitada=10,
+        )
+        from apps.activos.services import registrar_recepcion_lote
+        self.recepcion = registrar_recepcion_lote(
+            detalle=self.detalle, cantidad=6, bodega=self.bodega, usuario=None,
+        )
+
+        self.sin_permiso = User.objects.create_user(username='sin_permiso_anular', password='x')
+        PerfilUsuario.objects.create(usuario=self.sin_permiso, acceso_todas_unidades=True)
+
+        self.con_permiso = User.objects.create_user(username='con_permiso_anular', password='x')
+        PerfilUsuario.objects.create(usuario=self.con_permiso, acceso_todas_unidades=True)
+        self.con_permiso.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='change_recepcionlote'),
+            Permission.objects.get(content_type__app_label='activos', codename='view_ordencompra'),
+        )
+
+    def test_sin_permiso_devuelve_403(self):
+        self.client.force_login(self.sin_permiso)
+        resp = self.client.post(reverse('panel:recepcion_lote_anular', args=[self.recepcion.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_con_permiso_anula_la_recepcion(self):
+        self.client.force_login(self.con_permiso)
+        resp = self.client.post(
+            reverse('panel:recepcion_lote_anular', args=[self.recepcion.pk]), {'motivo': 'Cantidad mal cargada'},
+        )
+        self.assertRedirects(resp, reverse('panel:orden_compra_detalle', args=[self.oc.pk]))
+        self.recepcion.refresh_from_db()
+        self.assertEqual(self.recepcion.estado, RecepcionLote.Estado.ANULADO)
+        self.assertTrue(EventoAuditoria.objects.filter(accion='recepcion_lote.anular').exists())
+
+    def test_no_se_puede_anular_dos_veces_desde_el_panel(self):
+        self.client.force_login(self.con_permiso)
+        self.client.post(reverse('panel:recepcion_lote_anular', args=[self.recepcion.pk]))
+        resp = self.client.post(reverse('panel:recepcion_lote_anular', args=[self.recepcion.pk]))
+        self.assertRedirects(resp, reverse('panel:orden_compra_detalle', args=[self.oc.pk]))
 
 
 class BodegaOrdenCompraMultiTenantTests(TestCase):

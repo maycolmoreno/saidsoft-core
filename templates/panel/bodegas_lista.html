@@ -15,9 +15,14 @@
                 <span class="text-[var(--text-dim)] text-sm ml-2">{{ b.nombre }}</span>
                 {% if b.custodio %}<span class="text-[var(--text-faint)] text-xs ml-2">custodio: {{ b.custodio.username }}</span>{% endif %}
             </div>
-            <a href="{% url 'panel:bodega_stock_ingresar' b.pk %}" class="btn primary" style="font-size:12px; padding:6px 12px;">
-                + Ingresar consumibles
-            </a>
+            <div class="flex items-center gap-2">
+                <a href="{% url 'panel:bodega_ajuste_stock' b.pk %}" class="btn secondary" style="font-size:12px; padding:6px 12px;">
+                    Ajustar stock
+                </a>
+                <a href="{% url 'panel:bodega_stock_ingresar' b.pk %}" class="btn primary" style="font-size:12px; padding:6px 12px;">
+                    + Ingresar consumibles
+                </a>
+            </div>
         </div>
         <table class="w-full text-sm">
             <tbody>
