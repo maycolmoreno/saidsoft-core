@@ -232,6 +232,59 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
 .security-block.tone-critical{ border-color:var(--critical-dim); }
 .security-block.tone-critical .field-icon{ background:var(--critical-dim); color:var(--critical); }
 
+/* ---------- Formularios de acción ----------
+   Antes: campos apilados uno por uno, sin ningún contexto del objeto real sobre
+   el que se actúa, y el mismo botón "primary" (violeta) para cualquier acción —
+   desde "asignar" hasta "dar de baja". Reusa el vocabulario ya existente
+   (.field-grid/.field de la ficha de detalle) para la tarjeta de contexto, y
+   agrega solo lo que faltaba: una grilla de campos consciente del tipo de
+   widget, y un botón cuyo tono (primary/warning/danger) refleja el riesgo real
+   de la acción, igual que ya hacen los .pill de estado. */
+.form-context{
+  border-radius:var(--radius-md); padding:14px 16px; border:1px solid var(--border-soft);
+  background:var(--overlay-faint); margin-bottom:22px;
+}
+.form-context-head{ display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+.form-context-icon{
+  width:32px; height:32px; border-radius:9px; flex:none;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--info-dim); color:var(--info);
+}
+.form-context-icon svg{ width:16px; height:16px; }
+.form-context-title{ font-size:13.5px; font-weight:600; }
+.form-context-sub{ font-size:11.5px; color:var(--text-faint); }
+
+.form-grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px 20px; }
+.form-field.span-2{ grid-column:1 / -1; }
+.form-field label{ display:block; font-size:12.5px; font-weight:500; color:var(--text-dim); margin-bottom:5px; }
+.form-field .help{ font-size:11.5px; color:var(--text-faint); margin-top:5px; }
+.form-field .field-error{ font-size:11.5px; color:var(--critical); margin-top:5px; }
+.form-field-check{
+  display:flex; align-items:center; gap:9px; grid-column:1 / -1;
+  padding:10px 12px; border:1px solid var(--border-soft); border-radius:var(--radius-sm);
+  background:var(--overlay-faint);
+}
+.form-field-check label{ margin:0; font-size:12.5px; color:var(--text); font-weight:500; }
+
+.form-card input[type=text], .form-card input[type=number], .form-card input[type=email],
+.form-card input[type=password], .form-card input[type=date], .form-card input[type=datetime-local],
+.form-card input[type=url], .form-card select, .form-card textarea{
+  width:100%; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--bg);
+  color:var(--text); padding:8px 11px; font-size:13px; font-family:inherit;
+}
+.form-card textarea{ resize:vertical; min-height:76px; }
+.form-card input:focus, .form-card select:focus, .form-card textarea:focus{
+  outline:none; border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-dim);
+}
+.form-field-check input[type=checkbox]{ width:16px; height:16px; accent-color:var(--accent); flex:none; }
+
+.btn.warning{ background:var(--warning-dim); color:var(--warning); border-color:transparent; }
+.btn.warning:hover{ background:var(--warning); color:#fff; }
+
+@media (max-width:640px){
+  .form-grid{ grid-template-columns:1fr; }
+}
+
 @media (max-width:1180px){
   .shell{ grid-template-columns:76px 1fr; }
   .sidebar{ align-items:center; }

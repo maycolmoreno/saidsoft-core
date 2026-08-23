@@ -17,6 +17,23 @@ from apps.mantenimiento.models import (
 from apps.mantenimiento.tasks import generar_informe_pdf_task
 
 
+def _resumen_mantenimiento(mantenimiento):
+    """Contexto común para el card de resumen de accion_form.html en las acciones
+    de un Mantenimiento puntual (cerrar/cancelar/adjuntar imagen/repuesto) -- antes
+    esos formularios no mostraban nada sobre el mantenimiento que estaban afectando."""
+    principal = mantenimiento.equipos.select_related('equipo').filter(es_principal=True).first()
+    return {
+        'resumen_tipo': 'mantenimiento',
+        'resumen_titulo': f'Mantenimiento #{mantenimiento.pk}',
+        'resumen_sub': f'{mantenimiento.cliente or "Sin cliente"} · {mantenimiento.get_estado_interno_display()}',
+        'resumen_campos': [
+            ('Equipo principal', principal.equipo if principal else '—'),
+            ('Técnico', mantenimiento.tecnico or 'Sin asignar'),
+            ('Programado para', mantenimiento.fecha_programada),
+        ],
+    }
+
+
 @login_required
 @permission_required('mantenimiento.view_mantenimiento', raise_exception=True)
 def mantenimientos_lista(request):
@@ -60,7 +77,7 @@ def mantenimiento_crear(request):
     else:
         form = MantenimientoManualForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': 'Nuevo mantenimiento',
+        'form': form, 'titulo': 'Nuevo mantenimiento', 'boton': 'Crear mantenimiento',
         'volver_url': reverse('panel:mantenimientos_lista'),
     })
 
@@ -150,10 +167,11 @@ def mantenimiento_cerrar(request, pk):
     else:
         form = CerrarMantenimientoForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Cerrar mantenimiento #{mantenimiento.pk}',
+        'form': form, 'titulo': f'Cerrar mantenimiento #{mantenimiento.pk}', 'boton': 'Cerrar mantenimiento',
         'subtitulo': 'Si el resultado es "Requiere baja" o "Irreparable", se marcará baja_recomendada en los '
                      'equipos cubiertos. Si es "Reparado", "Sin falla" u otro resultado exitoso, los equipos que '
                      'este mantenimiento tenía "En reparación" vuelven a bodega con el estado general elegido.',
+        **_resumen_mantenimiento(mantenimiento),
         'volver_url': reverse('panel:mantenimiento_detalle', args=[pk]),
     })
 
@@ -181,7 +199,9 @@ def mantenimiento_cancelar(request, pk):
     else:
         form = CancelarMantenimientoForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Cancelar mantenimiento #{mantenimiento.pk}',
+        'form': form, 'titulo': f'Cancelar mantenimiento #{mantenimiento.pk}', 'boton': 'Cancelar mantenimiento',
+        'tono': 'danger',
+        **_resumen_mantenimiento(mantenimiento),
         'volver_url': reverse('panel:mantenimiento_detalle', args=[pk]),
     })
 
@@ -210,7 +230,7 @@ def mantenimiento_programado_crear(request):
     else:
         form = MantenimientoProgramadoForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': 'Nuevo mantenimiento programado',
+        'form': form, 'titulo': 'Nuevo mantenimiento programado', 'boton': 'Crear plan',
         'volver_url': reverse('panel:mantenimientos_programados_lista'),
     })
 
@@ -260,7 +280,8 @@ def mantenimiento_imagen_adjuntar(request, pk):
     else:
         form = ImagenMantenimientoForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Adjuntar imagen a mantenimiento #{mantenimiento.pk}',
+        'form': form, 'titulo': f'Adjuntar imagen a mantenimiento #{mantenimiento.pk}', 'boton': 'Adjuntar imagen',
+        **_resumen_mantenimiento(mantenimiento),
         'volver_url': reverse('panel:mantenimiento_detalle', args=[pk]),
     })
 
@@ -290,7 +311,8 @@ def mantenimiento_repuesto_agregar(request, pk):
     else:
         form = RepuestoUtilizadoForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Registrar repuesto en mantenimiento #{mantenimiento.pk}',
+        'form': form, 'titulo': f'Registrar repuesto en mantenimiento #{mantenimiento.pk}', 'boton': 'Registrar repuesto',
+        **_resumen_mantenimiento(mantenimiento),
         'volver_url': reverse('panel:mantenimiento_detalle', args=[pk]),
     })
 
@@ -379,7 +401,7 @@ def actividad_planificada_crear(request):
     else:
         form = ActividadPlanificadaForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': 'Nueva actividad planificada',
+        'form': form, 'titulo': 'Nueva actividad planificada', 'boton': 'Crear actividad',
         'volver_url': reverse('panel:actividades_planificadas_lista'),
     })
 
@@ -406,7 +428,12 @@ def actividad_planificada_completar(request, pk):
     else:
         form = CompletarActividadForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Completar actividad: {actividad.titulo}',
+        'form': form, 'titulo': f'Completar actividad: {actividad.titulo}', 'boton': 'Marcar completada',
+        'resumen_tipo': 'mantenimiento', 'resumen_titulo': actividad.titulo,
+        'resumen_sub': f'Técnico: {actividad.tecnico}',
+        'resumen_campos': [
+            ('Prioridad', actividad.get_prioridad_display()), ('Vence', actividad.fecha_fin),
+        ],
         'volver_url': reverse('panel:actividades_planificadas_lista'),
     })
 

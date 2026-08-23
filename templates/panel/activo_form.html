@@ -1,108 +1,77 @@
 {% extends "panel/base.html" %}
+{% load form_extras %}
 {% block title %}{{ titulo }} · SAIDSOFT{% endblock %}
 {% block content %}
 <h1 class="text-xl font-semibold mb-1">{{ titulo }}</h1>
 {% if subtitulo %}<p class="text-sm text-[var(--text-faint)] mb-6">{{ subtitulo }}</p>{% endif %}
 
-<form method="post" class="card p-6 max-w-2xl space-y-5">
+<form method="post" class="form-card card p-6 max-w-2xl">
     {% csrf_token %}
 
     {% for error in form.non_field_errors %}
-    <p class="text-sm px-3 py-2 rounded-md" style="background:var(--critical-dim, rgba(220,38,38,.12)); color:var(--critical);">{{ error }}</p>
+    <p class="text-sm alert sev-critical px-3 py-2 mb-4">{{ error }}</p>
     {% endfor %}
 
-    <div>
-        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.tipo.label }}</label>
-        {{ form.tipo }}
-        {% for error in form.tipo.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    <div class="section-head">
+        <div class="label"><h3>Identificación</h3></div>
+    </div>
+    <div class="form-grid">
+        {% for name in "tipo,marca,categoria,modelo,numero_serie"|split_names %}
+        {% with field=form|get_field:name %}
+        <div class="form-field {% if field|widget_ancho_completo %}span-2{% endif %}">
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
+            {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+        {% endwith %}
+        {% endfor %}
     </div>
 
-    <div class="grid grid-cols-2 gap-4">
-        <div>
-            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.marca.label }}</label>
-            {{ form.marca }}
-            {% for error in form.marca.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-        </div>
-        <div>
-            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.categoria.label }}</label>
-            {{ form.categoria }}
-            {% for error in form.categoria.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-        </div>
-    </div>
-
-    <div class="grid grid-cols-2 gap-4">
-        <div>
-            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.modelo.label }}</label>
-            {{ form.modelo }}
-            {% for error in form.modelo.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-        </div>
-        <div>
-            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.numero_serie.label }}</label>
-            {{ form.numero_serie }}
-            {% for error in form.numero_serie.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-        </div>
-    </div>
-
-    <div data-tipo-computo hidden>
-        <p class="text-xs font-medium text-[var(--text-faint)] mb-2">Specs de cómputo</p>
-        <div class="grid grid-cols-3 gap-4">
-            <div>
-                <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.procesador.label }}</label>
-                {{ form.procesador }}
-                {% for error in form.procesador.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    <div class="section-divider" data-tipo-computo hidden>
+        <div class="section-head"><div class="label"><h3>Especificaciones de cómputo</h3></div></div>
+        <div class="form-grid">
+            {% for name in "procesador,ram_gb,almacenamiento_gb"|split_names %}
+            {% with field=form|get_field:name %}
+            <div class="form-field">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
             </div>
-            <div>
-                <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.ram_gb.label }}</label>
-                {{ form.ram_gb }}
-                {% for error in form.ram_gb.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+            {% endwith %}
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="section-divider">
+        <div class="section-head"><div class="label"><h3>Compra y garantía</h3></div></div>
+        <div class="form-grid">
+            {% for name in "codigo_sap,condicion_al_recibir,fecha_compra,vencimiento_garantia,orden_compra"|split_names %}
+            {% with field=form|get_field:name %}
+            <div class="form-field {% if field|widget_ancho_completo %}span-2{% endif %}">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
             </div>
-            <div>
-                <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.almacenamiento_gb.label }}</label>
-                {{ form.almacenamiento_gb }}
-                {% for error in form.almacenamiento_gb.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+            {% endwith %}
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="section-divider">
+        <div class="section-head"><div class="label"><h3>Ubicación</h3></div></div>
+        <div class="form-grid">
+            {% with field=form.bodega %}
+            <div class="form-field">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
             </div>
+            {% endwith %}
         </div>
     </div>
 
-    <div class="grid grid-cols-2 gap-4">
-        <div>
-            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.codigo_sap.label }}</label>
-            {{ form.codigo_sap }}
-            {% for error in form.codigo_sap.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-        </div>
-        <div>
-            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.condicion_al_recibir.label }}</label>
-            {{ form.condicion_al_recibir }}
-            {% for error in form.condicion_al_recibir.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-        </div>
-    </div>
-
-    <div class="grid grid-cols-2 gap-4">
-        <div>
-            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.fecha_compra.label }}</label>
-            {{ form.fecha_compra }}
-            {% for error in form.fecha_compra.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-        </div>
-        <div>
-            <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.vencimiento_garantia.label }}</label>
-            {{ form.vencimiento_garantia }}
-            {% for error in form.vencimiento_garantia.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-        </div>
-    </div>
-
-    <div>
-        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.orden_compra.label }}</label>
-        {{ form.orden_compra }}
-        {% for error in form.orden_compra.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-    </div>
-
-    <div>
-        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">{{ form.bodega.label }}</label>
-        {{ form.bodega }}
-        {% for error in form.bodega.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-    </div>
-
-    <div class="flex items-center gap-3 pt-2">
+    <div class="flex items-center gap-3 pt-6">
         <button type="submit" class="btn primary" style="padding:10px 20px;">Registrar activo</button>
         <a href="{{ volver_url }}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
     </div>

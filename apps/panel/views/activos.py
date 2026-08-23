@@ -46,7 +46,7 @@ def colaborador_crear(request):
     else:
         form = ColaboradorForm(user=request.user)
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': 'Nuevo colaborador',
+        'form': form, 'titulo': 'Nuevo colaborador', 'boton': 'Registrar colaborador',
         'subtitulo': 'Carga manual mientras se integra con RRHH/nómina.',
         'volver_url': reverse('panel:colaboradores_lista'),
     })
@@ -109,7 +109,7 @@ def orden_compra_crear(request):
     else:
         form = OrdenCompraForm(user=request.user)
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': 'Nueva orden de compra',
+        'form': form, 'titulo': 'Nueva orden de compra', 'boton': 'Crear orden',
         'volver_url': reverse('panel:ordenes_compra_lista'),
     })
 
@@ -150,7 +150,11 @@ def orden_compra_linea_crear(request, pk):
     else:
         form = OrdenCompraLineaForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Nueva línea para OC {oc.numero_oc}',
+        'form': form, 'titulo': f'Nueva línea para OC {oc.numero_oc}', 'boton': 'Agregar línea',
+        'resumen_tipo': 'orden_compra', 'resumen_titulo': f'OC {oc.numero_oc}', 'resumen_sub': oc.proveedor,
+        'resumen_campos': [
+            ('Estado', oc.get_estado_display()), ('Fecha de emisión', oc.fecha_emision),
+        ],
         'volver_url': reverse('panel:orden_compra_detalle', args=[pk]),
     })
 
@@ -186,8 +190,12 @@ def orden_compra_linea_recibir(request, pk):
             'cantidad': detalle.cantidad_solicitada - detalle.cantidad_recibida,
         })
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Recibir línea de OC {detalle.orden_compra.numero_oc}',
-        'subtitulo': f'{detalle} — pendiente: {detalle.cantidad_solicitada - detalle.cantidad_recibida}',
+        'form': form, 'titulo': f'Recibir línea de OC {detalle.orden_compra.numero_oc}', 'boton': 'Registrar recepción',
+        'resumen_tipo': 'orden_compra', 'resumen_titulo': str(detalle), 'resumen_sub': f'OC {detalle.orden_compra.numero_oc}',
+        'resumen_campos': [
+            ('Solicitado', detalle.cantidad_solicitada), ('Recibido hasta ahora', detalle.cantidad_recibida),
+            ('Pendiente', detalle.cantidad_solicitada - detalle.cantidad_recibida),
+        ],
         'volver_url': reverse('panel:orden_compra_detalle', args=[detalle.orden_compra_id]),
     })
 
@@ -224,7 +232,13 @@ def recepcion_lote_anular(request, pk):
         form = AnularRecepcionForm()
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': f'Anular recepción de {recepcion.orden_compra.numero_oc}',
-        'subtitulo': str(recepcion),
+        'boton': 'Anular recepción', 'tono': 'danger',
+        'resumen_tipo': 'orden_compra', 'resumen_titulo': str(recepcion),
+        'resumen_sub': f'OC {recepcion.orden_compra.numero_oc}',
+        'resumen_campos': [
+            ('Lote', recepcion.numero_lote or '—'), ('Cantidad recibida', recepcion.cantidad_recibida),
+            ('Bodega destino', recepcion.bodega_destino),
+        ],
         'volver_url': reverse('panel:orden_compra_detalle', args=[recepcion.orden_compra_id]),
     })
 
@@ -277,7 +291,9 @@ def orden_compra_recibir(request, pk):
     else:
         form = RecibirOrdenCompraForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Recibir OC {oc.numero_oc}',
+        'form': form, 'titulo': f'Recibir OC {oc.numero_oc}', 'boton': 'Marcar como recibida',
+        'resumen_tipo': 'orden_compra', 'resumen_titulo': f'OC {oc.numero_oc}', 'resumen_sub': oc.proveedor,
+        'resumen_campos': [('Estado actual', oc.get_estado_display()), ('Fecha de emisión', oc.fecha_emision)],
         'volver_url': reverse('panel:orden_compra_detalle', args=[pk]),
     })
 
@@ -381,7 +397,12 @@ def activo_asignar(request, pk):
     else:
         form = AsignacionForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Asignar {activo.codigo}',
+        'form': form, 'titulo': f'Asignar {activo.codigo}', 'boton': 'Asignar',
+        'resumen_tipo': 'activo', 'resumen_titulo': f'{activo.codigo} — {activo.get_tipo_display()}',
+        'resumen_sub': f'{activo.marca or ""} {activo.modelo}'.strip(),
+        'resumen_campos': [
+            ('Estado', activo.get_estado_display()), ('Bodega actual', activo.bodega_actual),
+        ],
         'volver_url': reverse('panel:activo_detalle', args=[pk]),
     })
 
@@ -407,8 +428,13 @@ def activo_devolver(request, pk):
     else:
         form = DevolucionForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Registrar devolución de {activo.codigo}',
-        'subtitulo': f'Colaborador actual: {activo.colaborador_actual}',
+        'form': form, 'titulo': f'Registrar devolución de {activo.codigo}', 'boton': 'Registrar devolución',
+        'resumen_tipo': 'activo', 'resumen_titulo': f'{activo.codigo} — {activo.get_tipo_display()}',
+        'resumen_sub': f'{activo.marca or ""} {activo.modelo}'.strip(),
+        'resumen_campos': [
+            ('Asignado a', activo.colaborador_actual),
+            ('Estado físico actual', activo.get_estado_fisico_actual_display() or '—'),
+        ],
         'volver_url': reverse('panel:activo_detalle', args=[pk]),
     })
 
@@ -445,9 +471,16 @@ def activo_reparacion_enviar(request, pk):
     else:
         form = EnvioReparacionForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Enviar a reparación {activo.codigo}',
+        'form': form, 'titulo': f'Enviar a reparación {activo.codigo}', 'boton': 'Enviar a reparación',
+        'tono': 'warning',
         'subtitulo': 'Esto abre un Mantenimiento vinculado a este activo para hacer seguimiento completo '
                      '(checklist, firma, repuestos, informe PDF) — no es solo un cambio de estado.',
+        'resumen_tipo': 'activo', 'resumen_titulo': f'{activo.codigo} — {activo.get_tipo_display()}',
+        'resumen_sub': f'{activo.marca or ""} {activo.modelo}'.strip(),
+        'resumen_campos': [
+            ('Estado actual', activo.get_estado_display()),
+            ('Asignado a / Bodega', activo.colaborador_actual or activo.bodega_actual),
+        ],
         'volver_url': reverse('panel:activo_detalle', args=[pk]),
     })
 
@@ -473,7 +506,12 @@ def activo_reparacion_retorno(request, pk):
     else:
         form = RetornoReparacionForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Retorno de reparación: {activo.codigo}',
+        'form': form, 'titulo': f'Retorno de reparación: {activo.codigo}', 'boton': 'Registrar retorno',
+        'subtitulo': 'Este activo quedó en reparación antes de que "enviar a reparación" abriera un '
+                     'Mantenimiento vinculado — registro directo, sin checklist ni firma.',
+        'resumen_tipo': 'activo', 'resumen_titulo': f'{activo.codigo} — {activo.get_tipo_display()}',
+        'resumen_sub': f'{activo.marca or ""} {activo.modelo}'.strip(),
+        'resumen_campos': [('Estado actual', activo.get_estado_display())],
         'volver_url': reverse('panel:activo_detalle', args=[pk]),
     })
 
@@ -499,8 +537,14 @@ def activo_baja(request, pk):
     else:
         form = BajaForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Dar de baja {activo.codigo}',
+        'form': form, 'titulo': f'Dar de baja {activo.codigo}', 'boton': 'Confirmar baja', 'tono': 'danger',
         'subtitulo': 'El activo permanece en el sistema para auditoría; nunca se elimina.',
+        'resumen_tipo': 'activo', 'resumen_titulo': f'{activo.codigo} — {activo.get_tipo_display()}',
+        'resumen_sub': f'{activo.marca or ""} {activo.modelo}'.strip(),
+        'resumen_campos': [
+            ('Estado actual', activo.get_estado_display()),
+            ('Asignado a / Bodega', activo.colaborador_actual or activo.bodega_actual),
+        ],
         'volver_url': reverse('panel:activo_detalle', args=[pk]),
     })
 
@@ -530,8 +574,10 @@ def activo_consumible_entregar(request, pk):
     else:
         form = ConsumibleEntregadoForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Entregar consumible a {activo.colaborador_actual}',
-        'subtitulo': f'Se descuenta del stock de {activo.bodega_actual}.',
+        'form': form, 'titulo': f'Entregar consumible a {activo.colaborador_actual}', 'boton': 'Entregar',
+        'resumen_tipo': 'activo', 'resumen_titulo': f'{activo.codigo} — {activo.get_tipo_display()}',
+        'resumen_sub': f'Asignado a {activo.colaborador_actual}',
+        'resumen_campos': [('Bodega de descuento', activo.bodega_actual)],
         'volver_url': reverse('panel:activo_detalle', args=[pk]),
     })
 
@@ -568,7 +614,9 @@ def bodega_stock_ingresar(request, pk):
     else:
         form = StockIngresoForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Ingresar consumibles a {bodega.codigo}',
+        'form': form, 'titulo': f'Ingresar consumibles a {bodega.codigo}', 'boton': 'Ingresar stock',
+        'resumen_tipo': 'bodega', 'resumen_titulo': bodega.codigo, 'resumen_sub': bodega.nombre or 'Sin nombre',
+        'resumen_campos': [('Unidad de negocio', bodega.unidad_negocio or 'Compartida')],
         'volver_url': reverse('panel:bodegas_lista'),
     })
 
@@ -605,8 +653,10 @@ def bodega_ajuste_stock(request, pk):
     else:
         form = AjusteStockForm()
     return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Ajustar stock de {bodega.codigo}',
+        'form': form, 'titulo': f'Ajustar stock de {bodega.codigo}', 'boton': 'Registrar ajuste',
         'subtitulo': 'Corrige el stock por conteo físico, merma o error de carga — queda registrado en el kardex.',
+        'resumen_tipo': 'bodega', 'resumen_titulo': bodega.codigo, 'resumen_sub': bodega.nombre or 'Sin nombre',
+        'resumen_campos': [('Unidad de negocio', bodega.unidad_negocio or 'Compartida')],
         'volver_url': reverse('panel:bodegas_lista'),
     })
 

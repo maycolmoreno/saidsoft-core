@@ -4,32 +4,49 @@
 <h1 class="text-xl font-semibold mb-1">Firmar mantenimiento #{{ mantenimiento.pk }}</h1>
 <p class="text-sm text-[var(--text-faint)] mb-6">Firma con el mouse o el dedo (pantalla táctil) dentro del recuadro.</p>
 
-<form method="post" id="firma-form" class="max-w-lg">
+<form method="post" id="firma-form" class="form-card card p-6 max-w-lg">
     {% csrf_token %}
+
+    <div class="form-context">
+        <div class="form-context-head">
+            <div class="form-context-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.13.36.36.68.66.94"/></svg>
+            </div>
+            <div>
+                <div class="form-context-title">Mantenimiento #{{ mantenimiento.pk }}</div>
+                <div class="form-context-sub">{{ mantenimiento.cliente|default:"Sin cliente" }} · {{ mantenimiento.get_estado_interno_display }}</div>
+            </div>
+        </div>
+    </div>
+
     {% if form.non_field_errors %}
-    <div class="mb-3 text-sm" style="color:var(--critical);">{{ form.non_field_errors }}</div>
+    <p class="text-sm alert sev-critical px-3 py-2 mb-4">{{ form.non_field_errors }}</p>
     {% endif %}
 
-    <label class="block text-sm text-[var(--text-dim)] mb-1">{{ form.tipo_firma.label }}</label>
-    {{ form.tipo_firma }}
-    {% for error in form.tipo_firma.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
-
-    <div class="mt-4 mb-2 text-sm text-[var(--text-dim)]">Firma</div>
-    {# La firma queda tinta oscura sobre blanco a propósito, sin importar el tema: es un artefacto real que se imprime/archiva, no una superficie de la UI. #}
-    <canvas id="firma-canvas" width="500" height="200" class="rounded-md touch-none" style="border:1px solid var(--border); background:#fff;"></canvas>
-    <div class="mt-2 flex gap-3">
-        <button type="button" id="firma-limpiar" class="text-xs hover:underline text-[var(--text-faint)]">Limpiar</button>
+    <div class="form-field mb-4">
+        <label for="{{ form.tipo_firma.id_for_label }}">{{ form.tipo_firma.label }}</label>
+        {{ form.tipo_firma }}
+        {% for error in form.tipo_firma.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
     </div>
-    {{ form.firma_base64 }}
-    {% comment %}
-    "Falta capturar la firma" es un error de campo, no non_field: sin esto el
-    formulario volvía idéntico y sin explicación al rechazar una firma vacía.
-    {% endcomment %}
-    {% for error in form.firma_base64.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
 
-    <div class="mt-6 flex gap-3">
-        <button type="submit" class="btn primary">Guardar firma</button>
-        <a href="{{ volver_url }}" class="btn secondary">Cancelar</a>
+    <div class="form-field">
+        <label>Firma</label>
+        {# La firma queda tinta oscura sobre blanco a propósito, sin importar el tema: es un artefacto real que se imprime/archiva, no una superficie de la UI. #}
+        <canvas id="firma-canvas" width="500" height="200" class="rounded-md touch-none w-full" style="border:1px solid var(--border); background:#fff; max-width:100%;"></canvas>
+        <div class="mt-2 flex gap-3">
+            <button type="button" id="firma-limpiar" class="text-xs hover:underline text-[var(--text-faint)]">Limpiar</button>
+        </div>
+        {{ form.firma_base64 }}
+        {% comment %}
+        "Falta capturar la firma" es un error de campo, no non_field: sin esto el
+        formulario volvía idéntico y sin explicación al rechazar una firma vacía.
+        {% endcomment %}
+        {% for error in form.firma_base64.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+
+    <div class="flex items-center gap-3 pt-6">
+        <button type="submit" class="btn primary" style="padding:10px 20px;">Guardar firma</button>
+        <a href="{{ volver_url }}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
     </div>
 </form>
 
