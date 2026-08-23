@@ -18,6 +18,12 @@ La IP es por FARMACIA, no por NODO/grupo — un mismo nodo puede agrupar farmaci
 IPs distintas (es un canal de versión de POS, no una topología de red), así que nunca
 se infiere del grupo.
 
+"ELIPSYS_CRESIO" es el valor real que trae el NODO de las sucursales que todavía no se
+asignaron a ningún canal de versión de POS (rollout de TRX001-004/HUB_111_6/HUB1116) —
+no es un grupo real, y además excede Grupo.codigo (max_length=10). Se remapea al
+placeholder "PENDIENTE", corregible a mano estación por estación cuando cada una entre
+en operación real (ver PLAN_MODERNIZACION.md, 22-ago-2026).
+
 Uso:
     python manage.py importar_red_farmacias_xlsx "DATOS DE FARMACIAS(3).xlsx"
     python manage.py importar_red_farmacias_xlsx "DATOS DE FARMACIAS(3).xlsx" --dry-run
@@ -37,6 +43,9 @@ HOJAS = [
     ('FARMAMIA', 4, 3, 2, 11, 5, 6, 8, 12),
     ('SAN GREGORIO', 5, 3, 2, 10, 9, 8, 7, 11),
 ]
+
+NODOS_SIN_ASIGNAR = {'ELIPSYS_CRESIO', '#N/A', ''}
+NODO_PLACEHOLDER = 'PENDIENTE'
 
 ENCABEZADOS = ['codigo', 'ciudad', 'provincia', 'nodo', 'segmento', 'tipo_enlace', 'backup', 'ip']
 
@@ -79,9 +88,12 @@ class Command(BaseCommand):
                 codigo = _valor_columna(fila, c_codigo)
                 if not codigo:
                     continue
+                nodo = _valor_columna(fila, c_nodo).upper()
+                if nodo in NODOS_SIN_ASIGNAR:
+                    nodo = NODO_PLACEHOLDER
                 escritor.writerow([
                     codigo, _valor_columna(fila, c_ciudad), _valor_columna(fila, c_provincia),
-                    _valor_columna(fila, c_nodo), _valor_columna(fila, c_segmento),
+                    nodo, _valor_columna(fila, c_segmento),
                     _valor_columna(fila, c_enlace), _valor_columna(fila, c_backup), _valor_columna(fila, c_ip),
                 ])
                 total_filas += 1

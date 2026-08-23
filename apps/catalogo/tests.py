@@ -492,6 +492,25 @@ class ImportarRedFarmaciasXlsxTests(TestCase):
         self.assertIn('[DRY RUN] 2 farmacia(s) creada(s)', salida)
         self.assertFalse(Farmacia.objects.filter(codigo='MA001').exists())
 
+    def test_nodo_sin_asignar_se_remapea_a_pendiente(self):
+        # "ELIPSYS_CRESIO" es el valor real que trae el NODO de las sucursales sin
+        # canal de versión de POS asignado todavía -- no es un grupo real y además
+        # excede Grupo.codigo (max_length=10), así que se remapea a un placeholder.
+        import openpyxl
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        sg = wb.create_sheet('SAN GREGORIO')
+        sg.append(['Item', 'Provincia', 'Canton', 'Direccion', 'Id de Farmacia', 'Login', 'Backup', 'Proveedor', 'RED LAN', 'NODO', 'IP', 'CLAVE'])
+        sg.append([1, 'MANABI', 'SANTA ANA', 'Direccion X', 'GSA02', 'login', None, 'TELCONET', '192.168.102.1', 'elipsys_cresio', '192.168.112.61', None])
+        ruta = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False).name
+        wb.save(ruta)
+
+        salida = io.StringIO()
+        call_command('importar_red_farmacias_xlsx', ruta, stdout=salida)
+
+        self.assertIn('1 farmacia(s) creada(s)', salida.getvalue())
+        self.assertEqual(Farmacia.objects.get(codigo='GSA02').grupo.codigo, 'PENDIENTE')
+
 
 class ImportarDirectorioSucursalesTests(TestCase):
     """Enriquecimiento de Farmacia ya existentes con el directorio de sucursales de
