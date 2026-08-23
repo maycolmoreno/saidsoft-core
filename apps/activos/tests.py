@@ -61,6 +61,18 @@ class SeedPermisosTests(TestCase):
         self.assertNotIn('ver_clave_bitlocker', codenames)
         self.assertNotIn('supervision_auditoria_estacion', codenames)
 
+    def test_soporte_tecnico_tiene_inventario_como_el_rol_tecnico(self):
+        # Confirmado con el usuario (22-ago-2026): el técnico de campo registra en
+        # SAIDSOFT los equipos que reemplaza/mueve en una farmacia, mismo set que el
+        # rol 'Técnico' heredado de InvTICS.
+        call_command('seed_permisos')
+        grupo = Group.objects.get(name='Soporte Técnico')
+        codenames = set(grupo.permissions.values_list('codename', flat=True))
+        self.assertTrue({
+            'view_activo', 'change_activo', 'view_eventoactivo', 'add_eventoactivo',
+            'view_ubicacion', 'view_colaborador',
+        }.issubset(codenames))
+
 
 class CrearTecnicosSoporteTests(TestCase):
     """Alta de los 9 técnicos de soporte de campo (Colaborador + login real), datos

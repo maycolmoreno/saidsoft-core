@@ -52,6 +52,13 @@ ROLES = {
         ('scripts', 'ejecucionscript', ['view', 'add']),
         ('scripts', 'scriptprogramado', ['view', 'add', 'change']),
         ('catalogo', 'estacion', ['view']),
+        # Mismo set que el rol 'Técnico' heredado de InvTICS -- confirmado con el
+        # usuario (22-ago-2026): el técnico de campo registra en SAIDSOFT los equipos
+        # que reemplaza/mueve en una farmacia, no solo hace soporte remoto.
+        ('activos', 'activo', ['view', 'change']),
+        ('activos', 'eventoactivo', ['view', 'add']),
+        ('activos', 'ubicacion', ['view']),
+        ('activos', 'colaborador', ['view']),
     ],
 }
 
