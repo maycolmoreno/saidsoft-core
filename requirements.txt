@@ -14,3 +14,4 @@ pysnmp>=7.1
 django-axes>=8.3
 django-otp>=1.5
 qrcode[pil]>=8.0
+openpyxl>=3.1

@@ -396,8 +396,19 @@ def _normalizar_encabezado(texto):
 
 
 def _encontrar_columna(fieldnames, *pistas):
-    for nombre in fieldnames:
-        normalizado = _normalizar_encabezado(nombre)
+    """Encuentra el encabezado que corresponde a una de las `pistas` dadas.
+
+    Primero busca una coincidencia EXACTA (encabezado normalizado == pista) entre
+    todos los encabezados antes de caer a una coincidencia por substring — una pista
+    corta como "ip" es substring de "tipo_enlace" ("t-IP-o"), así que sin esta
+    preferencia por exacto, una columna "Tipo de Enlace" listada antes que la columna
+    "IP" real le robaba el match (encontrado escribiendo el test de esta función).
+    """
+    normalizados = {nombre: _normalizar_encabezado(nombre) for nombre in fieldnames}
+    for nombre, normalizado in normalizados.items():
+        if normalizado in pistas:
+            return nombre
+    for nombre, normalizado in normalizados.items():
         if any(pista in normalizado for pista in pistas):
             return nombre
     return None
@@ -430,6 +441,7 @@ def importar_farmacias_desde_csv(archivo_texto, *, dry_run=False, actualizar=Fal
     archivo subido por HTTP) y cómo lo decodifica.
     """
     import csv
+    import ipaddress
 
     from django.db import transaction
 
@@ -448,6 +460,7 @@ def importar_farmacias_desde_csv(archivo_texto, *, dry_run=False, actualizar=Fal
     col_segmento = _encontrar_columna(lector.fieldnames, 'segmento')
     col_tipo_enlace = _encontrar_columna(lector.fieldnames, 'enlace')
     col_backup = _encontrar_columna(lector.fieldnames, 'backup')
+    col_ip = _encontrar_columna(lector.fieldnames, 'ip_router', 'ip')
     if not col_codigo or not col_nodo:
         raise ValueError(
             f'No se detectaron las columnas necesarias en {lector.fieldnames!r}. '
@@ -455,7 +468,7 @@ def importar_farmacias_desde_csv(archivo_texto, *, dry_run=False, actualizar=Fal
         )
     resultado.columnas = {
         'código': col_codigo, 'ciudad': col_ciudad, 'provincia': col_provincia, 'nodo': col_nodo,
-        'segmento': col_segmento, 'tipo_enlace': col_tipo_enlace, 'backup': col_backup,
+        'segmento': col_segmento, 'tipo_enlace': col_tipo_enlace, 'backup': col_backup, 'ip': col_ip,
     }
 
     grupos_cache = {g.codigo: g for g in Grupo.objects.all()}
@@ -478,6 +491,20 @@ def importar_farmacias_desde_csv(archivo_texto, *, dry_run=False, actualizar=Fal
             if not nodo:
                 resultado.errores.append(f'fila {fila_num} ({codigo}): sin valor de nodo/grupo.')
                 continue
+
+            # La IP es por farmacia, no por nodo/grupo — un mismo grupo puede agrupar
+            # farmacias con IPs distintas (rollout de versión de POS, no topología de
+            # red), así que nunca se infiere del grupo, siempre se lee de esta fila.
+            ip_router = None
+            if col_ip:
+                ip_texto = (fila.get(col_ip) or '').strip()
+                if ip_texto:
+                    try:
+                        ipaddress.ip_address(ip_texto)
+                    except ValueError:
+                        resultado.errores.append(f'fila {fila_num} ({codigo}): IP "{ip_texto}" inválida, se ignora.')
+                    else:
+                        ip_router = ip_texto
 
             # Validar largo ANTES de tocar la base — un valor que no entra en la
             # columna (ej. un NODO más largo que Grupo.codigo, max_length=10) tiraba
@@ -534,10 +561,12 @@ def importar_farmacias_desde_csv(archivo_texto, *, dry_run=False, actualizar=Fal
                     existente.segmento_red = segmento_red
                     existente.tipo_enlace = tipo_enlace
                     existente.tiene_backup = tiene_backup
+                    if ip_router:
+                        existente.ip_router = ip_router
                     if not dry_run:
                         existente.save(update_fields=[
                             'ubicacion', 'grupo', 'unidad_negocio',
-                            'segmento_red', 'tipo_enlace', 'tiene_backup',
+                            'segmento_red', 'tipo_enlace', 'tiene_backup', 'ip_router',
                         ])
                     resultado.actualizadas.append(codigo)
                 else:
@@ -548,6 +577,7 @@ def importar_farmacias_desde_csv(archivo_texto, *, dry_run=False, actualizar=Fal
                 Farmacia.objects.create(
                     codigo=codigo, ubicacion=ubicacion, grupo=grupo, unidad_negocio=unidad,
                     segmento_red=segmento_red, tipo_enlace=tipo_enlace, tiene_backup=tiene_backup,
+                    ip_router=ip_router,
                 )
             resultado.creadas.append(codigo)
 

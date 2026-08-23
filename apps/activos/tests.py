@@ -62,6 +62,78 @@ class SeedPermisosTests(TestCase):
         self.assertNotIn('supervision_auditoria_estacion', codenames)
 
 
+class CrearTecnicosSoporteTests(TestCase):
+    """Alta de los 9 técnicos de soporte de campo (Colaborador + login real), datos
+    reales de RRHH recibidos por chat el 22-ago-2026."""
+
+    def setUp(self):
+        call_command('seed_permisos')
+        import tempfile
+        self.archivo_passwords = tempfile.NamedTemporaryFile(suffix='.txt', delete=False).name
+
+    def _correr(self):
+        call_command('crear_tecnicos_soporte', archivo_passwords=self.archivo_passwords)
+
+    def test_crea_los_9_colaboradores_con_login_y_grupo_correcto(self):
+        self._correr()
+        self.assertEqual(Colaborador.objects.count(), 9)
+        grupo_soporte = Group.objects.get(name='Soporte Técnico')
+
+        jaime = Colaborador.objects.get(cedula='1312655291')
+        self.assertEqual(jaime.nombre, 'Carranza Cedeño Jaime Leonerys')
+        self.assertIsNotNone(jaime.usuario_id)
+        self.assertEqual(jaime.usuario.username, 'jaime.carranza')
+        self.assertIn(grupo_soporte, jaime.usuario.groups.all())
+        self.assertFalse(jaime.usuario.is_superuser)  # nunca Admin, aunque RRHH los marque así
+        self.assertEqual(jaime.cargo.nombre, 'Asistente de Soporte Técnico')
+        self.assertTrue(jaime.origen_sync)
+        # Un login recién creado debe quedar con contraseña usable de verdad, no en
+        # blanco -- de lo contrario nadie puede entrar aunque el registro exista.
+        self.assertTrue(jaime.usuario.has_usable_password())
+
+    def test_escribe_las_contrasenas_generadas_en_el_archivo_no_en_pantalla(self):
+        import io
+        buffer_salida = io.StringIO()
+        call_command('crear_tecnicos_soporte', archivo_passwords=self.archivo_passwords, stdout=buffer_salida)
+        salida = buffer_salida.getvalue()
+        with open(self.archivo_passwords, encoding='utf-8') as f:
+            contenido = f.read()
+        self.assertIn('jaime.carranza,', contenido)
+        self.assertEqual(contenido.count('\n'), 10)  # encabezado + 9 técnicos
+        # La contraseña real no debe aparecer en la salida por consola del comando.
+        lineas_passwords = contenido.strip().splitlines()[1:]
+        for linea in lineas_passwords:
+            _, password = linea.split(',')
+            self.assertNotIn(password, salida)
+
+    def test_correr_dos_veces_no_duplica_ni_regenera_contrasenas(self):
+        self._correr()
+
+        otro_archivo = self.archivo_passwords + '.2'
+        call_command('crear_tecnicos_soporte', archivo_passwords=otro_archivo)
+
+        self.assertEqual(Colaborador.objects.count(), 9)
+        self.assertEqual(User.objects.count(), 9)
+        # Nadie necesitaba login nuevo la segunda vez -- ni se crea el archivo.
+        import os
+        self.assertFalse(os.path.exists(otro_archivo))
+
+    def test_sin_el_grupo_soporte_tecnico_falla_con_mensaje_claro(self):
+        Group.objects.filter(name='Soporte Técnico').delete()
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            self._correr()
+
+    def test_dry_run_no_escribe_nada(self):
+        call_command('crear_tecnicos_soporte', archivo_passwords=self.archivo_passwords, dry_run=True)
+        self.assertEqual(Colaborador.objects.count(), 0)
+        self.assertEqual(User.objects.count(), 0)
+        # setUp ya crea el archivo vacío (tempfile.NamedTemporaryFile) -- en modo
+        # prueba debe seguir vacío, nunca escribirse con contraseñas de verdad.
+        with open(self.archivo_passwords, encoding='utf-8') as f:
+            self.assertEqual(f.read(), '')
+
+
 class RegistrarAsignacionTests(TestCase):
     def setUp(self):
         self.usuario = User.objects.create_user(username='u', password='x')

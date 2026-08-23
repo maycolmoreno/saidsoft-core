@@ -105,6 +105,42 @@ class Farmacia(models.Model):
                   'romper nada más.',
     )
 
+    # Directorio de sucursales (importado desde el Excel de RRHH — ver
+    # apps.catalogo.services.importar_directorio_sucursales, agosto 2026). Todos blank
+    # a propósito: una farmacia sin este dato todavía sigue funcionando igual que antes.
+    class TipoSucursal(models.TextChoices):
+        PROPIA = 'propia', 'Propia'
+        ASOCIADO = 'asociado', 'Asociado'
+
+    class FormatoFarmacia(models.TextChoices):
+        MOSTRADOR = 'mostrador', 'Mostrador'
+        MOSTRADOR_XP = 'mostrador_xp', 'Mostrador XP'
+        AUTOSERVICIO = 'autoservicio', 'Autoservicio'
+        CATEGORIAS = 'categorias', 'Categorías'
+
+    administrador = models.CharField(max_length=150, blank=True)
+    coordinador_zonal = models.CharField(max_length=150, blank=True)
+    coordinador_regional = models.CharField(max_length=150, blank=True)
+    ciudad = models.CharField(max_length=100, blank=True)
+    provincia = models.CharField(max_length=100, blank=True)
+    parroquia = models.CharField(max_length=100, blank=True)
+    direccion = models.CharField(max_length=255, blank=True)
+    horario = models.TextField(blank=True)
+    tipo_sucursal = models.CharField(max_length=15, choices=TipoSucursal.choices, blank=True)
+    formato_farmacia = models.CharField(max_length=20, choices=FormatoFarmacia.choices, blank=True)
+    latitud = models.FloatField(null=True, blank=True)
+    longitud = models.FloatField(null=True, blank=True)
+    fecha_inicio_operacion = models.DateField(null=True, blank=True)
+    fecha_inicio_ruc = models.DateField(null=True, blank=True)
+    extension_telefonica = models.PositiveIntegerField(
+        null=True, blank=True, help_text='Extensión interna (PBX), no una IP pese al nombre de la columna original.',
+    )
+    tecnico_asignado = models.ForeignKey(
+        'activos.Colaborador', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='farmacias_asignadas',
+        help_text='Técnico de soporte responsable de esta sucursal.',
+    )
+
     class Meta:
         db_table = 'farmacia'
         ordering = ['codigo']

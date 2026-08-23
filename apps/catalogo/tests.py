@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 import tempfile
@@ -10,6 +11,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
+from apps.activos.models import Cargo, Colaborador, Departamento
 from apps.catalogo import crypto
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
 from apps.catalogo.services import (
@@ -308,6 +310,25 @@ class ImportarFarmaciasTests(TestCase):
         # Backup vacío -> sin enlace de respaldo.
         self.assertFalse(Farmacia.objects.get(codigo='MPDL1').tiene_backup)
 
+    def test_captura_ip_por_farmacia_no_por_nodo(self):
+        # La IP es por farmacia, no por nodo/grupo -- un mismo NODO puede agrupar
+        # farmacias con IPs distintas (rollout de versión de POS, no topología de red).
+        csv_contenido = (
+            'Ciudad,Id de,NODO,IP\n'
+            'Pasaje,MP001,trx001,192.168.112.5\n'
+            'Pinas,MI001,trx001,192.168.112.60\n'
+        )
+        self._correr(csv_contenido)
+        self.assertEqual(Farmacia.objects.get(codigo='MP001').ip_router, '192.168.112.5')
+        self.assertEqual(Farmacia.objects.get(codigo='MI001').ip_router, '192.168.112.60')
+
+    def test_ip_invalida_se_reporta_como_error_sin_bloquear_la_fila(self):
+        csv_contenido = 'Ciudad,Id de,NODO,IP\nPasaje,MP001,trx001,no-es-una-ip\n'
+        salida = self._correr(csv_contenido)
+        self.assertIn('IP "no-es-una-ip" inválida', salida)
+        mp001 = Farmacia.objects.get(codigo='MP001')
+        self.assertIsNone(mp001.ip_router)
+
 
 class FarmaciaAdminImportarViewTests(TestCase):
     """El botón "Importar CSV" del admin (/admin/catalogo/farmacia/importar/) usa el
@@ -418,6 +439,155 @@ class EstacionAdminMonitoreoEnLoteTests(TestCase):
         self.assertTrue(
             EventoAuditoria.objects.filter(accion='estacion.monitoreo_activar', usuario=self.admin_user).exists(),
         )
+
+
+class ImportarRedFarmaciasXlsxTests(TestCase):
+    """Wrapper sobre importar_farmacias_desde_csv que lee directo del Excel real de
+    red (dos hojas, FARMAMIA y SAN GREGORIO, con columnas distintas entre sí)."""
+
+    def setUp(self):
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+
+    def _libro_de_prueba(self):
+        import openpyxl
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+
+        farmamia = wb.create_sheet('FARMAMIA')
+        farmamia.append(['mcu', 'Provincia', 'Ciudad', 'Id de Farmacia', 'Segmento de Red', 'Tipo de Enlace', 'Login', 'Backup', 'IP-DNS', 'Correo', 'NODO', 'IP'])
+        farmamia.append([1, 'El Oro', 'Arenillas', 'MA001', '10.101.18.224/27', 'TELCONET', 'login1', 'ACTIVO', None, None, 'trx001', '192.168.112.5'])
+
+        sg = wb.create_sheet('SAN GREGORIO')
+        sg.append(['Item', 'Provincia', 'Canton', 'Direccion', 'Id de Farmacia', 'Login', 'Backup', 'Proveedor', 'RED LAN', 'NODO', 'IP', 'CLAVE'])
+        sg.append([2, 'MANABI', 'SANTA ANA', 'Direccion X', 'GSA01', 'login2', None, 'TELCONET', '192.168.102.1', 'trx003', '192.168.112.60', None])
+
+        ruta = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False).name
+        wb.save(ruta)
+        return ruta
+
+    def _correr(self, **opciones):
+        salida = io.StringIO()
+        call_command('importar_red_farmacias_xlsx', self._libro_de_prueba(), stdout=salida, **opciones)
+        return salida.getvalue()
+
+    def test_crea_farmacias_de_ambas_hojas_con_su_propia_ip(self):
+        salida = self._correr()
+        self.assertIn('2 farmacia(s) creada(s)', salida)
+
+        ma001 = Farmacia.objects.get(codigo='MA001')
+        self.assertEqual(ma001.unidad_negocio, self.mia)
+        self.assertEqual(ma001.grupo.codigo, 'TRX001')
+        self.assertEqual(ma001.ip_router, '192.168.112.5')
+        self.assertEqual(ma001.segmento_red, '10.101.18.224/27')
+
+        gsa01 = Farmacia.objects.get(codigo='GSA01')
+        self.assertEqual(gsa01.unidad_negocio, self.sg)
+        self.assertEqual(gsa01.grupo.codigo, 'TRX003')
+        self.assertEqual(gsa01.ip_router, '192.168.112.60')
+        self.assertEqual(gsa01.tipo_enlace, 'TELCONET')
+
+    def test_dry_run_no_escribe_nada(self):
+        salida = self._correr(dry_run=True)
+        self.assertIn('[DRY RUN] 2 farmacia(s) creada(s)', salida)
+        self.assertFalse(Farmacia.objects.filter(codigo='MA001').exists())
+
+
+class ImportarDirectorioSucursalesTests(TestCase):
+    """Enriquecimiento de Farmacia ya existentes con el directorio de sucursales de
+    RRHH (nombre, horario, coordinadores, coordenadas, técnico asignado, etc.)."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='GES07', grupo=grupo, unidad_negocio=self.sg)
+
+        departamento = Departamento.objects.create(nombre='Tecnologías e Innovación', tipo=Departamento.Tipo.TECNICO)
+        cargo = Cargo.objects.create(nombre='Asistente de Soporte Técnico', departamento=departamento)
+        self.tecnico = Colaborador.objects.create(
+            nombre='Carranza Cedeño Jaime Leonerys', cedula='1312655291', cargo=cargo,
+        )
+
+    def _libro_de_prueba(self, tecnico='JAIME CARRANZA', tipo_sucursal='PROPIA', formato='MOSTRADOR'):
+        import openpyxl
+        wb = openpyxl.Workbook()
+        wb.active.title = 'Directorio Personal'
+        hoja = wb.active
+        hoja.append([
+            'Nombre Sucursal', 'Marca', 'Ciudad', 'Sucursal', 'Horario', 'Administrador', 'Coordinador_Zonal',
+            'Ext_Ip', 'Celular', 'Correo_Electonico', 'Provincia', 'Coordinador_Regional', 'Direccion',
+            'Tipo_Sucursal', 'Latitud', 'Longitud', 'formato_farmacia', 'Parroquia', 'fecha_inicio_op',
+            'fecha_inicio_ruc', 'Tecnico',
+        ])
+        hoja.append([
+            'FARMACIAS SAN GREGORIO GES07', 'SAN GREGORIO', 'ESMERALDAS', 'GES07',
+            'LUNES A VIERNES: 08:00 - 19:00', 'SASINTUÑA BONE MARTHA', 'MARQUEZ MOSQUERA MARIO',
+            None, '0990051735', 'ges07.avlibertad@sangregorio.com.ec', 'ESMERALDAS',
+            'ALARCON MACIAS GEOVANNY', 'AVENIDA LIBERTAD / SN', tipo_sucursal, '0.9704555', '-79.6530856',
+            formato, 'ESMERALDAS', datetime.datetime(2022, 2, 7), datetime.datetime(2022, 2, 7), tecnico,
+        ])
+        ruta = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False).name
+        wb.save(ruta)
+        return ruta
+
+    def _correr(self, **kwargs):
+        salida = io.StringIO()
+        call_command('importar_directorio_sucursales', self._libro_de_prueba(**kwargs), stdout=salida)
+        return salida.getvalue()
+
+    def test_enriquece_la_farmacia_existente_con_todos_los_campos(self):
+        self._correr()
+        self.farmacia.refresh_from_db()
+        self.assertEqual(self.farmacia.nombre, 'FARMACIAS SAN GREGORIO GES07')
+        self.assertEqual(self.farmacia.administrador, 'SASINTUÑA BONE MARTHA')
+        self.assertEqual(self.farmacia.coordinador_zonal, 'MARQUEZ MOSQUERA MARIO')
+        self.assertEqual(self.farmacia.coordinador_regional, 'ALARCON MACIAS GEOVANNY')
+        self.assertEqual(self.farmacia.ciudad, 'ESMERALDAS')
+        self.assertEqual(self.farmacia.provincia, 'ESMERALDAS')
+        self.assertEqual(self.farmacia.direccion, 'AVENIDA LIBERTAD / SN')
+        self.assertEqual(self.farmacia.tipo_sucursal, Farmacia.TipoSucursal.PROPIA)
+        self.assertEqual(self.farmacia.formato_farmacia, Farmacia.FormatoFarmacia.MOSTRADOR)
+        self.assertAlmostEqual(self.farmacia.latitud, 0.9704555)
+        self.assertAlmostEqual(self.farmacia.longitud, -79.6530856)
+        self.assertEqual(self.farmacia.telefono, '0990051735')
+        self.assertEqual(self.farmacia.email, 'ges07.avlibertad@sangregorio.com.ec')
+        self.assertEqual(self.farmacia.fecha_inicio_operacion, datetime.date(2022, 2, 7))
+        self.assertEqual(self.farmacia.tecnico_asignado, self.tecnico)
+
+    def test_formato_mostrador_xp_se_normaliza_con_guion_bajo(self):
+        self._correr(formato='MOSTRADOR XP')
+        self.farmacia.refresh_from_db()
+        self.assertEqual(self.farmacia.formato_farmacia, Farmacia.FormatoFarmacia.MOSTRADOR_XP)
+
+    def test_tecnico_nd_no_vincula_a_nadie(self):
+        self._correr(tecnico='N/D')
+        self.farmacia.refresh_from_db()
+        self.assertIsNone(self.farmacia.tecnico_asignado)
+
+    def test_tecnico_desconocido_se_reporta_como_advertencia(self):
+        salida = self._correr(tecnico='ALGUIEN NUEVO')
+        self.assertIn('técnico sin mapeo', salida)
+        self.farmacia.refresh_from_db()
+        self.assertIsNone(self.farmacia.tecnico_asignado)
+
+    def test_codigo_sin_farmacia_todavia_se_reporta_como_error(self):
+        self.farmacia.delete()
+        salida = self._correr()
+        self.assertIn('sin Farmacia todavía en SAIDSOFT', salida)
+
+    def test_dry_run_no_escribe_nada(self):
+        self._correr(tipo_sucursal='ASOCIADO')  # deja el estado real limpio primero
+        self.farmacia.refresh_from_db()
+        self.assertEqual(self.farmacia.tipo_sucursal, Farmacia.TipoSucursal.ASOCIADO)
+
+        salida = io.StringIO()
+        call_command(
+            'importar_directorio_sucursales', self._libro_de_prueba(tipo_sucursal='PROPIA'),
+            dry_run=True, stdout=salida,
+        )
+        self.assertIn('[DRY RUN] 1 farmacia', salida.getvalue())
+        self.farmacia.refresh_from_db()
+        self.assertEqual(self.farmacia.tipo_sucursal, Farmacia.TipoSucursal.ASOCIADO)  # sin cambios
 
 
 class ComandoFirmadoTests(TestCase):

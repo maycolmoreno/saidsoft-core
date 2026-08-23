@@ -1633,3 +1633,59 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
   - Ningún cambio de código en este ítem — es documentación pura, sin migración ni
     despliegue al servidor. Vive versionada junto con el código en vez de como un
     documento aparte, para que quede sincronizada cuando algo cambie.
+
+## Directorio real de sucursales y técnicos de soporte (22-ago-2026)
+
+Con la auditoría de gobernanza cerrada, el usuario pasó dos archivos reales de RRHH/
+operaciones (`directorio_sucursal_Agosto.xlsx`, 693 sucursales; `DATOS DE
+FARMACIAS(3).xlsx`, inventario de red) para enriquecer el catálogo de `Farmacia` y dar
+de alta a los técnicos de soporte de campo con login real. Cruzado contra la base de
+producción real: **las 485 farmacias que ya existían en SAIDSOFT están las 485 en el
+directorio** (coincidencia perfecta), pero **208 sucursales reales no existían
+todavía** — el catálogo estaba ~30% incompleto.
+
+- **`Farmacia`**: 15 campos nuevos (administrador, coordinadores zonal/regional,
+  ciudad/provincia/parroquia, dirección, horario, tipo/formato de sucursal,
+  latitud/longitud, fechas de inicio de operación/RUC, extensión telefónica) +
+  `tecnico_asignado` (FK a `Colaborador`). Migración `0020` en `catalogo` (sin datos
+  que migrar, todos los campos nacen vacíos).
+- **`Colaborador`**: nuevo `usuario` (OneToOne a `auth.User`) para vincular el registro
+  de persona con su login real al panel. Migración `0019` en `activos`.
+- **`importar_farmacias_desde_csv` (ya existente) extendido** para importar también
+  `ip_router` por fila — no existía antes pese a que el campo ya estaba en el modelo.
+  La IP es por FARMACIA, no por nodo/grupo (un mismo nodo puede agrupar farmacias con
+  IPs distintas — aclarado por el usuario). De paso, se corrigió un bug real en
+  `_encontrar_columna` (la función compartida de detección de encabezados): una pista
+  corta como "ip" es substring de "tipo_enlace" ("t**ip**o_enlace"), así que sin
+  preferir coincidencia exacta antes que por substring, una columna "Tipo de Enlace"
+  bloqueaba la columna "IP" real — encontrado escribiendo el test, no en producción.
+- **Tres comandos nuevos**, todos con `--dry-run`:
+  - `crear_tecnicos_soporte`: alta de los 9 técnicos reales (Jaime Carranza, Wellington
+    Alvarez, Luis Figueroa, Diego Aguilar, Leonel Villacres, Mateo Picón, Luis López,
+    Alex Lema, Daniel Dumes) — `Colaborador` con cédula/correo/cargo reales + login al
+    panel (usuario = prefijo del correo @cresio.com) + grupo **Soporte Técnico**, nunca
+    Administrador aunque el sistema de RRHH de origen los marque "rol: Admin" (mínimo
+    privilegio — ya tienen exactamente lo que necesitan: reiniciar/aprobar estaciones,
+    acceso remoto, ejecutar scripts). Contraseñas generadas al azar, nunca impresas en
+    pantalla — quedan en un archivo aparte para distribuir de forma segura. **Bug real
+    encontrado y corregido antes de tocar producción**: el booleano de
+    `User.objects.get_or_create()` quedó nombrado al revés en el primer borrador
+    (`usuario_ya_existia` en realidad contenía `creado`), lo que hacía que un login
+    recién creado NUNCA recibiera contraseña (quedaba inutilizable) y uno preexistente
+    la perdiera pisada por una nueva — atrapado por un test que verifica
+    `has_usable_password()`, no en producción.
+  - `importar_red_farmacias_xlsx`: wrapper sobre `importar_farmacias_desde_csv` que lee
+    directo las dos hojas reales (FARMAMIA, SAN GREGORIO — columnas distintas entre
+    sí) sin pasar por un CSV intermedio a mano. Crea las 208 sucursales faltantes con
+    su Grupo/unidad de negocio/IP correctos.
+  - `importar_directorio_sucursales`: enriquece las Farmacia ya existentes (nunca crea)
+    con los 15 campos nuevos + vincula `tecnico_asignado` por cédula, usando un mapeo
+    fijo (`NOMBRE_DIRECTORIO_A_CEDULA`) porque varias personas figuran en el directorio
+    por su segundo nombre (ej. "MAURICIO ALVAREZ" es Wellington Mauricio Alvarez
+    Mendoza) — comparar texto no alcanzaba.
+- `openpyxl` nueva dependencia real del proyecto (antes solo se usó al vuelo para
+  inspeccionar los archivos).
+- Suite completa verificada en verde (549 tests OK) + `check`/`makemigrations --check
+  --dry-run` limpios. **Pendiente, con visto bueno explícito del usuario antes de cada
+  paso**: correr los tres comandos en `--dry-run` contra la base de producción real,
+  mostrar el reporte, y recién aplicar de verdad con confirmación.

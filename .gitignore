@@ -13,6 +13,14 @@ db.sqlite3
 
 # Secretos y certificados de producción
 /deploy/.env
+
+# Datos reales de RRHH/operaciones (PII: cédulas, teléfonos, direcciones de sucursales
+# y colaboradores de CRESIO) usados para importar apps.catalogo.Farmacia/apps.activos.
+# Colaborador -- nunca al historial de git, sin importar dónde se los deje dentro del
+# repo (22-ago-2026).
+/docs/*.xlsx
+/docs/*.xls
+/docs/*.csv
 /deploy/certs/*.pem
 /deploy/meshcentral/config.json
 

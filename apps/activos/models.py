@@ -149,6 +149,11 @@ class Colaborador(models.Model):
     )
     activo = models.BooleanField(default=True, help_text='Colaborador vigente en la empresa.')
     fecha_registro = models.DateTimeField(auto_now_add=True)
+    usuario = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='colaborador',
+        help_text='Login al panel de este colaborador, si tiene uno (ej. técnicos de soporte '
+                  'con acceso propio) — no todo Colaborador necesita una cuenta.',
+    )
 
     class Meta:
         db_table = 'colaborador'
