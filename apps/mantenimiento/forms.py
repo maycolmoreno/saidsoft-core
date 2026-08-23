@@ -3,7 +3,10 @@ from django.contrib.auth import get_user_model
 
 from apps.activos.models import Activo, Bodega, Colaborador, TipoConsumible, Ubicacion
 
-from .models import EstadoGeneralEquipo, MantenimientoProgramado, PrioridadActividad, ResultadoTecnico, TipoFirma
+from .models import (
+    EstadoGeneralEquipo, MantenimientoProgramado, PrioridadActividad, ResultadoTecnico, TipoFirma,
+    TipoMantenimiento,
+)
 
 INPUT_CLASS = 'w-full rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]'
 
@@ -26,7 +29,10 @@ class MantenimientoManualForm(forms.Form):
         help_text='Si no se asigna aquí, el técnico queda sin asignar (a diferencia de la app móvil, '
                   'donde el técnico siempre se autoasigna).',
     )
-    tipo_mantenimiento = forms.CharField(widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
+    tipo_mantenimiento = forms.ModelChoiceField(
+        queryset=TipoMantenimiento.objects.filter(activo=True), required=False,
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
     estado_general = forms.ChoiceField(
         choices=EstadoGeneralEquipo.choices, widget=forms.Select(attrs={'class': INPUT_CLASS}),
         label='Estado general del equipo',

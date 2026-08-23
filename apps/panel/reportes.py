@@ -237,7 +237,7 @@ def reporte_mantenimiento(salida, unidad_negocio, desde=None, hasta=None):
     mantenimientos = (
         Mantenimiento.objects
         .filter(cliente__unidad_negocio=unidad_negocio)
-        .select_related('cliente', 'tecnico')
+        .select_related('cliente', 'tecnico', 'tipo_mantenimiento')
         .prefetch_related('equipos__equipo')
         .order_by('-fecha_creacion')
     )
@@ -252,7 +252,7 @@ def reporte_mantenimiento(salida, unidad_negocio, desde=None, hasta=None):
         filas.append([
             m.pk,
             m.get_tipo_origen_display(),
-            m.tipo_mantenimiento,
+            m.tipo_mantenimiento.nombre if m.tipo_mantenimiento else '',
             m.cliente.nombre if m.cliente else '',
             principal.codigo if principal else '',
             m.tecnico.username if m.tecnico else '',

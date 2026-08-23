@@ -58,6 +58,32 @@ class MantenimientoProgramado(models.Model):
         return f'{self.equipo.codigo} cada {self.frecuencia_dias} días'
 
 
+class TipoMantenimiento(models.Model):
+    """Catálogo configurable (administrable desde /admin/, no hardcodeado en Python).
+
+    Reemplaza al CharField de texto libre que tenía Mantenimiento.tipo_mantenimiento --
+    sin un catálogo, cualquiera escribía lo que quisiera ("preventivo", "Preventivo",
+    "PREV"...) y era imposible reportar por tipo de forma confiable
+    (docs/proceso-mantenimiento-ti.md, brecha #3, 23-ago-2026). `codigo` identifica los
+    5 tipos conceptuales de la propuesta (preventivo/correctivo/falla_critica/
+    actualizacion/obsolescencia) para que el código pueda asignarlos por default sin
+    depender del texto de `nombre`, que sí es editable libremente por un administrador.
+    """
+    codigo = models.CharField(max_length=30, unique=True)
+    nombre = models.CharField(max_length=100)
+    descripcion = models.TextField(blank=True)
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'tipo_mantenimiento'
+        ordering = ['nombre']
+        verbose_name = 'Tipo de mantenimiento'
+        verbose_name_plural = 'Tipos de mantenimiento'
+
+    def __str__(self):
+        return self.nombre
+
+
 class Mantenimiento(models.Model):
     """Entidad central: un mantenimiento manual, programado o venido de Odoo Helpdesk."""
 
@@ -80,7 +106,9 @@ class Mantenimiento(models.Model):
         related_name='mantenimientos_generados',
     )
     descripcion = models.TextField(blank=True)
-    tipo_mantenimiento = models.CharField(max_length=30, blank=True)
+    tipo_mantenimiento = models.ForeignKey(
+        TipoMantenimiento, on_delete=models.PROTECT, null=True, blank=True, related_name='mantenimientos',
+    )
     tipo_origen = models.CharField(
         max_length=20, choices=TipoOrigenMantenimiento.choices, default=TipoOrigenMantenimiento.MANUAL,
     )

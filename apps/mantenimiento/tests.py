@@ -8,7 +8,7 @@ from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoCo
 
 from .models import (
     EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado, Notificacion,
-    RepuestoUtilizado, ResultadoTecnico, TipoOrigenMantenimiento,
+    RepuestoUtilizado, ResultadoTecnico, TipoMantenimiento, TipoOrigenMantenimiento,
 )
 from .services import (
     cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf, iniciar_reparacion_desde_activo,
@@ -27,7 +27,7 @@ class CrearMantenimientoManualTests(TestCase):
     def _crear(self, **overrides):
         kwargs = dict(
             equipos=[self.equipo], tecnico=self.tecnico, cliente=self.cliente,
-            tipo_mantenimiento='preventivo', estado_general=EstadoGeneralEquipo.OPERATIVO,
+            tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='preventivo'), estado_general=EstadoGeneralEquipo.OPERATIVO,
             descripcion='Revisión', fecha_programada=timezone.now(), usuario=self.usuario,
         )
         kwargs.update(overrides)
@@ -71,7 +71,7 @@ class CerrarMantenimientoTests(TestCase):
 
     def _crear(self, **overrides):
         kwargs = dict(
-            equipos=[self.equipo], tecnico=None, tipo_mantenimiento='correctivo',
+            equipos=[self.equipo], tecnico=None, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'),
             estado_general=EstadoGeneralEquipo.NO_OPERATIVO, descripcion='Falla',
             fecha_programada=timezone.now(), usuario=self.usuario,
         )
@@ -267,12 +267,12 @@ class NotificarVencimientoTests(TestCase):
 
     def test_detecta_mantenimiento_atrasado(self):
         viejo = crear_mantenimiento_manual(
-            equipos=[self.equipo], tecnico=self.tecnico, tipo_mantenimiento='correctivo',
+            equipos=[self.equipo], tecnico=self.tecnico, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'),
             descripcion='Falla', fecha_programada=timezone.now() - timedelta(days=10), usuario=self.tecnico,
         )
         reciente = crear_mantenimiento_manual(
             equipos=[Activo.objects.create(codigo='CR-DSK-0012', tipo=Activo.Tipo.DESKTOP)],
-            tecnico=self.tecnico, tipo_mantenimiento='correctivo', descripcion='Falla',
+            tecnico=self.tecnico, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'), descripcion='Falla',
             fecha_programada=timezone.now() - timedelta(days=1), usuario=self.tecnico,
         )
         resultado = list(mantenimientos_atrasados(dias_gracia=3))
@@ -281,7 +281,7 @@ class NotificarVencimientoTests(TestCase):
 
     def test_mantenimiento_cerrado_no_se_considera_atrasado(self):
         mantenimiento = crear_mantenimiento_manual(
-            equipos=[self.equipo], tecnico=self.tecnico, tipo_mantenimiento='correctivo',
+            equipos=[self.equipo], tecnico=self.tecnico, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'),
             descripcion='Falla', fecha_programada=timezone.now() - timedelta(days=10), usuario=self.tecnico,
         )
         cerrar_mantenimiento(mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
@@ -294,7 +294,7 @@ class NotificarVencimientoTests(TestCase):
         )
         crear_mantenimiento_manual(
             equipos=[Activo.objects.create(codigo='CR-DSK-0013', tipo=Activo.Tipo.DESKTOP)],
-            tecnico=self.tecnico, tipo_mantenimiento='correctivo', descripcion='Falla',
+            tecnico=self.tecnico, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'), descripcion='Falla',
             fecha_programada=timezone.now() - timedelta(days=10), usuario=self.tecnico,
         )
         resultado = notificar_mantenimientos_proximos_y_atrasados()
@@ -319,7 +319,7 @@ class NotificarVencimientoTests(TestCase):
         # Mantenimiento manual sin técnico asignado.
         crear_mantenimiento_manual(
             equipos=[Activo.objects.create(codigo='CR-DSK-0014', tipo=Activo.Tipo.DESKTOP)],
-            tecnico=None, tipo_mantenimiento='correctivo', descripcion='Falla',
+            tecnico=None, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'), descripcion='Falla',
             fecha_programada=timezone.now() - timedelta(days=10), usuario=self.tecnico,
         )
         resultado = notificar_mantenimientos_proximos_y_atrasados()
@@ -352,7 +352,7 @@ class GenerarInformePdfTests(TestCase):
         self.usuario = User.objects.create_user(username='u_pdf', password='x')
         self.equipo = Activo.objects.create(codigo='CR-DSK-0100', tipo=Activo.Tipo.DESKTOP)
         self.mantenimiento = crear_mantenimiento_manual(
-            equipos=[self.equipo], tecnico=self.usuario, cliente=None, tipo_mantenimiento='preventivo',
+            equipos=[self.equipo], tecnico=self.usuario, cliente=None, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='preventivo'),
             estado_general=EstadoGeneralEquipo.OPERATIVO, descripcion='Revisión',
             fecha_programada=timezone.now(), usuario=self.usuario,
         )
@@ -384,7 +384,7 @@ class GenerarInformePdfTaskTests(TestCase):
         self.usuario = User.objects.create_user(username='u_pdf_task', password='x')
         self.equipo = Activo.objects.create(codigo='CR-DSK-0101', tipo=Activo.Tipo.DESKTOP)
         self.mantenimiento = crear_mantenimiento_manual(
-            equipos=[self.equipo], tecnico=self.usuario, cliente=None, tipo_mantenimiento='preventivo',
+            equipos=[self.equipo], tecnico=self.usuario, cliente=None, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='preventivo'),
             estado_general=EstadoGeneralEquipo.OPERATIVO, descripcion='Revisión',
             fecha_programada=timezone.now(), usuario=self.usuario,
         )
@@ -411,7 +411,7 @@ class RegistrarRepuestoUtilizadoTests(TestCase):
         self.usuario = User.objects.create_user(username='u_repuesto', password='x')
         self.equipo = Activo.objects.create(codigo='CR-DSK-0200', tipo=Activo.Tipo.DESKTOP)
         self.mantenimiento = crear_mantenimiento_manual(
-            equipos=[self.equipo], tecnico=self.usuario, cliente=None, tipo_mantenimiento='correctivo',
+            equipos=[self.equipo], tecnico=self.usuario, cliente=None, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'),
             estado_general=EstadoGeneralEquipo.NO_OPERATIVO, descripcion='Falla',
             fecha_programada=timezone.now(), usuario=self.usuario,
         )
@@ -500,12 +500,12 @@ class ResumenMantenimientoPeriodoTests(TestCase):
     def test_cuenta_total_y_cerrados_del_periodo(self):
         crear_mantenimiento_manual(
             equipos=[self.equipo], tecnico=self.usuario, cliente=self.colaborador,
-            tipo_mantenimiento='correctivo', descripcion='Falla', fecha_programada=timezone.now(),
+            tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'), descripcion='Falla', fecha_programada=timezone.now(),
             usuario=self.usuario,
         )
         m2 = crear_mantenimiento_manual(
             equipos=[Activo.objects.create(codigo='CR-DSK-0301', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.mia)],
-            tecnico=self.usuario, cliente=self.colaborador, tipo_mantenimiento='correctivo',
+            tecnico=self.usuario, cliente=self.colaborador, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'),
             descripcion='Falla', fecha_programada=timezone.now(), usuario=self.usuario,
         )
         cerrar_mantenimiento(mantenimiento=m2, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.usuario)
@@ -521,7 +521,7 @@ class ResumenMantenimientoPeriodoTests(TestCase):
         colaborador_sg = Colaborador.objects.create(nombre='Luis', cedula='9102', unidad_negocio=sg)
         crear_mantenimiento_manual(
             equipos=[Activo.objects.create(codigo='CR-DSK-0302', tipo=Activo.Tipo.DESKTOP, unidad_negocio=sg)],
-            tecnico=self.usuario, cliente=colaborador_sg, tipo_mantenimiento='correctivo',
+            tecnico=self.usuario, cliente=colaborador_sg, tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'),
             descripcion='Falla', fecha_programada=timezone.now(), usuario=self.usuario,
         )
         self.assertEqual(self._kpis()['total_periodo'], 0)
@@ -542,7 +542,7 @@ class ResumenMantenimientoPeriodoTests(TestCase):
     def test_sin_mantenimientos_cerrados_mttr_es_none(self):
         crear_mantenimiento_manual(
             equipos=[self.equipo], tecnico=self.usuario, cliente=self.colaborador,
-            tipo_mantenimiento='correctivo', descripcion='Falla', fecha_programada=timezone.now(),
+            tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'), descripcion='Falla', fecha_programada=timezone.now(),
             usuario=self.usuario,
         )
         self.assertIsNone(self._kpis()['mttr_horas'])
@@ -550,7 +550,7 @@ class ResumenMantenimientoPeriodoTests(TestCase):
     def test_costo_repuestos_suma_solo_los_del_periodo(self):
         mantenimiento = crear_mantenimiento_manual(
             equipos=[self.equipo], tecnico=self.usuario, cliente=self.colaborador,
-            tipo_mantenimiento='correctivo', descripcion='Falla', fecha_programada=timezone.now(),
+            tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'), descripcion='Falla', fecha_programada=timezone.now(),
             usuario=self.usuario,
         )
         tipo_consumible = TipoConsumible.objects.create(codigo='FUENTE2', nombre='Fuente de poder')
@@ -572,7 +572,7 @@ class ResumenMantenimientoPeriodoTests(TestCase):
     def test_atrasados_ahora_cuenta_mantenimientos_abiertos_hace_mas_de_3_dias(self):
         crear_mantenimiento_manual(
             equipos=[self.equipo], tecnico=self.usuario, cliente=self.colaborador,
-            tipo_mantenimiento='correctivo', descripcion='Falla',
+            tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'), descripcion='Falla',
             fecha_programada=timezone.now() - timedelta(days=10), usuario=self.usuario,
         )
         self.assertEqual(self._kpis()['atrasados_ahora'], 1)

@@ -26,7 +26,7 @@ from apps.cumplimiento.models import (
     ActividadCumplimiento, ResultadoCumplimientoEstacion, TipoObjetivoCumplimiento,
 )
 from apps.despliegues.models import Despliegue
-from apps.mantenimiento.models import EstadoGeneralEquipo, Mantenimiento
+from apps.mantenimiento.models import EstadoGeneralEquipo, Mantenimiento, TipoMantenimiento
 from apps.monitoreo.models import (
     Alerta, Metrica, MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
@@ -718,12 +718,13 @@ class MantenimientoCrearViewTests(TestCase):
         self.client.force_login(self.usuario)
         self.equipo = Activo.objects.create(codigo='CR-DSK-0099', tipo=Activo.Tipo.DESKTOP)
         self.cliente = Colaborador.objects.create(nombre='Ana', cedula='9999')
+        self.tipo_preventivo = TipoMantenimiento.objects.get(codigo='preventivo')
 
     def _post_valido(self):
         return self.client.post(reverse('panel:mantenimiento_crear'), {
             'equipos': [self.equipo.pk],
             'cliente': self.cliente.pk,
-            'tipo_mantenimiento': 'preventivo',
+            'tipo_mantenimiento': self.tipo_preventivo.pk,
             'estado_general': EstadoGeneralEquipo.OPERATIVO,
             'descripcion': 'Revisión de rutina',
             'fecha_programada': '2026-10-01T09:00',
@@ -748,12 +749,13 @@ class MantenimientoApiCrearTests(TestCase):
         self.token = Token.objects.create(user=self.tecnico)
         self.equipo = Activo.objects.create(codigo='CR-DSK-0100', tipo=Activo.Tipo.DESKTOP)
         self.cliente = Colaborador.objects.create(nombre='Beto', cedula='8888')
+        self.tipo_correctivo = TipoMantenimiento.objects.get(codigo='correctivo')
 
     def _payload(self):
         return {
             'equipos': [self.equipo.pk],
             'cliente': self.cliente.pk,
-            'tipo_mantenimiento': 'correctivo',
+            'tipo_mantenimiento': self.tipo_correctivo.pk,
             'estado_general': EstadoGeneralEquipo.NO_OPERATIVO,
             'descripcion': 'Falla de pantalla',
             'fecha_programada': '2026-10-01T09:00:00Z',

@@ -15,8 +15,16 @@ from apps.activos.models import Activo, MovimientoInventario
 from .models import (
     ActividadChecklist, ActividadPlanificada, ActividadRealizada, EstadoGeneralEquipo, EventoMantenimiento,
     FirmaMantenimiento, ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado,
-    Notificacion, PrioridadActividad, RepuestoUtilizado, ResultadoTecnico, TipoOrigenMantenimiento,
+    Notificacion, PrioridadActividad, RepuestoUtilizado, ResultadoTecnico, TipoMantenimiento,
+    TipoOrigenMantenimiento,
 )
+
+
+def _tipo_mantenimiento(codigo):
+    """Busca un TipoMantenimiento del catálogo por código -- nunca lanza si no existe
+    (un administrador puede haber renombrado/desactivado el catálogo semilla), deja el
+    Mantenimiento sin clasificar en vez de reventar el flujo que lo llama."""
+    return TipoMantenimiento.objects.filter(codigo=codigo).first()
 
 # Resultados que indican que el equipo vuelve a estar disponible: solo estos devuelven
 # automáticamente un Activo de "En reparación" a "En bodega" al cerrar el mantenimiento.
@@ -43,7 +51,7 @@ def _snapshot_equipo(equipo):
 
 
 def crear_mantenimiento_manual(*, equipos, tecnico, descripcion, fecha_programada, usuario,
-                                cliente=None, tipo_mantenimiento='', equipo_principal=None,
+                                cliente=None, tipo_mantenimiento=None, equipo_principal=None,
                                 estado_general='', mantenimiento_programado=None):
     if not equipos:
         raise ValueError('Un mantenimiento debe tener al menos un equipo.')
@@ -95,7 +103,8 @@ def iniciar_reparacion_desde_activo(*, activo, motivo, detalle_motivo, usuario):
         activo=activo, motivo=motivo, detalle_motivo=detalle_motivo, usuario=usuario,
     )
     return crear_mantenimiento_manual(
-        equipos=[activo], tecnico=None, descripcion=detalle_motivo, tipo_mantenimiento=motivo,
+        equipos=[activo], tecnico=None, descripcion=detalle_motivo,
+        tipo_mantenimiento=_tipo_mantenimiento('correctivo'),
         fecha_programada=timezone.now(), usuario=usuario, cliente=cliente,
     )
 
@@ -187,7 +196,7 @@ def generar_proximo_mantenimiento_programado(*, programado, usuario=None):
     mantenimiento = Mantenimiento.objects.create(
         cliente=equipo.colaborador_actual, tecnico=programado.tecnico, mantenimiento_programado=programado,
         descripcion=f'Mantenimiento programado cada {programado.frecuencia_dias} días.',
-        tipo_origen=TipoOrigenMantenimiento.PROGRAMADO,
+        tipo_origen=TipoOrigenMantenimiento.PROGRAMADO, tipo_mantenimiento=_tipo_mantenimiento('preventivo'),
         fecha_programada=timezone.now(), snapshot_equipo=_snapshot_equipo(equipo),
     )
     MantenimientoEquipo.objects.create(mantenimiento=mantenimiento, equipo=equipo, es_principal=True)

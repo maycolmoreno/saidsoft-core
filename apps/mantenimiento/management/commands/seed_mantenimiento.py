@@ -7,7 +7,9 @@ from django.utils import timezone
 
 from apps.activos.models import Activo, CategoriaEquipo
 from apps.mantenimiento import services
-from apps.mantenimiento.models import ActividadChecklist, Mantenimiento, MantenimientoProgramado, ResultadoTecnico
+from apps.mantenimiento.models import (
+    ActividadChecklist, Mantenimiento, MantenimientoProgramado, ResultadoTecnico, TipoMantenimiento,
+)
 
 
 class Command(BaseCommand):
@@ -47,10 +49,13 @@ class Command(BaseCommand):
                 observaciones='Mantenimiento preventivo semestral.',
             )
 
+        tipo_preventivo = TipoMantenimiento.objects.filter(codigo='preventivo').first()
+        tipo_correctivo = TipoMantenimiento.objects.filter(codigo='correctivo').first()
+
         if not Mantenimiento.objects.filter(descripcion__startswith='[seed]').exists():
             m1 = services.crear_mantenimiento_manual(
                 equipos=[equipo_principal], tecnico=admin, cliente=cliente,
-                descripcion='[seed] Limpieza preventiva programada', tipo_mantenimiento='preventivo',
+                descripcion='[seed] Limpieza preventiva programada', tipo_mantenimiento=tipo_preventivo,
                 fecha_programada=timezone.now(), usuario=admin,
             )
             services.iniciar_mantenimiento(mantenimiento=m1, usuario=admin)
@@ -62,7 +67,7 @@ class Command(BaseCommand):
             if len(equipos) > 1:
                 m2 = services.crear_mantenimiento_manual(
                     equipos=equipos, tecnico=admin, cliente=cliente,
-                    descripcion='[seed] Revisión correctiva multi-equipo', tipo_mantenimiento='correctivo',
+                    descripcion='[seed] Revisión correctiva multi-equipo', tipo_mantenimiento=tipo_correctivo,
                     fecha_programada=timezone.now(), usuario=admin, equipo_principal=equipos[1],
                 )
                 services.iniciar_mantenimiento(mantenimiento=m2, usuario=admin)

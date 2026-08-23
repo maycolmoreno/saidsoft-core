@@ -6,7 +6,8 @@ from apps.activos.models import Activo, Colaborador
 
 from .models import (
     ActividadChecklist, ConsentimientoMonitoreo, EstadoGeneralEquipo, EventoMantenimiento, FirmaMantenimiento,
-    ImagenMantenimiento, Mantenimiento, MantenimientoProgramado, ResultadoTecnico, TipoFirma, UbicacionTecnico,
+    ImagenMantenimiento, Mantenimiento, MantenimientoProgramado, ResultadoTecnico, TipoFirma, TipoMantenimiento,
+    UbicacionTecnico,
 )
 
 
@@ -51,6 +52,7 @@ class ChecklistItemSerializer(serializers.Serializer):
 
 class MantenimientoListSerializer(serializers.ModelSerializer):
     cliente = serializers.StringRelatedField()
+    tipo_mantenimiento = serializers.StringRelatedField()
     equipos = serializers.SerializerMethodField()
 
     class Meta:
@@ -82,7 +84,9 @@ class MantenimientoCrearSerializer(serializers.Serializer):
         many=True, queryset=Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA),
     )
     cliente = serializers.PrimaryKeyRelatedField(queryset=Colaborador.objects.filter(activo=True))
-    tipo_mantenimiento = serializers.CharField()
+    tipo_mantenimiento = serializers.PrimaryKeyRelatedField(
+        queryset=TipoMantenimiento.objects.filter(activo=True), required=False, allow_null=True, default=None,
+    )
     estado_general = serializers.ChoiceField(choices=EstadoGeneralEquipo.choices)
     descripcion = serializers.CharField()
     fecha_programada = serializers.DateTimeField()

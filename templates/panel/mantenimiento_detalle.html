@@ -23,6 +23,10 @@
         <div>{{ mantenimiento.fecha_programada|date:"d/m/Y H:i" }} · {{ mantenimiento.get_tipo_origen_display }}</div>
     </div>
     <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Tipo de mantenimiento</div>
+        <div>{{ mantenimiento.tipo_mantenimiento|default:"Sin clasificar" }}</div>
+    </div>
+    <div class="card p-4">
         <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Resultado técnico</div>
         <div>{{ mantenimiento.get_resultado_tecnico_display|default:"—" }}</div>
     </div>

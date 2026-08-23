@@ -5,8 +5,15 @@ from apps.cuentas.services import scope_opcional_por_unidad_negocio
 from .models import (
     ActividadChecklist, ActividadPlanificada, ActividadRealizada, ConsentimientoMonitoreo, EventoMantenimiento,
     FirmaMantenimiento, ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado,
-    Notificacion, RepuestoUtilizado, UbicacionTecnico,
+    Notificacion, RepuestoUtilizado, TipoMantenimiento, UbicacionTecnico,
 )
+
+
+@admin.register(TipoMantenimiento)
+class TipoMantenimientoAdmin(admin.ModelAdmin):
+    list_display = ('nombre', 'codigo', 'activo')
+    list_filter = ('activo',)
+    search_fields = ('nombre', 'codigo')
 
 
 @admin.register(MantenimientoProgramado)
@@ -68,11 +75,12 @@ class RepuestoUtilizadoInline(admin.TabularInline):
 @admin.register(Mantenimiento)
 class MantenimientoAdmin(admin.ModelAdmin):
     list_display = (
-        'id', 'estado_interno', 'tipo_origen', 'cliente', 'tecnico', 'fecha_programada', 'resultado_tecnico',
+        'id', 'estado_interno', 'tipo_mantenimiento', 'tipo_origen', 'cliente', 'tecnico', 'fecha_programada',
+        'resultado_tecnico',
     )
-    list_filter = ('estado_interno', 'tipo_origen', 'resultado_tecnico')
+    list_filter = ('estado_interno', 'tipo_mantenimiento', 'tipo_origen', 'resultado_tecnico')
     search_fields = ('descripcion', 'cliente__nombre')
-    autocomplete_fields = ('cliente', 'tecnico', 'mantenimiento_programado', 'cerrado_por')
+    autocomplete_fields = ('cliente', 'tecnico', 'tipo_mantenimiento', 'mantenimiento_programado', 'cerrado_por')
     readonly_fields = ('snapshot_equipo', 'fecha_creacion')
     inlines = [
         MantenimientoEquipoInline, ActividadRealizadaInline, FirmaMantenimientoInline,
