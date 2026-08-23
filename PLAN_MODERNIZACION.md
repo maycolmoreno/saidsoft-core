@@ -1686,6 +1686,38 @@ todavía** — el catálogo estaba ~30% incompleto.
 - `openpyxl` nueva dependencia real del proyecto (antes solo se usó al vuelo para
   inspeccionar los archivos).
 - Suite completa verificada en verde (549 tests OK) + `check`/`makemigrations --check
-  --dry-run` limpios. **Pendiente, con visto bueno explícito del usuario antes de cada
-  paso**: correr los tres comandos en `--dry-run` contra la base de producción real,
-  mostrar el reporte, y recién aplicar de verdad con confirmación.
+  --dry-run` limpios.
+
+**Resultado real de los tres pasos, aplicados en producción con visto bueno explícito
+del usuario antes de cada uno (22-ago-2026):**
+
+1. **`importar_red_farmacias_xlsx`** — el dry-run contra el archivo real de red destapó
+   dos problemas no anticipados: el NODO real trae el valor `ELIPSYS_CRESIO` (y también
+   `#N/A`/vacío) para las sucursales que todavía no se asignaron a ningún canal de
+   versión de POS — no es un grupo real y además excede `Grupo.codigo` (máx. 10
+   caracteres) — remapeado a un grupo placeholder **`PENDIENTE`**, corregible a mano
+   estación por estación cuando cada una entre en operación real. Y el archivo de red
+   trae un código extra, `MPREV1`, que el usuario confirmó es la misma entidad que
+   `PREV1` (PREVITAL, ya no existe) — agregado a `CODIGOS_EXCLUIDOS`. Con ambos fixes:
+   **216 farmacias creadas** (no 208 — el archivo de red tiene más filas reales que el
+   directorio de RRHH), 485 actualizadas, 0 errores. Verificado en producción: 701
+   farmacias totales, 208 en el grupo `PENDIENTE`, 700 con `ip_router` seteada.
+2. **`crear_tecnicos_soporte`** — dry-run detectó un `Colaborador` preexistente (Diego
+   Aguilar, cédula `0706884947`) que se verificó a mano antes de aplicar (mismos datos
+   de contacto, ningún campo de unidad de negocio/ubicación/equipo tocado por el
+   comando). Aplicado: **9 `Colaborador` + 9 `auth.User` creados**, los 9 en el grupo
+   Soporte Técnico, contraseñas generadas al azar y extraídas del contenedor efímero a
+   `/home/glpi/credenciales_tecnicos.txt` en el host (permisos 600, nunca impresas en
+   pantalla ni en este documento) — **pendiente que el usuario las distribuya a cada
+   técnico y borre el archivo del servidor después**.
+3. **`importar_directorio_sucursales`** — dry-run limpio: **692 farmacias enriquecidas**
+   (dirección, ciudad/provincia/parroquia, horario, administrador, coordinadores,
+   tipo/formato de sucursal, coordenadas, fechas, técnico asignado), 1 código del
+   directorio (`PREV1`) sin Farmacia todavía, esperado — es la sucursal que ya no
+   existe. Aplicado igual que el dry-run. Verificado en producción: los 9 técnicos
+   cubren el 100% de las 692 (35 a 118 farmacias cada uno, sin huecos ni duplicados).
+
+**Pendiente de limpieza**: `/home/glpi/directorio_sucursal_Agosto.xlsx` y
+`/home/glpi/DATOS_DE_FARMACIAS_3.xlsx` siguen en el host del servidor con datos reales
+de RRHH/red — mismo criterio que el `.gitignore` del repo (nunca dejar PII real
+tirada), conviene borrarlos del servidor una vez confirmado que el import quedó bien.
