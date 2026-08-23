@@ -1606,3 +1606,30 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
     datos que migrar).
   - Suite completa verificada en verde (534 tests OK) + `check`/`makemigrations
     --check --dry-run` limpios.
+
+- **GOV-1 — 🟢 cerrado (22-ago-2026):** no existía ningún documento formal de
+  gobernanza — la seguridad se gestionaba fix por fix, documentada acá mismo pero sin
+  una política, una matriz de riesgos ni una declaración de aplicabilidad (SoA) que
+  dieran una foto de conjunto. Nuevo `docs/gobernanza/` con tres documentos, decididos
+  con el usuario (alcance: toda CRESIO como organización, con SAIDSOFT como sistema
+  principal en el alcance técnico):
+  - `politica-seguridad-informacion.md`: política formal (objeto, alcance,
+    compromiso de la dirección, principios, roles, control de acceso, comunicaciones,
+    gestión de cambios, continuidad, incidentes, cumplimiento) — describe lo que el
+    sistema realmente hace hoy, no aspiraciones sin implementar.
+  - `matriz-riesgos.md`: los 16 hallazgos cerrados de esta sesión (OPS-1, SEC-1 a
+    SEC-6, AC-1 a AC-3, BUG-1 a BUG-3, OPS-2) más 7 riesgos que quedan abiertos a
+    propósito y documentados como tales — entre ellos el más importante: **la copia de
+    backups fuera del servidor sigue pendiente** (R-17, depende de que la organización
+    defina un destino), y el rollout incompleto del agente en 4 de las 5 estaciones
+    del piloto (R-10b).
+  - `soa.md`: los 93 controles del Anexo A de ISO/IEC 27001:2022, marcados con
+    honestidad — 35 implementados, 28 parciales, 4 no aplicables, 26 no evaluados o
+    pendientes. El bloque más débil, con claridad, es **A.7 (controles físicos)**:
+    ningún control de seguridad física del servidor (Intel NUC en sitio,
+    `glpi-NUC11TNKv5`) fue evaluado, porque esta auditoría completa fue exclusivamente
+    técnica (código e infraestructura de software) — nunca hubo una visita de sitio.
+    Se documenta como pendiente en vez de fingir que se evaluó.
+  - Ningún cambio de código en este ítem — es documentación pura, sin migración ni
+    despliegue al servidor. Vive versionada junto con el código en vez de como un
+    documento aparte, para que quede sincronizada cuando algo cambie.
