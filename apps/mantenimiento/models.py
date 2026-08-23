@@ -371,6 +371,11 @@ class Notificacion(models.Model):
     actividad_planificada = models.ForeignKey(
         ActividadPlanificada, on_delete=models.SET_NULL, null=True, blank=True, related_name='notificaciones',
     )
+    mantenimiento_programado = models.ForeignKey(
+        MantenimientoProgramado, on_delete=models.SET_NULL, null=True, blank=True, related_name='notificaciones',
+        help_text='Para avisos de "próximo a vencer" -- todavía no existe un Mantenimiento '
+                  'generado al momento de avisar, así que no alcanza con el FK de arriba.',
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -81,6 +81,7 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
                 'apps.cuentas.context_processors.unidad_negocio_contexto',
+                'apps.mantenimiento.context_processors.notificaciones_contexto',
             ],
         },
     },
@@ -319,6 +320,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     'generar-mantenimientos-programados': {
         'task': 'apps.mantenimiento.tasks.generar_mantenimientos_programados_task',
+        'schedule': 60.0 * 60 * 24,  # diario
+    },
+    'notificar-mantenimientos-vencimiento': {
+        'task': 'apps.mantenimiento.tasks.notificar_mantenimientos_vencimiento_task',
         'schedule': 60.0 * 60 * 24,  # diario
     },
     'generar-escaneos-programados': {

@@ -349,9 +349,89 @@ def generar_informe_pdf(*, mantenimiento) -> Mantenimiento:
     return mantenimiento
 
 
-def notificar(*, usuario, mensaje, url='', mantenimiento=None, actividad_planificada=None):
+def notificar(*, usuario, mensaje, url='', mantenimiento=None, actividad_planificada=None,
+               mantenimiento_programado=None):
     """Bandeja de notificaciones in-app; no genera EventoMantenimiento (no es un hecho de negocio a auditar)."""
     return Notificacion.objects.create(
         usuario=usuario, mensaje=mensaje, url=url, mantenimiento=mantenimiento,
-        actividad_planificada=actividad_planificada,
+        actividad_planificada=actividad_planificada, mantenimiento_programado=mantenimiento_programado,
     )
+
+
+# --- Alertas de vencimiento (reutilizan Notificacion, no un modelo de alerta propio) ---
+#
+# apps.mantenimiento.Notificacion existía desde antes pero nada la poblaba todavía --
+# generar_mantenimientos_vencidos() ya resuelve el vencimiento de un plan apenas se
+# cumple (crea el siguiente Mantenimiento el mismo día), así que un plan casi nunca
+# queda "vencido" visible más de un día si la tarea diaria corre bien. El valor real de
+# esto es doble: avisar CON ANTICIPACIÓN (para que el técnico planifique su ruta, no se
+# entere el mismo día) y detectar cuando un Mantenimiento ya generado (programado o no)
+# lleva demasiado tiempo sin cerrarse -- eso sí es un problema operativo real y no se
+# autorresuelve solo.
+
+DIAS_PROXIMO_A_VENCER = 7
+DIAS_GRACIA_ATRASADO = 3
+
+
+def mantenimientos_programados_por_vencer(dias=DIAS_PROXIMO_A_VENCER):
+    """Planes activos cuyo `fecha_proximo` cae dentro de los próximos `dias` días."""
+    hoy = timezone.now().date()
+    return MantenimientoProgramado.objects.filter(
+        activo=True, fecha_proximo__gte=hoy, fecha_proximo__lte=hoy + timedelta(days=dias),
+    ).select_related('equipo', 'tecnico')
+
+
+def mantenimientos_atrasados(dias_gracia=DIAS_GRACIA_ATRASADO):
+    """Mantenimientos (de cualquier origen) abiertos hace más de `dias_gracia` días sin cerrarse."""
+    limite = timezone.now() - timedelta(days=dias_gracia)
+    return Mantenimiento.objects.filter(
+        estado_interno__in=[Mantenimiento.EstadoInterno.PENDIENTE, Mantenimiento.EstadoInterno.EN_PROCESO],
+        fecha_programada__lt=limite,
+    ).select_related('tecnico', 'cliente')
+
+
+def notificar_mantenimientos_proximos_y_atrasados() -> dict:
+    """Diaria (ver CELERY_BEAT_SCHEDULE). Idempotente por día calendario: si ya se avisó
+    hoy sobre un plan/mantenimiento puntual, no lo repite -- pero si sigue sin
+    resolverse, vuelve a avisar mañana (recordatorio diario a propósito, no una sola vez)."""
+    from django.urls import reverse
+
+    hoy = timezone.now().date()
+    creadas_proximos = 0
+    for programado in mantenimientos_programados_por_vencer():
+        if not programado.tecnico_id:
+            continue
+        ya_avisado_hoy = Notificacion.objects.filter(
+            mantenimiento_programado=programado, creado_en__date=hoy,
+        ).exists()
+        if ya_avisado_hoy:
+            continue
+        dias_restantes = (programado.fecha_proximo - hoy).days
+        notificar(
+            usuario=programado.tecnico,
+            mensaje=f'Mantenimiento preventivo de {programado.equipo.codigo} vence en '
+                    f'{dias_restantes} día(s) ({programado.fecha_proximo:%d/%m/%Y}).',
+            url=reverse('panel:mantenimientos_programados_lista'),
+            mantenimiento_programado=programado,
+        )
+        creadas_proximos += 1
+
+    creadas_atrasados = 0
+    for mantenimiento in mantenimientos_atrasados():
+        if not mantenimiento.tecnico_id:
+            continue
+        ya_avisado_hoy = Notificacion.objects.filter(
+            mantenimiento=mantenimiento, creado_en__date=hoy,
+        ).exists()
+        if ya_avisado_hoy:
+            continue
+        dias_atraso = (hoy - mantenimiento.fecha_programada.date()).days
+        notificar(
+            usuario=mantenimiento.tecnico,
+            mensaje=f'Mantenimiento #{mantenimiento.pk} lleva {dias_atraso} día(s) sin cerrarse.',
+            url=reverse('panel:mantenimiento_detalle', args=[mantenimiento.pk]),
+            mantenimiento=mantenimiento,
+        )
+        creadas_atrasados += 1
+
+    return {'proximos': creadas_proximos, 'atrasados': creadas_atrasados}

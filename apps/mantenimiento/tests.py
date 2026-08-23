@@ -7,11 +7,12 @@ from django.utils import timezone
 from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoConsumible
 
 from .models import (
-    EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado, RepuestoUtilizado,
-    ResultadoTecnico, TipoOrigenMantenimiento,
+    EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado, Notificacion,
+    RepuestoUtilizado, ResultadoTecnico, TipoOrigenMantenimiento,
 )
 from .services import (
     cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf, iniciar_reparacion_desde_activo,
+    mantenimientos_atrasados, mantenimientos_programados_por_vencer, notificar_mantenimientos_proximos_y_atrasados,
     registrar_repuesto_utilizado,
 )
 
@@ -232,6 +233,97 @@ class IniciarReparacionDesdeActivoTests(TestCase):
             )
         # No debe quedar un Mantenimiento huérfano si registrar_envio_reparacion falla.
         self.assertEqual(Mantenimiento.objects.count(), 0)
+
+
+class NotificarVencimientoTests(TestCase):
+    """Notificacion existía desde antes pero nada la poblaba -- estas pruebas cubren
+    los dos avisos nuevos (plan próximo a vencer, mantenimiento atrasado) y su
+    idempotencia diaria (22-ago-2026)."""
+
+    def setUp(self):
+        self.tecnico = User.objects.create_user(username='tec', password='x')
+        self.equipo = Activo.objects.create(codigo='CR-DSK-0010', tipo=Activo.Tipo.DESKTOP)
+
+    def test_detecta_plan_proximo_a_vencer_dentro_de_la_ventana(self):
+        hoy = timezone.now().date()
+        dentro = MantenimientoProgramado.objects.create(
+            equipo=self.equipo, tecnico=self.tecnico, frecuencia_dias=90, fecha_proximo=hoy + timedelta(days=5),
+        )
+        fuera = MantenimientoProgramado.objects.create(
+            equipo=Activo.objects.create(codigo='CR-DSK-0011', tipo=Activo.Tipo.DESKTOP),
+            tecnico=self.tecnico, frecuencia_dias=90, fecha_proximo=hoy + timedelta(days=20),
+        )
+        resultado = list(mantenimientos_programados_por_vencer(dias=7))
+        self.assertIn(dentro, resultado)
+        self.assertNotIn(fuera, resultado)
+
+    def test_plan_inactivo_no_se_detecta(self):
+        hoy = timezone.now().date()
+        MantenimientoProgramado.objects.create(
+            equipo=self.equipo, tecnico=self.tecnico, frecuencia_dias=90,
+            fecha_proximo=hoy + timedelta(days=2), activo=False,
+        )
+        self.assertEqual(mantenimientos_programados_por_vencer().count(), 0)
+
+    def test_detecta_mantenimiento_atrasado(self):
+        viejo = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.tecnico, tipo_mantenimiento='correctivo',
+            descripcion='Falla', fecha_programada=timezone.now() - timedelta(days=10), usuario=self.tecnico,
+        )
+        reciente = crear_mantenimiento_manual(
+            equipos=[Activo.objects.create(codigo='CR-DSK-0012', tipo=Activo.Tipo.DESKTOP)],
+            tecnico=self.tecnico, tipo_mantenimiento='correctivo', descripcion='Falla',
+            fecha_programada=timezone.now() - timedelta(days=1), usuario=self.tecnico,
+        )
+        resultado = list(mantenimientos_atrasados(dias_gracia=3))
+        self.assertIn(viejo, resultado)
+        self.assertNotIn(reciente, resultado)
+
+    def test_mantenimiento_cerrado_no_se_considera_atrasado(self):
+        mantenimiento = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.tecnico, tipo_mantenimiento='correctivo',
+            descripcion='Falla', fecha_programada=timezone.now() - timedelta(days=10), usuario=self.tecnico,
+        )
+        cerrar_mantenimiento(mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
+        self.assertEqual(mantenimientos_atrasados(dias_gracia=3).count(), 0)
+
+    def test_notificar_crea_avisos_para_ambos_casos(self):
+        hoy = timezone.now().date()
+        MantenimientoProgramado.objects.create(
+            equipo=self.equipo, tecnico=self.tecnico, frecuencia_dias=90, fecha_proximo=hoy + timedelta(days=3),
+        )
+        crear_mantenimiento_manual(
+            equipos=[Activo.objects.create(codigo='CR-DSK-0013', tipo=Activo.Tipo.DESKTOP)],
+            tecnico=self.tecnico, tipo_mantenimiento='correctivo', descripcion='Falla',
+            fecha_programada=timezone.now() - timedelta(days=10), usuario=self.tecnico,
+        )
+        resultado = notificar_mantenimientos_proximos_y_atrasados()
+        self.assertEqual(resultado, {'proximos': 1, 'atrasados': 1})
+        self.assertEqual(Notificacion.objects.filter(usuario=self.tecnico).count(), 2)
+
+    def test_no_duplica_el_aviso_el_mismo_dia(self):
+        hoy = timezone.now().date()
+        MantenimientoProgramado.objects.create(
+            equipo=self.equipo, tecnico=self.tecnico, frecuencia_dias=90, fecha_proximo=hoy + timedelta(days=3),
+        )
+        notificar_mantenimientos_proximos_y_atrasados()
+        resultado = notificar_mantenimientos_proximos_y_atrasados()
+        self.assertEqual(resultado['proximos'], 0)
+        self.assertEqual(Notificacion.objects.count(), 1)
+
+    def test_sin_tecnico_asignado_no_falla_ni_notifica(self):
+        MantenimientoProgramado.objects.create(
+            equipo=self.equipo, tecnico=self.tecnico, frecuencia_dias=90,
+            fecha_proximo=timezone.now().date() + timedelta(days=3),
+        )
+        # Mantenimiento manual sin técnico asignado.
+        crear_mantenimiento_manual(
+            equipos=[Activo.objects.create(codigo='CR-DSK-0014', tipo=Activo.Tipo.DESKTOP)],
+            tecnico=None, tipo_mantenimiento='correctivo', descripcion='Falla',
+            fecha_programada=timezone.now() - timedelta(days=10), usuario=self.tecnico,
+        )
+        resultado = notificar_mantenimientos_proximos_y_atrasados()
+        self.assertEqual(resultado['atrasados'], 0)  # el atrasado sin técnico se omite
 
 
 class GenerarMantenimientosProgramadosTaskTests(TestCase):
