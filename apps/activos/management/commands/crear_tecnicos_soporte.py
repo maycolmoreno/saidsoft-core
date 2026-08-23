@@ -11,6 +11,14 @@ seed_permisos) — NO Administrador, aunque el sistema de RRHH de origen los mar
 "rol: Admin": ese campo es de otro sistema y no corresponde traducirlo a acceso total
 en SAIDSOFT. Soporte Técnico ya tiene exactamente lo que necesitan para su función
 (aprobar/reiniciar estaciones, acceso remoto, ejecutar scripts) — mínimo privilegio.
+
+Además de los permisos de Django (grupo), cada login recibe un `PerfilUsuario` con
+`acceso_todas_unidades=True` — sin esto, la capa de tenant de apps.cuentas.services
+(`unidades_negocio_visibles`) les mostraría cero farmacias/estaciones, porque un login
+sin perfil no ve ninguna unidad de negocio. Se les da acceso a las tres (SG/MIA/7DIAS)
+en vez de una lista fija porque cada técnico cubre farmacias de varias marcas mezcladas
+en su zona geográfica, no una sola marca (ver Farmacia.tecnico_asignado en
+PLAN_MODERNIZACION.md, 22-ago-2026).
 """
 import secrets
 
@@ -20,6 +28,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.activos.models import Cargo, Colaborador, Departamento
+from apps.cuentas.models import PerfilUsuario
 
 DEPARTAMENTO_NOMBRE = 'Tecnologías e Innovación'
 
@@ -142,6 +151,7 @@ class Command(BaseCommand):
             username = datos['correo'].split('@')[0]
             if colaborador.usuario_id:
                 self.stdout.write(f'  {prefijo}{username}: ya tiene login, no se toca.')
+                self._asegurar_perfil(colaborador.usuario, prefijo=prefijo)
                 continue
 
             usuario, creado = User.objects.get_or_create(
@@ -160,6 +170,7 @@ class Command(BaseCommand):
             usuario.groups.add(grupo_soporte)
             colaborador.usuario = usuario
             colaborador.save(update_fields=['usuario'])
+            self._asegurar_perfil(usuario, prefijo=prefijo)
 
         if credenciales_nuevas and dry_run:
             self.stdout.write(self.style.WARNING(
@@ -178,3 +189,19 @@ class Command(BaseCommand):
             ))
         else:
             self.stdout.write('Todos los técnicos ya tenían login — no se generó ninguna contraseña nueva.')
+
+    def _asegurar_perfil(self, usuario, *, prefijo):
+        """Garantiza que `usuario` vea todas las unidades de negocio (personal interno)."""
+        perfil, creado = PerfilUsuario.objects.get_or_create(
+            usuario=usuario, defaults={'acceso_todas_unidades': True},
+        )
+        if creado:
+            self.stdout.write(
+                f'  {prefijo}{usuario.username}: perfil creado (acceso a todas las unidades de negocio).',
+            )
+        elif not perfil.acceso_todas_unidades:
+            perfil.acceso_todas_unidades = True
+            perfil.save(update_fields=['acceso_todas_unidades'])
+            self.stdout.write(
+                f'  {prefijo}{usuario.username}: perfil existente actualizado a acceso a todas las unidades.',
+            )

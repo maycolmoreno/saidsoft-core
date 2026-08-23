@@ -133,6 +133,31 @@ class CrearTecnicosSoporteTests(TestCase):
         with open(self.archivo_passwords, encoding='utf-8') as f:
             self.assertEqual(f.read(), '')
 
+    def test_login_nuevo_recibe_perfil_con_acceso_a_todas_las_unidades(self):
+        # Sin PerfilUsuario, apps.cuentas.services.unidades_negocio_visibles() devuelve
+        # queryset vacío -- el técnico entraría y no vería ninguna farmacia/estación,
+        # aunque tenga todos los permisos de Django del grupo Soporte Técnico.
+        self._correr()
+        jaime = Colaborador.objects.get(cedula='1312655291')
+        self.assertTrue(jaime.usuario.perfil.acceso_todas_unidades)
+
+    def test_login_ya_existente_tambien_recibe_el_perfil(self):
+        from apps.cuentas.models import PerfilUsuario
+        from apps.cuentas.services import unidades_negocio_visibles
+
+        usuario = User.objects.create_user(username='jaime.carranza', password='x')
+        Colaborador.objects.create(
+            cedula='1312655291', nombre='Carranza Cedeño Jaime Leonerys',
+            correo='jaime.carranza@cresio.com', usuario=usuario,
+        )
+        self.assertFalse(PerfilUsuario.objects.filter(usuario=usuario).exists())
+
+        self._correr()
+
+        usuario.refresh_from_db()
+        self.assertTrue(usuario.perfil.acceso_todas_unidades)
+        self.assertEqual(unidades_negocio_visibles(usuario).count(), UnidadNegocio.objects.count())
+
 
 class RegistrarAsignacionTests(TestCase):
     def setUp(self):
