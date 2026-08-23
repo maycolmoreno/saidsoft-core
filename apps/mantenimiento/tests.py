@@ -8,10 +8,11 @@ from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoCo
 
 from .models import (
     EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado, RepuestoUtilizado,
-    ResultadoTecnico,
+    ResultadoTecnico, TipoOrigenMantenimiento,
 )
 from .services import (
-    cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf, registrar_repuesto_utilizado,
+    cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf, iniciar_reparacion_desde_activo,
+    registrar_repuesto_utilizado,
 )
 
 
@@ -124,6 +125,113 @@ class CerrarMantenimientoTests(TestCase):
         hoy = timezone.now().date()
         self.assertEqual(programado.fecha_ultimo, hoy)
         self.assertEqual(programado.fecha_proximo, hoy + timedelta(days=30))
+
+    def test_reparado_devuelve_a_bodega_un_equipo_en_reparacion(self):
+        self.equipo.estado = Activo.Estado.EN_REPARACION
+        self.equipo.save(update_fields=['estado'])
+        mantenimiento = self._crear(estado_general=EstadoGeneralEquipo.OPERATIVO)
+
+        cerrar_mantenimiento(
+            mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.usuario,
+        )
+
+        self.equipo.refresh_from_db()
+        self.assertEqual(self.equipo.estado, Activo.Estado.EN_BODEGA)
+        self.assertEqual(self.equipo.estado_fisico_actual, Activo.EstadoFisico.BUENO)
+
+    def test_estado_general_al_cerrar_decide_el_estado_fisico_de_vuelta(self):
+        self.equipo.estado = Activo.Estado.EN_REPARACION
+        self.equipo.save(update_fields=['estado'])
+        mantenimiento = self._crear(estado_general=EstadoGeneralEquipo.OPERATIVO)
+
+        cerrar_mantenimiento(
+            mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.usuario,
+            estado_general=EstadoGeneralEquipo.REQUIERE_REVISION,
+        )
+
+        self.equipo.refresh_from_db()
+        self.assertEqual(self.equipo.estado, Activo.Estado.EN_BODEGA)
+        self.assertEqual(self.equipo.estado_fisico_actual, Activo.EstadoFisico.REGULAR)
+
+    def test_resultado_todavia_roto_no_devuelve_a_bodega(self):
+        self.equipo.estado = Activo.Estado.EN_REPARACION
+        self.equipo.save(update_fields=['estado'])
+        mantenimiento = self._crear()
+
+        cerrar_mantenimiento(
+            mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REQUIERE_REPUESTO, usuario=self.usuario,
+        )
+
+        self.equipo.refresh_from_db()
+        self.assertEqual(self.equipo.estado, Activo.Estado.EN_REPARACION)
+
+    def test_no_toca_el_estado_de_un_equipo_que_no_estaba_en_reparacion(self):
+        # Mantenimiento preventivo sobre un equipo asignado -- cerrarlo no debe
+        # "devolverlo a bodega" de la nada.
+        self.equipo.estado = Activo.Estado.ASIGNADO
+        self.equipo.save(update_fields=['estado'])
+        mantenimiento = self._crear()
+
+        cerrar_mantenimiento(
+            mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.usuario,
+        )
+
+        self.equipo.refresh_from_db()
+        self.assertEqual(self.equipo.estado, Activo.Estado.ASIGNADO)
+
+    def test_requiere_baja_no_devuelve_a_bodega(self):
+        self.equipo.estado = Activo.Estado.EN_REPARACION
+        self.equipo.save(update_fields=['estado'])
+        mantenimiento = self._crear()
+
+        cerrar_mantenimiento(
+            mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REQUIERE_BAJA, usuario=self.usuario,
+        )
+
+        self.equipo.refresh_from_db()
+        self.assertEqual(self.equipo.estado, Activo.Estado.EN_REPARACION)
+        self.assertTrue(self.equipo.baja_recomendada)
+
+
+class IniciarReparacionDesdeActivoTests(TestCase):
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u', password='x')
+        self.colaborador = Colaborador.objects.create(nombre='Ana', cedula='0002')
+        self.equipo = Activo.objects.create(
+            codigo='CR-DSK-0003', tipo=Activo.Tipo.DESKTOP,
+            estado=Activo.Estado.ASIGNADO, colaborador_actual=self.colaborador,
+        )
+
+    def test_envia_a_reparacion_y_abre_mantenimiento_vinculado(self):
+        from apps.activos.models import MotivoReparacion
+
+        mantenimiento = iniciar_reparacion_desde_activo(
+            activo=self.equipo, motivo=MotivoReparacion.FALLA_TECNICA, detalle_motivo='No enciende',
+            usuario=self.usuario,
+        )
+
+        self.equipo.refresh_from_db()
+        self.assertEqual(self.equipo.estado, Activo.Estado.EN_REPARACION)
+        self.assertIsNone(self.equipo.colaborador_actual)
+
+        self.assertEqual(mantenimiento.tipo_origen, TipoOrigenMantenimiento.MANUAL)
+        self.assertEqual(mantenimiento.cliente_id, self.colaborador.pk)  # capturado ANTES de limpiarlo
+        self.assertEqual(mantenimiento.descripcion, 'No enciende')
+        self.assertTrue(mantenimiento.equipos.filter(equipo=self.equipo, es_principal=True).exists())
+
+    def test_rechaza_si_el_activo_ya_esta_dado_de_baja(self):
+        from apps.activos.models import MotivoReparacion
+
+        self.equipo.estado = Activo.Estado.DADO_DE_BAJA
+        self.equipo.save(update_fields=['estado'])
+
+        with self.assertRaises(ValueError):
+            iniciar_reparacion_desde_activo(
+                activo=self.equipo, motivo=MotivoReparacion.FALLA_TECNICA, detalle_motivo='',
+                usuario=self.usuario,
+            )
+        # No debe quedar un Mantenimiento huérfano si registrar_envio_reparacion falla.
+        self.assertEqual(Mantenimiento.objects.count(), 0)
 
 
 class GenerarMantenimientosProgramadosTaskTests(TestCase):

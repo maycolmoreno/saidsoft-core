@@ -13,6 +13,12 @@ ROLES = {
         ('activos', 'eventoactivo', ['view', 'add']),
         ('activos', 'ubicacion', ['view']),
         ('activos', 'colaborador', ['view']),
+        # "Enviar a reparación" abre un Mantenimiento vinculado (22-ago-2026) -- sin esto,
+        # quien lo envía no podría después cerrarlo, usar el checklist ni firmar, aunque
+        # ya tiene activos.change_activo para todo lo demás del ciclo de vida del activo.
+        # Las sub-acciones de Mantenimiento (checklist/firma/imagen/repuesto) están TODAS
+        # gateadas por change_mantenimiento, no por permisos propios.
+        ('mantenimiento', 'mantenimiento', ['view', 'add', 'change']),
     ],
     'Bodeguero': [
         ('activos', 'activo', ['view', 'add', 'change']),
@@ -59,6 +65,9 @@ ROLES = {
         ('activos', 'eventoactivo', ['view', 'add']),
         ('activos', 'ubicacion', ['view']),
         ('activos', 'colaborador', ['view']),
+        # Mismo motivo que en 'Técnico' de arriba: "enviar a reparación" abre un
+        # Mantenimiento vinculado, y sin este permiso no podrían cerrarlo ellos mismos.
+        ('mantenimiento', 'mantenimiento', ['view', 'add', 'change']),
     ],
 }
 

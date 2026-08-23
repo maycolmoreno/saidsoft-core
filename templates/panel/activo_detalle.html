@@ -50,6 +50,18 @@
 </div>
 {% endif %}
 
+{% if mantenimiento_abierto %}
+<div class="card p-4 mb-6 text-sm flex items-center justify-between">
+    <div>
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Mantenimiento en curso</div>
+        <div>#{{ mantenimiento_abierto.pk }} — {{ mantenimiento_abierto.get_estado_interno_display }}</div>
+    </div>
+    <a href="{% url 'panel:mantenimiento_detalle' mantenimiento_abierto.pk %}" class="btn secondary">
+        Ver checklist / firma / repuestos
+    </a>
+</div>
+{% endif %}
+
 <h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Especificaciones de equipo</h2>
 <div class="grid grid-cols-4 gap-4 mb-6 text-sm">
     <div class="card p-4">
@@ -79,7 +91,12 @@
         <a href="{% url 'panel:activo_devolver' activo.pk %}" class="btn primary">Registrar devolución</a>
         <a href="{% url 'panel:activo_consumible_entregar' activo.pk %}" class="btn secondary">Entregar consumible</a>
     {% elif activo.estado == 'en_reparacion' %}
-        <a href="{% url 'panel:activo_reparacion_retorno' activo.pk %}" class="btn primary">Registrar retorno de reparación</a>
+        {% if mantenimiento_abierto %}
+            <a href="{% url 'panel:mantenimiento_cerrar' mantenimiento_abierto.pk %}" class="btn primary">Cerrar mantenimiento y retornar</a>
+        {% else %}
+            {# Sin mantenimiento vinculado -- caso legado, de antes de que "enviar a reparación" abriera uno automático. #}
+            <a href="{% url 'panel:activo_reparacion_retorno' activo.pk %}" class="btn primary">Registrar retorno de reparación</a>
+        {% endif %}
         <a href="{% url 'panel:activo_baja' activo.pk %}" class="btn danger">Dar de baja</a>
     {% elif activo.estado == 'dado_de_baja' %}
         <span class="text-sm text-[var(--text-faint)] italic">Este activo está dado de baja. Permanece en el sistema para auditoría.</span>

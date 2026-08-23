@@ -5,16 +5,36 @@ crea el EventoMantenimiento inmutable correspondiente.
 """
 from datetime import timedelta
 
+from django.db import transaction
 from django.utils import timezone
 
 from apps.activos import services as activos_services
-from apps.activos.models import MovimientoInventario
+from apps.activos.models import Activo, MovimientoInventario
 
 from .models import (
-    ActividadChecklist, ActividadPlanificada, ActividadRealizada, EventoMantenimiento, FirmaMantenimiento,
-    ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado, Notificacion,
-    PrioridadActividad, RepuestoUtilizado, ResultadoTecnico, TipoOrigenMantenimiento,
+    ActividadChecklist, ActividadPlanificada, ActividadRealizada, EstadoGeneralEquipo, EventoMantenimiento,
+    FirmaMantenimiento, ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado,
+    Notificacion, PrioridadActividad, RepuestoUtilizado, ResultadoTecnico, TipoOrigenMantenimiento,
 )
+
+# Resultados que indican que el equipo vuelve a estar disponible: solo estos devuelven
+# automáticamente un Activo de "En reparación" a "En bodega" al cerrar el mantenimiento.
+# Los que quedan afuera (requiere_repuesto, escalado_a_proveedor, garantia_rechazada)
+# significan que el equipo sigue roto/en curso en otro lado -- se deja "En reparación"
+# a propósito, no hay todavía un flujo v1 para reabrir/encadenar un mantenimiento
+# siguiente. requiere_baja/irreparable ya tienen su propio manejo (baja_recomendada,
+# ver más abajo) y tampoco vuelven a bodega.
+RESULTADOS_RETORNAN_A_BODEGA = frozenset({
+    ResultadoTecnico.REPARADO, ResultadoTecnico.SIN_FALLA, ResultadoTecnico.SIN_INTERVENCION,
+    ResultadoTecnico.PARCIALMENTE_REPARADO, ResultadoTecnico.GARANTIA_APLICADA,
+    ResultadoTecnico.ACTUALIZADO, ResultadoTecnico.INSTALADO,
+})
+
+_ESTADO_FISICO_DESDE_GENERAL = {
+    EstadoGeneralEquipo.OPERATIVO: Activo.EstadoFisico.BUENO,
+    EstadoGeneralEquipo.REQUIERE_REVISION: Activo.EstadoFisico.REGULAR,
+    EstadoGeneralEquipo.NO_OPERATIVO: Activo.EstadoFisico.MALO,
+}
 
 
 def _snapshot_equipo(equipo):
@@ -57,6 +77,28 @@ def crear_mantenimiento_manual(*, equipos, tecnico, descripcion, fecha_programad
     return mantenimiento
 
 
+@transaction.atomic
+def iniciar_reparacion_desde_activo(*, activo, motivo, detalle_motivo, usuario):
+    """Envía un Activo a reparación Y abre de una vez el Mantenimiento que lo cubre.
+
+    Antes, "enviar a reparación" era solo un cambio de estado en Activo (motivo +
+    nota de texto, nada más) sin ningún vínculo con apps.mantenimiento -- el módulo
+    completo (checklist, firma, repuestos, informe PDF) quedaba desconectado de este
+    flujo, aunque ya existía para todo lo demás. Se captura `cliente` ANTES de llamar
+    a `registrar_envio_reparacion` porque esa función limpia `colaborador_actual`.
+    `tecnico` queda sin asignar (asignable después desde el propio Mantenimiento) --
+    quien envía a reparación desde Activos no es necesariamente quien la va a hacer.
+    """
+    cliente = activo.colaborador_actual
+    activos_services.registrar_envio_reparacion(
+        activo=activo, motivo=motivo, detalle_motivo=detalle_motivo, usuario=usuario,
+    )
+    return crear_mantenimiento_manual(
+        equipos=[activo], tecnico=None, descripcion=detalle_motivo, tipo_mantenimiento=motivo,
+        fecha_programada=timezone.now(), usuario=usuario, cliente=cliente,
+    )
+
+
 def iniciar_mantenimiento(*, mantenimiento, usuario):
     if mantenimiento.estado_interno != Mantenimiento.EstadoInterno.PENDIENTE:
         raise ValueError('Solo un mantenimiento pendiente puede iniciarse.')
@@ -78,7 +120,8 @@ def registrar_actividad_checklist(*, mantenimiento, actividad, realizada, usuari
     return actividad_realizada
 
 
-def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_real_minutos=None):
+@transaction.atomic
+def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_real_minutos=None, estado_general=''):
     if mantenimiento.estado_interno == Mantenimiento.EstadoInterno.CERRADO:
         raise ValueError('El mantenimiento ya está cerrado.')
     if mantenimiento.estado_interno == Mantenimiento.EstadoInterno.CANCELADO:
@@ -88,9 +131,11 @@ def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_re
     mantenimiento.fecha_cierre = timezone.now()
     mantenimiento.cerrado_por = usuario
     mantenimiento.tiempo_real_minutos = tiempo_real_minutos
-    mantenimiento.save(update_fields=[
-        'estado_interno', 'resultado_tecnico', 'fecha_cierre', 'cerrado_por', 'tiempo_real_minutos',
-    ])
+    campos = ['estado_interno', 'resultado_tecnico', 'fecha_cierre', 'cerrado_por', 'tiempo_real_minutos']
+    if estado_general:
+        mantenimiento.estado_general = estado_general
+        campos.append('estado_general')
+    mantenimiento.save(update_fields=campos)
     EventoMantenimiento.objects.create(
         mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.CERRADO, usuario=usuario,
         detalle={'resultado_tecnico': resultado_tecnico},
@@ -99,6 +144,17 @@ def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_re
         for me in mantenimiento.equipos.select_related('equipo'):
             activos_services.registrar_baja_recomendada(
                 activo=me.equipo, motivo=f'Mantenimiento #{mantenimiento.pk}: {resultado_tecnico}', usuario=usuario,
+            )
+    elif resultado_tecnico in RESULTADOS_RETORNAN_A_BODEGA:
+        # Solo los equipos que este mantenimiento puso "En reparación" -- si el
+        # mantenimiento es preventivo sobre un activo ya asignado/en bodega, cerrarlo
+        # no le cambia el estado de ciclo de vida.
+        estado_fisico = _ESTADO_FISICO_DESDE_GENERAL.get(
+            mantenimiento.estado_general, Activo.EstadoFisico.BUENO,
+        )
+        for me in mantenimiento.equipos.select_related('equipo').filter(equipo__estado=Activo.Estado.EN_REPARACION):
+            activos_services.registrar_retorno_reparacion(
+                activo=me.equipo, estado_fisico=estado_fisico, usuario=usuario,
             )
 
     if mantenimiento.mantenimiento_programado_id:

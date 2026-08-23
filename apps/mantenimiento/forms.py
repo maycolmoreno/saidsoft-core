@@ -47,6 +47,12 @@ class CerrarMantenimientoForm(forms.Form):
     resultado_tecnico = forms.ChoiceField(
         choices=ResultadoTecnico.choices, widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
+    estado_general = forms.ChoiceField(
+        choices=[('', '— sin cambiar —')] + list(EstadoGeneralEquipo.choices), required=False,
+        widget=forms.Select(attrs={'class': INPUT_CLASS}), label='Estado general del equipo al cierre',
+        help_text='Si el resultado devuelve el equipo a bodega (reparado, sin falla, etc.), '
+                  'este valor decide el estado físico con el que vuelve.',
+    )
     tiempo_real_minutos = forms.IntegerField(
         required=False, min_value=1, widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),
         label='Tiempo real de intervención (minutos)',

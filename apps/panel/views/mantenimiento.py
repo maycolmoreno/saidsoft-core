@@ -136,7 +136,8 @@ def mantenimiento_cerrar(request, pk):
             try:
                 mantenimiento_services.cerrar_mantenimiento(
                     mantenimiento=mantenimiento, resultado_tecnico=form.cleaned_data['resultado_tecnico'],
-                    tiempo_real_minutos=form.cleaned_data['tiempo_real_minutos'], usuario=request.user,
+                    tiempo_real_minutos=form.cleaned_data['tiempo_real_minutos'],
+                    estado_general=form.cleaned_data['estado_general'], usuario=request.user,
                 )
             except ValueError as exc:
                 form.add_error(None, str(exc))
@@ -150,7 +151,9 @@ def mantenimiento_cerrar(request, pk):
         form = CerrarMantenimientoForm()
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': f'Cerrar mantenimiento #{mantenimiento.pk}',
-        'subtitulo': 'Si el resultado es "Requiere baja", se marcará baja_recomendada en los equipos cubiertos.',
+        'subtitulo': 'Si el resultado es "Requiere baja" o "Irreparable", se marcará baja_recomendada en los '
+                     'equipos cubiertos. Si es "Reparado", "Sin falla" u otro resultado exitoso, los equipos que '
+                     'este mantenimiento tenía "En reparación" vuelven a bodega con el estado general elegido.',
         'volver_url': reverse('panel:mantenimiento_detalle', args=[pk]),
     })
 

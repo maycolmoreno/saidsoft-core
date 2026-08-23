@@ -16,6 +16,8 @@ from apps.activos.models import (
 )
 from apps.activos.services import ConcurrencyError
 from apps.auditoria.models import registrar_evento
+from apps.mantenimiento import services as mantenimiento_services
+from apps.mantenimiento.models import Mantenimiento
 from apps.cuentas.services import (
     scope_opcional_por_unidad_negocio, scope_opcional_por_unidad_negocio_activa, usuario_puede_ver,
     verificar_acceso,
@@ -349,7 +351,13 @@ def activo_detalle(request, pk):
     )
     verificar_acceso(request.user, activo.unidad_negocio)
     eventos = activo.eventos.select_related('usuario').order_by('-timestamp')
-    return render(request, 'panel/activo_detalle.html', {'activo': activo, 'eventos': eventos})
+    mantenimiento_abierto = Mantenimiento.objects.filter(
+        equipos__equipo=activo,
+        estado_interno__in=[Mantenimiento.EstadoInterno.PENDIENTE, Mantenimiento.EstadoInterno.EN_PROCESO],
+    ).order_by('-fecha_creacion').first()
+    return render(request, 'panel/activo_detalle.html', {
+        'activo': activo, 'eventos': eventos, 'mantenimiento_abierto': mantenimiento_abierto,
+    })
 
 
 @login_required
@@ -416,17 +424,30 @@ def activo_reparacion_enviar(request, pk):
     if request.method == 'POST':
         form = EnvioReparacionForm(request.POST)
         if form.is_valid():
-            activos_services.registrar_envio_reparacion(
-                activo=activo, motivo=form.cleaned_data['motivo'],
-                detalle_motivo=form.cleaned_data['detalle_motivo'], usuario=request.user,
-            )
-            registrar_evento(usuario=request.user, accion='activo.enviar_reparacion', objeto=activo, request=request)
-            messages.success(request, f'{activo.codigo} enviado a reparación.')
-            return redirect('panel:activo_detalle', pk=pk)
+            try:
+                mantenimiento = mantenimiento_services.iniciar_reparacion_desde_activo(
+                    activo=activo, motivo=form.cleaned_data['motivo'],
+                    detalle_motivo=form.cleaned_data['detalle_motivo'], usuario=request.user,
+                )
+            except ValueError as exc:
+                form.add_error(None, str(exc))
+            else:
+                registrar_evento(
+                    usuario=request.user, accion='activo.enviar_reparacion', objeto=activo, request=request,
+                    detalle={'mantenimiento_id': mantenimiento.pk},
+                )
+                messages.success(
+                    request,
+                    f'{activo.codigo} enviado a reparación — se abrió el mantenimiento #{mantenimiento.pk} '
+                    'para hacer seguimiento (checklist, firma, repuestos, informe).',
+                )
+                return redirect('panel:mantenimiento_detalle', pk=mantenimiento.pk)
     else:
         form = EnvioReparacionForm()
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': f'Enviar a reparación {activo.codigo}',
+        'subtitulo': 'Esto abre un Mantenimiento vinculado a este activo para hacer seguimiento completo '
+                     '(checklist, firma, repuestos, informe PDF) — no es solo un cambio de estado.',
         'volver_url': reverse('panel:activo_detalle', args=[pk]),
     })
 
