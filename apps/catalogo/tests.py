@@ -511,6 +511,24 @@ class ImportarRedFarmaciasXlsxTests(TestCase):
         self.assertIn('1 farmacia(s) creada(s)', salida.getvalue())
         self.assertEqual(Farmacia.objects.get(codigo='GSA02').grupo.codigo, 'PENDIENTE')
 
+    def test_mprev1_queda_excluido(self):
+        # MPREV1 (PREVITAL) no es una farmacia real -- confirmado con el usuario
+        # (22-ago-2026), misma entidad que PREV1 en el directorio de RRHH.
+        import openpyxl
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        farmamia = wb.create_sheet('FARMAMIA')
+        farmamia.append(['mcu', 'Provincia', 'Ciudad', 'Id de Farmacia', 'Segmento de Red', 'Tipo de Enlace', 'Login', 'Backup', 'IP-DNS', 'Correo', 'NODO', 'IP'])
+        farmamia.append([1, 'El Oro', 'Machala', 'MPREV1', '', '', '', '', None, None, 'trx001', '192.168.112.9'])
+        ruta = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False).name
+        wb.save(ruta)
+
+        salida = io.StringIO()
+        call_command('importar_red_farmacias_xlsx', ruta, stdout=salida)
+
+        self.assertIn('0 farmacia(s) creada(s)', salida.getvalue())
+        self.assertFalse(Farmacia.objects.filter(codigo='MPREV1').exists())
+
 
 class ImportarDirectorioSucursalesTests(TestCase):
     """Enriquecimiento de Farmacia ya existentes con el directorio de sucursales de

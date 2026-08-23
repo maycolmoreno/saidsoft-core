@@ -47,6 +47,11 @@ HOJAS = [
 NODOS_SIN_ASIGNAR = {'ELIPSYS_CRESIO', '#N/A', ''}
 NODO_PLACEHOLDER = 'PENDIENTE'
 
+# Códigos que aparecen en el archivo real de red pero no son farmacias — confirmado con
+# el usuario (22-ago-2026). MPREV1 es PREVITAL, la misma entidad que PREV1 en el
+# directorio de RRHH, que ya no existe.
+CODIGOS_EXCLUIDOS = {'MPREV1'}
+
 ENCABEZADOS = ['codigo', 'ciudad', 'provincia', 'nodo', 'segmento', 'tipo_enlace', 'backup', 'ip']
 
 
@@ -85,8 +90,8 @@ class Command(BaseCommand):
                 continue
             hoja = libro[nombre_hoja]
             for fila in hoja.iter_rows(min_row=2, values_only=True):
-                codigo = _valor_columna(fila, c_codigo)
-                if not codigo:
+                codigo = _valor_columna(fila, c_codigo).upper()
+                if not codigo or codigo in CODIGOS_EXCLUIDOS:
                     continue
                 nodo = _valor_columna(fila, c_nodo).upper()
                 if nodo in NODOS_SIN_ASIGNAR:
