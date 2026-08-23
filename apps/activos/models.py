@@ -3,7 +3,7 @@ import uuid
 from django.conf import settings
 from django.db import models
 
-from apps.catalogo.models import UnidadNegocio
+from apps.catalogo.models import Farmacia, UnidadNegocio
 
 
 class CategoriaEquipo(models.Model):
@@ -444,6 +444,12 @@ class Activo(models.Model):
     colaborador_actual = models.ForeignKey(
         Colaborador, on_delete=models.SET_NULL, null=True, blank=True, related_name='activos_asignados',
     )
+    farmacia = models.ForeignKey(
+        Farmacia, on_delete=models.SET_NULL, null=True, blank=True, related_name='activos',
+        help_text='Farmacia donde está físicamente el equipo -- vacío = administrativo/oficina o en bodega. '
+                  'Se completa solo si el equipo tiene una Estación RMM vinculada; para el resto (impresoras, '
+                  'monitores, PCs sin agente) se asigna a mano.',
+    )
     unidad_negocio = models.ForeignKey(
         UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='activos',
     )
@@ -476,6 +482,7 @@ class EventoActivo(models.Model):
         BAJA = 'baja', 'Dado de baja'
         BAJA_RECOMENDADA = 'baja_recomendada', 'Baja recomendada (mantenimiento)'
         TRANSITO = 'transito', 'En tránsito entre bodegas'
+        UBICACION_ACTUALIZADA = 'ubicacion_actualizada', 'Ubicación (farmacia) actualizada'
 
     activo = models.ForeignKey(Activo, on_delete=models.CASCADE, related_name='eventos')
     tipo_evento = models.CharField(max_length=25, choices=TipoEvento.choices)

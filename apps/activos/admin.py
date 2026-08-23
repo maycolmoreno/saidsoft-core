@@ -152,12 +152,13 @@ class EventoActivoInline(admin.TabularInline):
 class ActivoAdmin(admin.ModelAdmin):
     list_display = (
         'codigo', 'tipo', 'marca', 'categoria', 'modelo', 'estado', 'estado_fisico_actual',
-        'bodega_actual', 'colaborador_actual', 'unidad_negocio', 'baja_recomendada',
+        'farmacia', 'bodega_actual', 'colaborador_actual', 'unidad_negocio', 'baja_recomendada',
     )
     list_filter = ('tipo', 'estado', 'bodega_actual', 'unidad_negocio', 'baja_recomendada')
     search_fields = ('codigo', 'numero_serie', 'marca__nombre', 'modelo', 'codigo_sap')
     autocomplete_fields = (
-        'orden_compra', 'bodega_actual', 'colaborador_actual', 'marca', 'categoria', 'unidad_negocio', 'estacion',
+        'orden_compra', 'bodega_actual', 'colaborador_actual', 'farmacia', 'marca', 'categoria', 'unidad_negocio',
+        'estacion',
     )
     readonly_fields = ('codigo', 'fecha_creacion')
     inlines = [EventoActivoInline]

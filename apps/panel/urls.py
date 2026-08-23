@@ -109,6 +109,7 @@ urlpatterns = [
     path('activos/nuevo/', views.activo_crear, name='activo_crear'),
     path('activos/<int:pk>/', views.activo_detalle, name='activo_detalle'),
     path('activos/<int:pk>/asignar/', views.activo_asignar, name='activo_asignar'),
+    path('activos/<int:pk>/ubicar-farmacia/', views.activo_ubicar_farmacia, name='activo_ubicar_farmacia'),
     path('activos/<int:pk>/devolver/', views.activo_devolver, name='activo_devolver'),
     path('activos/<int:pk>/reparacion/enviar/', views.activo_reparacion_enviar, name='activo_reparacion_enviar'),
     path('activos/<int:pk>/reparacion/retorno/', views.activo_reparacion_retorno, name='activo_reparacion_retorno'),

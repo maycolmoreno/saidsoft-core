@@ -1,5 +1,7 @@
 from django import forms
 
+from apps.catalogo.models import Farmacia
+
 from .models import (
     Activo, Bodega, CategoriaEquipo, Colaborador, CondicionAlRecibir, Marca, MotivoBaja,
     MotivoReparacion, OrdenCompra, OrdenCompraDetalle, TipoConsumible,
@@ -150,6 +152,12 @@ class ActivoIngresoForm(forms.Form):
     bodega = forms.ModelChoiceField(
         queryset=None, widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
+    farmacia = forms.ModelChoiceField(
+        queryset=None, required=False, widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        label='Farmacia (si aplica)',
+        help_text='Solo si ya sabes que este equipo va a una farmacia puntual (PDV o administrativo del local). '
+                  'Vacío = queda como administrativo/oficina hasta que se ubique.',
+    )
 
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -162,6 +170,9 @@ class ActivoIngresoForm(forms.Form):
         self.fields['orden_compra'].queryset = scope_opcional_por_unidad_negocio(
             OrdenCompra.objects.all(), user, 'unidad_negocio',
         )
+        self.fields['farmacia'].queryset = scope_opcional_por_unidad_negocio(
+            Farmacia.objects.filter(activa=True), user, 'unidad_negocio',
+        ).order_by('codigo')
 
 
 class AsignacionForm(forms.Form):
@@ -172,6 +183,21 @@ class AsignacionForm(forms.Form):
     estado_fisico_entrega = forms.ChoiceField(
         choices=Activo.EstadoFisico.choices, widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
+
+
+class UbicarFarmaciaForm(forms.Form):
+    farmacia = forms.ModelChoiceField(
+        queryset=None, required=False, widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        help_text='Vacío = administrativo/oficina (o en bodega, según su estado actual).',
+    )
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        from apps.cuentas.services import scope_opcional_por_unidad_negocio
+
+        self.fields['farmacia'].queryset = scope_opcional_por_unidad_negocio(
+            Farmacia.objects.filter(activa=True), user, 'unidad_negocio',
+        ).order_by('codigo')
 
 
 class DevolucionForm(forms.Form):

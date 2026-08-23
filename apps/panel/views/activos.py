@@ -9,7 +9,7 @@ from apps.activos import services as activos_services
 from apps.activos.forms import (
     ActivoIngresoForm, AjusteStockForm, AnularRecepcionForm, AsignacionForm, BajaForm, ColaboradorForm,
     ConsumibleEntregadoForm, DevolucionForm, EnvioReparacionForm, OrdenCompraForm, OrdenCompraLineaForm,
-    RecepcionLoteForm, RecibirOrdenCompraForm, RetornoReparacionForm, StockIngresoForm,
+    RecepcionLoteForm, RecibirOrdenCompraForm, RetornoReparacionForm, StockIngresoForm, UbicarFarmaciaForm,
 )
 from apps.activos.models import (
     Activo, Bodega, Colaborador, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, RecepcionLote, Ubicacion,
@@ -309,19 +309,25 @@ def activos_lista(request):
     tipo = request.GET.get('tipo')
     estado = request.GET.get('estado')
     bodega = request.GET.get('bodega')
+    ubicacion = request.GET.get('ubicacion')
     if tipo:
         activos = activos.filter(tipo=tipo)
     if estado:
         activos = activos.filter(estado=estado)
     if bodega:
         activos = activos.filter(bodega_actual__codigo=bodega)
+    if ubicacion == 'farmacia':
+        activos = activos.filter(farmacia__isnull=False)
+    elif ubicacion == 'administrativo':
+        activos = activos.filter(farmacia__isnull=True)
 
     return render(request, 'panel/activos_lista.html', {
-        'activos': activos,
+        'activos': activos.select_related('farmacia'),
         'tipos': Activo.Tipo.choices,
         'estados': Activo.Estado.choices,
         'bodegas': scope_opcional_por_unidad_negocio(Bodega.objects.all(), request.user, 'unidad_negocio').order_by('codigo'),
         'filtro_tipo': tipo or '', 'filtro_estado': estado or '', 'filtro_bodega': bodega or '',
+        'filtro_ubicacion': ubicacion or '',
     })
 
 
@@ -338,7 +344,7 @@ def activo_crear(request):
                 procesador=d['procesador'], ram_gb=d['ram_gb'], almacenamiento_gb=d['almacenamiento_gb'],
                 codigo_sap=d['codigo_sap'], condicion_al_recibir=d['condicion_al_recibir'],
                 fecha_compra=d['fecha_compra'], vencimiento_garantia=d['vencimiento_garantia'],
-                orden_compra=d['orden_compra'], bodega=d['bodega'], usuario=request.user,
+                orden_compra=d['orden_compra'], bodega=d['bodega'], farmacia=d['farmacia'], usuario=request.user,
             )
             registrar_evento(usuario=request.user, accion='activo.ingreso', objeto=activo, request=request)
             messages.success(request, f'Activo {activo.codigo} registrado en {activo.bodega_actual.codigo}.')
@@ -362,7 +368,7 @@ def activo_detalle(request, pk):
     activo = get_object_or_404(
         Activo.objects.select_related(
             'bodega_actual', 'colaborador_actual', 'orden_compra', 'marca', 'categoria',
-            'estacion', 'estacion__farmacia',
+            'estacion', 'estacion__farmacia', 'farmacia',
         ), pk=pk,
     )
     verificar_acceso(request.user, activo.unidad_negocio)
@@ -402,6 +408,48 @@ def activo_asignar(request, pk):
         'resumen_sub': f'{activo.marca or ""} {activo.modelo}'.strip(),
         'resumen_campos': [
             ('Estado', activo.get_estado_display()), ('Bodega actual', activo.bodega_actual),
+        ],
+        'volver_url': reverse('panel:activo_detalle', args=[pk]),
+    })
+
+
+@login_required
+@permission_required('activos.change_activo', raise_exception=True)
+def activo_ubicar_farmacia(request, pk):
+    """Marca en qué farmacia está físicamente un activo -- independiente de su ciclo de
+    vida (bodega/asignado/reparación), a diferencia de "asignar", que sí exige
+    En bodega. Un PDV no tiene "colaborador asignado" en el mismo sentido que un
+    equipo de oficina."""
+    activo = get_object_or_404(Activo, pk=pk)
+    verificar_acceso(request.user, activo.unidad_negocio)
+    if activo.estado == Activo.Estado.DADO_DE_BAJA:
+        messages.error(request, 'Un activo dado de baja no puede reubicarse.')
+        return redirect('panel:activo_detalle', pk=pk)
+    if activo.estacion_id:
+        messages.error(
+            request,
+            'Este activo tiene una Estación RMM vinculada -- su farmacia se sincroniza sola, no se puede '
+            'cambiar a mano.',
+        )
+        return redirect('panel:activo_detalle', pk=pk)
+    if request.method == 'POST':
+        form = UbicarFarmaciaForm(request.POST, user=request.user)
+        if form.is_valid():
+            activos_services.registrar_ubicacion_farmacia(
+                activo=activo, farmacia=form.cleaned_data['farmacia'], usuario=request.user,
+            )
+            registrar_evento(usuario=request.user, accion='activo.ubicar_farmacia', objeto=activo, request=request)
+            messages.success(request, f'{activo.codigo} actualizado.')
+            return redirect('panel:activo_detalle', pk=pk)
+    else:
+        form = UbicarFarmaciaForm(user=request.user, initial={'farmacia': activo.farmacia_id})
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': f'Ubicar {activo.codigo} en una farmacia', 'boton': 'Guardar',
+        'subtitulo': 'Deja el campo vacío para marcarlo como administrativo/oficina.',
+        'resumen_tipo': 'activo', 'resumen_titulo': f'{activo.codigo} — {activo.get_tipo_display()}',
+        'resumen_sub': f'{activo.marca or ""} {activo.modelo}'.strip(),
+        'resumen_campos': [
+            ('Farmacia actual', activo.farmacia or 'Administrativo / sin ubicar'),
         ],
         'volver_url': reverse('panel:activo_detalle', args=[pk]),
     })

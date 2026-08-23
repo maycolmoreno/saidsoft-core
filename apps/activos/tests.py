@@ -14,8 +14,8 @@ from .models import (
 from .services import (
     activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, activos_por_vencer_garantia,
     anular_recepcion_lote, registrar_ajuste_inventario, registrar_asignacion, registrar_recepcion_lote,
-    registrar_salida_stock, registrar_traslado_bodega, scope_movimientos_visibles, stock_bajo_minimo,
-    vincular_activos_por_numero_serie,
+    registrar_salida_stock, registrar_traslado_bodega, registrar_ubicacion_farmacia, scope_movimientos_visibles,
+    stock_bajo_minimo, vincular_activos_por_numero_serie,
 )
 
 
@@ -565,6 +565,18 @@ class VincularActivosPorNumeroSerieTests(TestCase):
         activo.refresh_from_db()
         self.assertEqual(activo.estacion, estacion)
 
+    def test_vincular_sincroniza_la_farmacia_desde_la_estacion(self):
+        # Antes solo se sincronizaba `estacion` -- un activo vinculado por RMM se
+        # quedaba sin forma de saber en qué farmacia está si nadie lo cargaba a mano
+        # (23-ago-2026).
+        self._crear_estacion('ML001-A', 'SN-0001')
+        activo = Activo.objects.create(codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, numero_serie='SN-0001')
+
+        vincular_activos_por_numero_serie()
+
+        activo.refresh_from_db()
+        self.assertEqual(activo.farmacia, self.farmacia)
+
     def test_no_vincula_si_no_hay_match(self):
         self._crear_estacion('ML001-A', 'SN-0001')
         self.assertEqual(vincular_activos_por_numero_serie(), 0)
@@ -587,6 +599,51 @@ class VincularActivosPorNumeroSerieTests(TestCase):
         self.assertIsNone(otro.estacion)
         activo.refresh_from_db()
         self.assertEqual(activo.estacion, estacion)
+
+
+class RegistrarUbicacionFarmaciaTests(TestCase):
+    """Activo.farmacia: cómo diferenciar un equipo de farmacia de uno administrativo
+    para equipos sin agente RMM (impresoras, monitores, PCs sin agente) -- 23-ago-2026."""
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_farmacia', password='x')
+        grupo = Grupo.objects.create(codigo='TRX001', version_objetivo='4.2.1')
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.otra_farmacia = Farmacia.objects.create(codigo='ML002', grupo=grupo, unidad_negocio=sg)
+        self.activo = Activo.objects.create(codigo='CR-IMP-0001', tipo=Activo.Tipo.IMPRESORA)
+
+    def test_asigna_farmacia_y_registra_evento(self):
+        registrar_ubicacion_farmacia(activo=self.activo, farmacia=self.farmacia, usuario=self.usuario)
+        self.activo.refresh_from_db()
+        self.assertEqual(self.activo.farmacia, self.farmacia)
+        self.assertTrue(
+            EventoActivo.objects.filter(
+                activo=self.activo, tipo_evento=EventoActivo.TipoEvento.UBICACION_ACTUALIZADA,
+            ).exists(),
+        )
+
+    def test_limpiar_farmacia_lo_vuelve_administrativo(self):
+        self.activo.farmacia = self.farmacia
+        self.activo.save(update_fields=['farmacia'])
+        registrar_ubicacion_farmacia(activo=self.activo, farmacia=None, usuario=self.usuario)
+        self.activo.refresh_from_db()
+        self.assertIsNone(self.activo.farmacia)
+
+    def test_rechaza_activo_dado_de_baja(self):
+        self.activo.estado = Activo.Estado.DADO_DE_BAJA
+        self.activo.save(update_fields=['estado'])
+        with self.assertRaises(ValueError):
+            registrar_ubicacion_farmacia(activo=self.activo, farmacia=self.farmacia, usuario=self.usuario)
+
+    def test_rechaza_activo_con_estacion_rmm_vinculada(self):
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.activo.estacion = estacion
+        self.activo.save(update_fields=['estacion'])
+        with self.assertRaises(ValueError):
+            registrar_ubicacion_farmacia(activo=self.activo, farmacia=self.otra_farmacia, usuario=self.usuario)
 
 
 class AnomaliasRedActivoTests(TestCase):

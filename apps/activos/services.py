@@ -46,11 +46,11 @@ def generar_codigo_activo(tipo: str) -> str:
 def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
                        vencimiento_garantia, orden_compra, bodega, usuario,
                        categoria=None, procesador='', ram_gb=None, almacenamiento_gb=None,
-                       codigo_sap='', condicion_al_recibir=''):
+                       codigo_sap='', condicion_al_recibir='', farmacia=None):
     activo = Activo(
         tipo=tipo, marca=marca, categoria=categoria, modelo=modelo, numero_serie=numero_serie,
         procesador=procesador, ram_gb=ram_gb, almacenamiento_gb=almacenamiento_gb,
-        codigo_sap=codigo_sap, condicion_al_recibir=condicion_al_recibir,
+        codigo_sap=codigo_sap, condicion_al_recibir=condicion_al_recibir, farmacia=farmacia,
         fecha_compra=fecha_compra, vencimiento_garantia=vencimiento_garantia,
         orden_compra=orden_compra, bodega_actual=bodega,
         estado=Activo.Estado.EN_BODEGA, estado_fisico_actual=Activo.EstadoFisico.NUEVO,
@@ -116,6 +116,34 @@ def registrar_asignacion(*, activo, colaborador, estado_fisico_entrega, usuario)
             'bodega_origen': bodega_origen.codigo if bodega_origen else None,
             'estado_fisico_entrega': estado_fisico_entrega,
         },
+    )
+
+
+@transaction.atomic
+def registrar_ubicacion_farmacia(*, activo, farmacia, usuario):
+    """Marca (o limpia) en qué farmacia está físicamente un activo -- independiente del
+    ciclo de vida (bodega/asignado/reparación): un PDV no tiene "colaborador asignado"
+    en el mismo sentido que un equipo de oficina, así que esto no depende de
+    `registrar_asignacion`. `farmacia=None` lo vuelve a marcar como
+    administrativo/oficina o en bodega, según corresponda.
+
+    No se puede llamar sobre un activo con Estación RMM vinculada -- para esos, la
+    farmacia se sincroniza sola desde la Estación (ver
+    vincular_activos_por_numero_serie); permitir editarla a mano dejaría el dato
+    desincronizado de lo que el propio RMM reporta.
+    """
+    if activo.estado == Activo.Estado.DADO_DE_BAJA:
+        raise ValueError('Un activo dado de baja no puede reubicarse.')
+    if activo.estacion_id:
+        raise ValueError(
+            'Este activo tiene una Estación RMM vinculada -- su farmacia se sincroniza '
+            'sola, no se puede cambiar a mano.',
+        )
+    activo.farmacia = farmacia
+    activo.save(update_fields=['farmacia'])
+    EventoActivo.objects.create(
+        activo=activo, tipo_evento=EventoActivo.TipoEvento.UBICACION_ACTUALIZADA, usuario=usuario,
+        detalle={'farmacia': farmacia.codigo if farmacia else None},
     )
 
 
@@ -464,8 +492,11 @@ def vincular_activos_por_numero_serie() -> int:
     for estacion in estaciones:
         candidatos = list(Activo.objects.filter(numero_serie__iexact=estacion.numero_serie, estacion__isnull=True))
         if len(candidatos) == 1:
+            # La Estación ya sabe en qué farmacia está -- se sincroniza de una vez para
+            # no depender de que alguien lo cargue a mano para equipos que sí tienen RMM.
             candidatos[0].estacion = estacion
-            candidatos[0].save(update_fields=['estacion'])
+            candidatos[0].farmacia = estacion.farmacia
+            candidatos[0].save(update_fields=['estacion', 'farmacia'])
             vinculados += 1
     return vinculados
 

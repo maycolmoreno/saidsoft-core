@@ -28,6 +28,11 @@
         <option value="{{ b.codigo }}" {% if b.codigo == filtro_bodega %}selected{% endif %}>{{ b.codigo }}</option>
         {% endfor %}
     </select>
+    <select name="ubicacion" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+        <option value="">Farmacia y administrativo</option>
+        <option value="farmacia" {% if filtro_ubicacion == 'farmacia' %}selected{% endif %}>Solo farmacia (PDV)</option>
+        <option value="administrativo" {% if filtro_ubicacion == 'administrativo' %}selected{% endif %}>Solo administrativo</option>
+    </select>
 </form>
 
 <div class="card" style="overflow:hidden;">
@@ -53,7 +58,8 @@
                     </span>
                 </td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
-                    {% if a.colaborador_actual %}{{ a.colaborador_actual.nombre }}{% elif a.bodega_actual %}{{ a.bodega_actual.codigo }}{% else %}—{% endif %}
+                    {% if a.farmacia %}<span class="pill info">{{ a.farmacia.codigo }}</span>{% endif %}
+                    {% if a.colaborador_actual %}{{ a.colaborador_actual.nombre }}{% elif a.bodega_actual %}{{ a.bodega_actual.codigo }}{% elif not a.farmacia %}—{% endif %}
                 </td>
             </tr>
         {% empty %}

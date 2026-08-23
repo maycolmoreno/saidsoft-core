@@ -1614,6 +1614,73 @@ class ActivosVistasPermisoTests(TestCase):
         self.assertNotEqual(self.activo.estado, Activo.Estado.DADO_DE_BAJA)
 
 
+class ActivoUbicarFarmaciaViewTests(TestCase):
+    """Cómo diferenciar un equipo de farmacia de uno administrativo para equipos sin
+    agente RMM (impresoras, monitores) -- 23-ago-2026."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001', version_objetivo='4.2.1')
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.activo = Activo.objects.create(codigo='CR-IMP-0001', tipo=Activo.Tipo.IMPRESORA, unidad_negocio=self.sg)
+
+        self.usuario = User.objects.create_user(username='u_ubicar_farmacia', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='change_activo'),
+            Permission.objects.get(content_type__app_label='activos', codename='view_activo'),
+        )
+        self.client.force_login(self.usuario)
+
+    def test_asigna_farmacia_y_redirige(self):
+        resp = self.client.post(
+            reverse('panel:activo_ubicar_farmacia', args=[self.activo.pk]), {'farmacia': self.farmacia.pk},
+        )
+        self.assertRedirects(resp, reverse('panel:activo_detalle', args=[self.activo.pk]))
+        self.activo.refresh_from_db()
+        self.assertEqual(self.activo.farmacia, self.farmacia)
+
+    def test_dejar_vacio_lo_vuelve_administrativo(self):
+        self.activo.farmacia = self.farmacia
+        self.activo.save(update_fields=['farmacia'])
+        self.client.post(reverse('panel:activo_ubicar_farmacia', args=[self.activo.pk]), {'farmacia': ''})
+        self.activo.refresh_from_db()
+        self.assertIsNone(self.activo.farmacia)
+
+    def test_rechaza_si_esta_dado_de_baja(self):
+        self.activo.estado = Activo.Estado.DADO_DE_BAJA
+        self.activo.save(update_fields=['estado'])
+        resp = self.client.post(
+            reverse('panel:activo_ubicar_farmacia', args=[self.activo.pk]), {'farmacia': self.farmacia.pk},
+        )
+        self.assertRedirects(resp, reverse('panel:activo_detalle', args=[self.activo.pk]))
+        self.activo.refresh_from_db()
+        self.assertIsNone(self.activo.farmacia)
+
+    def test_rechaza_si_tiene_estacion_rmm_vinculada(self):
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.activo.estacion = estacion
+        self.activo.save(update_fields=['estacion'])
+        resp = self.client.get(reverse('panel:activo_ubicar_farmacia', args=[self.activo.pk]))
+        self.assertRedirects(resp, reverse('panel:activo_detalle', args=[self.activo.pk]))
+
+    def test_lista_filtra_por_ubicacion(self):
+        self.activo.farmacia = self.farmacia
+        self.activo.save(update_fields=['farmacia'])
+        administrativo = Activo.objects.create(
+            codigo='CR-DSK-0055', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg,
+        )
+        resp = self.client.get(reverse('panel:activos_lista'), {'ubicacion': 'farmacia'})
+        self.assertContains(resp, 'CR-IMP-0001')
+        self.assertNotContains(resp, 'CR-DSK-0055')
+
+        resp = self.client.get(reverse('panel:activos_lista'), {'ubicacion': 'administrativo'})
+        self.assertContains(resp, 'CR-DSK-0055')
+        self.assertNotContains(resp, 'CR-IMP-0001')
+
+
 class BodegaAjusteStockViewTests(TestCase):
     """BUG-3 de la auditoría de gobernanza (22-ago-2026): botón nuevo para
     MovimientoInventario.TipoMovimiento.AJUSTE, mismo permiso que ingresar stock."""
