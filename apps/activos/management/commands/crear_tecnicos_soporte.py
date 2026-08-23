@@ -19,10 +19,20 @@ sin perfil no ve ninguna unidad de negocio. Se les da acceso a las tres (SG/MIA/
 en vez de una lista fija porque cada técnico cubre farmacias de varias marcas mezcladas
 en su zona geográfica, no una sola marca (ver Farmacia.tecnico_asignado en
 PLAN_MODERNIZACION.md, 22-ago-2026).
+
+Los dos con `es_supervisor_regional=True` (Luis Figueroa, Diego Aguilar) reciben además,
+como PERMISO INDIVIDUAL (`user_permissions`, no de grupo), `scripts.aprobar_ejecucionscript`
+y `despliegues.aprobar_despliegue` — confirmado con el usuario (22-ago-2026) para que
+puedan aprobar lo que crean sus propios asistentes (la regla de cuatro ojos ya vigente
+exige que el aprobador no sea el mismo que creó la ejecución/despliegue, ver AC-3/AC-2 en
+PLAN_MODERNIZACION.md). Deliberadamente NO se agrega a `seed_permisos.py` como parte del
+grupo "Soporte Técnico": ese cierre de auditoría dejó escrito que quién aprueba qué es una
+decisión persona por persona, no de rol — dárselo a todo el grupo lo repetiría para los 7
+asistentes, que no deben tenerlo.
 """
 import secrets
 
-from django.contrib.auth.models import Group, User
+from django.contrib.auth.models import Group, Permission, User
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
@@ -44,10 +54,12 @@ TECNICOS = [
     dict(
         nombre='Figueroa Parraga Luis Miguel', cedula='1310909906', correo='luis.figueroa@cresio.com',
         telefono='0986086237', cargo='Supervisor Regional de Soporte Técnico', ciudad='', provincia='',
+        es_supervisor_regional=True,
     ),
     dict(
         nombre='Aguilar Peña Diego Fabricio', cedula='0706884947', correo='diego.aguilar@cresio.com',
         telefono='0999512823', cargo='Supervisor Regional de Soporte Técnico', ciudad='', provincia='El Oro',
+        es_supervisor_regional=True,
     ),
     dict(
         nombre='Villacres Cango Hjalmar Leonel', cedula='0706362621', correo='leonel.villacres@cresio.com',
@@ -152,6 +164,8 @@ class Command(BaseCommand):
             if colaborador.usuario_id:
                 self.stdout.write(f'  {prefijo}{username}: ya tiene login, no se toca.')
                 self._asegurar_perfil(colaborador.usuario, prefijo=prefijo)
+                if datos.get('es_supervisor_regional'):
+                    self._asegurar_permisos_supervisor(colaborador.usuario, prefijo=prefijo)
                 continue
 
             usuario, creado = User.objects.get_or_create(
@@ -171,6 +185,8 @@ class Command(BaseCommand):
             colaborador.usuario = usuario
             colaborador.save(update_fields=['usuario'])
             self._asegurar_perfil(usuario, prefijo=prefijo)
+            if datos.get('es_supervisor_regional'):
+                self._asegurar_permisos_supervisor(usuario, prefijo=prefijo)
 
         if credenciales_nuevas and dry_run:
             self.stdout.write(self.style.WARNING(
@@ -205,3 +221,26 @@ class Command(BaseCommand):
             self.stdout.write(
                 f'  {prefijo}{usuario.username}: perfil existente actualizado a acceso a todas las unidades.',
             )
+
+    def _asegurar_permisos_supervisor(self, usuario, *, prefijo):
+        """Permiso individual (no de grupo) para aprobar lo que crean sus asistentes.
+
+        Deliberadamente por persona, no por rol -- ver docstring del módulo.
+        """
+        codenames = [
+            ('scripts', 'aprobar_ejecucionscript'),
+            ('despliegues', 'aprobar_despliegue'),
+        ]
+        for app_label, codename in codenames:
+            try:
+                permiso = Permission.objects.get(content_type__app_label=app_label, codename=codename)
+            except Permission.DoesNotExist:
+                self.stderr.write(self.style.WARNING(
+                    f'  {prefijo}Permiso {app_label}.{codename} no existe (¿falta una migración?), se omite.',
+                ))
+                continue
+            if not usuario.user_permissions.filter(pk=permiso.pk).exists():
+                usuario.user_permissions.add(permiso)
+                self.stdout.write(
+                    f'  {prefijo}{usuario.username}: permiso individual "{codename}" otorgado (supervisor regional).',
+                )

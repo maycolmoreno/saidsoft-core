@@ -170,6 +170,34 @@ class CrearTecnicosSoporteTests(TestCase):
         self.assertTrue(usuario.perfil.acceso_todas_unidades)
         self.assertEqual(unidades_negocio_visibles(usuario).count(), UnidadNegocio.objects.count())
 
+    def test_supervisores_regionales_reciben_permiso_individual_de_aprobar(self):
+        # Confirmado con el usuario (22-ago-2026): solo los 2 supervisores regionales
+        # (Luis Figueroa, Diego Aguilar) aprueban lo que crean sus asistentes -- permiso
+        # INDIVIDUAL, nunca de grupo (así quedó decidido al cerrar AC-3/AC-2).
+        self._correr()
+        luis = Colaborador.objects.get(cedula='1310909906')
+        diego = Colaborador.objects.get(cedula='0706884947')
+        for colaborador in (luis, diego):
+            self.assertTrue(colaborador.usuario.has_perm('scripts.aprobar_ejecucionscript'))
+            self.assertTrue(colaborador.usuario.has_perm('despliegues.aprobar_despliegue'))
+
+    def test_asistentes_no_reciben_el_permiso_de_aprobar(self):
+        self._correr()
+        jaime = Colaborador.objects.get(cedula='1312655291')  # Asistente, no supervisor
+        self.assertFalse(jaime.usuario.has_perm('scripts.aprobar_ejecucionscript'))
+        self.assertFalse(jaime.usuario.has_perm('despliegues.aprobar_despliegue'))
+
+    def test_supervisor_con_login_ya_existente_tambien_recibe_el_permiso(self):
+        usuario = User.objects.create_user(username='luis.figueroa', password='x')
+        Colaborador.objects.create(
+            cedula='1310909906', nombre='Figueroa Parraga Luis Miguel',
+            correo='luis.figueroa@cresio.com', usuario=usuario,
+        )
+        self._correr()
+        usuario.refresh_from_db()
+        self.assertTrue(usuario.has_perm('scripts.aprobar_ejecucionscript'))
+        self.assertTrue(usuario.has_perm('despliegues.aprobar_despliegue'))
+
 
 class RegistrarAsignacionTests(TestCase):
     def setUp(self):
