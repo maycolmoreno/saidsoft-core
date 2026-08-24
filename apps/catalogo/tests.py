@@ -743,3 +743,22 @@ class EnviarActualizacionAgenteTests(TestCase):
             estacion='ML001-A', timestamp=payload['timestamp'],
         )
         self.assertEqual(payload['firma'], firma_esperada)
+
+    def test_se_publica_retenido_en_topico_propio_no_en_comando(self):
+        # No usa /comando/ (fire-and-forget a propósito, ver enviar_comando): esto
+        # debe quedar retenido en EMQX para que una estación apagada lo reciba apenas
+        # se conecte, no solo si ya estaba en línea en el momento del publish.
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            enviar_actualizacion_agente(self.estacion, self.version)
+        args, kwargs = mock_single.call_args
+        self.assertEqual(args[0], f'/saidsof/agente/{self.estacion.codigo}/actualizar_agente/')
+        self.assertTrue(kwargs['retain'])
+
+    def test_limpiar_actualizacion_pendiente_publica_vacio_y_retenido(self):
+        from apps.catalogo.services import limpiar_actualizacion_pendiente
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            limpiar_actualizacion_pendiente(self.estacion)
+        args, kwargs = mock_single.call_args
+        self.assertEqual(args[0], f'/saidsof/agente/{self.estacion.codigo}/actualizar_agente/')
+        self.assertEqual(args[1], '')
+        self.assertTrue(kwargs['retain'])

@@ -15,6 +15,10 @@ def _topico_comando(estacion) -> str:
     return f'/saidsof/agente/{estacion.codigo}/comando/'
 
 
+def _topico_actualizar_agente(estacion) -> str:
+    return f'/saidsof/agente/{estacion.codigo}/actualizar_agente/'
+
+
 def firmar_payload(**campos) -> str:
     """HMAC-SHA256 de los valores de `campos` unidos con "|", en el orden en que se pasan.
 
@@ -29,7 +33,7 @@ def firmar_payload(**campos) -> str:
     return hmac.new(settings.COMANDO_HMAC_SECRET.encode(), mensaje.encode(), hashlib.sha256).hexdigest()
 
 
-def _publicar_comando(estacion, payload: dict) -> bool:
+def _publicar_mqtt(topico: str, payload_str: str, *, retain: bool) -> bool:
     mqtt_conf = settings.MQTT_CONFIG
     auth = None
     if mqtt_conf['USERNAME']:
@@ -40,19 +44,22 @@ def _publicar_comando(estacion, payload: dict) -> bool:
 
     try:
         mqtt_publish.single(
-            _topico_comando(estacion),
-            json.dumps(payload),
+            topico, payload_str,
             hostname=mqtt_conf['HOST'],
             port=mqtt_conf['PORT'],
             auth=auth,
             tls=tls,
             client_id=mqtt_conf['CLIENT_ID_PANEL'],
-            retain=False,
+            retain=retain,
         )
         return True
     except Exception:
-        logger.exception('No se pudo enviar el comando "%s" a %s', payload.get('comando'), estacion.codigo)
+        logger.exception('No se pudo publicar en %s', topico)
         return False
+
+
+def _publicar_comando(estacion, payload: dict) -> bool:
+    return _publicar_mqtt(_topico_comando(estacion), json.dumps(payload), retain=False)
 
 
 def enviar_comando(estacion, comando: str) -> bool:
@@ -108,9 +115,17 @@ def enviar_actualizacion_agente(estacion, version_agente) -> bool:
     ejecutable y vuelve a arrancar solo (ver agente-prueba/agente_prueba.py,
     `_verificar_y_actualizar_agente`/`_aplicar_actualizacion_agente`).
 
-    Un agente anterior a esta función no sabe interpretar "actualizar_agente" y lo
-    ignora — la primera actualización de cada estación existente hay que instalarla a
-    mano; de ahí en adelante ya la puede disparar este mismo comando desde el panel.
+    Se publica RETENIDO (retain=True) en un tópico propio, no en `/comando/` (que es
+    fire-and-forget a propósito, ver `enviar_comando`): si la estación está apagada,
+    EMQX guarda este mensaje y se lo entrega apenas se reconecta -- optimiza el
+    rollout a toda la flota sin depender de que cada estación esté encendida en el
+    momento exacto en que se dispara. `apps.mqtt_worker.services.manejar_heartbeat`
+    limpia el retenido en cuanto confirma que la estación ya aplicó la versión.
+
+    Un agente anterior a que existiera este comando (agente-prueba-0.1) no sabe
+    interpretarlo y lo ignora sin más — la primera actualización de esas estaciones
+    hay que instalarla a mano (ver docstring de VersionAgente); de ahí en adelante ya
+    la puede disparar este mismo comando desde el panel, online o no.
     """
     timestamp = int(time.time())
     url = settings.ARCHIVOS_BASE_URL.rstrip('/') + version_agente.ejecutable.url
@@ -118,10 +133,21 @@ def enviar_actualizacion_agente(estacion, version_agente) -> bool:
         comando='actualizar_agente', version=version_agente.version, url=url, sha256=version_agente.sha256,
         estacion=estacion.codigo, timestamp=timestamp,
     )
-    return _publicar_comando(estacion, {
+    payload = {
         'comando': 'actualizar_agente', 'version': version_agente.version, 'url': url,
         'sha256': version_agente.sha256, 'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
-    })
+    }
+    return _publicar_mqtt(_topico_actualizar_agente(estacion), json.dumps(payload), retain=True)
+
+
+def limpiar_actualizacion_pendiente(estacion) -> bool:
+    """Borra el mensaje retenido de actualizar_agente de `estacion` (payload vacío +
+    retain=True es, en MQTT, la forma de borrar un retenido -- no de retener uno
+    vacío). Se llama desde manejar_heartbeat cuando la estación ya reporta la versión
+    que se le había pedido aplicar, para que una reconexión futura (una desconexión
+    de red cualquiera, no solo apagar/prender) no vuelva a aplicar esa misma
+    actualización de nuevo."""
+    return _publicar_mqtt(_topico_actualizar_agente(estacion), '', retain=True)
 
 
 def resolver_estaciones(destino_tipo, *, unidad_negocio, grupos=None, farmacias=None, estaciones=None):

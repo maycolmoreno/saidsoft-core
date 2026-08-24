@@ -477,6 +477,31 @@ class ManejarHeartbeatTests(TestCase):
         self.assertNotEqual(self.estacion.version_pos, '9.9.9')
         self.assertNotEqual(self.estacion.estado_conexion, Estacion.EstadoConexion.ONLINE)
 
+    def test_version_agente_nueva_limpia_la_actualizacion_pendiente(self):
+        # Confirma que el heartbeat que reporta la versión ya aplicada borra el
+        # retenido de actualizar_agente (ver apps.catalogo.services.
+        # limpiar_actualizacion_pendiente) -- una reconexión de red futura no debe
+        # volver a aplicar la misma actualización de nuevo.
+        with patch('apps.catalogo.services.limpiar_actualizacion_pendiente') as mock_limpiar:
+            manejar_heartbeat(self.estacion.codigo, {
+                'token': self.estacion.token_enrolamiento, 'version_agente': 'agente-prueba-0.5',
+            })
+        mock_limpiar.assert_called_once_with(self.estacion)
+
+    def test_version_agente_sin_cambios_no_limpia_nada(self):
+        self.estacion.version_agente = 'agente-prueba-0.5'
+        self.estacion.save(update_fields=['version_agente'])
+        with patch('apps.catalogo.services.limpiar_actualizacion_pendiente') as mock_limpiar:
+            manejar_heartbeat(self.estacion.codigo, {
+                'token': self.estacion.token_enrolamiento, 'version_agente': 'agente-prueba-0.5',
+            })
+        mock_limpiar.assert_not_called()
+
+    def test_heartbeat_sin_version_agente_no_limpia_nada(self):
+        with patch('apps.catalogo.services.limpiar_actualizacion_pendiente') as mock_limpiar:
+            manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento})
+        mock_limpiar.assert_not_called()
+
     def test_heartbeat_valido_registra_estado_dispositivo_mqtt(self):
         manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento})
         estado = EstadoDispositivo.objects.get(estacion=self.estacion, fuente=EstadoDispositivo.Fuente.MQTT)

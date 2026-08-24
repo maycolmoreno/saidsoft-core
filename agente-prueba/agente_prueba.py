@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.4'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.5'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -166,7 +166,7 @@ class AgentePrueba:
     def _token(self) -> str:
         return self.identidad.get('token', '')
 
-    def _firma_valida(self, tipo_mensaje: str, payload: dict, **campos) -> bool:
+    def _firma_valida(self, tipo_mensaje: str, payload: dict, *, verificar_ventana: bool = True, **campos) -> bool:
         """Valida firma HMAC + ventana de timestamp de un mensaje entrante (comando,
         ejecutar_script, despliegue o software) — ver VENTANA_TIMESTAMP_SEGUNDOS.
         `campos` debe pasarse en el mismo orden que el servidor los firmó. Cuando
@@ -174,7 +174,13 @@ class AgentePrueba:
         mensajes de despliegue/software que son legítimamente para varias), además
         exige que coincida con este agente — defensa en profundidad contra un mensaje
         capturado de OTRA estación y reenviado a este tópico (p.ej. vía la credencial
-        MQTT compartida que todavía no se angostó por ACL, ver PLAN_MODERNIZACION.md)."""
+        MQTT compartida que todavía no se angostó por ACL, ver PLAN_MODERNIZACION.md).
+
+        `verificar_ventana=False` es solo para actualizar_agente vía el tópico
+        retenido: ese mensaje se firma UNA vez y puede quedar guardado en el broker
+        horas o días hasta que la estación se prenda y se reconecte -- exigirle los
+        mismos 120s que a un comando en vivo lo descartaría siempre. El SHA-256 del
+        ejecutable sigue siendo la garantía de integridad real, independiente de esto."""
         firma_esperada = firmar(self.args.hmac_secret, **campos)
         if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
             logging.error('Firma HMAC inválida en %s — se ignora (posible suplantación).', tipo_mensaje)
@@ -185,7 +191,7 @@ class AgentePrueba:
                 tipo_mensaje, campos['estacion'],
             )
             return False
-        if not timestamp_en_ventana(payload.get('timestamp')):
+        if verificar_ventana and not timestamp_en_ventana(payload.get('timestamp')):
             logging.error(
                 '%s con timestamp fuera de ventana (posible mensaje reenviado/capturado) — se ignora.',
                 tipo_mensaje,
@@ -201,6 +207,14 @@ class AgentePrueba:
         logging.info('Conectado al broker %s:%s', self.args.host, self.args.puerto)
         client.subscribe(f'/saidsof/enrolamiento/respuesta/{self.args.codigo}/')
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/comando/')
+        # Tópico propio y retenido (a diferencia de /comando/, que es fire-and-forget a
+        # propósito): si la estación está apagada cuando se publica, EMQX guarda el
+        # último mensaje y se lo entrega apenas se reconecta -- sin esto, una estación
+        # con un agente muy viejo (sin este comando) que quedó apagada durante el
+        # rollout nunca se entera de la actualización pendiente. El servidor limpia el
+        # retenido (payload vacío) en cuanto ve el heartbeat con la versión ya aplicada
+        # (ver apps.mqtt_worker.services.manejar_heartbeat).
+        client.subscribe(f'/saidsof/agente/{self.args.codigo}/actualizar_agente/')
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/software/')
         client.subscribe('/saidsof/software/global/')
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/despliegue/')
@@ -248,6 +262,11 @@ class AgentePrueba:
                 self._manejar_respuesta_enrolamiento(payload)
             elif msg.topic == f'/saidsof/agente/{self.args.codigo}/comando/':
                 self._manejar_comando(payload)
+            elif msg.topic == f'/saidsof/agente/{self.args.codigo}/actualizar_agente/':
+                # verificar_ventana=False: este tópico es retenido, puede llegar horas
+                # o días después de publicado (ver _on_connect) -- el SHA-256 sigue
+                # siendo la garantía de integridad real.
+                self._verificar_y_actualizar_agente(payload, verificar_ventana=False)
             elif msg.topic.startswith('/saidsof/software/') or msg.topic.endswith('/software/'):
                 self._manejar_software(payload)
             elif msg.topic.startswith('/saidsof/despliegue/') or msg.topic.endswith('/despliegue/'):
@@ -834,9 +853,9 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
     # --- auto-actualización del agente ---
     NOMBRE_SERVICIO = 'SaidsoftAgente'  # debe coincidir con ServicioAgenteSaidsoft._svc_name_
 
-    def _verificar_y_actualizar_agente(self, payload):
+    def _verificar_y_actualizar_agente(self, payload, *, verificar_ventana: bool = True):
         if not self._firma_valida(
-            'actualizar_agente', payload,
+            'actualizar_agente', payload, verificar_ventana=verificar_ventana,
             comando='actualizar_agente', version=payload.get('version'), url=payload.get('url'),
             sha256=payload.get('sha256'), estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
         ):

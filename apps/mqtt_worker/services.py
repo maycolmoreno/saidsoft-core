@@ -152,6 +152,7 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
         resolver_alertas_sin_heartbeat(estacion)
         resolver_alertas_agente_caido_red_viva(estacion)
 
+    version_agente_anterior = estacion.version_agente
     estacion.version_agente = payload.get('version_agente', estacion.version_agente)
     estacion.version_pos = payload.get('version_pos', estacion.version_pos)
     estacion.so_nombre = payload.get('so_nombre', estacion.so_nombre)
@@ -165,6 +166,14 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
     estacion.estado_conexion = Estacion.EstadoConexion.ONLINE
     estacion.ultimo_heartbeat = timezone.now()
     estacion.save()
+
+    if estacion.version_agente and estacion.version_agente != version_agente_anterior:
+        # La versión reportada cambió -- si había una actualización retenida esperando
+        # a que esta estación se conectara (ver enviar_actualizacion_agente), ya se
+        # aplicó: borrarla para que una desconexión/reconexión de red cualquiera (no
+        # solo apagar/prender el equipo) no la vuelva a disparar de nuevo.
+        from apps.catalogo.services import limpiar_actualizacion_pendiente
+        limpiar_actualizacion_pendiente(estacion)
 
     from apps.facturacion.services import registrar_actividad_mensual
     registrar_actividad_mensual(estacion)
