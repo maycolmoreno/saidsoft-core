@@ -186,8 +186,17 @@
 }
 .tooltip b{ color:#fff; }
 
-/* ---------- Modal (dialog nativo) ---------- */
-dialog#modal-info{ background:var(--card); border:1px solid var(--border); color:var(--text); }
+/* ---------- Modal (dialog nativo) ----------
+   El preflight de Tailwind pone margin:0 en todo, incluido <dialog> -- eso anula el
+   margin:auto con el que el navegador centra un <dialog> abierto vía showModal(),
+   así que sin esto queda pegado arriba a la izquierda tapando el topnav (encontrado
+   en la vista de detalle de estación, con el modal lleno de secciones). Se reafirma
+   la posición explícita acá (más específica que el reset) y se limita el alto
+   máximo con scroll propio, para que nunca crezca más que el viewport. */
+dialog#modal-info{
+  background:var(--card); border:1px solid var(--border); color:var(--text);
+  position:fixed; inset:0; margin:auto; max-height:85vh; overflow-y:auto;
+}
 dialog#modal-info::backdrop{ background:var(--overlay-hover); }
 
 /* ---------- Field (icono + etiqueta + valor) ----------
