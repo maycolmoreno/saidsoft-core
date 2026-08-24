@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.3'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.4'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -876,11 +876,29 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
         # propio script es quien detiene el servicio vía Stop-Service, no este proceso —
         # un servicio de Windows no puede pararse a sí mismo desde adentro más que
         # devolviendo el control a SvcDoRun, que es justo lo que Stop-Service dispara).
-        subprocess.Popen(
-            ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script_swap],
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-            close_fds=True,
-        )
+        #
+        # stdin/stdout/stderr=DEVNULL es obligatorio acá: un servicio de Windows no tiene
+        # consola, así que sus handles estándar son inválidos — sin esto, CreateProcess
+        # falla al intentar heredarlos (WinError 6, "The handle is invalid") y Popen()
+        # lanza una excepción que muere en silencio dentro de este hilo (nada la atrapa,
+        # y un servicio sin consola no tiene dónde imprimir el traceback). Encontrado en
+        # producción (ML006-A, 23-ago-2026): el comando llegaba, la descarga y el SHA-256
+        # eran correctos, el .ps1 se escribía en disco, pero Popen nunca lo ejecutaba de
+        # verdad -- ni saidsoft-agente-update.log ni el auto-borrado del .ps1 llegaban a
+        # existir. _listar_software_instalado() no sufre esto porque check_output ya
+        # redirige stdout a un pipe propio.
+        try:
+            subprocess.Popen(
+                ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script_swap],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                close_fds=True,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            # Si esto falla, la actualización queda descargada pero nunca aplicada -- sin
+            # este log, el único rastro sería un .ps1 huérfano en TEMP que nunca se
+            # autoborra (justo lo que pasó en producción antes de este fix).
+            logging.exception('No se pudo lanzar el script de reemplazo para la actualización a %s', version_nueva)
 
     def _generar_script_swap(self, exe_actual: str, exe_nuevo: str, version_nueva: str) -> str:
         """PowerShell separado del proceso del agente: espera a que el servicio quede
@@ -1121,9 +1139,14 @@ Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyConti
             time.sleep(1)
 
     def _iniciar_pos(self) -> None:
+        # Mismo motivo que el Popen de _aplicar_actualizacion_agente: sin stdin/stdout/
+        # stderr=DEVNULL, CreateProcess falla al intentar heredar los handles estándar
+        # (inválidos bajo un servicio de Windows sin consola) y el POS nunca llega a
+        # arrancar -- silencioso, sin excepción visible en ningún lado.
         subprocess.Popen(
             [self.args.pos_comando_iniciar],
             cwd=os.path.dirname(self.args.pos_comando_iniciar) or None,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
     def _version_pos_actual(self) -> str:
