@@ -206,6 +206,27 @@ def estacion_software_instalado_solicitar(request, pk):
 
 
 @login_required
+@permission_required('catalogo.consultar_info_estacion', raise_exception=True)
+@require_POST
+def estacion_perifericos_solicitar(request, pk):
+    """Dispara un escaneo puntual de periféricos USB (ver
+    apps.mqtt_worker.services.manejar_perifericos). Mismo permiso que el escaneo de
+    software instalado: es diagnóstico, no una acción de riesgo."""
+    estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
+    solicitado_perifericos = False
+    if (
+        estacion.estado_aprobacion == Estacion.EstadoAprobacion.APROBADA
+        and enviar_comando(estacion, 'consultar_perifericos')
+    ):
+        registrar_evento(
+            usuario=request.user, accion='estacion.consultar_perifericos', objeto=estacion, request=request,
+        )
+        solicitado_perifericos = True
+    return _render_info_modal(request, estacion, solicitado_perifericos=solicitado_perifericos)
+
+
+@login_required
 @permission_required('catalogo.acceso_remoto_estacion', raise_exception=True)
 @require_POST
 def estacion_meshcentral_vincular(request, pk):

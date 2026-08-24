@@ -10,7 +10,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio
+from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, PerifericoDetectado, UnidadNegocio
 from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
 from apps.facturacion.models import ActividadMensualEstacion
 from apps.monitoreo.models import Alerta, EstadoDispositivo, Metrica, MuestraMetrica, PosErrorDetectado, ReglaAlerta
@@ -22,8 +22,9 @@ from apps.mqtt_worker.emqx_admin import aprovisionar_credencial_estacion
 from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
 from apps.mqtt_worker.services import (
     NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_instalacion,
-    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_pos_errores,
-    manejar_software_instalado, manejar_windows_update, registrar_latido_worker, registrar_mensaje_fallido,
+    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_perifericos,
+    manejar_pos_errores, manejar_software_instalado, manejar_windows_update, registrar_latido_worker,
+    registrar_mensaje_fallido,
 )
 from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript, Script, TipoScript
 from apps.software.models import SoftwareInstaladoDetectado
@@ -731,6 +732,92 @@ class ManejarSoftwareInstaladoTests(TestCase):
         self.assertFalse(SoftwareInstaladoDetectado.objects.filter(estacion=self.estacion).exists())
 
 
+class ManejarPerifericosTests(TestCase):
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def test_guarda_los_dispositivos_reportados(self):
+        manejar_perifericos(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'dispositivos': [
+                {'nombre': 'HP LaserJet', 'fabricante': 'HP', 'clase': 'Printer', 'device_id': r'USB\VID_03F0&PID_1234\1'},
+                {'nombre': 'Mouse óptico', 'fabricante': 'Logitech', 'clase': 'Mouse', 'device_id': r'USB\VID_046D&PID_C077\2'},
+            ],
+        })
+        detectados = PerifericoDetectado.objects.filter(estacion=self.estacion).order_by('nombre')
+        self.assertEqual(list(detectados.values_list('nombre', 'clase')), [
+            ('HP LaserJet', 'Printer'), ('Mouse óptico', 'Mouse'),
+        ])
+        self.estacion.refresh_from_db()
+        self.assertIsNotNone(self.estacion.perifericos_ultima_verificacion)
+
+    def test_bytes_nul_no_tumban_el_guardado(self):
+        manejar_perifericos(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'dispositivos': [
+                {'nombre': 'Rar\x00o', 'fabricante': '\x00Acme', 'clase': 'HIDClass\x00', 'device_id': 'USB\\1\x00'},
+            ],
+        })
+        detectado = PerifericoDetectado.objects.get(estacion=self.estacion)
+        self.assertEqual(detectado.nombre, 'Raro')
+        self.assertEqual(detectado.fabricante, 'Acme')
+        self.assertEqual(detectado.device_id, 'USB\\1')
+
+    def test_un_escaneo_nuevo_reemplaza_el_anterior_por_completo(self):
+        manejar_perifericos(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'dispositivos': [{'nombre': 'Viejo', 'device_id': 'USB\\1'}],
+        })
+        manejar_perifericos(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'dispositivos': [{'nombre': 'Nuevo', 'device_id': 'USB\\2'}],
+        })
+        nombres = set(PerifericoDetectado.objects.filter(estacion=self.estacion).values_list('nombre', flat=True))
+        self.assertEqual(nombres, {'Nuevo'})
+
+    def test_dispositivos_sin_device_id_o_duplicados_se_descartan(self):
+        manejar_perifericos(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'dispositivos': [
+                {'nombre': 'SinId', 'device_id': ''},
+                {'nombre': 'Teclado', 'device_id': 'USB\\1'},
+                {'nombre': 'Teclado repetido', 'device_id': 'USB\\1'},
+            ],
+        })
+        detectados = PerifericoDetectado.objects.filter(estacion=self.estacion)
+        self.assertEqual(detectados.count(), 1)
+        self.assertEqual(detectados.first().nombre, 'Teclado')
+
+    def test_lista_vacia_limpia_el_inventario_anterior(self):
+        manejar_perifericos(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'dispositivos': [{'nombre': 'Algo', 'device_id': 'USB\\1'}],
+        })
+        manejar_perifericos(self.estacion.codigo, {'token': self.estacion.token_enrolamiento, 'dispositivos': []})
+        self.assertFalse(PerifericoDetectado.objects.filter(estacion=self.estacion).exists())
+
+    def test_token_invalido_no_actualiza_nada(self):
+        manejar_perifericos(self.estacion.codigo, {
+            'token': 'malo', 'dispositivos': [{'nombre': 'Teclado', 'device_id': 'USB\\1'}],
+        })
+        self.assertFalse(PerifericoDetectado.objects.filter(estacion=self.estacion).exists())
+        self.estacion.refresh_from_db()
+        self.assertIsNone(self.estacion.perifericos_ultima_verificacion)
+
+    def test_estacion_no_aprobada_se_ignora(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        manejar_perifericos(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'dispositivos': [{'nombre': 'Teclado', 'device_id': 'USB\\1'}],
+        })
+        self.assertFalse(PerifericoDetectado.objects.filter(estacion=self.estacion).exists())
+
+
 class ManejarPosErroresTests(TestCase):
     def setUp(self):
         sg = UnidadNegocio.objects.get(codigo='SG')
@@ -958,6 +1045,14 @@ class OnMessageDispatchTests(TestCase):
         })
         self.command._on_message(MagicMock(), None, msg)
         self.assertTrue(SoftwareInstaladoDetectado.objects.filter(estacion=self.estacion, nombre='Google Chrome').exists())
+
+    def test_perifericos_dispatcha_a_manejar_perifericos(self):
+        msg = _msg('/saidsof/agente/ML001-A/perifericos/', {
+            'token': self.estacion.token_enrolamiento,
+            'dispositivos': [{'nombre': 'Teclado', 'clase': 'Keyboard', 'device_id': 'USB\\1'}],
+        })
+        self.command._on_message(MagicMock(), None, msg)
+        self.assertTrue(PerifericoDetectado.objects.filter(estacion=self.estacion, nombre='Teclado').exists())
 
     def test_pos_errores_dispatcha_a_manejar_pos_errores(self):
         msg = _msg('/saidsof/agente/ML001-A/pos_errores/', {

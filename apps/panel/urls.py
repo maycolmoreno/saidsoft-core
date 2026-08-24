@@ -38,6 +38,10 @@ urlpatterns = [
         name='estacion_software_instalado_solicitar',
     ),
     path(
+        'estaciones/<int:pk>/perifericos/solicitar/', views.estacion_perifericos_solicitar,
+        name='estacion_perifericos_solicitar',
+    ),
+    path(
         'estaciones/<int:pk>/agente/actualizar/', views.estacion_actualizar_agente_solicitar,
         name='estacion_actualizar_agente_solicitar',
     ),

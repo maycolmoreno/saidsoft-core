@@ -20,7 +20,9 @@ from apps.activos.models import (
 )
 from apps.auditoria.models import EventoAuditoria, registrar_evento
 from apps.catalogo import crypto
-from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
+from apps.catalogo.models import (
+    ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, PerifericoDetectado, UnidadNegocio, VersionAgente,
+)
 from apps.cuentas.models import PerfilUsuario
 from apps.cumplimiento.models import (
     ActividadCumplimiento, ResultadoCumplimientoEstacion, TipoObjetivoCumplimiento,
@@ -334,6 +336,59 @@ class EstacionSoftwareInstaladoSolicitarTests(TestCase):
         resp = self.client.get(reverse('panel:estacion_info_modal', args=[self.estacion.pk]))
         self.assertContains(resp, 'Google Chrome')
         self.assertContains(resp, '118.0')
+
+
+class EstacionPerifericosSolicitarTests(TestCase):
+    """Mismo permiso que 'Actualizar ahora' (consultar_info_estacion) — no es una
+    acción de riesgo, así que reusa el permiso en vez de uno propio."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        self.usuario = User.objects.create_user(username='u_perif', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='consultar_info_estacion'),
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
+        self.client.force_login(self.usuario)
+
+    def test_sin_permiso_devuelve_403(self):
+        sin_permiso = User.objects.create_user(username='u_perif_sin', password='x')
+        PerfilUsuario.objects.create(usuario=sin_permiso, acceso_todas_unidades=True)
+        self.client.force_login(sin_permiso)
+        resp = self.client.post(reverse('panel:estacion_perifericos_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_envia_el_comando_y_audita(self):
+        with patch('apps.panel.views.estaciones.enviar_comando', return_value=True) as mock_enviar:
+            resp = self.client.post(reverse('panel:estacion_perifericos_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_called_once_with(self.estacion, 'consultar_perifericos')
+        self.assertTrue(EventoAuditoria.objects.filter(accion='estacion.consultar_perifericos').exists())
+
+    def test_estacion_no_aprobada_no_envia_ni_audita(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        with patch('apps.panel.views.estaciones.enviar_comando', return_value=True) as mock_enviar:
+            resp = self.client.post(reverse('panel:estacion_perifericos_solicitar', args=[self.estacion.pk]))
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_not_called()
+
+    def test_modal_muestra_lo_detectado_en_el_ultimo_escaneo(self):
+        PerifericoDetectado.objects.create(estacion=self.estacion, nombre='Teclado USB', clase='Keyboard', device_id='USB\\1')
+        self.estacion.perifericos_ultima_verificacion = timezone.now()
+        self.estacion.save(update_fields=['perifericos_ultima_verificacion'])
+        resp = self.client.get(reverse('panel:estacion_info_modal', args=[self.estacion.pk]))
+        self.assertContains(resp, 'Teclado USB')
+        self.assertContains(resp, 'Keyboard')
 
 
 class EstacionPowerPlanModalTests(TestCase):

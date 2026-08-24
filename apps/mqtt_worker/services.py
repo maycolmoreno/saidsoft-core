@@ -430,6 +430,50 @@ def manejar_software_instalado(codigo_estacion: str, payload: dict) -> None:
     estacion.save(update_fields=['software_instalado_ultima_verificacion'])
 
 
+def manejar_perifericos(codigo_estacion: str, payload: dict) -> None:
+    """Guarda el resultado de un escaneo puntual de periféricos USB (comando
+    "consultar_perifericos"). Semántica de snapshot, mismo criterio que
+    manejar_software_instalado: reemplaza por completo lo que había antes para esta
+    estación — ver docstring de apps.catalogo.models.PerifericoDetectado."""
+    close_old_connections()
+    try:
+        estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
+    except Estacion.DoesNotExist:
+        logger.warning('Reporte de periféricos con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    from apps.catalogo.models import PerifericoDetectado
+
+    def _limpiar(valor) -> str:
+        # Mismo motivo que manejar_software_instalado: Postgres rechaza bytes NUL en
+        # columnas text.
+        return (valor or '').replace('\x00', '').strip()
+
+    dispositivos = payload.get('dispositivos') or []
+    detectados = []
+    device_ids_vistos = set()
+    for d in dispositivos:
+        device_id = _limpiar(d.get('device_id'))
+        nombre = _limpiar(d.get('nombre'))
+        if not device_id or not nombre or device_id in device_ids_vistos:
+            # unique_together=('estacion', 'device_id') no tolera duplicados/vacíos en
+            # el mismo bulk_create -- se descarta silenciosamente el repetido.
+            continue
+        device_ids_vistos.add(device_id)
+        detectados.append(PerifericoDetectado(
+            estacion=estacion, nombre=nombre, device_id=device_id,
+            fabricante=_limpiar(d.get('fabricante')), clase=_limpiar(d.get('clase')),
+        ))
+
+    PerifericoDetectado.objects.filter(estacion=estacion).delete()
+    PerifericoDetectado.objects.bulk_create(detectados)
+
+    estacion.perifericos_ultima_verificacion = timezone.now()
+    estacion.save(update_fields=['perifericos_ultima_verificacion'])
+
+
 def manejar_pos_errores(codigo_estacion: str, payload: dict) -> None:
     """Guarda lo nuevo de un reporte periódico del log del POS (ver
     agente-prueba/agente_prueba.py::bucle_log_pos) — el agente ya agrupó por mensaje

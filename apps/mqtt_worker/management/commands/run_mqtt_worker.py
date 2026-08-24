@@ -17,8 +17,9 @@ from django.utils import timezone
 
 from apps.mqtt_worker.services import (
     NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_instalacion,
-    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_pos_errores,
-    manejar_software_instalado, manejar_windows_update, registrar_latido_worker, registrar_mensaje_fallido,
+    manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_perifericos,
+    manejar_pos_errores, manejar_software_instalado, manejar_windows_update, registrar_latido_worker,
+    registrar_mensaje_fallido,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ TOPICO_ESTADO_SCRIPT = '/saidsof/agente/+/script_estado/'
 TOPICO_ESTADO_INSTALACION = '/saidsof/agente/+/software_estado/'
 TOPICO_WINDOWS_UPDATE = '/saidsof/agente/+/windows_update/'
 TOPICO_SOFTWARE_INSTALADO = '/saidsof/agente/+/software_instalado/'
+TOPICO_PERIFERICOS = '/saidsof/agente/+/perifericos/'
 TOPICO_POS_ERRORES = '/saidsof/agente/+/pos_errores/'
 
 # El latido se guarda como mucho cada N segundos (no en cada mensaje): a la
@@ -122,6 +124,7 @@ class Command(BaseCommand):
         client.subscribe(TOPICO_ESTADO_INSTALACION, qos=1)
         client.subscribe(TOPICO_WINDOWS_UPDATE)
         client.subscribe(TOPICO_SOFTWARE_INSTALADO)
+        client.subscribe(TOPICO_PERIFERICOS)
         client.subscribe(TOPICO_POS_ERRORES)
         registrar_latido_worker(NOMBRE_WORKER_MQTT)
 
@@ -169,6 +172,8 @@ class Command(BaseCommand):
                 manejar_windows_update(_codigo_desde_topico(msg.topic), payload)
             elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/software_instalado/'):
                 manejar_software_instalado(_codigo_desde_topico(msg.topic), payload)
+            elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/perifericos/'):
+                manejar_perifericos(_codigo_desde_topico(msg.topic), payload)
             elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/pos_errores/'):
                 manejar_pos_errores(_codigo_desde_topico(msg.topic), payload)
         except Exception as exc:

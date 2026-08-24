@@ -238,6 +238,11 @@ class Estacion(models.Model):
     # para poder buscar "qué estaciones tienen instalado X" — ver docstring del modelo).
     software_instalado_ultima_verificacion = models.DateTimeField(null=True, blank=True)
 
+    # Periféricos USB conectados — comando "consultar_perifericos", mismo patrón "info
+    # bajo demanda" que software instalado. El detalle vive en PerifericoDetectado
+    # (relacional, no JSONField, mismo motivo que software instalado).
+    perifericos_ultima_verificacion = models.DateTimeField(null=True, blank=True)
+
     estado_conexion = models.CharField(
         max_length=20, choices=EstadoConexion.choices, default=EstadoConexion.NUNCA_CONECTADA,
     )
@@ -410,3 +415,37 @@ class ClaveRecuperacionBitLocker(models.Model):
 
     def __str__(self):
         return f'Clave BitLocker de {self.estacion.codigo}'
+
+
+class PerifericoDetectado(models.Model):
+    """Snapshot de dispositivos USB conectados a una estación en su último escaneo
+    (comando "consultar_perifericos"): impresoras, teclado, mouse, almacenamiento,
+    cámaras — cualquier dispositivo enumerado bajo el bus USB de Windows.
+
+    Mismo criterio que apps.software.models.SoftwareInstaladoDetectado: se reemplaza
+    por completo en cada escaneo, no es un historial — desconectar algo entre escaneos
+    se refleja recién en el próximo, no hay lógica de diff.
+
+    No detecta periféricos inalámbricos por Bluetooth (otro DeviceID, fuera del filtro
+    "USB\\*") ni impresoras de red (no pasan por el bus USB de este equipo) — limitación
+    real de WMI, no de este modelo.
+    """
+    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='perifericos_detectados')
+    nombre = models.CharField(max_length=200)
+    fabricante = models.CharField(max_length=150, blank=True)
+    clase = models.CharField(
+        max_length=100, blank=True,
+        help_text='PNPClass de Windows: Keyboard, Mouse, Printer, HIDClass, USB, DiskDrive, Image, etc.',
+    )
+    device_id = models.CharField(max_length=255, blank=True)
+    detectado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'periferico_detectado'
+        ordering = ['estacion', 'nombre']
+        unique_together = [('estacion', 'device_id')]
+        verbose_name = 'Periférico detectado'
+        verbose_name_plural = 'Periféricos detectados'
+
+    def __str__(self):
+        return f'{self.nombre} ({self.estacion.codigo})'

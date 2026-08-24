@@ -233,6 +233,44 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
         {% endif %}
     </div>
 
+    <div class="section-divider">
+        <div class="section-head">
+            <span class="label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M8 6V4"/><path d="M16 6V4"/></svg>
+                <h3>Periféricos USB</h3>
+            </span>
+            {% if estacion.perifericos_ultima_verificacion %}
+            <span class="pill neutral">{{ estacion.perifericos_detectados.count }} dispositivo{{ estacion.perifericos_detectados.count|pluralize }}</span>
+            {% else %}
+            <span class="pill neutral">Nunca escaneado</span>
+            {% endif %}
+        </div>
+
+        {% if estacion.perifericos_ultima_verificacion %}
+        <p class="text-xs text-[var(--text-faint)] mb-2">Último escaneo: {{ estacion.perifericos_ultima_verificacion }}</p>
+        <ul class="text-xs mb-2 space-y-1" style="max-height:9rem;overflow-y:auto;">
+            {% for p in estacion.perifericos_detectados.all %}
+            <li>{{ p.nombre }}{% if p.clase %} <span class="text-[var(--text-faint)] mono">({{ p.clase }})</span>{% endif %}</li>
+            {% empty %}
+            <li class="text-[var(--text-faint)]">Sin dispositivos detectados.</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-xs text-[var(--text-dim)] mb-2">Todavía no se escaneó esta estación.</p>
+        {% endif %}
+
+        {% if estacion.estado_aprobacion == 'aprobada' and estacion.estado_conexion == 'online' %}
+        <form hx-post="{% url 'panel:estacion_perifericos_solicitar' estacion.pk %}"
+              hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+              hx-target="#modal-info-content" hx-swap="innerHTML">
+            {% csrf_token %}
+            <button type="submit" class="btn secondary">Escanear periféricos USB</button>
+        </form>
+        {% else %}
+        <p class="text-xs text-[var(--text-faint)]">La estación debe estar aprobada y en línea para escanear.</p>
+        {% endif %}
+    </div>
+
     {% with errores_pos=estacion.pos_errores.all %}
     {% if errores_pos %}
     <div class="section-divider">

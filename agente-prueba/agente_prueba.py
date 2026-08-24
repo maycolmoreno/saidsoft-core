@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.2'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.3'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -503,6 +503,8 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
             self._verificar_y_escanear_actualizaciones(payload)
         elif comando == 'consultar_software_instalado':
             self._verificar_y_consultar_software_instalado(payload)
+        elif comando == 'consultar_perifericos':
+            self._verificar_y_consultar_perifericos(payload)
         elif comando == 'actualizar_agente':
             self._verificar_y_actualizar_agente(payload)
         else:
@@ -782,6 +784,49 @@ ConvertTo-Json -Compress -InputObject @($programas)
         # lo serializa como array sin importar cuántos elementos tenga (0, 1 o muchos).
         salida = subprocess.check_output(
             ['powershell', '-NoProfile', '-Command', script], timeout=30, text=True,
+        )
+        datos = json.loads(salida) if salida.strip() else []
+        return datos if isinstance(datos, list) else [datos]
+
+    def _verificar_y_consultar_perifericos(self, payload):
+        # Mismo esquema de firma que consultar_software_instalado.
+        if not self._firma_valida(
+            'comando consultar_perifericos', payload,
+            comando='consultar_perifericos',
+            estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+        ):
+            return
+        threading.Thread(target=self._escanear_y_reportar_perifericos, daemon=True).start()
+
+    def _escanear_y_reportar_perifericos(self):
+        try:
+            dispositivos = self._listar_perifericos_usb()
+        except Exception:
+            logging.exception('No se pudo listar los periféricos USB')
+            dispositivos = []
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/perifericos/', {
+            'token': self._token(), 'dispositivos': dispositivos,
+        })
+        logging.info('Periféricos USB reportados: %d', len(dispositivos))
+
+    def _listar_perifericos_usb(self) -> list:
+        """Enumera los dispositivos actualmente conectados por USB (Win32_PnPEntity,
+        filtrado a DeviceID que empieza con "USB\\") — impresoras, teclado, mouse,
+        almacenamiento, cámaras, cualquier periférico USB. No detecta periféricos
+        inalámbricos por Bluetooth (otro DeviceID, fuera de este filtro) ni impresoras
+        de red (no pasan por el bus USB de este equipo) — limitación real de WMI, no de
+        este código."""
+        script = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$dispositivos = Get-CimInstance Win32_PnPEntity -Filter "DeviceID LIKE 'USB%'" |
+    Where-Object { $_.Status -eq 'OK' } |
+    Select-Object @{N='nombre';E={$_.Name}}, @{N='fabricante';E={$_.Manufacturer}}, @{N='clase';E={$_.PNPClass}}, @{N='device_id';E={$_.DeviceID}}
+ConvertTo-Json -Compress -InputObject @($dispositivos)
+"""
+        # Mismo motivo que _listar_software_instalado: -InputObject @(...) fuerza
+        # serialización como array sin importar cuántos elementos tenga.
+        salida = subprocess.check_output(
+            ['powershell', '-NoProfile', '-Command', script], timeout=20, text=True,
         )
         datos = json.loads(salida) if salida.strip() else []
         return datos if isinstance(datos, list) else [datos]
