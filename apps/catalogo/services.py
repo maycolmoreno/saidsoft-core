@@ -370,7 +370,12 @@ def calcular_matriz_cumplimiento(unidades_negocio, *, umbral_online_minutos=5):
     umbral_online = timezone.now() - timedelta(minutes=umbral_online_minutos)
     en_alcance = Q(farmacias__unidad_negocio__in=unidades_negocio)
 
-    grupos = Grupo.objects.filter(en_alcance).distinct().annotate(
+    # "PENDIENTE" es el bucket que usa importar_farmacias cuando el nodo/grupo de una
+    # fila no se pudo resolver a un Grupo real todavía (ver apps.catalogo.services,
+    # importar_farmacias) -- no es una unidad operativa, así que no debe aparecer en
+    # un reporte de cumplimiento como si lo fuera. Si tiene farmacias, es una señal de
+    # que falta terminar de clasificarlas, no un grupo a auditar.
+    grupos = Grupo.objects.filter(en_alcance).exclude(codigo='PENDIENTE').distinct().annotate(
         total_estaciones=Count('farmacias__estaciones', filter=en_alcance, distinct=True),
         total_farmacias=Count('farmacias', filter=en_alcance, distinct=True),
         conformes=Count(

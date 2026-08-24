@@ -15,7 +15,7 @@ from apps.activos.models import Cargo, Colaborador, Departamento
 from apps.catalogo import crypto
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
 from apps.catalogo.services import (
-    enviar_actualizacion_agente, enviar_comando, enviar_script, firmar_payload,
+    calcular_matriz_cumplimiento, enviar_actualizacion_agente, enviar_comando, enviar_script, firmar_payload,
     generar_comando_instalacion_meshcentral, obtener_clave_bitlocker_descifrada, resolver_estaciones,
     url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
     validar_destino_unidad_negocio,
@@ -762,3 +762,25 @@ class EnviarActualizacionAgenteTests(TestCase):
         self.assertEqual(args[0], f'/saidsof/agente/{self.estacion.codigo}/actualizar_agente/')
         self.assertEqual(args[1], '')
         self.assertTrue(kwargs['retain'])
+
+
+class CalcularMatrizCumplimientoTests(TestCase):
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+
+    def test_excluye_el_grupo_pendiente(self):
+        # PENDIENTE es el bucket que usa importar_farmacias cuando el nodo/grupo de
+        # una fila no se resolvió todavía -- no es una unidad operativa real, no debe
+        # aparecer en la matriz de cumplimiento aunque tenga farmacias (encontrado en
+        # producción: 208 farmacias quedaron ahí por un NODO más largo que
+        # Grupo.codigo, ver docstring de importar_farmacias).
+        pendiente = Grupo.objects.create(codigo='PENDIENTE')
+        Farmacia.objects.create(codigo='GX001', grupo=pendiente, unidad_negocio=self.sg)
+        codigos = [g.codigo for g in calcular_matriz_cumplimiento([self.sg])]
+        self.assertNotIn('PENDIENTE', codigos)
+
+    def test_incluye_grupos_reales_con_farmacias_en_alcance(self):
+        grupo = Grupo.objects.create(codigo='TRX099')
+        Farmacia.objects.create(codigo='GX002', grupo=grupo, unidad_negocio=self.sg)
+        codigos = [g.codigo for g in calcular_matriz_cumplimiento([self.sg])]
+        self.assertIn('TRX099', codigos)
