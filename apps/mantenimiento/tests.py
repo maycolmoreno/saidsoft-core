@@ -123,7 +123,7 @@ class CerrarMantenimientoTests(TestCase):
         )
 
         programado.refresh_from_db()
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         self.assertEqual(programado.fecha_ultimo, hoy)
         self.assertEqual(programado.fecha_proximo, hoy + timedelta(days=30))
 
@@ -245,7 +245,7 @@ class NotificarVencimientoTests(TestCase):
         self.equipo = Activo.objects.create(codigo='CR-DSK-0010', tipo=Activo.Tipo.DESKTOP)
 
     def test_detecta_plan_proximo_a_vencer_dentro_de_la_ventana(self):
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         dentro = MantenimientoProgramado.objects.create(
             equipo=self.equipo, tecnico=self.tecnico, frecuencia_dias=90, fecha_proximo=hoy + timedelta(days=5),
         )
@@ -258,7 +258,7 @@ class NotificarVencimientoTests(TestCase):
         self.assertNotIn(fuera, resultado)
 
     def test_plan_inactivo_no_se_detecta(self):
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         MantenimientoProgramado.objects.create(
             equipo=self.equipo, tecnico=self.tecnico, frecuencia_dias=90,
             fecha_proximo=hoy + timedelta(days=2), activo=False,
@@ -288,7 +288,7 @@ class NotificarVencimientoTests(TestCase):
         self.assertEqual(mantenimientos_atrasados(dias_gracia=3).count(), 0)
 
     def test_notificar_crea_avisos_para_ambos_casos(self):
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         MantenimientoProgramado.objects.create(
             equipo=self.equipo, tecnico=self.tecnico, frecuencia_dias=90, fecha_proximo=hoy + timedelta(days=3),
         )
@@ -302,7 +302,7 @@ class NotificarVencimientoTests(TestCase):
         self.assertEqual(Notificacion.objects.filter(usuario=self.tecnico).count(), 2)
 
     def test_no_duplica_el_aviso_el_mismo_dia(self):
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         MantenimientoProgramado.objects.create(
             equipo=self.equipo, tecnico=self.tecnico, frecuencia_dias=90, fecha_proximo=hoy + timedelta(days=3),
         )
@@ -314,7 +314,7 @@ class NotificarVencimientoTests(TestCase):
     def test_sin_tecnico_asignado_no_falla_ni_notifica(self):
         MantenimientoProgramado.objects.create(
             equipo=self.equipo, tecnico=self.tecnico, frecuencia_dias=90,
-            fecha_proximo=timezone.now().date() + timedelta(days=3),
+            fecha_proximo=timezone.localdate() + timedelta(days=3),
         )
         # Mantenimiento manual sin técnico asignado.
         crear_mantenimiento_manual(
@@ -335,7 +335,7 @@ class GenerarMantenimientosProgramadosTaskTests(TestCase):
         usuario = User.objects.create_user(username='u_task_mant', password='x')
         equipo = Activo.objects.create(codigo='CR-DSK-0099', tipo=Activo.Tipo.DESKTOP)
         programado = MantenimientoProgramado.objects.create(
-            equipo=equipo, tecnico=usuario, frecuencia_dias=30, fecha_proximo=timezone.now().date(),
+            equipo=equipo, tecnico=usuario, frecuencia_dias=30, fecha_proximo=timezone.localdate(),
         )
 
         resultado = generar_mantenimientos_programados_task.delay()

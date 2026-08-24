@@ -169,7 +169,7 @@ def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_re
 
     if mantenimiento.mantenimiento_programado_id:
         programado = mantenimiento.mantenimiento_programado
-        hoy = mantenimiento.fecha_cierre.date()
+        hoy = timezone.localtime(mantenimiento.fecha_cierre).date()
         programado.fecha_ultimo = hoy
         programado.fecha_proximo = hoy + timedelta(days=programado.frecuencia_dias)
         programado.save(update_fields=['fecha_ultimo', 'fecha_proximo'])
@@ -204,7 +204,7 @@ def generar_proximo_mantenimiento_programado(*, programado, usuario=None):
         mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.PROGRAMADO, usuario=usuario,
         detalle={'origen': 'programado', 'mantenimiento_programado_id': programado.pk},
     )
-    hoy = timezone.now().date()
+    hoy = timezone.localdate()
     programado.fecha_ultimo = hoy
     programado.fecha_proximo = hoy + timedelta(days=programado.frecuencia_dias)
     programado.save(update_fields=['fecha_ultimo', 'fecha_proximo'])
@@ -218,7 +218,7 @@ def generar_mantenimientos_vencidos() -> int:
     from django.db import transaction
 
     with transaction.atomic():
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         vencidos = MantenimientoProgramado.objects.filter(activo=True, fecha_proximo__lte=hoy)
         total = 0
         for programado in vencidos:
@@ -385,7 +385,7 @@ DIAS_GRACIA_ATRASADO = 3
 
 def mantenimientos_programados_por_vencer(dias=DIAS_PROXIMO_A_VENCER):
     """Planes activos cuyo `fecha_proximo` cae dentro de los próximos `dias` días."""
-    hoy = timezone.now().date()
+    hoy = timezone.localdate()
     return MantenimientoProgramado.objects.filter(
         activo=True, fecha_proximo__gte=hoy, fecha_proximo__lte=hoy + timedelta(days=dias),
     ).select_related('equipo', 'tecnico')
@@ -406,7 +406,7 @@ def notificar_mantenimientos_proximos_y_atrasados() -> dict:
     resolverse, vuelve a avisar mañana (recordatorio diario a propósito, no una sola vez)."""
     from django.urls import reverse
 
-    hoy = timezone.now().date()
+    hoy = timezone.localdate()
     creadas_proximos = 0
     for programado in mantenimientos_programados_por_vencer():
         if not programado.tecnico_id:
@@ -435,7 +435,7 @@ def notificar_mantenimientos_proximos_y_atrasados() -> dict:
         ).exists()
         if ya_avisado_hoy:
             continue
-        dias_atraso = (hoy - mantenimiento.fecha_programada.date()).days
+        dias_atraso = (hoy - timezone.localtime(mantenimiento.fecha_programada).date()).days
         notificar(
             usuario=mantenimiento.tecnico,
             mensaje=f'Mantenimiento #{mantenimiento.pk} lleva {dias_atraso} día(s) sin cerrarse.',
