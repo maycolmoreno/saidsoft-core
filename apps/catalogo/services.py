@@ -109,6 +109,26 @@ def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script
     })
 
 
+def enviar_consultar_red_farmacia(estacion, comunidad: str) -> bool:
+    """Pide a `estacion` que sondee por SNMP el Mikrotik de su propia farmacia (misma
+    LAN, sin VPN -- ver docstring de agente_prueba._leer_contadores_mikrotik sobre
+    por qué esto reemplaza el sondeo directo desde el servidor de
+    apps.monitoreo.mikrotik, que no tiene ruta de red hacia esas IPs privadas).
+
+    `comunidad` viaja en el payload (no la deriva el agente de su propio código):
+    el servidor ya conoce `farmacia.codigo.lower()` con autoridad, más simple y
+    confiable que hacer que el agente lo reconstruya a partir de su Estacion.codigo.
+    """
+    timestamp = int(time.time())
+    firma = firmar_payload(
+        comando='consultar_red_farmacia', comunidad=comunidad, estacion=estacion.codigo, timestamp=timestamp,
+    )
+    return _publicar_comando(estacion, {
+        'comando': 'consultar_red_farmacia', 'comunidad': comunidad,
+        'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
+    })
+
+
 def enviar_actualizacion_agente(estacion, version_agente) -> bool:
     """Publica la orden de actualizar el agente de `estacion` a `version_agente`
     (apps.catalogo.models.VersionAgente). El agente se detiene, reemplaza su propio

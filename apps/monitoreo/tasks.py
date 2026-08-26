@@ -1,6 +1,6 @@
 from celery import shared_task
 
-from .mikrotik import sincronizar_ancho_banda_farmacias
+from .mikrotik import sincronizar_ancho_banda_farmacias, solicitar_sondeo_red_farmacias_via_agente
 from .services import (
     escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
 )
@@ -45,6 +45,17 @@ def sincronizar_ancho_banda_farmacias_task():
     configurado (ver apps.monitoreo.mikrotik)."""
     exitosas = sincronizar_ancho_banda_farmacias()
     return f'{exitosas} farmacia(s) sondeada(s) por SNMP.'
+
+
+@shared_task(name='apps.monitoreo.tasks.solicitar_sondeo_red_farmacias_via_agente_task')
+def solicitar_sondeo_red_farmacias_via_agente_task():
+    """Cada 5 min (ver CELERY_BEAT_SCHEDULE) — por cada farmacia con `ip_router` y
+    una estación en línea, le pide a esa estación (misma LAN que el Mikrotik del
+    sitio) que lo sondee y reporte por MQTT. Ver docstring de
+    solicitar_sondeo_red_farmacias_via_agente sobre por qué esto reemplaza en la
+    práctica al sondeo directo de sincronizar_ancho_banda_farmacias_task."""
+    enviadas = solicitar_sondeo_red_farmacias_via_agente()
+    return f'{enviadas} estación(es) recibieron el pedido de sondeo de red.'
 
 
 @shared_task(name='apps.monitoreo.tasks.sincronizar_meshcentral_task')

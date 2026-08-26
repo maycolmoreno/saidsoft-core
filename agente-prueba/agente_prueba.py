@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.5'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.6'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -524,6 +524,8 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
             self._verificar_y_consultar_software_instalado(payload)
         elif comando == 'consultar_perifericos':
             self._verificar_y_consultar_perifericos(payload)
+        elif comando == 'consultar_red_farmacia':
+            self._verificar_y_consultar_red_farmacia(payload)
         elif comando == 'actualizar_agente':
             self._verificar_y_actualizar_agente(payload)
         else:
@@ -849,6 +851,104 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
         )
         datos = json.loads(salida) if salida.strip() else []
         return datos if isinstance(datos, list) else [datos]
+
+    # --- ancho de banda del enlace de la farmacia (Mikrotik local, sin VPN) ---
+    #
+    # apps.monitoreo.mikrotik sondea los ~700 Mikrotik de las farmacias por SNMP
+    # DESDE EL SERVIDOR CENTRAL -- pero el servidor no tiene ninguna ruta de red
+    # hacia esas IPs privadas (192.168/169/170.x.x), confirmado con ping real
+    # (24-ago-2026): 100% de pérdida, sin ruta en la tabla del host. Esta estación,
+    # en cambio, está en la MISMA LAN que el Mikrotik de su propia farmacia -- lo
+    # alcanza directo, sin VPN. Mismos OIDs/protocolo que el lado servidor, pero
+    # sondeando un solo router en vez de 700 en paralelo con asyncio.
+
+    def _verificar_y_consultar_red_farmacia(self, payload):
+        if not self._firma_valida(
+            'comando consultar_red_farmacia', payload,
+            comando='consultar_red_farmacia', comunidad=payload.get('comunidad'),
+            estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+        ):
+            return
+        threading.Thread(
+            target=self._escanear_y_reportar_red_farmacia, args=(payload.get('comunidad'),), daemon=True,
+        ).start()
+
+    def _escanear_y_reportar_red_farmacia(self, comunidad):
+        try:
+            contadores = self._leer_contadores_mikrotik(comunidad)
+        except Exception:
+            logging.exception('No se pudo sondear el Mikrotik local de la farmacia')
+            contadores = None
+        payload = {'token': self._token()}
+        if contadores is not None:
+            payload['bytes_recibidos'], payload['bytes_enviados'] = contadores
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/red_farmacia/', payload)
+        logging.info(
+            'Red de farmacia reportada: %s', contadores if contadores is not None else 'sin datos (router no respondió)',
+        )
+
+    def _gateway_por_defecto(self) -> str:
+        """IP del gateway por defecto de Windows -- en la LAN de una farmacia es el
+        propio Mikrotik (confirmado contra ML006: la IP LAN de la estación y
+        Farmacia.ip_router caen en la misma subred /24). No se usa el ip_router que
+        conoce el servidor porque el agente no lo recibe y porque redescubrirlo
+        localmente es más robusto que depender de que ese dato esté siempre al día."""
+        try:
+            salida = subprocess.check_output(
+                ['powershell', '-NoProfile', '-Command',
+                 "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | "
+                 "Sort-Object -Property RouteMetric | Select-Object -First 1 -ExpandProperty NextHop)"],
+                timeout=10, text=True,
+            )
+            return salida.strip()
+        except Exception:
+            logging.exception('No se pudo determinar el gateway por defecto de Windows')
+            return ''
+
+    def _leer_contadores_mikrotik(self, comunidad: str):
+        """(bytes_recibidos, bytes_enviados) del Mikrotik local, o None si no se pudo
+        sondear -- nunca lanza. Mismos OIDs que apps.monitoreo.mikrotik: ipRouteIfIndex
+        de la ruta por defecto para resolver la interfaz WAN sin necesitar su nombre
+        (no es uniforme entre sitios), después ifHCIn/OutOctets (64 bits, evita
+        wraparound) de esa interfaz."""
+        import asyncio
+
+        from pysnmp.hlapi.v3arch.asyncio import (
+            CommunityData, ContextData, ObjectIdentity, ObjectType, SnmpEngine, UdpTransportTarget, get_cmd,
+        )
+
+        ip = self._gateway_por_defecto()
+        if not ip:
+            return None
+
+        async def _sondear():
+            engine = SnmpEngine()
+            target = await UdpTransportTarget.create((ip, 161), timeout=3, retries=0)
+
+            _, error_status, _, var_binds = await get_cmd(
+                engine, CommunityData(comunidad), target, ContextData(),
+                ObjectType(ObjectIdentity('1.3.6.1.2.1.4.21.1.2.0.0.0.0')),
+            )
+            if error_status:
+                return None
+            try:
+                indice = int(var_binds[0][1])
+            except (IndexError, ValueError, TypeError):
+                return None
+
+            _, error_status, _, var_binds = await get_cmd(
+                engine, CommunityData(comunidad), target, ContextData(),
+                ObjectType(ObjectIdentity(f'1.3.6.1.2.1.31.1.1.1.6.{indice}')),
+                ObjectType(ObjectIdentity(f'1.3.6.1.2.1.31.1.1.1.10.{indice}')),
+            )
+            if error_status:
+                return None
+            try:
+                return int(var_binds[0][1]), int(var_binds[1][1])
+            except (IndexError, ValueError, TypeError):
+                return None
+
+        return asyncio.run(_sondear())
 
     # --- auto-actualización del agente ---
     NOMBRE_SERVICIO = 'SaidsoftAgente'  # debe coincidir con ServicioAgenteSaidsoft._svc_name_

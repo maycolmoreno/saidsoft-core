@@ -343,7 +343,17 @@ CELERY_BEAT_SCHEDULE = {
     'sincronizar-ancho-banda-farmacias': {
         'task': 'apps.monitoreo.tasks.sincronizar_ancho_banda_farmacias_task',
         # Cada 5 min: mismo orden de magnitud que las demás tareas de apps.monitoreo.
-        # Sin efecto si MIKROTIK_SNMP_CONFIG no está configurado.
+        # Sondeo DIRECTO desde este servidor -- confirmado 24-ago-2026 que no tiene
+        # ninguna ruta de red hacia las IPs privadas de las farmacias, así que hoy
+        # nunca logra sondear nada (solo loguea warnings). Se deja programada por si
+        # algún día existe una ruta VPN real; mientras tanto el dato real viene de
+        # 'sondear-red-farmacias-via-agente', abajo.
+        'schedule': 60.0 * 5,
+    },
+    'sondear-red-farmacias-via-agente': {
+        'task': 'apps.monitoreo.tasks.solicitar_sondeo_red_farmacias_via_agente_task',
+        # Cada 5 min, mismo intervalo que el sondeo directo que reemplaza en la
+        # práctica -- ver docstring de solicitar_sondeo_red_farmacias_via_agente.
         'schedule': 60.0 * 5,
     },
 }

@@ -1022,3 +1022,64 @@ class SincronizarAnchoBandaFarmaciasTests(TestCase):
         muestra = MuestraRedFarmacia.objects.filter(farmacia=self.con_ip).exclude(pk=anterior.pk).get()
         self.assertIsNone(muestra.red_recibido_kbps)
         self.assertIsNone(muestra.red_enviado_kbps)
+
+
+class SolicitarSondeoRedFarmaciasViaAgenteTests(TestCase):
+    """El servidor no tiene ruta de red hacia las IPs privadas de las farmacias
+    (confirmado 24-ago-2026) -- esto reemplaza en la práctica al sondeo directo,
+    pidiéndole a una estación de la propia LAN de cada farmacia que sondee su
+    Mikrotik local y reporte por MQTT."""
+
+    def setUp(self):
+        from .mikrotik import solicitar_sondeo_red_farmacias_via_agente
+        self.solicitar = solicitar_sondeo_red_farmacias_via_agente
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg, ip_router='10.0.1.1')
+
+    def test_le_pide_a_una_estacion_online_de_la_farmacia(self):
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        with patch('apps.catalogo.services.enviar_consultar_red_farmacia', return_value=True) as mock_enviar:
+            n = self.solicitar()
+        self.assertEqual(n, 1)
+        mock_enviar.assert_called_once_with(estacion, 'ml001')
+
+    def test_farmacia_sin_ip_router_se_ignora(self):
+        self.farmacia.ip_router = ''
+        self.farmacia.save(update_fields=['ip_router'])
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        with patch('apps.catalogo.services.enviar_consultar_red_farmacia', return_value=True) as mock_enviar:
+            n = self.solicitar()
+        self.assertEqual(n, 0)
+        mock_enviar.assert_not_called()
+
+    def test_farmacia_sin_estacion_online_se_ignora(self):
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, estado_conexion=Estacion.EstadoConexion.OFFLINE,
+        )
+        with patch('apps.catalogo.services.enviar_consultar_red_farmacia', return_value=True) as mock_enviar:
+            n = self.solicitar()
+        self.assertEqual(n, 0)
+        mock_enviar.assert_not_called()
+
+    def test_una_sola_estacion_por_farmacia_aunque_haya_varias_online(self):
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        Estacion.objects.create(
+            codigo='ML001-B', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        with patch('apps.catalogo.services.enviar_consultar_red_farmacia', return_value=True) as mock_enviar:
+            n = self.solicitar()
+        self.assertEqual(n, 1)
+        mock_enviar.assert_called_once()

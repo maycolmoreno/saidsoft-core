@@ -784,3 +784,31 @@ class CalcularMatrizCumplimientoTests(TestCase):
         Farmacia.objects.create(codigo='GX002', grupo=grupo, unidad_negocio=self.sg)
         codigos = [g.codigo for g in calcular_matriz_cumplimiento([self.sg])]
         self.assertIn('TRX099', codigos)
+
+
+class EnviarConsultarRedFarmaciaTests(TestCase):
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'), ip_router='10.0.1.1',
+        )
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+
+    def test_el_payload_lleva_comunidad_estacion_timestamp_y_firma_valida(self):
+        from apps.catalogo.services import enviar_consultar_red_farmacia
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            enviar_consultar_red_farmacia(self.estacion, 'ml001')
+        args, kwargs = mock_single.call_args
+        # No usa /comando/ como los demás (retain=False ahí no importa), pero SÍ
+        # comparte ese mismo tópico -- a diferencia de actualizar_agente, este no
+        # necesita quedar retenido: si la estación está apagada, simplemente no hay
+        # nada que sondear en ese momento.
+        self.assertEqual(args[0], f'/saidsof/agente/{self.estacion.codigo}/comando/')
+        payload = json.loads(args[1])
+        self.assertEqual(payload['comando'], 'consultar_red_farmacia')
+        self.assertEqual(payload['comunidad'], 'ml001')
+        self.assertEqual(payload['estacion'], 'ML001-A')
+        firma_esperada = firmar_payload(
+            comando='consultar_red_farmacia', comunidad='ml001', estacion='ML001-A', timestamp=payload['timestamp'],
+        )
+        self.assertEqual(payload['firma'], firma_esperada)

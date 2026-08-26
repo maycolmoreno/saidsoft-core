@@ -1,3 +1,4 @@
 paho-mqtt>=2.1
 pyinstaller>=6.0
 pywin32>=306
+pysnmp>=7.1

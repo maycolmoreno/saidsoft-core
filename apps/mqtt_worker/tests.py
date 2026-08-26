@@ -13,7 +13,9 @@ from django.utils import timezone
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, PerifericoDetectado, UnidadNegocio
 from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
 from apps.facturacion.models import ActividadMensualEstacion
-from apps.monitoreo.models import Alerta, EstadoDispositivo, Metrica, MuestraMetrica, PosErrorDetectado, ReglaAlerta
+from apps.monitoreo.models import (
+    Alerta, EstadoDispositivo, Metrica, MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta,
+)
 from apps.mqtt_worker.management.commands.run_mqtt_worker import (
     TOPICO_ESTADO_DESPLIEGUE, TOPICO_ESTADO_INSTALACION, TOPICO_ESTADO_SCRIPT, TOPICO_HEARTBEAT, Command,
     _codigo_desde_topico,
@@ -23,8 +25,8 @@ from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
 from apps.mqtt_worker.services import (
     NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_instalacion,
     manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_perifericos,
-    manejar_pos_errores, manejar_software_instalado, manejar_windows_update, registrar_latido_worker,
-    registrar_mensaje_fallido,
+    manejar_pos_errores, manejar_red_farmacia, manejar_software_instalado, manejar_windows_update,
+    registrar_latido_worker, registrar_mensaje_fallido,
 )
 from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript, Script, TipoScript
 from apps.software.models import SoftwareInstaladoDetectado
@@ -843,6 +845,63 @@ class ManejarPerifericosTests(TestCase):
         self.assertFalse(PerifericoDetectado.objects.filter(estacion=self.estacion).exists())
 
 
+class ManejarRedFarmaciaTests(TestCase):
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg, ip_router='10.0.1.1')
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def test_guarda_una_muestra_con_los_contadores_reportados(self):
+        manejar_red_farmacia(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'bytes_recibidos': 100_000, 'bytes_enviados': 50_000,
+        })
+        muestra = MuestraRedFarmacia.objects.get(farmacia=self.estacion.farmacia)
+        self.assertEqual(muestra.bytes_recibidos, 100_000)
+        self.assertEqual(muestra.bytes_enviados, 50_000)
+        self.assertIsNone(muestra.red_recibido_kbps)  # primera muestra, sin anterior contra qué comparar
+
+    def test_sin_contadores_no_crea_ninguna_muestra(self):
+        # El agente no pudo sondear su Mikrotik local (router caído, community
+        # equivocada, etc.) -- no hay nada real que guardar, y guardar ceros
+        # rompería el cálculo de tasa de la siguiente muestra real.
+        manejar_red_farmacia(self.estacion.codigo, {'token': self.estacion.token_enrolamiento})
+        self.assertFalse(MuestraRedFarmacia.objects.filter(farmacia=self.estacion.farmacia).exists())
+
+    def test_calcula_la_tasa_contra_la_muestra_anterior_de_la_farmacia(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        anterior = MuestraRedFarmacia.objects.create(
+            farmacia=self.estacion.farmacia, bytes_recibidos=100_000_000, bytes_enviados=50_000_000,
+        )
+        MuestraRedFarmacia.objects.filter(pk=anterior.pk).update(timestamp=timezone.now() - timedelta(seconds=300))
+
+        manejar_red_farmacia(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'bytes_recibidos': 112_000_000, 'bytes_enviados': 56_000_000,
+        })
+        muestra = MuestraRedFarmacia.objects.filter(farmacia=self.estacion.farmacia).exclude(pk=anterior.pk).get()
+        self.assertEqual(muestra.red_recibido_kbps, 320.0)
+        self.assertEqual(muestra.red_enviado_kbps, 160.0)
+
+    def test_token_invalido_no_crea_nada(self):
+        manejar_red_farmacia(self.estacion.codigo, {
+            'token': 'malo', 'bytes_recibidos': 100_000, 'bytes_enviados': 50_000,
+        })
+        self.assertFalse(MuestraRedFarmacia.objects.filter(farmacia=self.estacion.farmacia).exists())
+
+    def test_estacion_no_aprobada_se_ignora(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        manejar_red_farmacia(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'bytes_recibidos': 100_000, 'bytes_enviados': 50_000,
+        })
+        self.assertFalse(MuestraRedFarmacia.objects.filter(farmacia=self.estacion.farmacia).exists())
+
+
 class ManejarPosErroresTests(TestCase):
     def setUp(self):
         sg = UnidadNegocio.objects.get(codigo='SG')
@@ -1078,6 +1137,13 @@ class OnMessageDispatchTests(TestCase):
         })
         self.command._on_message(MagicMock(), None, msg)
         self.assertTrue(PerifericoDetectado.objects.filter(estacion=self.estacion, nombre='Teclado').exists())
+
+    def test_red_farmacia_dispatcha_a_manejar_red_farmacia(self):
+        msg = _msg('/saidsof/agente/ML001-A/red_farmacia/', {
+            'token': self.estacion.token_enrolamiento, 'bytes_recibidos': 100_000, 'bytes_enviados': 50_000,
+        })
+        self.command._on_message(MagicMock(), None, msg)
+        self.assertTrue(MuestraRedFarmacia.objects.filter(farmacia=self.estacion.farmacia).exists())
 
     def test_pos_errores_dispatcha_a_manejar_pos_errores(self):
         msg = _msg('/saidsof/agente/ML001-A/pos_errores/', {

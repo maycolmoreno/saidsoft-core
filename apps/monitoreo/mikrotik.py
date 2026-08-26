@@ -195,3 +195,39 @@ def sincronizar_ancho_banda_farmacias() -> int:
         )
         exitosas += 1
     return exitosas
+
+
+def solicitar_sondeo_red_farmacias_via_agente() -> int:
+    """Celery Beat periódico (cada 5 min, ver CELERY_BEAT_SCHEDULE): por cada
+    Farmacia con `ip_router` y al menos una Estacion aprobada y en línea, le pide a
+    ESA estación (misma LAN que el Mikrotik del sitio) que lo sondee por SNMP y
+    reporte por MQTT -- ver apps.catalogo.services.enviar_consultar_red_farmacia y
+    apps.mqtt_worker.services.manejar_red_farmacia.
+
+    Reemplaza en la práctica a sincronizar_ancho_banda_farmacias (sondeo directo
+    desde ESTE servidor): confirmado el 24-ago-2026 que el servidor no tiene ninguna
+    ruta de red hacia las IPs privadas de las farmacias (100% de pérdida de ping,
+    sin entrada en la tabla de rutas del host) -- esa función nunca puede funcionar
+    desde acá. Una estación de la propia farmacia sí puede, porque está en la misma
+    LAN que su Mikrotik. Se deja sincronizar_ancho_banda_farmacias sin borrar (no
+    hace daño, solo loguea warnings) por si algún día existe una ruta VPN real y
+    vuelve a tener sentido correrla en paralelo.
+
+    Devuelve cuántas estaciones recibieron el pedido (no confirma que hayan podido
+    sondear su router -- eso se ve en manejar_red_farmacia/MuestraRedFarmacia)."""
+    from apps.catalogo.models import Estacion
+    from apps.catalogo.services import enviar_consultar_red_farmacia
+
+    candidatas = Estacion.objects.filter(
+        estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, estado_conexion=Estacion.EstadoConexion.ONLINE,
+    ).exclude(farmacia__ip_router__isnull=True).select_related('farmacia').order_by('farmacia_id', 'codigo')
+
+    farmacias_vistas = set()
+    enviadas = 0
+    for estacion in candidatas:
+        if estacion.farmacia_id in farmacias_vistas:
+            continue
+        farmacias_vistas.add(estacion.farmacia_id)
+        if enviar_consultar_red_farmacia(estacion, _comunidad_para(estacion.farmacia)):
+            enviadas += 1
+    return enviadas

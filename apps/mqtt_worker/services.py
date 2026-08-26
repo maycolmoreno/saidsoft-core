@@ -483,6 +483,46 @@ def manejar_perifericos(codigo_estacion: str, payload: dict) -> None:
     estacion.save(update_fields=['perifericos_ultima_verificacion'])
 
 
+def manejar_red_farmacia(codigo_estacion: str, payload: dict) -> None:
+    """Guarda el resultado de un sondeo de ancho de banda del Mikrotik LOCAL de la
+    farmacia, hecho por una estación de esa misma LAN (ver
+    apps.catalogo.services.enviar_consultar_red_farmacia y el docstring de
+    agente_prueba._leer_contadores_mikrotik sobre por qué esto reemplaza el sondeo
+    directo desde el servidor -- sin ruta de red hacia esas IPs privadas).
+
+    Sin bytes_recibidos/bytes_enviados en el payload (el agente no pudo sondear su
+    router local -- caído, community equivocada, etc.) no se crea ninguna
+    MuestraRedFarmacia: no hay nada real que guardar, y una fila con contadores en
+    cero rompería el cálculo de tasa de la siguiente muestra (se leería como una
+    caída real de tráfico, no como "no se pudo medir")."""
+    close_old_connections()
+    try:
+        estacion = Estacion.objects.select_related('farmacia').get(
+            codigo=codigo_estacion, token_enrolamiento=payload.get('token'),
+        )
+    except Estacion.DoesNotExist:
+        logger.warning('Reporte de red de farmacia con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    bytes_recibidos = payload.get('bytes_recibidos')
+    bytes_enviados = payload.get('bytes_enviados')
+    if bytes_recibidos is None or bytes_enviados is None:
+        logger.info('%s: no se pudo sondear el Mikrotik local de %s', codigo_estacion, estacion.farmacia.codigo)
+        return
+
+    from apps.monitoreo.mikrotik import _calcular_tasa
+    from apps.monitoreo.models import MuestraRedFarmacia
+
+    farmacia = estacion.farmacia
+    red_recibido_kbps, red_enviado_kbps = _calcular_tasa(farmacia, bytes_recibidos, bytes_enviados)
+    MuestraRedFarmacia.objects.create(
+        farmacia=farmacia, bytes_recibidos=bytes_recibidos, bytes_enviados=bytes_enviados,
+        red_recibido_kbps=red_recibido_kbps, red_enviado_kbps=red_enviado_kbps,
+    )
+
+
 def manejar_pos_errores(codigo_estacion: str, payload: dict) -> None:
     """Guarda lo nuevo de un reporte periódico del log del POS (ver
     agente-prueba/agente_prueba.py::bucle_log_pos) — el agente ya agrupó por mensaje
