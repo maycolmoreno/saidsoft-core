@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.6'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.7'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -992,23 +992,28 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
             'reinicia solo en unos segundos.', version_nueva, script_swap, self.NOMBRE_SERVICIO,
         )
         # DETACHED_PROCESS: sigue vivo después de que el servicio actual se detenga (el
-        # propio script es quien detiene el servicio vía Stop-Service, no este proceso —
+        # propio script es quien detiene el servicio vía "net stop", no este proceso —
         # un servicio de Windows no puede pararse a sí mismo desde adentro más que
-        # devolviendo el control a SvcDoRun, que es justo lo que Stop-Service dispara).
+        # devolviendo el control a SvcDoRun, que es justo lo que "net stop" dispara).
         #
         # stdin/stdout/stderr=DEVNULL es obligatorio acá: un servicio de Windows no tiene
         # consola, así que sus handles estándar son inválidos — sin esto, CreateProcess
         # falla al intentar heredarlos (WinError 6, "The handle is invalid") y Popen()
-        # lanza una excepción que muere en silencio dentro de este hilo (nada la atrapa,
-        # y un servicio sin consola no tiene dónde imprimir el traceback). Encontrado en
-        # producción (ML006-A, 23-ago-2026): el comando llegaba, la descarga y el SHA-256
-        # eran correctos, el .ps1 se escribía en disco, pero Popen nunca lo ejecutaba de
-        # verdad -- ni saidsoft-agente-update.log ni el auto-borrado del .ps1 llegaban a
-        # existir. _listar_software_instalado() no sufre esto porque check_output ya
-        # redirige stdout a un pipe propio.
+        # lanza una excepción que muere en silencio dentro de este hilo. Encontrado en
+        # producción (ML006-A, 23-ago-2026).
+        #
+        # cmd.exe + .bat, NO powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden:
+        # ese patrón (PowerShell oculto, política de ejecución saltada, lanzado por un
+        # servicio en segundo plano) es una firma clásica que un antivirus/EDR está
+        # diseñado para bloquear -- confirmado en producción (ML006-A, 25-ago-2026): el
+        # Popen ya no lanzaba excepción (el fix de arriba funcionaba), pero el .ps1
+        # nunca llegaba a ejecutar ni su primera línea (sin log propio, sin autoborrado)
+        # -- el proceso se creaba y moría/bloqueaba antes de correr nada. "net stop"/
+        # "copy"/"net start" vía cmd.exe son comandos mucho más mundanos, sin ninguna
+        # bandera que dispare esa clase de heurística.
         try:
             subprocess.Popen(
-                ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script_swap],
+                ['cmd.exe', '/c', script_swap],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
                 close_fds=True,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1020,34 +1025,40 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
             logging.exception('No se pudo lanzar el script de reemplazo para la actualización a %s', version_nueva)
 
     def _generar_script_swap(self, exe_actual: str, exe_nuevo: str, version_nueva: str) -> str:
-        """PowerShell separado del proceso del agente: espera a que el servicio quede
-        Stopped (recién ahí el .exe actual suelta su lock de archivo), reemplaza el
-        binario (con .bak por si hay que revertir a mano) y vuelve a arrancar el
-        servicio. Se autoborra al terminar."""
+        """Batch (cmd.exe), no PowerShell -- ver comentario en _aplicar_actualizacion_agente
+        sobre por qué (un antivirus/EDR bloqueaba el patrón powershell -ExecutionPolicy
+        Bypass -WindowStyle Hidden lanzado por un servicio, encontrado en ML006-A,
+        25-ago-2026). Mismo comportamiento que la versión anterior: espera a que el
+        servicio quede detenido (recién ahí el .exe actual suelta su lock de archivo),
+        reemplaza el binario (con .bak por si hay que revertir a mano), vuelve a
+        arrancar el servicio, y se autoborra al terminar ("del %~f0" como última línea
+        -- técnica estándar de Windows para que un .bat se borre a sí mismo)."""
         exe_bak = exe_actual + '.bak'
         log_swap = os.path.join(tempfile.gettempdir(), 'saidsoft-agente-update.log')
-        script = f'''
-$ErrorActionPreference = 'Stop'
-"$(Get-Date -Format s) - Actualizando a {version_nueva}..." | Out-File -FilePath '{log_swap}' -Append
-try {{
-    Stop-Service -Name '{self.NOMBRE_SERVICIO}' -Force -ErrorAction SilentlyContinue
-    $intentos = 0
-    while ((Get-Service -Name '{self.NOMBRE_SERVICIO}').Status -ne 'Stopped' -and $intentos -lt 30) {{
-        Start-Sleep -Seconds 1
-        $intentos++
-    }}
-    if (Test-Path '{exe_bak}') {{ Remove-Item '{exe_bak}' -Force }}
-    Copy-Item '{exe_actual}' '{exe_bak}' -Force
-    Copy-Item '{exe_nuevo}' '{exe_actual}' -Force
-    Start-Service -Name '{self.NOMBRE_SERVICIO}'
-    "$(Get-Date -Format s) - Actualización a {version_nueva} aplicada." | Out-File -FilePath '{log_swap}' -Append
-}} catch {{
-    "$(Get-Date -Format s) - ERROR actualizando a {version_nueva}: $_" | Out-File -FilePath '{log_swap}' -Append
-    try {{ Start-Service -Name '{self.NOMBRE_SERVICIO}' -ErrorAction SilentlyContinue }} catch {{}}
-}}
-Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+        script = f'''@echo off
+echo %date% %time% - Actualizando a {version_nueva}... >> "{log_swap}"
+net stop "{self.NOMBRE_SERVICIO}"
+set intentos=0
+:esperar
+sc query "{self.NOMBRE_SERVICIO}" | findstr /C:"STOPPED" >nul
+if not errorlevel 1 goto detenido
+set /a intentos+=1
+if %intentos% geq 30 goto detenido
+timeout /t 1 /nobreak >nul
+goto esperar
+:detenido
+if exist "{exe_bak}" del /f /q "{exe_bak}"
+copy /y "{exe_actual}" "{exe_bak}" >nul
+copy /y "{exe_nuevo}" "{exe_actual}" >nul
+if errorlevel 1 (
+    echo %date% %time% - ERROR copiando el ejecutable nuevo para {version_nueva}. >> "{log_swap}"
+) else (
+    echo %date% %time% - Actualizacion a {version_nueva} aplicada. >> "{log_swap}"
+)
+net start "{self.NOMBRE_SERVICIO}"
+del "%~f0"
 '''
-        ruta_script = os.path.join(tempfile.gettempdir(), f'saidsoft-agente-update-{int(time.time())}.ps1')
+        ruta_script = os.path.join(tempfile.gettempdir(), f'saidsoft-agente-update-{int(time.time())}.bat')
         with open(ruta_script, 'w', encoding='utf-8') as f:
             f.write(script)
         return ruta_script
