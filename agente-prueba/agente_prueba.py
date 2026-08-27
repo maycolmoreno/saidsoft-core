@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.13'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.14'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -351,6 +351,28 @@ class AgentePrueba:
             # conexión que se está cerrando/reabriendo — mismo motivo por el que
             # _manejar_despliegue despacha a un hilo en vez de bloquear el loop de MQTT.
             threading.Thread(target=self.client.reconnect, daemon=True).start()
+
+    def _ya_procesado(self, clave: str, identificador) -> bool:
+        """True si este agente ya atendió `identificador` para `clave` ("instalacion" /
+        "despliegue"). Se persiste en identidad.json (igual que pos_log_posicion).
+
+        Hace falta porque software y despliegue se publican RETENIDOS (ver
+        apps.software.services / apps.despliegues.services) y nadie los borra del
+        broker: sin esto, cada reconexión del agente vuelve a recibir el mismo mensaje
+        y reinstalaría el software una y otra vez. La ventana de timestamp "tapaba"
+        esto rechazándolos, pero a costa de que una estación que estaba apagada al
+        publicar nunca recibiera la instalación (que es justo el motivo de retenerlos).
+        """
+        if identificador is None:
+            return False
+        vistos = self.identidad.setdefault(f'{clave}_procesados', [])
+        if identificador in vistos:
+            return True
+        vistos.append(identificador)
+        # Se acota para que identidad.json no crezca sin límite.
+        del vistos[:-200]
+        self._guardar_identidad()
+        return False
 
     def _en_hilo(self, funcion, payload):
         """Corre `funcion(payload)` en un hilo daemon, logueando cualquier excepción.
@@ -1150,8 +1172,19 @@ del "%~f0"
     # --- software (catálogo) ---
     def _manejar_software(self, payload):
         solicitud_id = payload.get('solicitud_id')
+        if self._ya_procesado('instalacion', solicitud_id):
+            logging.info('Instalación #%s ya procesada antes — se ignora el retenido.', solicitud_id)
+            return
+        # verificar_ventana=False: este mensaje se publica RETENIDO para que una
+        # estación apagada lo reciba al reconectar (apps.software.services), así que
+        # legítimamente puede llegar horas o días después de firmado -- exigirle los
+        # 120s de la ventana lo hacía imposible de entregar, que era justo lo
+        # contrario de retenerlo (encontrado en MAM06-A, 26-ago-2026: la instalación
+        # #9 se rechazaba con "timestamp fuera de ventana" en CADA reconexión). El
+        # SHA-256 del instalador sigue siendo la garantía de integridad, y
+        # solicitud_id actúa de nonce vía _ya_procesado.
         if not self._firma_valida(
-            'instalación de software', payload,
+            'instalación de software', payload, verificar_ventana=False,
             comando='instalar_software', solicitud_id=payload.get('solicitud_id'),
             aplicacion=payload.get('aplicacion'), version=payload.get('version'), accion=payload.get('accion'),
             url=payload.get('url'), sha256=payload.get('sha256'),
@@ -1254,8 +1287,13 @@ del "%~f0"
     # --- despliegues de POS ---
     def _manejar_despliegue(self, payload):
         despliegue_id = payload.get('despliegue_id')
+        if self._ya_procesado('despliegue', despliegue_id):
+            logging.info('Despliegue #%s ya procesado antes — se ignora el retenido.', despliegue_id)
+            return
+        # verificar_ventana=False + _ya_procesado: mismo motivo que en
+        # _manejar_software (los despliegues también se publican retenidos).
         if not self._firma_valida(
-            'despliegue', payload,
+            'despliegue', payload, verificar_ventana=False,
             comando='desplegar', despliegue_id=payload.get('despliegue_id'), version=payload.get('version'),
             url=payload.get('url'), sha256=payload.get('sha256'), modo_aplicacion=payload.get('modo_aplicacion'),
             ventana_fecha_hora=payload.get('ventana_fecha_hora'), timestamp=payload.get('timestamp'),
