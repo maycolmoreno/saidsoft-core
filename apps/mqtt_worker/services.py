@@ -159,6 +159,12 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
     estacion.so_build = payload.get('so_build', estacion.so_build)
     estacion.hostname = payload.get('hostname', estacion.hostname)
     estacion.numero_serie = payload.get('numero_serie', estacion.numero_serie)
+    # Config del POS (ver Estacion.pos_bdd): el agente solo la manda si pudo leer el
+    # .Config, así que se usa .get con el valor actual como default -- un heartbeat de
+    # una estación sin POS instalado no debe borrar lo que ya se sabía.
+    estacion.pos_servidor = payload.get('pos_servidor', estacion.pos_servidor)
+    estacion.pos_bdd = payload.get('pos_bdd', estacion.pos_bdd)
+    estacion.pos_puerto = payload.get('pos_puerto', estacion.pos_puerto)
     if payload.get('ip_lan'):
         estacion.ip_lan = payload['ip_lan']
     if payload.get('puerto_cache'):

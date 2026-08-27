@@ -812,3 +812,28 @@ class EnviarConsultarRedFarmaciaTests(TestCase):
             comando='consultar_red_farmacia', comunidad='ml001', estacion='ML001-A', timestamp=payload['timestamp'],
         )
         self.assertEqual(payload['firma'], firma_esperada)
+
+
+class NodoDiscrepanteTests(TestCase):
+    """El POS reporta a qué nodo apunta de verdad (Estacion.pos_bdd, leído del
+    Zabyca.Pos.Desktop.exe.Config). Solo se informa la discrepancia contra el grupo
+    asignado -- nunca se corrige sola, ver docstring de la propiedad."""
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX004')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+
+    def test_sin_pos_bdd_no_hay_discrepancia(self):
+        # Todavía no reportó nada: no hay contra qué comparar.
+        self.assertFalse(self.estacion.nodo_discrepante)
+
+    def test_coincide_con_el_grupo_no_es_discrepancia(self):
+        self.estacion.pos_bdd = 'trx004'  # el .Config lo trae en minúscula
+        self.assertFalse(self.estacion.nodo_discrepante)
+
+    def test_nodo_distinto_al_grupo_es_discrepancia(self):
+        self.estacion.pos_bdd = 'trx002'
+        self.assertTrue(self.estacion.nodo_discrepante)

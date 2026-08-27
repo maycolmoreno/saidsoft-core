@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.14'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.15'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -402,6 +402,52 @@ class AgentePrueba:
             return False
         return True
 
+    def _leer_config_pos(self) -> dict:
+        """Servidor/Bdd/Puerto del .Config del POS -- a qué nodo apunta REALMENTE esta
+        estación, leído del propio equipo en vez de una planilla.
+
+        El archivo es el `<ejecutable>.Config` de la convención .NET (ej.
+        "Zabyca.Pos.Desktop.exe.Config"), así que se deriva de --pos-comando-iniciar:
+        si el POS se instala en otra ruta o con otro nombre, sigue funcionando sin
+        tocar nada acá.
+
+        Se cachea por mtime porque esto se manda en CADA heartbeat (cada 60s): sin el
+        caché se estaría parseando el XML todo el tiempo para un dato que casi nunca
+        cambia.
+
+        Nunca lanza: si el POS no está instalado, el archivo no existe o el XML está
+        roto, devuelve {} y el panel simplemente no muestra el dato.
+        """
+        ruta = f'{self.args.pos_comando_iniciar}.Config'
+        try:
+            mtime = os.path.getmtime(ruta)
+        except OSError:
+            return {}
+
+        cacheado = getattr(self, '_cache_config_pos', None)
+        if cacheado and cacheado[0] == mtime:
+            return cacheado[1]
+
+        try:
+            import xml.etree.ElementTree as ET
+            raiz = ET.parse(ruta).getroot()
+            ajustes = {
+                (el.get('key') or '').strip().lower(): (el.get('value') or '').strip()
+                for el in raiz.iter('add')
+            }
+        except Exception:
+            logging.exception('No se pudo leer la configuración del POS en %s', ruta)
+            return {}
+
+        datos = {
+            'pos_servidor': ajustes.get('servidor', ''),
+            'pos_bdd': ajustes.get('bdd', ''),
+            'pos_puerto': ajustes.get('puerto', ''),
+        }
+        self._cache_config_pos = (mtime, datos)
+        logging.info('Configuración del POS leída: %s', datos)
+        return datos
+
     # --- heartbeat ---
     def bucle_heartbeat(self):
         while True:
@@ -416,6 +462,10 @@ class AgentePrueba:
                 'so_build': platform.win32_ver()[1],
                 'hostname': socket.gethostname(),
                 'numero_serie': self.identidad.get('numero_serie', ''),
+                # A qué nodo apunta REALMENTE el POS de esta estación (ver
+                # _leer_config_pos). Va en el heartbeat y no en consultar_info para que
+                # se mantenga solo, sin depender de que alguien apriete un botón.
+                **self._leer_config_pos(),
             })
             logging.info('Heartbeat enviado')
 

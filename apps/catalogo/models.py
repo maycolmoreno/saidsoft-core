@@ -180,6 +180,15 @@ class Estacion(models.Model):
     version_agente = models.CharField(max_length=30, blank=True)
     version_pos = models.CharField(max_length=30, blank=True)
 
+    # A qué nodo apunta REALMENTE el POS de esta estación, leído por el agente del
+    # Zabyca.Pos.Desktop.exe.Config del propio equipo y reportado en cada heartbeat
+    # (ver agente_prueba._leer_config_pos). Es el dato con autoridad: hasta ahora la
+    # relación farmacia->nodo vivía solo en planillas, que ya se comprobó que se
+    # desincronizan (208 farmacias quedaron en el grupo PENDIENTE por eso).
+    pos_servidor = models.CharField(max_length=100, blank=True, help_text='IP/host del servidor del POS.')
+    pos_bdd = models.CharField(max_length=50, blank=True, help_text='Base de datos del POS, ej. trx004.')
+    pos_puerto = models.CharField(max_length=10, blank=True)
+
     # Características de hardware, consultadas bajo demanda desde el panel (no viajan en
     # cada heartbeat: son prácticamente estáticas, no vale la pena mandarlas cada minuto).
     procesador = models.CharField(max_length=150, blank=True)
@@ -327,6 +336,19 @@ class Estacion(models.Model):
         """True si la versión de POS reportada no coincide con la versión objetivo de su grupo."""
         objetivo = self.farmacia.grupo.version_objetivo
         return bool(objetivo) and self.version_pos != objetivo
+
+    @property
+    def nodo_discrepante(self):
+        """True si el nodo que reporta el POS (`pos_bdd`, ej. "trx004") NO coincide con
+        el código del Grupo al que está asignada su farmacia.
+
+        Solo informa, no corrige nada: una discrepancia puede ser un .Config mal
+        configurado en la estación O una asignación de grupo desactualizada en el
+        panel, y cuál de los dos manda depende del caso. Devuelve False si todavía no
+        se reportó `pos_bdd` (no se puede comparar contra nada)."""
+        if not self.pos_bdd or not self.farmacia_id:
+            return False
+        return self.pos_bdd.strip().upper() != self.farmacia.grupo.codigo.strip().upper()
 
     @property
     def estado_meshcentral(self):

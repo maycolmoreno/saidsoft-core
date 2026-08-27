@@ -63,6 +63,25 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
             <div class="field-body"><div class="field-label">Versión de SO</div><div class="field-value mono num">{{ estacion.so_build|default:"—" }}</div></div>
         </div>
         <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
+            <div class="field-body">
+                <div class="field-label">Nodo del POS</div>
+                <div class="field-value mono">
+                    {{ estacion.pos_bdd|default:"—" }}
+                    {% if estacion.nodo_discrepante %}
+                    <span class="pill warning" title="El POS de esta estación apunta a &quot;{{ estacion.pos_bdd }}&quot;, pero su farmacia está asignada al grupo &quot;{{ estacion.farmacia.grupo.codigo }}&quot; en el panel. Revisar cuál de los dos está mal.">≠ {{ estacion.farmacia.grupo.codigo }}</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="7" rx="1"/><rect x="2" y="13" width="20" height="7" rx="1"/><path d="M6 7.5h.01M6 16.5h.01"/></svg></span>
+            <div class="field-body">
+                <div class="field-label">Servidor del POS</div>
+                <div class="field-value mono num">{% if estacion.pos_servidor %}{{ estacion.pos_servidor }}{% if estacion.pos_puerto %}:{{ estacion.pos_puerto }}{% endif %}{% else %}—{% endif %}</div>
+            </div>
+        </div>
+        <div class="field">
             <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="1"/><path d="M7 2v3M12 2v3M17 2v3M7 19v3M12 19v3M17 19v3M2 7h3M2 12h3M2 17h3M19 7h3M19 12h3M19 17h3"/></svg></span>
             <div class="field-body"><div class="field-label">Procesador</div><div class="field-value">{{ estacion.procesador|default:"—" }}</div></div>
         </div>
