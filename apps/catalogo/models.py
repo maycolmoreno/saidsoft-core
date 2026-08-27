@@ -47,9 +47,10 @@ class UnidadNegocio(models.Model):
 class Grupo(models.Model):
     """Canal de versión del POS, y también el NODO al que apuntan sus farmacias.
 
-    El `codigo` es a la vez el identificador del canal y el nombre de la base de datos
-    del POS (el `Bdd` del Zabyca.Pos.Desktop.exe.Config, ej. "trx004"), por eso
-    `Estacion.nodo_discrepante` puede comparar uno contra otro. `pos_servidor`/
+    El `codigo` identifica el canal; el nombre real de la base del POS (el `Bdd` del
+    Zabyca.Pos.Desktop.exe.Config) sale de `bdd_pos`, que por defecto es el código en
+    minúscula pero se puede fijar aparte en `pos_bdd` cuando no coinciden.
+    `Estacion.nodo_discrepante` compara contra ese valor efectivo. `pos_servidor`/
     `pos_puerto` completan la definición del nodo para poder REPARTIR farmacias entre
     nodos (balanceo de carga) desde el panel: crear un nodo nuevo es crear un Grupo, y
     mover una farmacia es cambiarle el grupo y empujar la config a sus estaciones (ver
@@ -66,6 +67,16 @@ class Grupo(models.Model):
         help_text='IP/host del servidor de base de datos de este nodo, ej. 192.168.112.3.',
     )
     pos_puerto = models.CharField(max_length=10, blank=True, help_text='Puerto del servidor, ej. 5433.')
+    # `codigo` solo admite MAYÚSCULAS (codigo_grupo_validator), pero el nombre real de
+    # la base en el .Config del POS va en minúscula ("trx004") y es sensible a
+    # mayúsculas: escribir "TRX004" deja al POS sin conectar. Este campo guarda el
+    # nombre EXACTO. Vacío = se usa `codigo.lower()`, que es lo que cubre a los nodos
+    # actuales (trx004, hub_111_6) sin tener que cargarlo uno por uno.
+    pos_bdd = models.CharField(
+        max_length=50, blank=True,
+        help_text='Nombre exacto de la base en el .Config (sensible a mayúsculas). '
+                  'Vacío = el código en minúscula.',
+    )
     # Cada nodo tiene su propia contraseña de base de datos, y el POS no arranca sin
     # ella: al reapuntar una farmacia hay que escribirla junto con Servidor/Bdd/Puerto.
     # Cifrada en reposo (mismo criterio que ClaveRecuperacionBitLocker): quien tenga
@@ -83,6 +94,13 @@ class Grupo(models.Model):
 
     def __str__(self):
         return self.codigo
+
+    @property
+    def bdd_pos(self) -> str:
+        """Nombre real de la base para el .Config del POS. `codigo` es siempre
+        MAYÚSCULA (codigo_grupo_validator) pero el POS la espera tal cual está creada
+        en el motor, normalmente en minúscula y sensible a mayúsculas."""
+        return self.pos_bdd or self.codigo.lower()
 
 
 class Farmacia(models.Model):
@@ -370,7 +388,7 @@ class Estacion(models.Model):
         se reportó `pos_bdd` (no se puede comparar contra nada)."""
         if not self.pos_bdd or not self.farmacia_id:
             return False
-        return self.pos_bdd.strip().upper() != self.farmacia.grupo.codigo.strip().upper()
+        return self.pos_bdd.strip().lower() != self.farmacia.grupo.bdd_pos.strip().lower()
 
     @property
     def estado_meshcentral(self):

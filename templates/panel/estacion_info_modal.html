@@ -80,7 +80,7 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
                 <div class="field-value mono">
                     {{ estacion.pos_bdd|default:"—" }}
                     {% if estacion.nodo_discrepante %}
-                    <span class="pill warning" title="El POS de esta estación apunta a &quot;{{ estacion.pos_bdd }}&quot;, pero su farmacia está asignada al grupo &quot;{{ estacion.farmacia.grupo.codigo }}&quot; en el panel. Revisar cuál de los dos está mal.">≠ {{ estacion.farmacia.grupo.codigo }}</span>
+                    <span class="pill warning" title="El POS de esta estación apunta a &quot;{{ estacion.pos_bdd }}&quot;, pero su farmacia está asignada al nodo &quot;{{ estacion.farmacia.grupo.bdd_pos }}&quot; en el panel. Revisar cuál de los dos está mal.">≠ {{ estacion.farmacia.grupo.bdd_pos }}</span>
                     {% endif %}
                 </div>
             </div>
@@ -100,9 +100,9 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
                 <form hx-post="{% url 'panel:farmacia_aplicar_nodo_pos' estacion.pk %}"
                       hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
                       hx-target="#modal-info-content" hx-swap="innerHTML"
-                      hx-confirm="Esto reescribe la configuración del POS de TODAS las estaciones de {{ estacion.farmacia.codigo }} para que apunten a {{ estacion.farmacia.grupo.codigo }}. Cada una lo aplica cuando su POS se cierre. ¿Continuar?">
+                      hx-confirm="Esto reescribe la configuración del POS de TODAS las estaciones de {{ estacion.farmacia.codigo }} para que apunten a {{ estacion.farmacia.grupo.bdd_pos }}. Cada una lo aplica cuando su POS se cierre. ¿Continuar?">
                     {% csrf_token %}
-                    <button type="submit" class="btn secondary">Aplicar {{ estacion.farmacia.grupo.codigo }} a la farmacia</button>
+                    <button type="submit" class="btn secondary">Aplicar {{ estacion.farmacia.grupo.bdd_pos }} a la farmacia</button>
                 </form>
             </div>
         </div>

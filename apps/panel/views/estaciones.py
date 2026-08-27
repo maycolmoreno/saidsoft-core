@@ -222,17 +222,17 @@ def farmacia_aplicar_nodo_pos(request, pk):
     enviadas = sum(
         1 for e in destinatarias
         if enviar_configurar_nodo_pos(
-            e, servidor=grupo.pos_servidor, bdd=grupo.codigo, puerto=grupo.pos_puerto, password=password,
+            e, servidor=grupo.pos_servidor, bdd=grupo.bdd_pos, puerto=grupo.pos_puerto, password=password,
         )
     )
     registrar_evento(
         usuario=request.user, accion='farmacia.aplicar_nodo_pos', objeto=farmacia,
-        detalle={'nodo': grupo.codigo, 'servidor': grupo.pos_servidor, 'estaciones': enviadas},
+        detalle={'nodo': grupo.bdd_pos, 'servidor': grupo.pos_servidor, 'estaciones': enviadas},
         request=request,
     )
     offline = farmacia.estaciones.filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA).count() - len(destinatarias)
     return _render_info_modal(request, estacion, nodo_enviado={
-        'nodo': grupo.codigo, 'servidor': grupo.pos_servidor, 'puerto': grupo.pos_puerto,
+        'nodo': grupo.bdd_pos, 'servidor': grupo.pos_servidor, 'puerto': grupo.pos_puerto,
         'enviadas': enviadas, 'offline': offline,
     })
 

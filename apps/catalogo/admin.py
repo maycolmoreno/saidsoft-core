@@ -39,7 +39,7 @@ class GrupoAdminForm(forms.ModelForm):
 
     class Meta:
         model = Grupo
-        fields = ('codigo', 'nombre', 'version_objetivo', 'pos_servidor', 'pos_puerto', 'activo')
+        fields = ('codigo', 'nombre', 'version_objetivo', 'pos_servidor', 'pos_puerto', 'pos_bdd', 'activo')
 
     def save(self, commit=True):
         grupo = super().save(commit=commit)
@@ -54,7 +54,7 @@ class GrupoAdminForm(forms.ModelForm):
 class GrupoAdmin(admin.ModelAdmin):
     form = GrupoAdminForm
     list_display = (
-        'codigo', 'nombre', 'version_objetivo', 'pos_servidor', 'pos_puerto',
+        'codigo', 'nombre', 'version_objetivo', 'bdd_pos', 'pos_servidor', 'pos_puerto',
         'tiene_password', 'activo', 'total_farmacias',
     )
     search_fields = ('codigo', 'nombre')

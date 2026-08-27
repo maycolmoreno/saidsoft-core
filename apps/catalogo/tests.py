@@ -906,3 +906,26 @@ class PasswordNodoTests(TestCase):
         establecer_password_nodo(self.grupo, 'algo')
         with override_settings(BITLOCKER_ENCRYPTION_KEY=Fernet.generate_key().decode()):
             self.assertEqual(obtener_password_nodo(self.grupo), '')
+
+
+class BddPosTests(TestCase):
+    """`codigo` solo admite MAYÚSCULAS, pero el .Config del POS trae la base en
+    minúscula y es sensible a mayúsculas: escribir "TRX004" deja al POS sin conectar."""
+
+    def test_por_defecto_es_el_codigo_en_minuscula(self):
+        self.assertEqual(Grupo(codigo='TRX004').bdd_pos, 'trx004')
+
+    def test_pos_bdd_explicito_manda(self):
+        # Para cuando el nombre real de la base no es simplemente el código en minúscula.
+        self.assertEqual(Grupo(codigo='TRX004', pos_bdd='TrxCuatro_Prod').bdd_pos, 'TrxCuatro_Prod')
+
+    def test_discrepancia_compara_contra_el_bdd_efectivo(self):
+        grupo = Grupo.objects.create(codigo='TRX005')
+        farmacia = Farmacia.objects.create(
+            codigo='ML027', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        estacion = Estacion.objects.create(codigo='ML027-ADM', farmacia=farmacia)
+        estacion.pos_bdd = 'trx005'   # el POS ya apunta al nodo nuevo
+        self.assertFalse(estacion.nodo_discrepante)
+        estacion.pos_bdd = 'trx004'   # todavía en el viejo
+        self.assertTrue(estacion.nodo_discrepante)

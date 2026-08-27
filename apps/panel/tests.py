@@ -2532,7 +2532,9 @@ class FarmaciaAplicarNodoPosTests(TestCase):
         self.assertEqual(mock_enviar.call_count, 2)
         enviadas = {c.args[0].codigo for c in mock_enviar.call_args_list}
         self.assertEqual(enviadas, {'ML001-A', 'ML001-B'})
-        self.assertEqual(mock_enviar.call_args.kwargs['bdd'], 'TRX004')
+        # En minúscula: el nombre de la base en el .Config es sensible a mayúsculas y
+        # `codigo` siempre es MAYÚSCULA, así que se manda `bdd_pos`, no `codigo`.
+        self.assertEqual(mock_enviar.call_args.kwargs['bdd'], 'trx004')
 
     def test_nodo_sin_password_no_envia_nada(self):
         # Sin contraseña el POS no podría conectarse al nodo nuevo: mejor no tocar
