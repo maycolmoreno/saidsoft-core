@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.7'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.8'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -123,6 +123,24 @@ def timestamp_en_ventana(timestamp, ventana_segundos: int = VENTANA_TIMESTAMP_SE
     try:
         return abs(time.time() - float(timestamp)) <= ventana_segundos
     except (TypeError, ValueError):
+        return False
+
+
+def _version_mayor_o_igual(version_actual: str, version_candidata: str) -> bool:
+    """True si `version_actual` >= `version_candidata`, comparando el sufijo numérico
+    ("agente-prueba-0.7" -> (0, 7)). Usada para nunca aplicar un downgrade automático
+    -- encontrado en producción (ML006-A, 25/26-ago-2026): un mensaje MQTT retenido
+    de actualizar_agente que quedó sin limpiar (la actualización que pedía nunca se
+    aplicó con éxito) le llegó a la estación en la SIGUIENTE reconexión -- incluso
+    después de haber sido actualizada a mano a una versión más nueva -- y downgradeó
+    el agente de vuelta a la vieja. Si no se puede parsear cualquiera de las dos
+    versiones, devuelve False (mejor pecar de aplicar la actualización que de
+    trabarse por un formato de versión inesperado)."""
+    try:
+        actual = tuple(int(p) for p in version_actual.rsplit('-', 1)[-1].split('.'))
+        candidata = tuple(int(p) for p in version_candidata.rsplit('-', 1)[-1].split('.'))
+        return actual >= candidata
+    except (ValueError, IndexError):
         return False
 
 
@@ -965,6 +983,13 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
 
     def _aplicar_actualizacion_agente(self, payload):
         version_nueva = payload.get('version', '?')
+        if _version_mayor_o_igual(VERSION_AGENTE_PRUEBA, version_nueva):
+            # Nunca downgrade automático -- ver docstring de _version_mayor_o_igual
+            # sobre el mensaje retenido rezagado que causó justo esto en producción.
+            logging.info(
+                'Actualización de agente a %s ignorada: ya estoy en %s.', version_nueva, VERSION_AGENTE_PRUEBA,
+            )
+            return
         if not getattr(sys, 'frozen', False):
             logging.error(
                 'Actualización de agente a %s: no corre como ejecutable empaquetado '
