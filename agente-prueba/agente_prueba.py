@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.12'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.13'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -285,10 +285,20 @@ class AgentePrueba:
                 # o días después de publicado (ver _on_connect) -- el SHA-256 sigue
                 # siendo la garantía de integridad real.
                 self._verificar_y_actualizar_agente(payload, verificar_ventana=False)
+            # software y despliegue van en un hilo aparte, NO inline: _on_message corre
+            # en el hilo de red de paho, y estos dos descargan archivos grandes (un
+            # instalador o un paquete de POS pueden tardar minutos). Bloquear ese hilo
+            # impide que salgan los PINGREQ del keepalive (60s) y el broker termina
+            # cerrando la conexión: el agente se queda "sordo" y sus reportes se pierden
+            # en silencio. Encontrado en MAM06-A (26-ago-2026): LibreOffice tardó 5 min
+            # en bajar, la estación salió de línea a mitad de camino y ni un solo paso
+            # (recibido/descargado/instalando) llegó al panel, que quedó en "pendiente".
+            # Mismo patrón que ya usan consultar_perifericos / consultar_software_instalado
+            # / escanear_actualizaciones / actualizar_agente.
             elif msg.topic.startswith('/saidsof/software/') or msg.topic.endswith('/software/'):
-                self._manejar_software(payload)
+                self._en_hilo(self._manejar_software, payload)
             elif msg.topic.startswith('/saidsof/despliegue/') or msg.topic.endswith('/despliegue/'):
-                self._manejar_despliegue(payload)
+                self._en_hilo(self._manejar_despliegue, payload)
             else:
                 logging.debug('Mensaje en tópico no manejado: %s', msg.topic)
         except Exception:
@@ -342,8 +352,33 @@ class AgentePrueba:
             # _manejar_despliegue despacha a un hilo en vez de bloquear el loop de MQTT.
             threading.Thread(target=self.client.reconnect, daemon=True).start()
 
+    def _en_hilo(self, funcion, payload):
+        """Corre `funcion(payload)` en un hilo daemon, logueando cualquier excepción.
+        El try/except general de _on_message solo cubre lo que corre inline; una
+        excepción dentro de un hilo moriría sin dejar rastro."""
+        def _correr():
+            try:
+                funcion(payload)
+            except Exception:
+                logging.exception('Error procesando %s en segundo plano', funcion.__name__)
+
+        threading.Thread(target=_correr, daemon=True).start()
+
     def _publicar(self, topico, payload):
-        self.client.publish(topico, json.dumps(payload))
+        """Publica y AVISA si el broker no lo recibió. paho no lanza cuando está
+        desconectado: publish() devuelve rc=MQTT_ERR_NO_CONN y descarta el mensaje
+        (QoS 0), así que sin este chequeo el agente seguía logueando "Heartbeat
+        enviado"/"Instalación #N -> descargado" mientras en realidad no llegaba nada
+        -- el log mentía y el panel se quedaba en "pendiente" sin ninguna pista.
+        Encontrado en MAM06-A (26-ago-2026) instalando LibreOffice."""
+        info = self.client.publish(topico, json.dumps(payload))
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            logging.error(
+                'No se pudo publicar en %s (rc=%s, ¿sin conexión al broker?) — el mensaje se perdió.',
+                topico, info.rc,
+            )
+            return False
+        return True
 
     # --- heartbeat ---
     def bucle_heartbeat(self):
