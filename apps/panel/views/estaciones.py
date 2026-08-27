@@ -7,7 +7,7 @@ from django.views.decorators.http import require_POST
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Grupo, VersionAgente
 from apps.catalogo.services import (
-    enviar_actualizacion_agente, enviar_comando, obtener_clave_bitlocker_descifrada,
+    enviar_actualizacion_agente, enviar_comando, enviar_configurar_nodo_pos, obtener_clave_bitlocker_descifrada,
     url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
@@ -181,6 +181,53 @@ def estacion_actualizar_agente_solicitar(request, pk):
     else:
         error_agente = f'No se pudo enviar la actualización a {estacion.codigo} (broker MQTT no disponible).'
     return _render_info_modal(request, estacion, solicitado_agente=solicitado_agente, error_agente=error_agente)
+
+
+@login_required
+@permission_required('catalogo.change_farmacia', raise_exception=True)
+@require_POST
+def farmacia_aplicar_nodo_pos(request, pk):
+    """Reapunta el POS de TODAS las estaciones de la farmacia de `pk` al nodo (Grupo)
+    que tiene asignado — el paso de "empujar la config" del balanceo de carga.
+
+    Se hace a nivel farmacia y no de estación porque el balanceo mueve sitios enteros:
+    dejar media farmacia en un nodo y media en otro sería un estado incoherente.
+
+    Permiso change_farmacia (no consultar_info_estacion): esto reescribe la config del
+    POS de producción, no es diagnóstico. El agente igual espera a que el POS se cierre
+    antes de tocar el archivo (ver enviar_configurar_nodo_pos), así que el cambio no
+    interrumpe ventas ni se confirma al instante: se ve cuando el heartbeat empieza a
+    reportar el nodo nuevo.
+    """
+    estacion = get_object_or_404(Estacion, pk=pk)
+    farmacia = estacion.farmacia
+    verificar_acceso(request.user, farmacia.unidad_negocio)
+    grupo = farmacia.grupo
+
+    if not (grupo.pos_servidor and grupo.pos_puerto):
+        return _render_info_modal(request, estacion, error_nodo=(
+            f'El nodo "{grupo.codigo}" no tiene servidor/puerto cargados todavía '
+            f'(Admin → Catálogo → Grupos). Sin eso no se puede reapuntar el POS.'
+        ))
+
+    destinatarias = list(farmacia.estaciones.filter(
+        estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        estado_conexion=Estacion.EstadoConexion.ONLINE,
+    ))
+    enviadas = sum(
+        1 for e in destinatarias
+        if enviar_configurar_nodo_pos(e, servidor=grupo.pos_servidor, bdd=grupo.codigo, puerto=grupo.pos_puerto)
+    )
+    registrar_evento(
+        usuario=request.user, accion='farmacia.aplicar_nodo_pos', objeto=farmacia,
+        detalle={'nodo': grupo.codigo, 'servidor': grupo.pos_servidor, 'estaciones': enviadas},
+        request=request,
+    )
+    offline = farmacia.estaciones.filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA).count() - len(destinatarias)
+    return _render_info_modal(request, estacion, nodo_enviado={
+        'nodo': grupo.codigo, 'servidor': grupo.pos_servidor, 'puerto': grupo.pos_puerto,
+        'enviadas': enviadas, 'offline': offline,
+    })
 
 
 @login_required

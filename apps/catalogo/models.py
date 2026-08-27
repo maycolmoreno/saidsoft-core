@@ -45,13 +45,27 @@ class UnidadNegocio(models.Model):
 
 
 class Grupo(models.Model):
-    """Canal de versión del POS. Cada farmacia pertenece a un único grupo."""
+    """Canal de versión del POS, y también el NODO al que apuntan sus farmacias.
+
+    El `codigo` es a la vez el identificador del canal y el nombre de la base de datos
+    del POS (el `Bdd` del Zabyca.Pos.Desktop.exe.Config, ej. "trx004"), por eso
+    `Estacion.nodo_discrepante` puede comparar uno contra otro. `pos_servidor`/
+    `pos_puerto` completan la definición del nodo para poder REPARTIR farmacias entre
+    nodos (balanceo de carga) desde el panel: crear un nodo nuevo es crear un Grupo, y
+    mover una farmacia es cambiarle el grupo y empujar la config a sus estaciones (ver
+    apps.catalogo.services.enviar_configurar_nodo_pos).
+    """
     codigo = models.CharField(max_length=10, unique=True, validators=[codigo_grupo_validator])
     nombre = models.CharField(max_length=100, blank=True)
     version_objetivo = models.CharField(
         max_length=30, blank=True,
         help_text='Versión del POS que este grupo debería tener instalada.',
     )
+    pos_servidor = models.CharField(
+        max_length=100, blank=True,
+        help_text='IP/host del servidor de base de datos de este nodo, ej. 192.168.112.3.',
+    )
+    pos_puerto = models.CharField(max_length=10, blank=True, help_text='Puerto del servidor, ej. 5433.')
     activo = models.BooleanField(default=True)
     fecha_creacion = models.DateTimeField(auto_now_add=True)
 

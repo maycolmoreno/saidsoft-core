@@ -2487,3 +2487,62 @@ class MfaTests(TestCase):
         self.client.post(reverse('panel:mfa_desactivar'), {'password': 'ContrasenaValida123!'})
         self.assertFalse(TOTPDevice.objects.filter(user=self.usuario).exists())
         self.assertTrue(EventoAuditoria.objects.filter(accion='usuario.mfa_desactivar', usuario=self.usuario).exists())
+
+
+class FarmaciaAplicarNodoPosTests(TestCase):
+    """Reapuntar el POS reescribe config de producción: exige change_farmacia, no el
+    permiso de diagnóstico. Aplica a la farmacia entera (el balanceo mueve sitios
+    completos, dejar media farmacia en cada nodo sería incoherente)."""
+
+    def setUp(self):
+        self.grupo = Grupo.objects.create(codigo='TRX004', pos_servidor='192.168.112.3', pos_puerto='5433')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=self.grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        comun = dict(
+            farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        self.estacion = Estacion.objects.create(codigo='ML001-A', **comun)
+        self.hermana = Estacion.objects.create(codigo='ML001-B', **comun)
+        self.usuario = User.objects.create_user(username='u_nodo', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='change_farmacia'),
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _url(self):
+        return reverse('panel:farmacia_aplicar_nodo_pos', args=[self.estacion.pk])
+
+    def test_sin_permiso_devuelve_403(self):
+        sin = User.objects.create_user(username='u_nodo_sin', password='x')
+        PerfilUsuario.objects.create(usuario=sin, acceso_todas_unidades=True)
+        self.client.force_login(sin)
+        self.assertEqual(self.client.post(self._url()).status_code, 403)
+
+    def test_envia_a_todas_las_estaciones_de_la_farmacia(self):
+        with patch('apps.panel.views.estaciones.enviar_configurar_nodo_pos', return_value=True) as mock_enviar:
+            resp = self.client.post(self._url())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_enviar.call_count, 2)
+        enviadas = {c.args[0].codigo for c in mock_enviar.call_args_list}
+        self.assertEqual(enviadas, {'ML001-A', 'ML001-B'})
+        self.assertEqual(mock_enviar.call_args.kwargs['bdd'], 'TRX004')
+
+    def test_nodo_sin_servidor_no_envia_nada(self):
+        self.grupo.pos_servidor = ''
+        self.grupo.save(update_fields=['pos_servidor'])
+        with patch('apps.panel.views.estaciones.enviar_configurar_nodo_pos') as mock_enviar:
+            resp = self.client.post(self._url())
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_not_called()
+
+    def test_estacion_offline_no_recibe_el_comando(self):
+        self.hermana.estado_conexion = Estacion.EstadoConexion.OFFLINE
+        self.hermana.save(update_fields=['estado_conexion'])
+        with patch('apps.panel.views.estaciones.enviar_configurar_nodo_pos', return_value=True) as mock_enviar:
+            self.client.post(self._url())
+        self.assertEqual(mock_enviar.call_count, 1)
+        self.assertEqual(mock_enviar.call_args.args[0].codigo, 'ML001-A')

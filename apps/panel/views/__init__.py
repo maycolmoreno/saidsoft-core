@@ -34,7 +34,7 @@ from .estaciones import (
     estacion_info_solicitar, estacion_meshcentral_escritorio, estacion_meshcentral_terminal,
     estacion_meshcentral_vincular, estacion_perifericos_solicitar, estacion_rechazar, estacion_reiniciar,
     estacion_software_instalado_solicitar, estacion_supervision_grabaciones, estacion_windows_update_solicitar,
-    estaciones_aprobar_lote, estaciones_lista, estaciones_pendientes_partial,
+    estaciones_aprobar_lote, estaciones_lista, estaciones_pendientes_partial, farmacia_aplicar_nodo_pos,
 )
 from .mantenimiento import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,
@@ -85,7 +85,7 @@ __all__ = [
     'estacion_meshcentral_escritorio', 'estacion_meshcentral_terminal', 'estacion_meshcentral_vincular',
     'estacion_rechazar', 'estacion_supervision_grabaciones',
     'estacion_reiniciar', 'estacion_windows_update_solicitar', 'estacion_software_instalado_solicitar',
-    'estacion_perifericos_solicitar',
+    'estacion_perifericos_solicitar', 'farmacia_aplicar_nodo_pos',
     'estaciones_aprobar_lote', 'estaciones_lista', 'estaciones_pendientes_partial',
     'mfa_configurar', 'mfa_desactivar', 'mfa_estado',
     'actividad_planificada_completar', 'actividad_planificada_crear', 'actividades_planificadas_lista',

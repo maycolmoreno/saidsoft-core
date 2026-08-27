@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.15'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.16'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -402,6 +402,79 @@ class AgentePrueba:
             return False
         return True
 
+    def _verificar_y_configurar_nodo_pos(self, payload):
+        if not self._firma_valida(
+            'comando configurar_nodo_pos', payload,
+            comando='configurar_nodo_pos', servidor=payload.get('servidor'), bdd=payload.get('bdd'),
+            puerto=payload.get('puerto'), estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+        ):
+            return
+        # En un hilo: puede quedarse esperando horas a que cierre el POS.
+        self._en_hilo(self._aplicar_nodo_pos, payload)
+
+    def _aplicar_nodo_pos(self, payload):
+        """Reapunta el POS a otro nodo reescribiendo Servidor/Bdd/Puerto en su .Config.
+
+        Espera a que el POS se cierre antes de tocar el archivo: así el cambio nunca
+        cae en medio de una venta, y el POS toma la config nueva en su siguiente
+        arranque (.NET lee el .Config al iniciar, no en caliente).
+
+        Reemplazo QUIRÚRGICO por texto, no reescribiendo el XML con ElementTree: el
+        .Config tiene muchas otras claves, comentarios y un formato que el POS y quien
+        lo administra esperan encontrar intactos. Solo se cambia el atributo `value` de
+        las tres claves, y solo si ya existen -- si alguna falta, se aborta sin tocar
+        nada en vez de inventarla.
+        """
+        servidor = (payload.get('servidor') or '').strip()
+        bdd = (payload.get('bdd') or '').strip()
+        puerto = (payload.get('puerto') or '').strip()
+        if not (servidor and bdd and puerto):
+            logging.error('configurar_nodo_pos con datos incompletos (%s/%s/%s) — se ignora.', servidor, bdd, puerto)
+            return
+
+        ruta = f'{self.args.pos_comando_iniciar}.Config'
+        if not os.path.exists(ruta):
+            logging.error('No existe el .Config del POS en %s — no se puede reapuntar el nodo.', ruta)
+            return
+
+        if self._pos_corriendo():
+            logging.info('Nodo del POS -> %s: el POS está abierto, esperando a que se cierre para aplicar...', bdd)
+            self._esperar_cierre_pos()
+
+        try:
+            with open(ruta, 'r', encoding='utf-8-sig') as f:
+                contenido = f.read()
+
+            nuevos = {'Servidor': servidor, 'Bdd': bdd, 'Puerto': puerto}
+            actualizado = contenido
+            for clave, valor in nuevos.items():
+                patron = re.compile(
+                    r'(<add\s+key\s*=\s*"' + re.escape(clave) + r'"\s+value\s*=\s*")([^"]*)(")',
+                    re.IGNORECASE,
+                )
+                actualizado, reemplazos = patron.subn(lambda m: m.group(1) + valor + m.group(3), actualizado)
+                if reemplazos == 0:
+                    logging.error(
+                        'El .Config del POS no tiene la clave "%s" — se aborta el cambio de nodo sin tocar nada.',
+                        clave,
+                    )
+                    return
+
+            shutil.copy2(ruta, ruta + '.bak')
+            with open(ruta, 'w', encoding='utf-8') as f:
+                f.write(actualizado)
+        except Exception:
+            logging.exception('No se pudo reapuntar el POS al nodo %s', bdd)
+            return
+
+        # Invalida el caché para que el próximo heartbeat reporte el nodo nuevo — es
+        # la confirmación que ve el panel.
+        self._cache_config_pos = None
+        logging.info(
+            'Nodo del POS aplicado: %s @ %s:%s (respaldo en %s.bak). Toma efecto al abrir el POS.',
+            bdd, servidor, puerto, ruta,
+        )
+
     def _leer_config_pos(self) -> dict:
         """Servidor/Bdd/Puerto del .Config del POS -- a qué nodo apunta REALMENTE esta
         estación, leído del propio equipo en vez de una planilla.
@@ -651,6 +724,8 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
             self._verificar_y_consultar_perifericos(payload)
         elif comando == 'consultar_red_farmacia':
             self._verificar_y_consultar_red_farmacia(payload)
+        elif comando == 'configurar_nodo_pos':
+            self._verificar_y_configurar_nodo_pos(payload)
         elif comando == 'actualizar_agente':
             self._verificar_y_actualizar_agente(payload)
         else:

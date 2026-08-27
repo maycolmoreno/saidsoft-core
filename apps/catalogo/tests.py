@@ -837,3 +837,36 @@ class NodoDiscrepanteTests(TestCase):
     def test_nodo_distinto_al_grupo_es_discrepancia(self):
         self.estacion.pos_bdd = 'trx002'
         self.assertTrue(self.estacion.nodo_discrepante)
+
+
+class EnviarConfigurarNodoPosTests(TestCase):
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX004', pos_servidor='192.168.112.3', pos_puerto='5433')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+
+    def test_el_payload_lleva_los_tres_valores_y_firma_valida(self):
+        from apps.catalogo.services import enviar_configurar_nodo_pos
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            enviar_configurar_nodo_pos(self.estacion, servidor='192.168.200.9', bdd='trx009', puerto='5555')
+        args, kwargs = mock_single.call_args
+        payload = json.loads(args[1])
+        self.assertEqual(payload['comando'], 'configurar_nodo_pos')
+        self.assertEqual(payload['servidor'], '192.168.200.9')
+        self.assertEqual(payload['bdd'], 'trx009')
+        self.assertEqual(payload['puerto'], '5555')
+        firma_esperada = firmar_payload(
+            comando='configurar_nodo_pos', servidor='192.168.200.9', bdd='trx009', puerto='5555',
+            estacion='ML001-A', timestamp=payload['timestamp'],
+        )
+        self.assertEqual(payload['firma'], firma_esperada)
+
+    def test_no_se_publica_retenido(self):
+        # Reapuntar el POS de una caja apagada, en un momento indeterminado, es
+        # justamente lo que no se quiere: se reenvía a mano cuando vuelva.
+        from apps.catalogo.services import enviar_configurar_nodo_pos
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            enviar_configurar_nodo_pos(self.estacion, servidor='1.2.3.4', bdd='x', puerto='1')
+        self.assertFalse(mock_single.call_args.kwargs['retain'])

@@ -109,6 +109,32 @@ def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script
     })
 
 
+def enviar_configurar_nodo_pos(estacion, *, servidor: str, bdd: str, puerto: str) -> bool:
+    """Reapunta el POS de `estacion` a otro nodo, reescribiendo Servidor/Bdd/Puerto en
+    su Zabyca.Pos.Desktop.exe.Config (ver agente_prueba._aplicar_nodo_pos).
+
+    Pensado para balanceo de carga: repartir farmacias entre nodos, o mover todas las
+    de un nodo a uno nuevo. El agente NO toca el archivo mientras el POS esté abierto
+    -- espera a que se cierre solo, así nunca corta una venta en curso. Por eso el
+    cambio puede tardar horas en aplicarse en una caja con mucha actividad, y no hay
+    confirmación inmediata: se confirma solo cuando el heartbeat empieza a reportar el
+    nodo nuevo (Estacion.pos_bdd).
+
+    No usa retain: si la estación está apagada, el comando se pierde a propósito --
+    reapuntar el POS de una caja que nadie está mirando, en un momento indeterminado,
+    es justo lo que no se quiere. Se reenvía desde el panel cuando vuelva.
+    """
+    timestamp = int(time.time())
+    firma = firmar_payload(
+        comando='configurar_nodo_pos', servidor=servidor, bdd=bdd, puerto=puerto,
+        estacion=estacion.codigo, timestamp=timestamp,
+    )
+    return _publicar_comando(estacion, {
+        'comando': 'configurar_nodo_pos', 'servidor': servidor, 'bdd': bdd, 'puerto': puerto,
+        'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
+    })
+
+
 def enviar_consultar_red_farmacia(estacion, comunidad: str) -> bool:
     """Pide a `estacion` que sondee por SNMP el Mikrotik de su propia farmacia (misma
     LAN, sin VPN -- ver docstring de agente_prueba._leer_contadores_mikrotik sobre

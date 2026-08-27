@@ -41,6 +41,17 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
         en un par de minutos si todo salió bien.
     </div>
     {% endif %}
+    {% if nodo_enviado %}
+    <div class="mb-4 text-xs px-3 py-2 rounded-md alert sev-info">
+        Cambio de nodo a <span class="mono">{{ nodo_enviado.nodo }}</span> ({{ nodo_enviado.servidor }}:{{ nodo_enviado.puerto }})
+        enviado a {{ nodo_enviado.enviadas }} estación(es) de esta farmacia.
+        {% if nodo_enviado.offline %}{{ nodo_enviado.offline }} está(n) fuera de línea y hay que reenviarles cuando vuelvan.{% endif %}
+        Cada estación aplica el cambio cuando su POS se cierre — no interrumpe ventas, así que puede tardar.
+    </div>
+    {% endif %}
+    {% if error_nodo %}
+    <div class="mb-4 text-xs px-3 py-2 rounded-md alert sev-critical">{{ error_nodo }}</div>
+    {% endif %}
     {% if error_agente %}
     <div class="mb-4 text-xs px-3 py-2 rounded-md alert sev-critical">{{ error_agente }}</div>
     {% endif %}
@@ -81,6 +92,21 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
                 <div class="field-value mono num">{% if estacion.pos_servidor %}{{ estacion.pos_servidor }}{% if estacion.pos_puerto %}:{{ estacion.pos_puerto }}{% endif %}{% else %}—{% endif %}</div>
             </div>
         </div>
+        {% if perms.catalogo.change_farmacia %}
+        <div class="field">
+            <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11l-3-3M20 17H9l3 3"/></svg></span>
+            <div class="field-body">
+                <div class="field-label">Reapuntar al nodo del grupo</div>
+                <form hx-post="{% url 'panel:farmacia_aplicar_nodo_pos' estacion.pk %}"
+                      hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                      hx-target="#modal-info-content" hx-swap="innerHTML"
+                      hx-confirm="Esto reescribe la configuración del POS de TODAS las estaciones de {{ estacion.farmacia.codigo }} para que apunten a {{ estacion.farmacia.grupo.codigo }}. Cada una lo aplica cuando su POS se cierre. ¿Continuar?">
+                    {% csrf_token %}
+                    <button type="submit" class="btn secondary">Aplicar {{ estacion.farmacia.grupo.codigo }} a la farmacia</button>
+                </form>
+            </div>
+        </div>
+        {% endif %}
         <div class="field">
             <span class="field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="1"/><path d="M7 2v3M12 2v3M17 2v3M7 19v3M12 19v3M17 19v3M2 7h3M2 12h3M2 17h3M19 7h3M19 12h3M19 17h3"/></svg></span>
             <div class="field-body"><div class="field-label">Procesador</div><div class="field-value">{{ estacion.procesador|default:"—" }}</div></div>

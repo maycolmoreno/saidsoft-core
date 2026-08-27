@@ -42,6 +42,10 @@ urlpatterns = [
         name='estacion_perifericos_solicitar',
     ),
     path(
+        'estaciones/<int:pk>/aplicar-nodo-pos/', views.farmacia_aplicar_nodo_pos,
+        name='farmacia_aplicar_nodo_pos',
+    ),
+    path(
         'estaciones/<int:pk>/agente/actualizar/', views.estacion_actualizar_agente_solicitar,
         name='estacion_actualizar_agente_solicitar',
     ),
