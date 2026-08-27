@@ -132,14 +132,26 @@ $config | ConvertTo-Json | Set-Content -Path (Join-Path $InstallPath "config.jso
 
 Write-Host "4) Registrando el servicio de Windows..." -ForegroundColor Cyan
 $exePath = Join-Path $InstallPath "Saidsoft.Agente.exe"
-& $exePath --startup auto install
-if ($LASTEXITCODE -ne 0) { throw "Falló el registro del servicio (código $LASTEXITCODE)." }
+
+# Start-Process -Wait -PassThru, NO "& $exePath": Saidsoft.Agente.exe se compila como
+# aplicación *windowed* (console=False en agente_prueba.spec, bootloader runw.exe de
+# PyInstaller). PowerShell NO espera a un ejecutable de subsistema GUI invocado con
+# "&" -- retorna al instante y $LASTEXITCODE queda en $null, así que el chequeo
+# "-ne 0" daba verdadero SIEMPRE y este script abortaba con "Falló el registro del
+# servicio (código )" (código vacío = la pista) aunque el servicio se hubiera
+# registrado bien. Encontrado instalando en ML016-B y ML027-ADM (26-ago-2026): la
+# instalación funcionaba de verdad, pero el script moría acá y nunca llegaba a
+# configurar el reinicio automático ni a iniciar el servicio.
+$proc = Start-Process -FilePath $exePath -ArgumentList '--startup','auto','install' -Wait -PassThru -NoNewWindow
+if ($proc.ExitCode -ne 0) { throw "Falló el registro del servicio (código $($proc.ExitCode))." }
 # pywin32 no expone política de reinicio automático al fallar — misma configuración que
 # usaba instalar-agente.ps1 para el agente C#.
 sc.exe failure $NombreServicio reset= 86400 actions= restart/30000/restart/60000/restart/120000 | Out-Null
 
 Write-Host "5) Iniciando el servicio..." -ForegroundColor Cyan
-& $exePath start
+# Mismo motivo que arriba: Start-Process en vez de "&". Se usa "net start" (y no
+# "$exePath start") porque no depende del bootloader windowed en absoluto.
+Start-Process -FilePath 'net.exe' -ArgumentList 'start',$NombreServicio -Wait -NoNewWindow
 Start-Sleep -Seconds 2
 Get-Service -Name $NombreServicio | Format-Table -AutoSize
 
