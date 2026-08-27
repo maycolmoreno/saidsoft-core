@@ -8,6 +8,8 @@ import time
 import paho.mqtt.publish as mqtt_publish
 from django.conf import settings
 
+from apps.catalogo import crypto
+
 logger = logging.getLogger(__name__)
 
 
@@ -109,7 +111,26 @@ def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script
     })
 
 
-def enviar_configurar_nodo_pos(estacion, *, servidor: str, bdd: str, puerto: str) -> bool:
+def establecer_password_nodo(grupo, password_plano: str) -> None:
+    """Guarda cifrada la contraseña de BD de un nodo. Cadena vacía la borra."""
+    grupo.pos_password_cifrada = crypto.cifrar(password_plano) if password_plano else ''
+    grupo.save(update_fields=['pos_password_cifrada'])
+
+
+def obtener_password_nodo(grupo) -> str:
+    """Contraseña de BD del nodo en texto plano, o '' si no tiene o no se puede
+    descifrar (clave rotada) — nunca lanza: un nodo mal configurado no debe tumbar el
+    flujo que lo consulta, y el llamador ya trata '' como "no configurado"."""
+    if not grupo.pos_password_cifrada:
+        return ''
+    try:
+        return crypto.descifrar(grupo.pos_password_cifrada)
+    except ValueError:
+        logger.error('No se pudo descifrar la contraseña del nodo %s (¿se rotó la clave?).', grupo.codigo)
+        return ''
+
+
+def enviar_configurar_nodo_pos(estacion, *, servidor: str, bdd: str, puerto: str, password: str) -> bool:
     """Reapunta el POS de `estacion` a otro nodo, reescribiendo Servidor/Bdd/Puerto en
     su Zabyca.Pos.Desktop.exe.Config (ver agente_prueba._aplicar_nodo_pos).
 
@@ -125,13 +146,15 @@ def enviar_configurar_nodo_pos(estacion, *, servidor: str, bdd: str, puerto: str
     es justo lo que no se quiere. Se reenvía desde el panel cuando vuelva.
     """
     timestamp = int(time.time())
+    # La contraseña entra a la firma como todo lo demás: si no, alguien que pudiera
+    # publicar en el tópico podría cambiarla sin invalidar el HMAC.
     firma = firmar_payload(
-        comando='configurar_nodo_pos', servidor=servidor, bdd=bdd, puerto=puerto,
+        comando='configurar_nodo_pos', servidor=servidor, bdd=bdd, puerto=puerto, password=password,
         estacion=estacion.codigo, timestamp=timestamp,
     )
     return _publicar_comando(estacion, {
         'comando': 'configurar_nodo_pos', 'servidor': servidor, 'bdd': bdd, 'puerto': puerto,
-        'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
+        'password': password, 'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
     })
 
 

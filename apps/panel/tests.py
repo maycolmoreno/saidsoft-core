@@ -2489,6 +2489,7 @@ class MfaTests(TestCase):
         self.assertTrue(EventoAuditoria.objects.filter(accion='usuario.mfa_desactivar', usuario=self.usuario).exists())
 
 
+@override_settings(BITLOCKER_ENCRYPTION_KEY=Fernet.generate_key().decode())
 class FarmaciaAplicarNodoPosTests(TestCase):
     """Reapuntar el POS reescribe config de producción: exige change_farmacia, no el
     permiso de diagnóstico. Aplica a la farmacia entera (el balanceo mueve sitios
@@ -2496,6 +2497,8 @@ class FarmaciaAplicarNodoPosTests(TestCase):
 
     def setUp(self):
         self.grupo = Grupo.objects.create(codigo='TRX004', pos_servidor='192.168.112.3', pos_puerto='5433')
+        from apps.catalogo.services import establecer_password_nodo
+        establecer_password_nodo(self.grupo, 'clave-nodo')
         farmacia = Farmacia.objects.create(
             codigo='ML001', grupo=self.grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
         )
@@ -2530,6 +2533,16 @@ class FarmaciaAplicarNodoPosTests(TestCase):
         enviadas = {c.args[0].codigo for c in mock_enviar.call_args_list}
         self.assertEqual(enviadas, {'ML001-A', 'ML001-B'})
         self.assertEqual(mock_enviar.call_args.kwargs['bdd'], 'TRX004')
+
+    def test_nodo_sin_password_no_envia_nada(self):
+        # Sin contraseña el POS no podría conectarse al nodo nuevo: mejor no tocar
+        # nada y avisar, que dejarlo a medio configurar.
+        from apps.catalogo.services import establecer_password_nodo
+        establecer_password_nodo(self.grupo, '')
+        with patch('apps.panel.views.estaciones.enviar_configurar_nodo_pos') as mock_enviar:
+            resp = self.client.post(self._url())
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_not_called()
 
     def test_nodo_sin_servidor_no_envia_nada(self):
         self.grupo.pos_servidor = ''

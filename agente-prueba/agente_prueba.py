@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.16'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.17'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -406,7 +406,8 @@ class AgentePrueba:
         if not self._firma_valida(
             'comando configurar_nodo_pos', payload,
             comando='configurar_nodo_pos', servidor=payload.get('servidor'), bdd=payload.get('bdd'),
-            puerto=payload.get('puerto'), estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+            puerto=payload.get('puerto'), password=payload.get('password'),
+            estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
         ):
             return
         # En un hilo: puede quedarse esperando horas a que cierre el POS.
@@ -428,8 +429,16 @@ class AgentePrueba:
         servidor = (payload.get('servidor') or '').strip()
         bdd = (payload.get('bdd') or '').strip()
         puerto = (payload.get('puerto') or '').strip()
-        if not (servidor and bdd and puerto):
-            logging.error('configurar_nodo_pos con datos incompletos (%s/%s/%s) — se ignora.', servidor, bdd, puerto)
+        # La contraseña NO se .strip(): un espacio al principio o al final puede ser
+        # parte de la contraseña real, y recortarlo dejaría al POS sin poder conectar.
+        password = payload.get('password') or ''
+        if not (servidor and bdd and puerto and password):
+            # Nunca se loguea el valor de la contraseña, solo si vino o no.
+            logging.error(
+                'configurar_nodo_pos con datos incompletos (servidor=%s bdd=%s puerto=%s password=%s) — se ignora.',
+                servidor or '(vacío)', bdd or '(vacío)', puerto or '(vacío)',
+                '(presente)' if password else '(vacía)',
+            )
             return
 
         ruta = f'{self.args.pos_comando_iniciar}.Config'
@@ -445,14 +454,19 @@ class AgentePrueba:
             with open(ruta, 'r', encoding='utf-8-sig') as f:
                 contenido = f.read()
 
-            nuevos = {'Servidor': servidor, 'Bdd': bdd, 'Puerto': puerto}
+            nuevos = {'Servidor': servidor, 'Bdd': bdd, 'Puerto': puerto, 'Contrasena': password}
             actualizado = contenido
             for clave, valor in nuevos.items():
+                # Escapado XML del valor: una contraseña puede traer &, < o " y sin
+                # esto dejaría el .Config mal formado — el POS no abriría. (El lambda
+                # del subn, además, evita que un "\" del valor se interprete como
+                # referencia de grupo en el reemplazo.)
+                valor_xml = valor.replace('&', '&amp;').replace('<', '&lt;').replace('"', '&quot;')
                 patron = re.compile(
                     r'(<add\s+key\s*=\s*"' + re.escape(clave) + r'"\s+value\s*=\s*")([^"]*)(")',
                     re.IGNORECASE,
                 )
-                actualizado, reemplazos = patron.subn(lambda m: m.group(1) + valor + m.group(3), actualizado)
+                actualizado, reemplazos = patron.subn(lambda m: m.group(1) + valor_xml + m.group(3), actualizado)
                 if reemplazos == 0:
                     logging.error(
                         'El .Config del POS no tiene la clave "%s" — se aborta el cambio de nodo sin tocar nada.',

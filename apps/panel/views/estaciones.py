@@ -8,6 +8,7 @@ from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Grupo, VersionAgente
 from apps.catalogo.services import (
     enviar_actualizacion_agente, enviar_comando, enviar_configurar_nodo_pos, obtener_clave_bitlocker_descifrada,
+    obtener_password_nodo,
     url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
@@ -204,10 +205,14 @@ def farmacia_aplicar_nodo_pos(request, pk):
     verificar_acceso(request.user, farmacia.unidad_negocio)
     grupo = farmacia.grupo
 
-    if not (grupo.pos_servidor and grupo.pos_puerto):
+    password = obtener_password_nodo(grupo)
+    if not (grupo.pos_servidor and grupo.pos_puerto and password):
+        faltan = [n for n, v in (
+            ('servidor', grupo.pos_servidor), ('puerto', grupo.pos_puerto), ('contraseña', password),
+        ) if not v]
         return _render_info_modal(request, estacion, error_nodo=(
-            f'El nodo "{grupo.codigo}" no tiene servidor/puerto cargados todavía '
-            f'(Admin → Catálogo → Grupos). Sin eso no se puede reapuntar el POS.'
+            f'Al nodo "{grupo.codigo}" le falta cargar: {", ".join(faltan)} '
+            f'(Admin → Catálogo → Grupos). Sin eso el POS no podría conectarse.'
         ))
 
     destinatarias = list(farmacia.estaciones.filter(
@@ -216,7 +221,9 @@ def farmacia_aplicar_nodo_pos(request, pk):
     ))
     enviadas = sum(
         1 for e in destinatarias
-        if enviar_configurar_nodo_pos(e, servidor=grupo.pos_servidor, bdd=grupo.codigo, puerto=grupo.pos_puerto)
+        if enviar_configurar_nodo_pos(
+            e, servidor=grupo.pos_servidor, bdd=grupo.codigo, puerto=grupo.pos_puerto, password=password,
+        )
     )
     registrar_evento(
         usuario=request.user, accion='farmacia.aplicar_nodo_pos', objeto=farmacia,

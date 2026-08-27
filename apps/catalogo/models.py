@@ -66,6 +66,14 @@ class Grupo(models.Model):
         help_text='IP/host del servidor de base de datos de este nodo, ej. 192.168.112.3.',
     )
     pos_puerto = models.CharField(max_length=10, blank=True, help_text='Puerto del servidor, ej. 5433.')
+    # Cada nodo tiene su propia contraseña de base de datos, y el POS no arranca sin
+    # ella: al reapuntar una farmacia hay que escribirla junto con Servidor/Bdd/Puerto.
+    # Cifrada en reposo (mismo criterio que ClaveRecuperacionBitLocker): quien tenga
+    # acceso directo a la BD no debe poder leerla. Nunca se muestra en el panel ni se
+    # loguea, y el agente NO la reporta de vuelta en el heartbeat.
+    pos_password_cifrada = models.TextField(
+        blank=True, help_text='Token Fernet — nunca texto plano. Contraseña de la BD de este nodo.',
+    )
     activo = models.BooleanField(default=True)
     fecha_creacion = models.DateTimeField(auto_now_add=True)
 

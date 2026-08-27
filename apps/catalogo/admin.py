@@ -1,5 +1,6 @@
 import io
 
+from django import forms
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied
 from django.shortcuts import redirect
@@ -10,7 +11,7 @@ from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_por_unidad_negocio
 
 from .models import Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
-from .services import importar_farmacias_desde_csv
+from .services import establecer_password_nodo, importar_farmacias_desde_csv
 
 
 @admin.register(UnidadNegocio)
@@ -24,15 +25,49 @@ class UnidadNegocioAdmin(admin.ModelAdmin):
         return obj.farmacias.count()
 
 
+class GrupoAdminForm(forms.ModelForm):
+    """La contraseña del nodo se carga acá pero NUNCA se muestra de vuelta: el campo
+    arranca siempre vacío y solo se guarda si se escribe algo (dejarlo en blanco
+    conserva la que ya estaba). Así el token cifrado no viaja al navegador ni queda
+    en el HTML del formulario."""
+
+    pos_password = forms.CharField(
+        label='Contraseña del nodo', required=False, widget=forms.PasswordInput(render_value=False),
+        help_text='Contraseña de la base de datos de este nodo (va al Contrasena del .Config del POS). '
+                  'Dejar vacío para conservar la actual. Se guarda cifrada.',
+    )
+
+    class Meta:
+        model = Grupo
+        fields = ('codigo', 'nombre', 'version_objetivo', 'pos_servidor', 'pos_puerto', 'activo')
+
+    def save(self, commit=True):
+        grupo = super().save(commit=commit)
+        nueva = self.cleaned_data.get('pos_password')
+        if nueva:
+            # establecer_password_nodo ya hace su propio save(update_fields=...).
+            establecer_password_nodo(grupo, nueva)
+        return grupo
+
+
 @admin.register(Grupo)
 class GrupoAdmin(admin.ModelAdmin):
-    list_display = ('codigo', 'nombre', 'version_objetivo', 'activo', 'total_farmacias')
+    form = GrupoAdminForm
+    list_display = (
+        'codigo', 'nombre', 'version_objetivo', 'pos_servidor', 'pos_puerto',
+        'tiene_password', 'activo', 'total_farmacias',
+    )
     search_fields = ('codigo', 'nombre')
     list_filter = ('activo',)
 
     @admin.display(description='Farmacias')
     def total_farmacias(self, obj):
         return obj.farmacias.count()
+
+    @admin.display(description='Contraseña', boolean=True)
+    def tiene_password(self, obj):
+        # Solo si está cargada o no — el valor nunca se muestra.
+        return bool(obj.pos_password_cifrada)
 
 
 @admin.register(Farmacia)
