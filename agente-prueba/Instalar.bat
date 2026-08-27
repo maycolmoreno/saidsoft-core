@@ -49,11 +49,13 @@ set "CENTRAL_HOST="
 set "MQTT_PUERTO="
 set "MQTT_PASSWORD="
 set "HMAC_SECRET="
+set "SERVIDOR_HORA="
 for /f "usebackq tokens=1,* delims==" %%A in ("config.txt") do (
     if /i "%%A"=="CentralHost" set "CENTRAL_HOST=%%B"
     if /i "%%A"=="MqttPuerto" set "MQTT_PUERTO=%%B"
     if /i "%%A"=="MqttPassword" set "MQTT_PASSWORD=%%B"
     if /i "%%A"=="ComandoHmacSecret" set "HMAC_SECRET=%%B"
+    if /i "%%A"=="ServidorHora" set "SERVIDOR_HORA=%%B"
 )
 if "%CENTRAL_HOST%"=="" (
     echo config.txt no tiene una linea "CentralHost=...". Revisa el formato contra config.ejemplo.txt.
@@ -63,13 +65,16 @@ if "%CENTRAL_HOST%"=="" (
 rem instalar-servicio.ps1 ya tiene 8081 como default (EMQX remapeado por el firewall del
 rem servidor, ver docker-compose.yml), pero lo tomamos de config.txt si esta explicito.
 if "%MQTT_PUERTO%"=="" set "MQTT_PUERTO=8081"
+rem Idem ServidorHora: instalar-servicio.ps1 ya tiene un default, config.txt lo pisa.
+rem Poner "ServidorHora=" (vacio) en config.txt desactiva la sincronizacion de hora.
+if "%SERVIDOR_HORA%"=="" set "SERVIDOR_HORA=farmaciasmia.int"
 
 echo Instalando el agente SAIDSOFT en esta estacion (%COMPUTERNAME%)...
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\instalar-servicio.ps1" ^
     -PublishFolder "." -CentralHost "%CENTRAL_HOST%" -MqttPuerto %MQTT_PUERTO% ^
     -MqttPassword "%MQTT_PASSWORD%" -CaCertPath ".\cert.pem" ^
-    -ComandoHmacSecret "%HMAC_SECRET%"
+    -ComandoHmacSecret "%HMAC_SECRET%" -ServidorHora "%SERVIDOR_HORA%"
 
 echo.
 echo Listo. Revisa arriba si dijo "Running" el servicio, y confirma en el panel

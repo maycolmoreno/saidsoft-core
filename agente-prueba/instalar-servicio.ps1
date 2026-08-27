@@ -71,6 +71,15 @@ param(
     [int]$IntervaloHeartbeat = 60,
     [string]$InstallPath = "C:\Program Files\Saidsoft\Agente",
 
+    # Servidor de hora al que sincronizar la estación (ver paso 2). Vacío = no tocar la
+    # hora. El agente descarta cualquier comando firmado con más de
+    # VENTANA_TIMESTAMP_SEGUNDOS (120s) de desfase contra su propio reloj — protección
+    # anti-replay, ver agente_prueba.timestamp_en_ventana. Una estación con la hora
+    # corrida ignora en silencio TODO script/comando del panel, y el único rastro queda
+    # en su log local ("timestamp fuera de ventana"), no en el panel. Encontrado en
+    # producción en ML016-B (26-ago-2026).
+    [string]$ServidorHora = "farmaciasmia.int",
+
     # Mismo POS (Farmamia Cia Ltda - Elipsys, Zabyca.Pos.Desktop.exe) para las 3
     # unidades de negocio (SG/MIA/7DIAS) — mismo valor que instalar-agente.ps1 original.
     [string]$PosCarpetaInstalacion = "C:\Program Files (x86)\Farmamia Cia Ltda - Elipsys\Cliente",
@@ -95,6 +104,42 @@ if ($PosNombreProceso.EndsWith(".exe", [StringComparison]::OrdinalIgnoreCase)) {
 }
 if (-not (Test-Path $PosCarpetaInstalacion)) {
     Write-Warning "No se encontró '$PosCarpetaInstalacion' en esta estación. El agente igual se instala, pero los despliegues de POS van a fallar hasta que el POS esté instalado ahí."
+}
+
+Write-Host "0) Sincronizando la hora de la estación..." -ForegroundColor Cyan
+if ([string]::IsNullOrWhiteSpace($ServidorHora)) {
+    Write-Host "   (omitido: no se indicó ServidorHora)" -ForegroundColor DarkGray
+} else {
+    # Nunca fatal: una estación con la hora corrida es un problema real (descarta todos
+    # los comandos del panel, ver comentario en el parámetro), pero no es motivo para
+    # abortar la instalación del agente -- se avisa y se sigue.
+    try {
+        # W32Time viene deshabilitado en algunas imágenes de Windows; sin esto,
+        # w32tm /resync falla con "El servicio no se ha iniciado".
+        Set-Service -Name W32Time -StartupType Automatic -ErrorAction Stop
+        Start-Service -Name W32Time -ErrorAction SilentlyContinue
+
+        # Se configura el peer ADEMÁS de sincronizar ahora: "net time /set" (lo que se
+        # venía haciendo a mano) corrige el reloj una vez, pero no evita que se vuelva a
+        # desviar. Con esto Windows lo mantiene sincronizado solo de ahí en adelante.
+        & w32tm.exe /config /manualpeerlist:"$ServidorHora" /syncfromflags:manual /update | Out-Null
+        & w32tm.exe /resync /force | Out-Null
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "   Hora sincronizada contra $ServidorHora (ahora: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))." -ForegroundColor DarkGray
+        } else {
+            # w32tm puede fallar si el peer no responde NTP pero sí SMB — "net time" es
+            # el camino que ya se sabe que funciona en esta red, se usa como respaldo.
+            & net.exe time "\\$ServidorHora" /set /yes | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "   Hora sincronizada vía 'net time' (ahora: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))." -ForegroundColor DarkGray
+            } else {
+                Write-Warning "No se pudo sincronizar la hora contra '$ServidorHora'. La instalación sigue, PERO si el reloj está corrido más de 2 minutos la estación va a ignorar todos los scripts y comandos del panel. Corregir a mano y reintentar."
+            }
+        }
+    } catch {
+        Write-Warning "No se pudo sincronizar la hora ($($_.Exception.Message)). La instalación sigue -- ver la advertencia de arriba sobre el impacto."
+    }
 }
 
 Write-Host "1) Deteniendo/quitando servicio previo si existe (agente C# o Python)..." -ForegroundColor Cyan

@@ -2,3 +2,9 @@ CentralHost=10.111.6.20
 MqttPuerto=8081
 MqttPassword=
 ComandoHmacSecret=
+# Servidor de hora contra el que sincronizar la estacion al instalar (y al que Windows
+# queda apuntando para mantenerla sincronizada solo de ahi en adelante). Dejarlo vacio
+# desactiva la sincronizacion. Importa: el agente descarta todo comando/script del panel
+# si su reloj esta desviado mas de 2 minutos (proteccion anti-replay), y eso solo queda
+# registrado en el log local de la estacion, no en el panel.
+ServidorHora=farmaciasmia.int
