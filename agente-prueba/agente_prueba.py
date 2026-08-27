@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.10'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.11'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -1062,34 +1062,49 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
         La espera entre reintentos usa "ping -n 2 127.0.0.1", NO "timeout /t 1": ese
         último requiere una consola/stdin real para funcionar (chequea si hay una
         tecla presionada incluso con /nobreak) y este script corre con stdin=DEVNULL
-        (obligatorio, el servicio no tiene consola) -- encontrado en producción
-        (ML006-A, 26-ago-2026): el .bat escribía su primera línea de log y el
-        servicio se detenía bien, pero nunca llegaba a copiar el ejecutable nuevo ni
-        a loguear éxito/error, consistente con que "timeout" fallara en cada vuelta
-        del bucle de espera y cortara la ejecución ahí. "ping" no depende de stdin."""
+        (obligatorio, el servicio no tiene consola).
+
+        Sigue sin usar "sc query | findstr" para esperar a que el servicio quede
+        detenido -- encontrado en producción (ML006-A, 26-ago-2026, ya con el fix de
+        "ping" de arriba aplicado): el .bat seguía sin pasar de su primera línea de
+        log en NINGÚN intento, "net stop" funcionaba (el servicio se detenía, según
+        el log del propio agente), pero nada después de eso quedaba registrado. En
+        vez de intentar detectar con precisión cuándo el proceso soltó el lock del
+        .exe (algo en ese `sc query`/pipe seguía sin funcionar en este entorno sin
+        consola, sin poder confirmar exactamente qué), esta versión: (1) loguea cada
+        paso por separado, para que si vuelve a trabarse el log diga dónde; (2) no
+        pisa el .exe en uso directamente -- copia el nuevo a un archivo .tmp (nunca
+        toca el archivo bloqueado) y recién al final hace un `move` rápido, con
+        reintentos cortos vía "ping" si el .exe todavía está en uso en ese momento."""
         exe_bak = exe_actual + '.bak'
+        exe_tmp = exe_actual + '.nuevo'
         log_swap = os.path.join(tempfile.gettempdir(), 'saidsoft-agente-update.log')
         script = f'''@echo off
-echo %date% %time% - Actualizando a {version_nueva}... >> "{log_swap}"
+echo %date% %time% - [1] iniciando actualizacion a {version_nueva} >> "{log_swap}"
 net stop "{self.NOMBRE_SERVICIO}"
+echo %date% %time% - [2] net stop devolvio %errorlevel% >> "{log_swap}"
+if exist "{exe_tmp}" del /f /q "{exe_tmp}"
+copy /y "{exe_nuevo}" "{exe_tmp}" >nul
+echo %date% %time% - [3] copia a temporal devolvio %errorlevel% >> "{log_swap}"
 set intentos=0
-:esperar
-sc query "{self.NOMBRE_SERVICIO}" | findstr /C:"STOPPED" >nul
-if not errorlevel 1 goto detenido
-set /a intentos+=1
-if %intentos% geq 30 goto detenido
-ping -n 2 127.0.0.1 >nul
-goto esperar
-:detenido
+:reemplazar
 if exist "{exe_bak}" del /f /q "{exe_bak}"
-copy /y "{exe_actual}" "{exe_bak}" >nul
-copy /y "{exe_nuevo}" "{exe_actual}" >nul
-if errorlevel 1 (
-    echo %date% %time% - ERROR copiando el ejecutable nuevo para {version_nueva}. >> "{log_swap}"
-) else (
-    echo %date% %time% - Actualizacion a {version_nueva} aplicada. >> "{log_swap}"
-)
+move /y "{exe_actual}" "{exe_bak}" >nul 2>>"{log_swap}"
+if not errorlevel 1 goto movido
+set /a intentos+=1
+echo %date% %time% - [4] .exe actual todavia en uso, intento %intentos% >> "{log_swap}"
+if %intentos% geq 20 goto fallo_reemplazo
+ping -n 2 127.0.0.1 >nul
+goto reemplazar
+:movido
+move /y "{exe_tmp}" "{exe_actual}" >nul
+echo %date% %time% - [5] Actualizacion a {version_nueva} aplicada tras %intentos% reintento(s). >> "{log_swap}"
+goto reiniciar
+:fallo_reemplazo
+echo %date% %time% - [5] ERROR: el .exe actual seguia en uso tras %intentos% reintentos, se aborta. >> "{log_swap}"
+:reiniciar
 net start "{self.NOMBRE_SERVICIO}"
+echo %date% %time% - [6] net start devolvio %errorlevel% >> "{log_swap}"
 del "%~f0"
 '''
         ruta_script = os.path.join(tempfile.gettempdir(), f'saidsoft-agente-update-{int(time.time())}.bat')
