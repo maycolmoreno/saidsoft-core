@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.8'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.9'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -1057,7 +1057,16 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
         servicio quede detenido (recién ahí el .exe actual suelta su lock de archivo),
         reemplaza el binario (con .bak por si hay que revertir a mano), vuelve a
         arrancar el servicio, y se autoborra al terminar ("del %~f0" como última línea
-        -- técnica estándar de Windows para que un .bat se borre a sí mismo)."""
+        -- técnica estándar de Windows para que un .bat se borre a sí mismo).
+
+        La espera entre reintentos usa "ping -n 2 127.0.0.1", NO "timeout /t 1": ese
+        último requiere una consola/stdin real para funcionar (chequea si hay una
+        tecla presionada incluso con /nobreak) y este script corre con stdin=DEVNULL
+        (obligatorio, el servicio no tiene consola) -- encontrado en producción
+        (ML006-A, 26-ago-2026): el .bat escribía su primera línea de log y el
+        servicio se detenía bien, pero nunca llegaba a copiar el ejecutable nuevo ni
+        a loguear éxito/error, consistente con que "timeout" fallara en cada vuelta
+        del bucle de espera y cortara la ejecución ahí. "ping" no depende de stdin."""
         exe_bak = exe_actual + '.bak'
         log_swap = os.path.join(tempfile.gettempdir(), 'saidsoft-agente-update.log')
         script = f'''@echo off
@@ -1069,7 +1078,7 @@ sc query "{self.NOMBRE_SERVICIO}" | findstr /C:"STOPPED" >nul
 if not errorlevel 1 goto detenido
 set /a intentos+=1
 if %intentos% geq 30 goto detenido
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 goto esperar
 :detenido
 if exist "{exe_bak}" del /f /q "{exe_bak}"
