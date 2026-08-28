@@ -54,8 +54,12 @@ class MuestraRedFarmaciaAdmin(admin.ModelAdmin):
 
 @admin.register(ReglaAlerta)
 class ReglaAlertaAdmin(admin.ModelAdmin):
-    list_display = ('nombre', 'metrica', 'operador', 'umbral', 'duracion_minutos', 'severidad', 'unidad_negocio', 'activo')
-    list_filter = ('unidad_negocio', 'metrica', 'severidad', 'activo')
+    list_display = (
+        'nombre', 'metrica', 'operador', 'umbral', 'duracion_minutos', 'severidad',
+        'abre_mantenimiento', 'unidad_negocio', 'activo',
+    )
+    list_filter = ('unidad_negocio', 'metrica', 'severidad', 'abre_mantenimiento', 'activo')
+    list_editable = ('abre_mantenimiento',)
     search_fields = ('nombre',)
     autocomplete_fields = ('unidad_negocio', 'creado_por')
 

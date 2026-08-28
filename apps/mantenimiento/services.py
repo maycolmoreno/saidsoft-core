@@ -114,6 +114,73 @@ def iniciar_reparacion_desde_activo(*, activo, motivo, detalle_motivo, usuario):
     )
 
 
+def abrir_mantenimiento_desde_alerta(alerta):
+    """Abre un Mantenimiento para el equipo de la estación que disparó `alerta`.
+
+    Cierra el círculo del RMM: hasta ahora una alerta avisaba, pero alguien tenía que
+    cargar la orden de trabajo a mano. Solo se llama para reglas marcadas con
+    `abre_mantenimiento` (ver ReglaAlerta) -- no toda alerta amerita un técnico.
+
+    NUNCA lanza: lo llama apps.monitoreo.services.abrir_o_mantener_alerta, que corre
+    sobre toda la flota; un problema acá no puede tumbar la evaluación de alertas ni
+    impedir que la alerta se abra. Devuelve el Mantenimiento creado, o None con el
+    motivo logueado.
+
+    Casos en que no crea nada (ninguno es un error):
+    - La estación no tiene un Activo vinculado todavía (el cruce por número de serie
+      corre a diario, ver apps.activos.services.vincular_activos_por_numero_serie):
+      sin equipo no hay a qué asociar el mantenimiento.
+    - Ese equipo ya tiene un mantenimiento abierto: crear_mantenimiento_manual lo
+      rechaza a propósito, y acá es justamente lo que se quiere (una falla que
+      persiste no debe generar una orden nueva cada vez que se re-evalúa la regla).
+    """
+    import logging
+
+    from .models import PrioridadMantenimiento
+
+    logger = logging.getLogger(__name__)
+    estacion = alerta.estacion
+    activo = getattr(estacion, 'activo_vinculado', None)
+    if activo is None:
+        logger.info(
+            'Alerta #%s en %s: la estación no tiene un activo vinculado, no se abre mantenimiento.',
+            alerta.pk, estacion.codigo,
+        )
+        return None
+
+    # La severidad de la regla define la prioridad: una regla crítica (POS caído) no
+    # puede entrar con el mismo plazo que una advertencia (disco al 80%).
+    prioridad = (
+        PrioridadMantenimiento.CRITICA
+        if alerta.regla.severidad == alerta.regla.Severidad.CRITICAL
+        else PrioridadMantenimiento.ALTA
+    )
+    try:
+        mantenimiento = crear_mantenimiento_manual(
+            equipos=[activo], tecnico=None, cliente=activo.colaborador_actual,
+            descripcion=(
+                f'Abierto automáticamente por la alerta #{alerta.pk} '
+                f'"{alerta.regla.nombre}" en {estacion.codigo} (valor: {alerta.valor_disparador}).'
+            ),
+            tipo_mantenimiento=_tipo_mantenimiento('correctivo'),
+            fecha_programada=timezone.now(), usuario=None, prioridad=prioridad,
+        )
+    except ValueError as exc:
+        # Típicamente "ya hay un mantenimiento abierto para este equipo".
+        logger.info('Alerta #%s en %s: no se abrió mantenimiento (%s).', alerta.pk, estacion.codigo, exc)
+        return None
+    except Exception:
+        logger.exception('Alerta #%s en %s: error abriendo el mantenimiento automático.', alerta.pk, estacion.codigo)
+        return None
+
+    mantenimiento.tipo_origen = TipoOrigenMantenimiento.MONITOREO
+    mantenimiento.save(update_fields=['tipo_origen'])
+    alerta.mantenimiento = mantenimiento
+    alerta.save(update_fields=['mantenimiento'])
+    logger.info('Alerta #%s en %s abrió el mantenimiento #%s.', alerta.pk, estacion.codigo, mantenimiento.pk)
+    return mantenimiento
+
+
 def iniciar_mantenimiento(*, mantenimiento, usuario):
     if mantenimiento.estado_interno != Mantenimiento.EstadoInterno.PENDIENTE:
         raise ValueError('Solo un mantenimiento pendiente puede iniciarse.')

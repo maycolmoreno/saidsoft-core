@@ -11,7 +11,9 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
+from apps.activos.models import Activo
 from apps.cuentas.models import PerfilUsuario
+from apps.mantenimiento.models import Mantenimiento, PrioridadMantenimiento, TipoOrigenMantenimiento
 from apps.monitoreo.adapters.meshcentral import AdaptadorMeshCentral, _en_linea, _id_corto
 
 from .mikrotik import sincronizar_ancho_banda_farmacias
@@ -20,7 +22,8 @@ from .models import (
     PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
 from .services import (
-    UMBRAL_ESCALAMIENTO_MINUTOS, clasificar_error_pos, escalar_alertas_abiertas, evaluar_cruce_monitoreo,
+    UMBRAL_ESCALAMIENTO_MINUTOS, abrir_o_mantener_alerta, clasificar_error_pos, escalar_alertas_abiertas,
+    evaluar_cruce_monitoreo, resolver_condicion,
     evaluar_regla_bitlocker, evaluar_regla_pos_errores, evaluar_reglas_metricas, notificar_alerta,
     registrar_estado_dispositivo, reglas_aplicables_a, resolver_alertas_agente_caido_red_viva,
     resolver_alertas_bitlocker, resolver_alertas_sin_heartbeat,
@@ -1083,3 +1086,70 @@ class SolicitarSondeoRedFarmaciasViaAgenteTests(TestCase):
             n = self.solicitar()
         self.assertEqual(n, 1)
         mock_enviar.assert_called_once()
+
+
+class AlertaAbreMantenimientoTests(TestCase):
+    """Cierra el círculo del RMM: una alerta de una regla marcada abre sola la orden
+    de trabajo. Nunca debe romper el flujo de alertas si algo falta."""
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_rmm', password='x')
+        self.regla = ReglaAlerta.objects.create(
+            nombre='POS caído', metrica=Metrica.SIN_HEARTBEAT, umbral=90, duracion_minutos=5,
+            severidad=ReglaAlerta.Severidad.CRITICAL, unidad_negocio=sg, creado_por=self.usuario,
+            abre_mantenimiento=True,
+        )
+        self.activo = Activo.objects.create(
+            codigo='CR-DSK-7001', tipo=Activo.Tipo.DESKTOP, estacion=self.estacion,
+        )
+
+    def test_abre_el_mantenimiento_y_lo_deja_enlazado(self):
+        alerta = abrir_o_mantener_alerta(self.regla, self.estacion, valor=95)
+        alerta.refresh_from_db()
+        self.assertIsNotNone(alerta.mantenimiento)
+        m = alerta.mantenimiento
+        self.assertEqual(m.tipo_origen, TipoOrigenMantenimiento.MONITOREO)
+        # Regla crítica -> prioridad crítica (SLA de 4h, no el de un preventivo).
+        self.assertEqual(m.prioridad, PrioridadMantenimiento.CRITICA)
+        self.assertEqual(list(m.equipos.values_list('equipo__codigo', flat=True)), ['CR-DSK-7001'])
+
+    def test_regla_de_advertencia_entra_como_alta_no_critica(self):
+        self.regla.severidad = ReglaAlerta.Severidad.WARNING
+        self.regla.save(update_fields=['severidad'])
+        alerta = abrir_o_mantener_alerta(self.regla, self.estacion, valor=95)
+        alerta.refresh_from_db()
+        self.assertEqual(alerta.mantenimiento.prioridad, PrioridadMantenimiento.ALTA)
+
+    def test_regla_sin_el_flag_no_abre_nada(self):
+        self.regla.abre_mantenimiento = False
+        self.regla.save(update_fields=['abre_mantenimiento'])
+        alerta = abrir_o_mantener_alerta(self.regla, self.estacion, valor=95)
+        alerta.refresh_from_db()
+        self.assertIsNone(alerta.mantenimiento)
+        self.assertFalse(Mantenimiento.objects.exists())
+
+    def test_estacion_sin_activo_vinculado_no_rompe_la_alerta(self):
+        self.activo.estacion = None
+        self.activo.save(update_fields=['estacion'])
+        alerta = abrir_o_mantener_alerta(self.regla, self.estacion, valor=95)
+        # La alerta se abre igual: no poder crear la orden no puede tragarse el aviso.
+        self.assertIsNotNone(alerta)
+        alerta.refresh_from_db()
+        self.assertIsNone(alerta.mantenimiento)
+
+    def test_no_duplica_si_el_equipo_ya_tiene_un_mantenimiento_abierto(self):
+        alerta1 = abrir_o_mantener_alerta(self.regla, self.estacion, valor=95)
+        self.assertIsNotNone(alerta1.mantenimiento)
+        # Se resuelve y vuelve a dispararse: no debe abrir una segunda orden sobre el
+        # mismo equipo mientras la primera siga abierta.
+        resolver_condicion(self.regla, self.estacion)
+        alerta2 = abrir_o_mantener_alerta(self.regla, self.estacion, valor=97)
+        alerta2.refresh_from_db()
+        self.assertIsNone(alerta2.mantenimiento)
+        self.assertEqual(Mantenimiento.objects.count(), 1)

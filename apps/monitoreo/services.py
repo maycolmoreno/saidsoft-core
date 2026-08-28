@@ -136,6 +136,13 @@ def abrir_o_mantener_alerta(regla, estacion, valor):
         return None
     alerta = Alerta.objects.create(regla=regla, estacion=estacion, valor_disparador=valor)
     notificar_alerta(alerta)
+    if regla.abre_mantenimiento:
+        # Import diferido: mantener la dependencia monitoreo -> mantenimiento fuera del
+        # nivel de módulo (mismo criterio que el resto de los cruces entre apps acá).
+        # La función nunca lanza -- ver su docstring: un problema abriendo la orden de
+        # trabajo no debe impedir que la alerta quede abierta y notificada.
+        from apps.mantenimiento.services import abrir_mantenimiento_desde_alerta
+        abrir_mantenimiento_desde_alerta(alerta)
     return alerta
 
 

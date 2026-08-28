@@ -229,6 +229,14 @@ class ReglaAlerta(models.Model):
         CRITICAL = 'critical', 'Crítica'
 
     nombre = models.CharField(max_length=150)
+    # No toda alerta amerita mandar un técnico: un pico de CPU se resuelve solo, un POS
+    # que no levanta no. Apagado por defecto para que activar una regla nueva no empiece
+    # a generar órdenes de trabajo sin que nadie lo haya decidido.
+    abre_mantenimiento = models.BooleanField(
+        default=False,
+        help_text='Si al dispararse esta regla se abre automáticamente un mantenimiento '
+                  'para el equipo de la estación afectada.',
+    )
     metrica = models.CharField(max_length=30, choices=Metrica.choices)
     operador = models.CharField(
         max_length=3, choices=Operador.choices, default=Operador.GTE,
@@ -285,6 +293,13 @@ class Alerta(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
     )
     resuelta_en = models.DateTimeField(null=True, blank=True)
+    # Referencia perezosa por string: evita que apps.monitoreo importe apps.mantenimiento
+    # a nivel de módulo (hoy la dependencia va en un solo sentido y conviene que siga así).
+    mantenimiento = models.ForeignKey(
+        'mantenimiento.Mantenimiento', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='alertas_origen',
+        help_text='Mantenimiento abierto automáticamente por esta alerta, si la regla lo pide.',
+    )
     escalada_en = models.DateTimeField(
         null=True, blank=True,
         help_text='Cuándo se reenvió la notificación por seguir ABIERTA sin reconocer '

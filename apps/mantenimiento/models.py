@@ -13,6 +13,10 @@ class TipoOrigenMantenimiento(models.TextChoices):
     ODOO_HELPDESK = 'odoo_helpdesk', 'Odoo Helpdesk'
     PROGRAMADO = 'programado', 'Programado'
     MANUAL = 'manual', 'Manual'
+    # Abierto solo por una alerta de monitoreo (ver
+    # apps.mantenimiento.services.abrir_mantenimiento_desde_alerta): nadie lo cargó a
+    # mano, lo disparó el RMM al detectar la falla.
+    MONITOREO = 'monitoreo', 'Monitoreo (automático)'
 
 
 class ResultadoTecnico(models.TextChoices):
