@@ -10,10 +10,11 @@ from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
 from .models import (
     AcuerdoNivelServicio, EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado,
     Notificacion, PrioridadMantenimiento, RADIO_VERIFICACION_METROS, RepuestoUtilizado, ResultadoTecnico,
-    TipoMantenimiento, TipoOrigenMantenimiento, UbicacionTecnico,
+    TipoMantenimiento, TipoOrigenMantenimiento, UbicacionTecnico, VisitaTecnica,
 )
 from .services import (
-    _metros_entre, cancelar_mantenimiento, cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf,
+    _metros_entre, cancelar_mantenimiento, cancelar_visita_tecnica, cerrar_visita_tecnica,
+    crear_visita_tecnica, iniciar_visita_tecnica, cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf,
     iniciar_mantenimiento, iniciar_reparacion_desde_activo, mantenimientos_atrasados,
     mantenimientos_programados_por_vencer, notificar_mantenimientos_proximos_y_atrasados,
     registrar_repuesto_utilizado,
@@ -792,3 +793,78 @@ class PresenciaEnSitioTests(TestCase):
         cerrar_mantenimiento(mantenimiento=m, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
         m.refresh_from_db()
         self.assertEqual(m.presencia_en_sitio, 'sin_datos')
+
+
+class VisitaTecnicaTests(TestCase):
+    """La visita pasó de ser un reporte de solo lectura (sobre activos.Ubicacion, que
+    en producción está vacía) a un proceso con ciclo de vida y verificación GPS."""
+
+    def setUp(self):
+        self.tecnico = User.objects.create_user(username='u_visita', password='x')
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=sg, latitud=-2.170998, longitud=-79.922359,
+        )
+
+    def _visita(self, fecha=None):
+        return crear_visita_tecnica(
+            farmacia=self.farmacia, tecnico=self.tecnico,
+            fecha_planificada=fecha or timezone.localdate(), motivo='relevamiento', usuario=self.tecnico,
+        )
+
+    def test_nace_planificada(self):
+        v = self._visita()
+        self.assertEqual(v.estado, VisitaTecnica.Estado.PLANIFICADA)
+        self.assertIsNone(v.fecha_inicio)
+
+    def test_ciclo_completo_con_gps_verifica_presencia(self):
+        v = self._visita()
+        iniciar_visita_tecnica(visita=v, usuario=self.tecnico)
+        UbicacionTecnico.objects.create(
+            usuario=self.tecnico, latitud=-2.171050, longitud=-79.922400,
+            timestamp_captura=timezone.now(),
+        )
+        cerrar_visita_tecnica(visita=v, usuario=self.tecnico, observaciones='todo ok')
+        v.refresh_from_db()
+        self.assertEqual(v.estado, VisitaTecnica.Estado.REALIZADA)
+        self.assertEqual(v.presencia_en_sitio, 'verificada')
+        self.assertEqual(v.observaciones, 'todo ok')
+
+    def test_cerrar_sin_gps_no_falla_y_queda_sin_datos(self):
+        v = self._visita()
+        iniciar_visita_tecnica(visita=v, usuario=self.tecnico)
+        cerrar_visita_tecnica(visita=v, usuario=self.tecnico)
+        v.refresh_from_db()
+        self.assertEqual(v.estado, VisitaTecnica.Estado.REALIZADA)
+        self.assertEqual(v.presencia_en_sitio, 'sin_datos')
+
+    def test_no_se_puede_iniciar_dos_veces(self):
+        v = self._visita()
+        iniciar_visita_tecnica(visita=v, usuario=self.tecnico)
+        with self.assertRaises(ValueError):
+            iniciar_visita_tecnica(visita=v, usuario=self.tecnico)
+
+    def test_no_se_puede_cerrar_una_cancelada(self):
+        v = self._visita()
+        cancelar_visita_tecnica(visita=v, motivo='se reprograma', usuario=self.tecnico)
+        with self.assertRaises(ValueError):
+            cerrar_visita_tecnica(visita=v, usuario=self.tecnico)
+
+    def test_planificada_para_ayer_y_sin_hacer_esta_atrasada(self):
+        v = self._visita(fecha=timezone.localdate() - timedelta(days=1))
+        self.assertTrue(v.atrasada)
+        cerrar_visita_tecnica(visita=v, usuario=self.tecnico)
+        v.refresh_from_db()
+        self.assertFalse(v.atrasada)
+
+    def test_el_mantenimiento_que_sale_de_la_visita_queda_enlazado(self):
+        v = self._visita()
+        equipo = Activo.objects.create(codigo='CR-DSK-6001', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia)
+        m = crear_mantenimiento_manual(
+            equipos=[equipo], tecnico=self.tecnico, descripcion='falla detectada en la visita',
+            fecha_programada=timezone.now(), usuario=self.tecnico,
+        )
+        m.visita = v
+        m.save(update_fields=['visita'])
+        self.assertEqual(list(v.mantenimientos_generados.all()), [m])

@@ -4,6 +4,9 @@ from django.urls import reverse_lazy
 
 from apps.activos.models import Activo, Bodega, Colaborador, TipoConsumible, Ubicacion
 
+from apps.catalogo.models import Farmacia
+from apps.cuentas.services import scope_opcional_por_unidad_negocio
+
 from .models import (
     EstadoGeneralEquipo, MantenimientoProgramado, PrioridadActividad, PrioridadMantenimiento, ResultadoTecnico,
     TipoFirma, TipoMantenimiento,
@@ -174,3 +177,30 @@ class CompletarActividadForm(forms.Form):
     tiempo_real_minutos = forms.IntegerField(
         required=False, min_value=1, widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),
     )
+
+
+class VisitaTecnicaForm(forms.Form):
+    """Planificar una visita. `farmacia` se acota a las unidades que el usuario puede
+    ver, mismo criterio que el resto de los formularios con alcance por tenant."""
+    farmacia = forms.ModelChoiceField(
+        queryset=Farmacia.objects.none(),
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
+    tecnico = forms.ModelChoiceField(
+        queryset=User.objects.filter(is_active=True).order_by('username'),
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
+    fecha_planificada = forms.DateField(
+        widget=forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
+    )
+    motivo = forms.CharField(
+        required=False, widget=forms.Textarea(attrs={'class': INPUT_CLASS, 'rows': 3}),
+        help_text='Para qué se va: relevamiento, preventivo de ruta, etc.',
+    )
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        queryset = Farmacia.objects.filter(activa=True).order_by('codigo')
+        if user is not None:
+            queryset = scope_opcional_por_unidad_negocio(queryset, user, 'unidad_negocio')
+        self.fields['farmacia'].queryset = queryset

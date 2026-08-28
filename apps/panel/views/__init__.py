@@ -14,7 +14,7 @@ from .activos import (
     bodega_ajuste_stock, bodega_stock_ingresar, bodegas_lista, colaborador_crear, colaboradores_lista,
     movimientos_inventario_lista, orden_compra_crear, orden_compra_detalle,
     orden_compra_linea_crear, orden_compra_linea_recibir, orden_compra_recibir, ordenes_compra_lista,
-    recepcion_lote_anular, visita_tecnica_lista,
+    recepcion_lote_anular, visita_tecnica_accion, visita_tecnica_crear, visita_tecnica_lista,
 )
 from .alertas import (
     alerta_reconocer, alerta_resolver, alertas_lista, pos_errores_flota, regla_alerta_crear, reglas_alerta_lista,
@@ -111,5 +111,5 @@ __all__ = [
     'solicitud_instalacion_crear', 'solicitud_instalacion_detalle', 'solicitud_instalacion_progreso_partial',
     'solicitud_instalacion_publicar', 'solicitudes_instalacion_lista', 'version_crear',
     'unidad_negocio_activar',
-    'visita_tecnica_lista',
+    'visita_tecnica_accion', 'visita_tecnica_crear', 'visita_tecnica_lista',
 ]

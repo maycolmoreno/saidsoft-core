@@ -1,56 +1,89 @@
 {% extends "panel/base.html" %}
-{% block title %}Visita técnica · SAIDSOFT{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold">Visita técnica por ubicación</h1>
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold">Visitas técnicas</h1>
+    {% if perms.mantenimiento.add_visitatecnica %}
+    <a href="{% url 'panel:visita_tecnica_crear' %}" class="btn primary">Planificar visita</a>
+    {% endif %}
 </div>
 
-<form method="get" class="flex items-center gap-3 mb-4">
-    <select name="ubicacion" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
-        <option value="">Todas las ubicaciones</option>
-        {% for u in todas_ubicaciones %}
-        <option value="{{ u.pk }}" {% if filtro_ubicacion == u.pk|stringformat:"s" %}selected{% endif %}>{{ u.nombre }}</option>
+<form method="get" class="mb-4">
+    <select name="estado" onchange="this.form.submit()"
+            class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]"
+            style="border:1px solid var(--border);">
+        <option value="">Todos los estados</option>
+        {% for valor, etiqueta in estados %}
+        <option value="{{ valor }}" {% if filtro_estado == valor %}selected{% endif %}>{{ etiqueta }}</option>
         {% endfor %}
     </select>
 </form>
 
-{% for s in secciones %}
-<div class="card mb-6" style="overflow:hidden;">
-    <div class="px-4 py-3 flex items-center justify-between" style="background:var(--panel);">
-        <div>
-            <span class="font-medium">{{ s.ubicacion.nombre }}</span>
-            <span class="text-xs text-[var(--text-faint)] ml-2">{{ s.ubicacion.ciudad|default:"" }}</span>
-        </div>
-        <span class="text-xs text-[var(--text-faint)]">{{ s.colaboradores|length }} colaborador(es) · {{ s.total_equipos }} equipo(s)</span>
-    </div>
+<div class="card overflow-x-auto">
     <table class="w-full text-sm">
-        <thead class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+        <thead style="background:var(--panel);">
             <tr>
-                <th class="text-left px-4 py-2">Colaborador</th>
-                <th class="text-left px-4 py-2">Cargo</th>
-                <th class="text-left px-4 py-2">Equipos asignados</th>
+                <th class="text-left px-4 py-3">Farmacia</th>
+                <th class="text-left px-4 py-3">Técnico</th>
+                <th class="text-left px-4 py-3">Planificada</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Presencia (GPS)</th>
+                <th class="text-left px-4 py-3">Mantenimientos</th>
+                <th class="text-left px-4 py-3">Acciones</th>
             </tr>
         </thead>
         <tbody>
-        {% for c in s.colaboradores %}
-            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
-                <td class="px-4 py-2">{{ c.nombre }}</td>
-                <td class="px-4 py-2 text-[var(--text-dim)]">{{ c.cargo|default:"—" }}</td>
-                <td class="px-4 py-2 text-[var(--text-dim)]">
-                    {% for a in c.activos_asignados.all %}
-                        <a href="{% url 'panel:activo_detalle' a.pk %}" class="font-mono text-xs hover:underline">{{ a.codigo }}</a>{% if not forloop.last %}, {% endif %}
-                    {% empty %}—{% endfor %}
+        {% for v in visitas %}
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-4 py-3">{{ v.farmacia.codigo }}</td>
+                <td class="px-4 py-3">{{ v.tecnico.username }}</td>
+                <td class="px-4 py-3 mono num">
+                    {{ v.fecha_planificada|date:"d/m/Y" }}
+                    {% if v.atrasada %}<span class="pill critical" title="La fecha planificada ya pasó y la visita sigue sin realizarse.">Atrasada</span>{% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if v.estado == 'realizada' %}good{% elif v.estado == 'en_curso' %}warning{% elif v.estado == 'cancelada' %}neutral{% else %}info{% endif %}">
+                        {{ v.get_estado_display }}
+                    </span>
+                </td>
+                <td class="px-4 py-3">
+                    {% with p=v.presencia_en_sitio %}
+                    <span class="pill {% if p == 'verificada' %}good{% elif p == 'fuera_de_rango' %}warning{% else %}neutral{% endif %}"
+                          title="{% if p == 'sin_datos' %}No se pudo verificar: el técnico puede no usar la app móvil, la farmacia puede no tener coordenadas o pudo no haber señal. No significa que no haya asistido.{% else %}Distancia mínima a la farmacia: {{ v.distancia_verificacion_metros }} m{% endif %}">
+                        {% if p == 'verificada' %}Verificada{% elif p == 'fuera_de_rango' %}Fuera de rango ({{ v.distancia_verificacion_metros|floatformat:0 }} m){% else %}Sin datos{% endif %}
+                    </span>
+                    {% endwith %}
+                </td>
+                <td class="px-4 py-3 mono num">{{ v.mantenimientos_generados.count }}</td>
+                <td class="px-4 py-3">
+                    {% if perms.mantenimiento.change_visitatecnica %}
+                    <div class="flex gap-2">
+                        {% if v.estado == 'planificada' %}
+                        <form method="post" action="{% url 'panel:visita_tecnica_accion' v.pk 'iniciar' %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn secondary">Iniciar</button>
+                        </form>
+                        <form method="post" action="{% url 'panel:visita_tecnica_accion' v.pk 'cancelar' %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn secondary">Cancelar</button>
+                        </form>
+                        {% elif v.estado == 'en_curso' %}
+                        <form method="post" action="{% url 'panel:visita_tecnica_accion' v.pk 'cerrar' %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn primary">Cerrar</button>
+                        </form>
+                        {% else %}
+                        <span class="text-xs text-[var(--text-faint)]">—</span>
+                        {% endif %}
+                    </div>
+                    {% endif %}
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="3" class="px-4 py-4 text-center text-[var(--text-faint)]">Sin colaboradores activos en esta ubicación.</td></tr>
+            <tr><td colspan="7" class="px-4 py-6 text-center text-[var(--text-faint)]">
+                No hay visitas registradas todavía.
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>
 </div>
-{% empty %}
-<div class="card px-4 py-8 text-center text-[var(--text-faint)]">
-    Sin ubicaciones registradas. Créalas desde el admin (Activos → Ubicaciones).
-</div>
-{% endfor %}
 {% endblock %}

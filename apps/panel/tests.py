@@ -29,7 +29,7 @@ from apps.cumplimiento.models import (
 )
 from apps.despliegues.models import Despliegue
 from apps.mantenimiento.models import (
-    EstadoGeneralEquipo, Mantenimiento, PrioridadMantenimiento, TipoMantenimiento,
+    EstadoGeneralEquipo, Mantenimiento, PrioridadMantenimiento, TipoMantenimiento, VisitaTecnica,
 )
 from apps.monitoreo.models import (
     Alerta, Metrica, MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
@@ -2564,3 +2564,56 @@ class FarmaciaAplicarNodoPosTests(TestCase):
             self.client.post(self._url())
         self.assertEqual(mock_enviar.call_count, 1)
         self.assertEqual(mock_enviar.call_args.args[0].codigo, 'ML001-A')
+
+
+class VisitaTecnicaPanelTests(TestCase):
+    """La vista reemplazó al reporte muerto que agrupaba por activos.Ubicacion."""
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=sg, latitud=-2.170998, longitud=-79.922359,
+        )
+        self.usuario = User.objects.create_user(username='u_vis', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        for codename in ('view_visitatecnica', 'add_visitatecnica', 'change_visitatecnica'):
+            self.usuario.user_permissions.add(
+                Permission.objects.get(content_type__app_label='mantenimiento', codename=codename),
+            )
+        self.client.force_login(self.usuario)
+
+    def test_lista_responde_200(self):
+        self.assertEqual(self.client.get(reverse('panel:visita_tecnica_lista')).status_code, 200)
+
+    def test_crear_planifica_la_visita(self):
+        resp = self.client.post(reverse('panel:visita_tecnica_crear'), {
+            'farmacia': self.farmacia.pk,
+            'tecnico': self.usuario.pk,
+            'fecha_planificada': '2026-09-15',
+            'motivo': 'relevamiento',
+        })
+        self.assertEqual(resp.status_code, 302)
+        visita = VisitaTecnica.objects.get()
+        self.assertEqual(visita.farmacia, self.farmacia)
+        self.assertEqual(visita.estado, VisitaTecnica.Estado.PLANIFICADA)
+
+    def test_flujo_iniciar_y_cerrar(self):
+        visita = VisitaTecnica.objects.create(
+            farmacia=self.farmacia, tecnico=self.usuario, fecha_planificada='2026-09-15',
+        )
+        self.client.post(reverse('panel:visita_tecnica_accion', args=[visita.pk, 'iniciar']))
+        visita.refresh_from_db()
+        self.assertEqual(visita.estado, VisitaTecnica.Estado.EN_CURSO)
+
+        self.client.post(reverse('panel:visita_tecnica_accion', args=[visita.pk, 'cerrar']),
+                         {'observaciones': 'sin novedades'})
+        visita.refresh_from_db()
+        self.assertEqual(visita.estado, VisitaTecnica.Estado.REALIZADA)
+        self.assertEqual(visita.observaciones, 'sin novedades')
+
+    def test_sin_permiso_devuelve_403(self):
+        sin = User.objects.create_user(username='u_vis_sin', password='x')
+        PerfilUsuario.objects.create(usuario=sin, acceso_todas_unidades=True)
+        self.client.force_login(sin)
+        self.assertEqual(self.client.get(reverse('panel:visita_tecnica_lista')).status_code, 403)

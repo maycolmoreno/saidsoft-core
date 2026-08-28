@@ -3,7 +3,7 @@
 Mismo patrón que apps/activos/services.py: cada función muta el modelo y
 crea el EventoMantenimiento inmutable correspondiente.
 """
-from datetime import timedelta
+from datetime import datetime, time as dt_time, timedelta
 
 from django.db import transaction
 from django.db.models import Avg, DurationField, ExpressionWrapper, F, Q, Sum
@@ -17,7 +17,7 @@ from .models import (
     EventoMantenimiento,
     FirmaMantenimiento, ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado,
     Notificacion, PrioridadActividad, PrioridadMantenimiento, RepuestoUtilizado, ResultadoTecnico,
-    TipoMantenimiento, TipoOrigenMantenimiento,
+    TipoMantenimiento, TipoOrigenMantenimiento, VisitaTecnica,
 )
 
 
@@ -133,34 +133,28 @@ def _metros_entre(lat1, lon1, lat2, lon2) -> float:
     return radio_tierra_m * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def _verificar_presencia_en_sitio(mantenimiento):
-    """Distancia MÍNIMA entre el técnico y la farmacia del equipo durante la
-    intervención, o None si no se puede determinar.
+def distancia_minima_a_farmacia(*, tecnico_id, farmacia, desde, hasta):
+    """Distancia MÍNIMA en metros entre las posiciones GPS del técnico en la ventana
+    [desde, hasta] y la farmacia, o None si no se puede determinar.
 
-    Se toma la mínima de toda la ventana (desde que se inició hasta el cierre) y no
-    la posición del momento exacto del cierre: el técnico puede cerrar la orden desde
-    el auto ya saliendo, y eso no significa que no haya estado en el local.
+    Se toma la mínima de toda la ventana y no la posición del momento exacto del
+    cierre: el técnico puede cerrar desde el auto ya saliendo, y eso no significa que
+    no haya estado en el local.
 
-    Nunca lanza: cerrar un mantenimiento no puede fallar porque falte GPS. Devuelve
-    None ante cualquier dato ausente (equipo sin farmacia, farmacia sin coordenadas,
-    técnico sin posiciones registradas) -- 'sin_datos' NO es lo mismo que "no fue".
+    Nunca lanza: ninguna operación de cierre puede fallar porque falte GPS. Devuelve
+    None ante cualquier dato ausente (sin técnico, farmacia sin coordenadas, sin
+    posiciones registradas) -- 'sin datos' NO es lo mismo que "no fue".
     """
     from .models import UbicacionTecnico
 
     try:
-        if mantenimiento.tecnico_id is None:
+        if tecnico_id is None or farmacia is None:
             return None
-        principal = mantenimiento.equipos.select_related('equipo__farmacia').filter(es_principal=True).first()
-        farmacia = principal.equipo.farmacia if principal and principal.equipo else None
-        if farmacia is None or farmacia.latitud is None or farmacia.longitud is None:
+        if farmacia.latitud is None or farmacia.longitud is None:
             return None
-
-        desde = mantenimiento.inicio_real or mantenimiento.fecha_programada
-        hasta = mantenimiento.fecha_cierre or timezone.now()
         posiciones = UbicacionTecnico.objects.filter(
-            usuario_id=mantenimiento.tecnico_id, timestamp_captura__gte=desde, timestamp_captura__lte=hasta,
+            usuario_id=tecnico_id, timestamp_captura__gte=desde, timestamp_captura__lte=hasta,
         ).values_list('latitud', 'longitud')
-
         distancias = [
             _metros_entre(float(lat), float(lon), farmacia.latitud, farmacia.longitud)
             for lat, lon in posiciones
@@ -168,10 +162,19 @@ def _verificar_presencia_en_sitio(mantenimiento):
         return round(min(distancias), 1) if distancias else None
     except Exception:
         import logging
-        logging.getLogger(__name__).exception(
-            'No se pudo verificar la presencia en sitio del mantenimiento #%s', mantenimiento.pk,
-        )
+        logging.getLogger(__name__).exception('No se pudo calcular la distancia del técnico a %s', farmacia)
         return None
+
+
+def _verificar_presencia_en_sitio(mantenimiento):
+    """Verificación GPS de un Mantenimiento: usa la farmacia del equipo principal."""
+    principal = mantenimiento.equipos.select_related('equipo__farmacia').filter(es_principal=True).first()
+    farmacia = principal.equipo.farmacia if principal and principal.equipo else None
+    return distancia_minima_a_farmacia(
+        tecnico_id=mantenimiento.tecnico_id, farmacia=farmacia,
+        desde=mantenimiento.inicio_real or mantenimiento.fecha_programada,
+        hasta=mantenimiento.fecha_cierre or timezone.now(),
+    )
 
 
 def abrir_mantenimiento_desde_alerta(alerta):
@@ -650,3 +653,68 @@ def resumen_mantenimiento_periodo(unidad_negocio, desde, hasta):
         'costo_repuestos_periodo': costo_repuestos,
         'equipos_requieren_reemplazo': requieren_reemplazo,
     }
+
+
+# --- Visitas técnicas ------------------------------------------------------------
+# Ciclo de vida: planificada -> en curso -> realizada (o cancelada). Mismo criterio que
+# el resto del módulo: cada transición valida el estado de origen y nunca deja el
+# registro a medias.
+
+def crear_visita_tecnica(*, farmacia, tecnico, fecha_planificada, motivo='', usuario=None):
+    return VisitaTecnica.objects.create(
+        farmacia=farmacia, tecnico=tecnico, fecha_planificada=fecha_planificada,
+        motivo=motivo, creado_por=usuario,
+    )
+
+
+def iniciar_visita_tecnica(*, visita, usuario=None):
+    """Marca la llegada del técnico. A partir de acá corre la ventana contra la que se
+    verifica el GPS al cerrar."""
+    if visita.estado != VisitaTecnica.Estado.PLANIFICADA:
+        raise ValueError('Solo una visita planificada puede iniciarse.')
+    visita.estado = VisitaTecnica.Estado.EN_CURSO
+    visita.fecha_inicio = timezone.now()
+    visita.save(update_fields=['estado', 'fecha_inicio'])
+    return visita
+
+
+def cerrar_visita_tecnica(*, visita, usuario=None, observaciones=''):
+    """Cierra la visita y verifica por GPS que el técnico haya estado en la farmacia.
+
+    La ventana arranca en fecha_inicio si la visita se inició; si el técnico cerró sin
+    marcar la llegada, se usa el día planificado completo, que es lo más justo que se
+    puede hacer sin ese dato.
+    """
+    if visita.estado == VisitaTecnica.Estado.REALIZADA:
+        raise ValueError('La visita ya está cerrada.')
+    if visita.estado == VisitaTecnica.Estado.CANCELADA:
+        raise ValueError('Una visita cancelada no puede cerrarse.')
+
+    ahora = timezone.now()
+    if visita.fecha_inicio:
+        desde = visita.fecha_inicio
+    else:
+        inicio_dia = datetime.combine(visita.fecha_planificada, dt_time.min)
+        desde = timezone.make_aware(inicio_dia, timezone.get_current_timezone())
+
+    visita.distancia_verificacion_metros = distancia_minima_a_farmacia(
+        tecnico_id=visita.tecnico_id, farmacia=visita.farmacia, desde=desde, hasta=ahora,
+    )
+    visita.estado = VisitaTecnica.Estado.REALIZADA
+    visita.fecha_cierre = ahora
+    if observaciones:
+        visita.observaciones = observaciones
+    visita.save(update_fields=[
+        'estado', 'fecha_cierre', 'observaciones', 'distancia_verificacion_metros',
+    ])
+    return visita
+
+
+def cancelar_visita_tecnica(*, visita, motivo='', usuario=None):
+    if visita.estado in (VisitaTecnica.Estado.REALIZADA, VisitaTecnica.Estado.CANCELADA):
+        raise ValueError('Una visita realizada o ya cancelada no puede cancelarse.')
+    visita.estado = VisitaTecnica.Estado.CANCELADA
+    if motivo:
+        visita.observaciones = motivo
+    visita.save(update_fields=['estado', 'observaciones'])
+    return visita

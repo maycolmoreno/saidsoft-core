@@ -4,6 +4,7 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.http import require_POST
 
 from apps.activos import services as activos_services
 from apps.activos.forms import (
@@ -17,7 +18,8 @@ from apps.activos.models import (
 from apps.activos.services import ConcurrencyError
 from apps.auditoria.models import registrar_evento
 from apps.mantenimiento import services as mantenimiento_services
-from apps.mantenimiento.models import Mantenimiento
+from apps.mantenimiento.forms import VisitaTecnicaForm
+from apps.mantenimiento.models import Mantenimiento, VisitaTecnica
 from apps.cuentas.services import (
     scope_opcional_por_unidad_negocio, scope_opcional_por_unidad_negocio_activa, usuario_puede_ver,
     verificar_acceso,
@@ -53,38 +55,92 @@ def colaborador_crear(request):
 
 
 @login_required
-@permission_required('activos.view_colaborador', raise_exception=True)
+@permission_required('mantenimiento.view_visitatecnica', raise_exception=True)
 def visita_tecnica_lista(request):
-    """Agrupa colaboradores y sus activos asignados por ubicación (agencia/local).
+    """Visitas planificadas/realizadas por farmacia.
 
-    Equivalente a CustodioVisita/EquipoVisita de InvTICS: en el sistema
-    original no eran tablas propias, sino una proyección de solo lectura
-    para que el técnico sepa qué visitar en una ubicación. Aquí es lo mismo:
-    un reporte armado sobre Colaborador/Activo, sin modelo nuevo.
+    Reemplaza al reporte anterior, que agrupaba colaboradores por `activos.Ubicacion`
+    -- una tabla que en producción está vacía, así que no mostraba nada -- y que
+    además no dejaba ningún rastro de si la visita se hizo.
     """
-    ubicaciones = (
-        Ubicacion.objects.filter(activo=True)
-        .prefetch_related('colaboradores__activos_asignados')
-        .order_by('nombre')
+    visitas = scope_opcional_por_unidad_negocio_activa(
+        VisitaTecnica.objects.select_related('farmacia', 'tecnico'), request, 'farmacia__unidad_negocio',
     )
-    filtro_ubicacion = request.GET.get('ubicacion')
-    if filtro_ubicacion:
-        ubicaciones = ubicaciones.filter(pk=filtro_ubicacion)
-
-    secciones = []
-    for ubicacion in ubicaciones:
-        colaboradores = [
-            c for c in ubicacion.colaboradores.filter(activo=True).select_related('unidad_negocio')
-            if usuario_puede_ver(request.user, c.unidad_negocio)
-        ]
-        total_equipos = sum(c.activos_asignados.count() for c in colaboradores)
-        secciones.append({'ubicacion': ubicacion, 'colaboradores': colaboradores, 'total_equipos': total_equipos})
-
+    estado = request.GET.get('estado')
+    if estado:
+        visitas = visitas.filter(estado=estado)
     return render(request, 'panel/visita_tecnica_lista.html', {
-        'secciones': secciones,
-        'todas_ubicaciones': Ubicacion.objects.filter(activo=True).order_by('nombre'),
-        'filtro_ubicacion': filtro_ubicacion or '',
+        'visitas': visitas,
+        'estados': VisitaTecnica.Estado.choices,
+        'filtro_estado': estado or '',
     })
+
+
+@login_required
+@permission_required('mantenimiento.add_visitatecnica', raise_exception=True)
+def visita_tecnica_crear(request):
+    if request.method == 'POST':
+        form = VisitaTecnicaForm(request.POST, user=request.user)
+        if form.is_valid():
+            d = form.cleaned_data
+            verificar_acceso(request.user, d['farmacia'].unidad_negocio)
+            visita = mantenimiento_services.crear_visita_tecnica(
+                farmacia=d['farmacia'], tecnico=d['tecnico'],
+                fecha_planificada=d['fecha_planificada'], motivo=d['motivo'], usuario=request.user,
+            )
+            registrar_evento(usuario=request.user, accion='visita.crear', objeto=visita, request=request)
+            messages.success(request, f'Visita a {visita.farmacia.codigo} planificada.')
+            return redirect('panel:visita_tecnica_lista')
+    else:
+        form = VisitaTecnicaForm(user=request.user)
+    return render(request, 'panel/accion_form.html', {
+        'form': form, 'titulo': 'Planificar visita técnica',
+        'volver_url': reverse('panel:visita_tecnica_lista'),
+    })
+
+
+@login_required
+@permission_required('mantenimiento.change_visitatecnica', raise_exception=True)
+@require_POST
+def visita_tecnica_accion(request, pk, accion):
+    """Transiciones de la visita en una sola vista: los tres botones comparten el mismo
+    andamiaje (validar acceso, llamar al servicio, auditar, avisar) y separarlos serían
+    tres copias de lo mismo."""
+    visita = get_object_or_404(VisitaTecnica, pk=pk)
+    verificar_acceso(request.user, visita.farmacia.unidad_negocio)
+    servicios = {
+        'iniciar': mantenimiento_services.iniciar_visita_tecnica,
+        'cerrar': mantenimiento_services.cerrar_visita_tecnica,
+        'cancelar': mantenimiento_services.cancelar_visita_tecnica,
+    }
+    if accion not in servicios:
+        messages.error(request, 'Acción no reconocida.')
+        return redirect('panel:visita_tecnica_lista')
+
+    kwargs = {'visita': visita, 'usuario': request.user}
+    if accion == 'cerrar':
+        kwargs['observaciones'] = request.POST.get('observaciones', '')
+    elif accion == 'cancelar':
+        kwargs['motivo'] = request.POST.get('motivo', '')
+    try:
+        servicios[accion](**kwargs)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
+        registrar_evento(usuario=request.user, accion=f'visita.{accion}', objeto=visita, request=request)
+        if accion == 'cerrar':
+            visita.refresh_from_db()
+            if visita.presencia_en_sitio == 'fuera_de_rango':
+                messages.warning(
+                    request,
+                    f'Visita cerrada, pero el GPS ubicó al técnico a '
+                    f'{visita.distancia_verificacion_metros:.0f} m de la farmacia.',
+                )
+            else:
+                messages.success(request, 'Visita cerrada.')
+        else:
+            messages.success(request, 'Visita actualizada.')
+    return redirect('panel:visita_tecnica_lista')
 
 
 @login_required

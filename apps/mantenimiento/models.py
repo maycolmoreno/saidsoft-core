@@ -155,6 +155,13 @@ class Mantenimiento(models.Model):
         related_name='mantenimientos_cerrados',
     )
     fecha_creacion = models.DateTimeField(auto_now_add=True)
+    # Visita de la que salió este mantenimiento, si nació durante una (ver
+    # VisitaTecnica). Referencia perezosa por string: VisitaTecnica se define más
+    # abajo en este mismo módulo.
+    visita = models.ForeignKey(
+        'mantenimiento.VisitaTecnica', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='mantenimientos_generados',
+    )
     informe_pdf = models.FileField(upload_to='mantenimiento/informes/%Y/%m/', blank=True)
     informe_pdf_generado_en = models.DateTimeField(null=True, blank=True)
     tiempo_real_minutos = models.PositiveIntegerField(
@@ -606,3 +613,76 @@ class UbicacionTecnico(models.Model):
 
     def __str__(self):
         return f'{self.usuario} @ {self.timestamp_captura:%Y-%m-%d %H:%M}'
+
+
+class VisitaTecnica(models.Model):
+    """Visita planificada de un técnico a una farmacia.
+
+    Antes "visita técnica" era solo un reporte de solo lectura que agrupaba
+    colaboradores y equipos por Ubicacion (heredado de CustodioVisita/EquipoVisita de
+    InvTICS). No dejaba rastro: no se podía saber cuándo fue la última vez que alguien
+    pisó un sitio, qué visitas están planificadas, ni si se hicieron. Además apuntaba
+    a `activos.Ubicacion`, que en producción está VACÍA -- el reporte no mostraba nada.
+
+    Por eso esto cuelga de Farmacia y no de Ubicacion: es donde está el equipamiento
+    real (700 farmacias, 692 con coordenadas) y es la misma entidad que usa el RMM, así
+    que la visita, el monitoreo y los mantenimientos hablan del mismo sitio.
+    """
+
+    class Estado(models.TextChoices):
+        PLANIFICADA = 'planificada', 'Planificada'
+        EN_CURSO = 'en_curso', 'En curso'
+        REALIZADA = 'realizada', 'Realizada'
+        CANCELADA = 'cancelada', 'Cancelada'
+
+    farmacia = models.ForeignKey(
+        'catalogo.Farmacia', on_delete=models.PROTECT, related_name='visitas_tecnicas',
+    )
+    tecnico = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='visitas_tecnicas',
+    )
+    fecha_planificada = models.DateField()
+    estado = models.CharField(max_length=12, choices=Estado.choices, default=Estado.PLANIFICADA)
+    motivo = models.TextField(blank=True, help_text='Para qué se va: relevamiento, preventivo de ruta, etc.')
+    observaciones = models.TextField(blank=True, help_text='Qué se encontró, cargado al cerrar.')
+    fecha_inicio = models.DateTimeField(null=True, blank=True)
+    fecha_cierre = models.DateTimeField(null=True, blank=True)
+    # Misma verificación que en Mantenimiento y por el mismo motivo: es un hecho del
+    # momento del cierre, se persiste para que quede auditable.
+    distancia_verificacion_metros = models.FloatField(
+        null=True, blank=True,
+        help_text='Distancia mínima del técnico a la farmacia durante la visita, en metros.',
+    )
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='visitas_tecnicas_creadas',
+    )
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'visita_tecnica'
+        ordering = ['-fecha_planificada']
+        verbose_name = 'Visita técnica'
+        verbose_name_plural = 'Visitas técnicas'
+
+    def __str__(self):
+        return f'Visita a {self.farmacia.codigo} el {self.fecha_planificada:%d/%m/%Y}'
+
+    @property
+    def unidad_negocio(self):
+        return self.farmacia.unidad_negocio
+
+    @property
+    def presencia_en_sitio(self):
+        """Igual que en Mantenimiento: 'sin_datos' NO significa que no haya ido."""
+        if self.distancia_verificacion_metros is None:
+            return 'sin_datos'
+        return 'verificada' if self.distancia_verificacion_metros <= RADIO_VERIFICACION_METROS else 'fuera_de_rango'
+
+    @property
+    def atrasada(self):
+        """Planificada para una fecha ya pasada y todavía sin realizar."""
+        return (
+            self.estado in (self.Estado.PLANIFICADA, self.Estado.EN_CURSO)
+            and self.fecha_planificada < timezone.localdate()
+        )
