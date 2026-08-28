@@ -30,6 +30,31 @@
         <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Resultado técnico</div>
         <div>{{ mantenimiento.get_resultado_tecnico_display|default:"—" }}</div>
     </div>
+    <div>
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Prioridad / SLA</div>
+        <div>
+            <span class="pill {% if mantenimiento.prioridad == 'critica' %}critical{% elif mantenimiento.prioridad == 'alta' %}warning{% elif mantenimiento.prioridad == 'baja' %}neutral{% else %}info{% endif %}">
+                {{ mantenimiento.get_prioridad_display }}
+            </span>
+            {% with sla=mantenimiento.estado_sla %}
+            <span class="pill {% if sla == 'incumplido' %}critical{% elif sla == 'por_vencer' %}warning{% elif sla == 'cumplido' or sla == 'en_plazo' %}good{% else %}neutral{% endif %}"
+                  title="{% if mantenimiento.limite_resolucion %}Límite de resolución: {{ mantenimiento.limite_resolucion }}{% else %}Sin SLA cargado{% endif %}">
+                {% if sla == 'incumplido' %}SLA incumplido{% elif sla == 'por_vencer' %}SLA por vencer{% elif sla == 'cumplido' %}SLA cumplido{% elif sla == 'en_plazo' %}SLA en plazo{% else %}Sin SLA{% endif %}
+            </span>
+            {% endwith %}
+        </div>
+    </div>
+    <div>
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Presencia en sitio</div>
+        <div>
+            {% with p=mantenimiento.presencia_en_sitio %}
+            <span class="pill {% if p == 'verificada' %}good{% elif p == 'fuera_de_rango' %}warning{% else %}neutral{% endif %}"
+                  title="{% if p == 'sin_datos' %}No se pudo verificar: puede que el técnico no use la app móvil, que la farmacia no tenga coordenadas o que no hubiera señal. No significa que no haya asistido.{% else %}Distancia mínima a la farmacia durante la intervención: {{ mantenimiento.distancia_verificacion_metros }} m{% endif %}">
+                {% if p == 'verificada' %}Verificada ({{ mantenimiento.distancia_verificacion_metros }} m){% elif p == 'fuera_de_rango' %}Fuera de rango ({{ mantenimiento.distancia_verificacion_metros }} m){% else %}Sin datos{% endif %}
+            </span>
+            {% endwith %}
+        </div>
+    </div>
     <div class="card p-4">
         <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Estado general del equipo</div>
         <div>{{ mantenimiento.get_estado_general_display|default:"—" }}</div>

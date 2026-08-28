@@ -7,6 +7,11 @@ from django.utils import timezone
 
 from apps.activos.models import Activo, Bodega, CategoriaEquipo, Colaborador, TipoConsumible, Ubicacion
 
+# Radio dentro del cual se considera que el técnico estuvo EN la farmacia. 200 m
+# cubre el error típico del GPS en zona urbana (10-50 m, peor bajo techo) más el
+# tamaño del local y su estacionamiento, sin llegar a abarcar la manzana entera.
+RADIO_VERIFICACION_METROS = 200
+
 
 class TipoOrigenMantenimiento(models.TextChoices):
     """Portado tal cual de TipoOrigenMantenimiento.java (InvTICS)."""
@@ -157,6 +162,16 @@ class Mantenimiento(models.Model):
         help_text='Tiempo real de intervención, capturado al cerrar (no siempre coincide con '
                   'fecha_cierre - fecha_programada: el técnico puede pausar/retomar).',
     )
+    # Distancia mínima entre el técnico y la farmacia del equipo durante la
+    # intervención, calculada AL CERRAR (ver services._verificar_presencia_en_sitio).
+    # Se persiste en vez de recalcularse después a propósito: es un hecho del momento
+    # del cierre y debe quedar auditable aunque después se purguen las posiciones o
+    # cambie el umbral. null = no se pudo verificar (sin GPS, sin coordenadas de la
+    # farmacia, o el equipo no está asociado a una farmacia).
+    distancia_verificacion_metros = models.FloatField(
+        null=True, blank=True,
+        help_text='Distancia mínima del técnico a la farmacia durante la intervención, en metros.',
+    )
 
     class Meta:
         db_table = 'mantenimiento'
@@ -175,6 +190,19 @@ class Mantenimiento(models.Model):
     @property
     def costo_total_repuestos(self):
         return sum((r.costo_total for r in self.repuestos_utilizados.all()), Decimal('0'))
+
+    @property
+    def presencia_en_sitio(self):
+        """'verificada' | 'fuera_de_rango' | 'sin_datos'.
+
+        Solo informa: que no se pueda verificar NO significa que el técnico no haya
+        ido. Hay motivos legítimos (el técnico no usa la app móvil, la farmacia sin
+        coordenadas, GPS sin señal dentro del local). Por eso el default es
+        'sin_datos' y no algo acusatorio.
+        """
+        if self.distancia_verificacion_metros is None:
+            return 'sin_datos'
+        return 'verificada' if self.distancia_verificacion_metros <= RADIO_VERIFICACION_METROS else 'fuera_de_rango'
 
     # --- SLA -------------------------------------------------------------------
     # El reloj corre desde `fecha_programada` (ver docstring de AcuerdoNivelServicio).

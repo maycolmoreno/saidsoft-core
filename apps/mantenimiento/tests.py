@@ -5,14 +5,15 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoConsumible
+from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
 
 from .models import (
     AcuerdoNivelServicio, EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado,
-    Notificacion, PrioridadMantenimiento, RepuestoUtilizado, ResultadoTecnico, TipoMantenimiento,
-    TipoOrigenMantenimiento,
+    Notificacion, PrioridadMantenimiento, RADIO_VERIFICACION_METROS, RepuestoUtilizado, ResultadoTecnico,
+    TipoMantenimiento, TipoOrigenMantenimiento, UbicacionTecnico,
 )
 from .services import (
-    cancelar_mantenimiento, cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf,
+    _metros_entre, cancelar_mantenimiento, cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf,
     iniciar_mantenimiento, iniciar_reparacion_desde_activo, mantenimientos_atrasados,
     mantenimientos_programados_por_vencer, notificar_mantenimientos_proximos_y_atrasados,
     registrar_repuesto_utilizado,
@@ -704,3 +705,90 @@ class SlaTests(TestCase):
             activo=activo, motivo='falla', detalle_motivo='no enciende', usuario=self.tecnico,
         )
         self.assertEqual(m.prioridad, PrioridadMantenimiento.ALTA)
+
+
+class PresenciaEnSitioTests(TestCase):
+    """Verificación GPS al cerrar: confirma si el técnico estuvo físicamente en la
+    farmacia. 'sin_datos' NO equivale a "no fue" -- hay motivos legítimos."""
+
+    def setUp(self):
+        self.tecnico = User.objects.create_user(username='u_gps', password='x')
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        # Coordenadas reales de Guayaquil como referencia.
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=sg, latitud=-2.170998, longitud=-79.922359,
+        )
+        self.equipo = Activo.objects.create(
+            codigo='CR-DSK-8001', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia,
+        )
+
+    def _mantenimiento(self):
+        return crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.tecnico, descripcion='x',
+            fecha_programada=timezone.now() - timedelta(hours=1), usuario=self.tecnico,
+        )
+
+    def _posicion(self, lat, lon):
+        UbicacionTecnico.objects.create(
+            usuario=self.tecnico, latitud=lat, longitud=lon, timestamp_captura=timezone.now(),
+        )
+
+    def test_haversine_da_una_distancia_creible(self):
+        # ~1 grado de latitud son ~111 km.
+        d = _metros_entre(-2.170998, -79.922359, -3.170998, -79.922359)
+        self.assertAlmostEqual(d, 111_195, delta=500)
+
+    def test_tecnico_en_la_farmacia_queda_verificada(self):
+        m = self._mantenimiento()
+        self._posicion(-2.171050, -79.922400)  # a unos pocos metros
+        cerrar_mantenimiento(mantenimiento=m, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
+        m.refresh_from_db()
+        self.assertLess(m.distancia_verificacion_metros, RADIO_VERIFICACION_METROS)
+        self.assertEqual(m.presencia_en_sitio, 'verificada')
+
+    def test_tecnico_lejos_queda_fuera_de_rango(self):
+        m = self._mantenimiento()
+        self._posicion(-2.200000, -79.950000)  # varios kilómetros
+        cerrar_mantenimiento(mantenimiento=m, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
+        m.refresh_from_db()
+        self.assertGreater(m.distancia_verificacion_metros, RADIO_VERIFICACION_METROS)
+        self.assertEqual(m.presencia_en_sitio, 'fuera_de_rango')
+
+    def test_toma_la_distancia_minima_no_la_ultima(self):
+        # Estuvo en la farmacia y después se alejó: sigue contando como que estuvo.
+        m = self._mantenimiento()
+        self._posicion(-2.171050, -79.922400)   # en el local
+        self._posicion(-2.250000, -79.980000)   # ya se fue
+        cerrar_mantenimiento(mantenimiento=m, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
+        m.refresh_from_db()
+        self.assertEqual(m.presencia_en_sitio, 'verificada')
+
+    def test_sin_posiciones_queda_sin_datos_y_el_cierre_no_falla(self):
+        m = self._mantenimiento()
+        cerrar_mantenimiento(mantenimiento=m, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
+        m.refresh_from_db()
+        self.assertIsNone(m.distancia_verificacion_metros)
+        self.assertEqual(m.presencia_en_sitio, 'sin_datos')
+        self.assertEqual(m.estado_interno, Mantenimiento.EstadoInterno.CERRADO)
+
+    def test_farmacia_sin_coordenadas_no_rompe_el_cierre(self):
+        self.farmacia.latitud = None
+        self.farmacia.save(update_fields=['latitud'])
+        m = self._mantenimiento()
+        self._posicion(-2.171050, -79.922400)
+        cerrar_mantenimiento(mantenimiento=m, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
+        m.refresh_from_db()
+        self.assertEqual(m.presencia_en_sitio, 'sin_datos')
+
+    def test_ignora_posiciones_fuera_de_la_ventana_de_intervencion(self):
+        # Una posición de ayer en la farmacia no sirve para dar por verificado el
+        # mantenimiento de hoy.
+        m = self._mantenimiento()
+        UbicacionTecnico.objects.create(
+            usuario=self.tecnico, latitud=-2.171050, longitud=-79.922400,
+            timestamp_captura=timezone.now() - timedelta(days=1),
+        )
+        cerrar_mantenimiento(mantenimiento=m, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
+        m.refresh_from_db()
+        self.assertEqual(m.presencia_en_sitio, 'sin_datos')

@@ -114,6 +114,66 @@ def iniciar_reparacion_desde_activo(*, activo, motivo, detalle_motivo, usuario):
     )
 
 
+def _metros_entre(lat1, lon1, lat2, lon2) -> float:
+    """Distancia en metros entre dos coordenadas (haversine).
+
+    Trigonometría a mano en vez de PostGIS/GeoDjango: es una sola distancia
+    punto-a-punto, no hace falta arrastrar una extensión de PostgreSQL ni las
+    dependencias de GDAL para esto.
+    """
+    import math
+
+    radio_tierra_m = 6_371_000
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    return radio_tierra_m * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _verificar_presencia_en_sitio(mantenimiento):
+    """Distancia MÍNIMA entre el técnico y la farmacia del equipo durante la
+    intervención, o None si no se puede determinar.
+
+    Se toma la mínima de toda la ventana (desde que se inició hasta el cierre) y no
+    la posición del momento exacto del cierre: el técnico puede cerrar la orden desde
+    el auto ya saliendo, y eso no significa que no haya estado en el local.
+
+    Nunca lanza: cerrar un mantenimiento no puede fallar porque falte GPS. Devuelve
+    None ante cualquier dato ausente (equipo sin farmacia, farmacia sin coordenadas,
+    técnico sin posiciones registradas) -- 'sin_datos' NO es lo mismo que "no fue".
+    """
+    from .models import UbicacionTecnico
+
+    try:
+        if mantenimiento.tecnico_id is None:
+            return None
+        principal = mantenimiento.equipos.select_related('equipo__farmacia').filter(es_principal=True).first()
+        farmacia = principal.equipo.farmacia if principal and principal.equipo else None
+        if farmacia is None or farmacia.latitud is None or farmacia.longitud is None:
+            return None
+
+        desde = mantenimiento.inicio_real or mantenimiento.fecha_programada
+        hasta = mantenimiento.fecha_cierre or timezone.now()
+        posiciones = UbicacionTecnico.objects.filter(
+            usuario_id=mantenimiento.tecnico_id, timestamp_captura__gte=desde, timestamp_captura__lte=hasta,
+        ).values_list('latitud', 'longitud')
+
+        distancias = [
+            _metros_entre(float(lat), float(lon), farmacia.latitud, farmacia.longitud)
+            for lat, lon in posiciones
+        ]
+        return round(min(distancias), 1) if distancias else None
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            'No se pudo verificar la presencia en sitio del mantenimiento #%s', mantenimiento.pk,
+        )
+        return None
+
+
 def abrir_mantenimiento_desde_alerta(alerta):
     """Abre un Mantenimiento para el equipo de la estación que disparó `alerta`.
 
@@ -217,6 +277,10 @@ def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_re
     if estado_general:
         mantenimiento.estado_general = estado_general
         campos.append('estado_general')
+    # Se calcula ACÁ y se persiste: es un hecho del momento del cierre, y recalcularlo
+    # después daría otro resultado (las posiciones se purgan, el umbral puede cambiar).
+    mantenimiento.distancia_verificacion_metros = _verificar_presencia_en_sitio(mantenimiento)
+    campos.append('distancia_verificacion_metros')
     mantenimiento.save(update_fields=campos)
     EventoMantenimiento.objects.create(
         mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.CERRADO, usuario=usuario,
