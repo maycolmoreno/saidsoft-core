@@ -3,7 +3,8 @@ from django.contrib import admin
 from apps.cuentas.services import scope_opcional_por_unidad_negocio
 
 from .models import (
-    ActividadChecklist, ActividadPlanificada, ActividadRealizada, ConsentimientoMonitoreo, EventoMantenimiento,
+    AcuerdoNivelServicio, ActividadChecklist, ActividadPlanificada, ActividadRealizada, ConsentimientoMonitoreo,
+    EventoMantenimiento,
     FirmaMantenimiento, ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado,
     Notificacion, RepuestoUtilizado, TipoMantenimiento, UbicacionTecnico,
 )
@@ -75,10 +76,10 @@ class RepuestoUtilizadoInline(admin.TabularInline):
 @admin.register(Mantenimiento)
 class MantenimientoAdmin(admin.ModelAdmin):
     list_display = (
-        'id', 'estado_interno', 'tipo_mantenimiento', 'tipo_origen', 'cliente', 'tecnico', 'fecha_programada',
-        'resultado_tecnico',
+        'id', 'estado_interno', 'prioridad', 'estado_sla', 'tipo_mantenimiento', 'tipo_origen', 'cliente',
+        'tecnico', 'fecha_programada', 'resultado_tecnico',
     )
-    list_filter = ('estado_interno', 'tipo_mantenimiento', 'tipo_origen', 'resultado_tecnico')
+    list_filter = ('estado_interno', 'prioridad', 'tipo_mantenimiento', 'tipo_origen', 'resultado_tecnico')
     search_fields = ('descripcion', 'cliente__nombre')
     autocomplete_fields = ('cliente', 'tecnico', 'tipo_mantenimiento', 'mantenimiento_programado', 'cerrado_por')
     readonly_fields = ('snapshot_equipo', 'fecha_creacion')
@@ -137,3 +138,12 @@ class UbicacionTecnicoAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+
+@admin.register(AcuerdoNivelServicio)
+class AcuerdoNivelServicioAdmin(admin.ModelAdmin):
+    """SLA por prioridad. Configurable acá y no en constantes del código, mismo
+    criterio que TipoMantenimiento: son reglas que TI ajusta sin tocar código."""
+    list_display = ('prioridad', 'horas_respuesta', 'horas_resolucion', 'activo')
+    list_filter = ('activo',)
+    list_editable = ('horas_respuesta', 'horas_resolucion', 'activo')

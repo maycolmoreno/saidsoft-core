@@ -5,8 +5,8 @@ from django.urls import reverse_lazy
 from apps.activos.models import Activo, Bodega, Colaborador, TipoConsumible, Ubicacion
 
 from .models import (
-    EstadoGeneralEquipo, MantenimientoProgramado, PrioridadActividad, ResultadoTecnico, TipoFirma,
-    TipoMantenimiento,
+    EstadoGeneralEquipo, MantenimientoProgramado, PrioridadActividad, PrioridadMantenimiento, ResultadoTecnico,
+    TipoFirma, TipoMantenimiento,
 )
 
 INPUT_CLASS = 'w-full rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]'
@@ -32,6 +32,11 @@ class MantenimientoManualForm(forms.Form):
         queryset=Activo.objects.none(),
         widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
         help_text='Solo se listan los equipos asignados al cliente elegido arriba.',
+    )
+    prioridad = forms.ChoiceField(
+        choices=PrioridadMantenimiento.choices, initial=PrioridadMantenimiento.NORMAL,
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        help_text='Define el plazo de atención y resolución (SLA).',
     )
     tecnico = forms.ModelChoiceField(
         queryset=User.objects.filter(is_active=True).order_by('username'), required=False,

@@ -6,17 +6,18 @@ crea el EventoMantenimiento inmutable correspondiente.
 from datetime import timedelta
 
 from django.db import transaction
-from django.db.models import Avg, DurationField, ExpressionWrapper, F, Sum
+from django.db.models import Avg, DurationField, ExpressionWrapper, F, Q, Sum
 from django.utils import timezone
 
 from apps.activos import services as activos_services
 from apps.activos.models import Activo, MovimientoInventario
 
 from .models import (
-    ActividadChecklist, ActividadPlanificada, ActividadRealizada, EstadoGeneralEquipo, EventoMantenimiento,
+    AcuerdoNivelServicio, ActividadChecklist, ActividadPlanificada, ActividadRealizada, EstadoGeneralEquipo,
+    EventoMantenimiento,
     FirmaMantenimiento, ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado,
-    Notificacion, PrioridadActividad, RepuestoUtilizado, ResultadoTecnico, TipoMantenimiento,
-    TipoOrigenMantenimiento,
+    Notificacion, PrioridadActividad, PrioridadMantenimiento, RepuestoUtilizado, ResultadoTecnico,
+    TipoMantenimiento, TipoOrigenMantenimiento,
 )
 
 
@@ -52,7 +53,7 @@ def _snapshot_equipo(equipo):
 
 def crear_mantenimiento_manual(*, equipos, tecnico, descripcion, fecha_programada, usuario,
                                 cliente=None, tipo_mantenimiento=None, equipo_principal=None,
-                                estado_general='', mantenimiento_programado=None):
+                                estado_general='', mantenimiento_programado=None, prioridad=None):
     if not equipos:
         raise ValueError('Un mantenimiento debe tener al menos un equipo.')
 
@@ -73,6 +74,7 @@ def crear_mantenimiento_manual(*, equipos, tecnico, descripcion, fecha_programad
         cliente=cliente, tecnico=tecnico, descripcion=descripcion,
         tipo_mantenimiento=tipo_mantenimiento, tipo_origen=TipoOrigenMantenimiento.MANUAL,
         estado_general=estado_general, mantenimiento_programado=mantenimiento_programado,
+        prioridad=prioridad or PrioridadMantenimiento.NORMAL,
         fecha_programada=fecha_programada, snapshot_equipo=_snapshot_equipo(principal),
     )
     MantenimientoEquipo.objects.bulk_create([
@@ -105,6 +107,9 @@ def iniciar_reparacion_desde_activo(*, activo, motivo, detalle_motivo, usuario):
     return crear_mantenimiento_manual(
         equipos=[activo], tecnico=None, descripcion=detalle_motivo,
         tipo_mantenimiento=_tipo_mantenimiento('correctivo'),
+        # Un equipo que se manda a reparar está fuera de servicio: no es un preventivo
+        # de rutina, arranca en ALTA (ajustable después desde el propio mantenimiento).
+        prioridad=PrioridadMantenimiento.ALTA,
         fecha_programada=timezone.now(), usuario=usuario, cliente=cliente,
     )
 
@@ -392,12 +397,33 @@ def mantenimientos_programados_por_vencer(dias=DIAS_PROXIMO_A_VENCER):
 
 
 def mantenimientos_atrasados(dias_gracia=DIAS_GRACIA_ATRASADO):
-    """Mantenimientos (de cualquier origen) abiertos hace más de `dias_gracia` días sin cerrarse."""
-    limite = timezone.now() - timedelta(days=dias_gracia)
-    return Mantenimiento.objects.filter(
+    """Mantenimientos abiertos que ya pasaron su límite de RESOLUCIÓN según el SLA de
+    su prioridad (AcuerdoNivelServicio).
+
+    Antes se usaba un único umbral en días para todo: un POS caído en una farmacia
+    vendiendo "vencía" igual que un preventivo de rutina. Ahora cada prioridad tiene
+    su propio plazo y el atraso se mide contra ese.
+
+    Se resuelve en SQL (un Q por prioridad) y no filtrando en Python, porque esto lo
+    llaman el dashboard y la tarea de notificaciones sobre toda la flota.
+
+    `dias_gracia` sigue siendo el respaldo para prioridades sin SLA cargado (o si
+    alguien borró los acuerdos): sin acuerdo no se puede afirmar un incumplimiento,
+    pero tampoco conviene dejar de avisar de algo abierto hace días.
+    """
+    ahora = timezone.now()
+    abiertos = Mantenimiento.objects.filter(
         estado_interno__in=[Mantenimiento.EstadoInterno.PENDIENTE, Mantenimiento.EstadoInterno.EN_PROCESO],
-        fecha_programada__lt=limite,
-    ).select_related('tecnico', 'cliente')
+    )
+
+    acuerdos = {a.prioridad: a for a in AcuerdoNivelServicio.objects.filter(activo=True)}
+    condicion = Q()
+    for prioridad, _ in PrioridadMantenimiento.choices:
+        acuerdo = acuerdos.get(prioridad)
+        horas = acuerdo.horas_resolucion if acuerdo else dias_gracia * 24
+        condicion |= Q(prioridad=prioridad, fecha_programada__lt=ahora - timedelta(hours=horas))
+
+    return abiertos.filter(condicion).select_related('tecnico', 'cliente')
 
 
 def notificar_mantenimientos_proximos_y_atrasados() -> dict:
@@ -476,9 +502,18 @@ def resumen_mantenimiento_periodo(unidad_negocio, desde, hasta):
         unidad_negocio=unidad_negocio, baja_recomendada=True,
     ).exclude(estado=Activo.Estado.DADO_DE_BAJA).count()
 
+    # % de cumplimiento sobre los CERRADOS del período: se calcula en Python porque
+    # el límite depende del SLA de cada prioridad (propiedad del modelo, no una columna).
+    cerrados = list(cerrados_periodo.only('prioridad', 'fecha_programada', 'fecha_cierre', 'estado_interno'))
+    con_sla = [m for m in cerrados if m.limite_resolucion is not None]
+    cumplidos = [m for m in con_sla if not m.sla_resolucion_incumplido]
+    pct_sla = round(100 * len(cumplidos) / len(con_sla)) if con_sla else None
+
     return {
         'total_periodo': del_periodo.count(),
         'cerrados_periodo': cerrados_periodo.count(),
+        'sla_cumplido_pct': pct_sla,
+        'sla_incumplidos_periodo': len(con_sla) - len(cumplidos),
         'atrasados_ahora': atrasados_ahora,
         'mttr_horas': round(mttr.total_seconds() / 3600, 1) if mttr else None,
         'costo_repuestos_periodo': costo_repuestos,

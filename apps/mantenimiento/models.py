@@ -1,7 +1,9 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from apps.activos.models import Activo, Bodega, CategoriaEquipo, Colaborador, TipoConsumible, Ubicacion
 
@@ -35,6 +37,20 @@ class EstadoGeneralEquipo(models.TextChoices):
     REQUIERE_REVISION = 'requiere_revision', 'Requiere revisión'
     NO_OPERATIVO = 'no_operativo', 'No operativo'
 
+
+
+class PrioridadMantenimiento(models.TextChoices):
+    """Prioridad de un Mantenimiento, distinta de PrioridadActividad (que es de
+    ActividadPlanificada y viene portada de InvTICS con otros valores).
+
+    Se agrega CRITICA porque acá el rango va de "un POS caído en una farmacia que
+    está vendiendo" a "un preventivo de rutina", y tratarlos con el mismo umbral era
+    justamente la debilidad que esto viene a corregir.
+    """
+    CRITICA = 'critica', 'Crítica'
+    ALTA = 'alta', 'Alta'
+    NORMAL = 'normal', 'Normal'
+    BAJA = 'baja', 'Baja'
 
 class MantenimientoProgramado(models.Model):
     """Plantilla recurrente: cada `frecuencia_dias` genera un Mantenimiento nuevo."""
@@ -112,6 +128,10 @@ class Mantenimiento(models.Model):
     tipo_origen = models.CharField(
         max_length=20, choices=TipoOrigenMantenimiento.choices, default=TipoOrigenMantenimiento.MANUAL,
     )
+    prioridad = models.CharField(
+        max_length=10, choices=PrioridadMantenimiento.choices, default=PrioridadMantenimiento.NORMAL,
+        help_text='Define el SLA aplicable (ver AcuerdoNivelServicio).',
+    )
     estado_interno = models.CharField(max_length=15, choices=EstadoInterno.choices, default=EstadoInterno.PENDIENTE)
     resultado_tecnico = models.CharField(max_length=25, choices=ResultadoTecnico.choices, blank=True)
     estado_general = models.CharField(max_length=20, choices=EstadoGeneralEquipo.choices, blank=True)
@@ -151,6 +171,69 @@ class Mantenimiento(models.Model):
     @property
     def costo_total_repuestos(self):
         return sum((r.costo_total for r in self.repuestos_utilizados.all()), Decimal('0'))
+
+    # --- SLA -------------------------------------------------------------------
+    # El reloj corre desde `fecha_programada` (ver docstring de AcuerdoNivelServicio).
+    # Todas estas propiedades devuelven None si no hay SLA cargado para la prioridad:
+    # sin acuerdo definido no se puede afirmar que algo esté incumplido.
+
+    @property
+    def sla(self):
+        return AcuerdoNivelServicio.objects.filter(prioridad=self.prioridad, activo=True).first()
+
+    @property
+    def limite_respuesta(self):
+        sla = self.sla
+        return self.fecha_programada + timedelta(hours=sla.horas_respuesta) if sla else None
+
+    @property
+    def limite_resolucion(self):
+        sla = self.sla
+        return self.fecha_programada + timedelta(hours=sla.horas_resolucion) if sla else None
+
+    @property
+    def inicio_real(self):
+        """Cuándo se pasó a EN_PROCESO, según el evento inmutable — no hay campo
+        propio para esto y EventoMantenimiento es la fuente de verdad."""
+        evento = self.eventos.filter(tipo_evento=EventoMantenimiento.TipoEvento.INICIADO).order_by('timestamp').first()
+        return evento.timestamp if evento else None
+
+    @property
+    def sla_respuesta_incumplido(self):
+        """True si ya pasó el límite para atenderlo y todavía no se inició. Si se
+        inició, se juzga contra el momento real de inicio (no contra "ahora"): un
+        mantenimiento atendido a tiempo no pasa a incumplido por seguir abierto."""
+        limite = self.limite_respuesta
+        if limite is None or self.estado_interno == self.EstadoInterno.CANCELADO:
+            return False
+        inicio = self.inicio_real
+        return (inicio or timezone.now()) > limite
+
+    @property
+    def sla_resolucion_incumplido(self):
+        limite = self.limite_resolucion
+        if limite is None or self.estado_interno == self.EstadoInterno.CANCELADO:
+            return False
+        cierre = self.fecha_cierre
+        return (cierre or timezone.now()) > limite
+
+    @property
+    def estado_sla(self):
+        """Etiqueta para el panel: 'sin_sla' | 'cumplido' | 'incumplido' | 'en_plazo' | 'por_vencer'.
+        'por_vencer' = queda menos del 20% del tiempo de resolución."""
+        limite = self.limite_resolucion
+        if limite is None:
+            return 'sin_sla'
+        if self.estado_interno == self.EstadoInterno.CANCELADO:
+            return 'sin_sla'
+        if self.estado_interno == self.EstadoInterno.CERRADO:
+            return 'incumplido' if self.sla_resolucion_incumplido else 'cumplido'
+        ahora = timezone.now()
+        if ahora > limite:
+            return 'incumplido'
+        total = (limite - self.fecha_programada).total_seconds()
+        restante = (limite - ahora).total_seconds()
+        return 'por_vencer' if total > 0 and restante / total <= 0.2 else 'en_plazo'
 
 
 class MantenimientoEquipo(models.Model):
@@ -251,6 +334,38 @@ class PrioridadActividad(models.TextChoices):
     NORMAL = 'normal', 'Normal'
     ALTA = 'alta', 'Alta'
     URGENTE = 'urgente', 'Urgente'
+
+
+
+class AcuerdoNivelServicio(models.Model):
+    """SLA por prioridad: en cuánto tiempo hay que ATENDER y RESOLVER un mantenimiento.
+
+    Configurable (no constantes en el código) por el mismo criterio que
+    TipoMantenimiento: son reglas de negocio que el área de TI ajusta sin tocar
+    código. Se siembran valores razonables por migración de datos.
+
+    El reloj arranca en `fecha_programada`, no en `fecha_creacion`: un preventivo
+    agendado para dentro de un mes no debe contar como incumplido desde que se crea.
+    Para un correctivo, ambas coinciden en la práctica (se crea con
+    fecha_programada=ahora, ver iniciar_reparacion_desde_activo).
+    """
+    prioridad = models.CharField(max_length=10, choices=PrioridadMantenimiento.choices, unique=True)
+    horas_respuesta = models.PositiveIntegerField(
+        help_text='Horas desde la fecha programada para INICIAR el mantenimiento.',
+    )
+    horas_resolucion = models.PositiveIntegerField(
+        help_text='Horas desde la fecha programada para CERRARLO.',
+    )
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'acuerdo_nivel_servicio'
+        ordering = ['prioridad']
+        verbose_name = 'Acuerdo de nivel de servicio (SLA)'
+        verbose_name_plural = 'Acuerdos de nivel de servicio (SLA)'
+
+    def __str__(self):
+        return f'{self.get_prioridad_display()}: atender {self.horas_respuesta}h / resolver {self.horas_resolucion}h'
 
 
 class FirmaMantenimiento(models.Model):

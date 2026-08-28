@@ -7,12 +7,14 @@ from django.utils import timezone
 from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoConsumible
 
 from .models import (
-    EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado, Notificacion,
-    RepuestoUtilizado, ResultadoTecnico, TipoMantenimiento, TipoOrigenMantenimiento,
+    AcuerdoNivelServicio, EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado,
+    Notificacion, PrioridadMantenimiento, RepuestoUtilizado, ResultadoTecnico, TipoMantenimiento,
+    TipoOrigenMantenimiento,
 )
 from .services import (
-    cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf, iniciar_reparacion_desde_activo,
-    mantenimientos_atrasados, mantenimientos_programados_por_vencer, notificar_mantenimientos_proximos_y_atrasados,
+    cancelar_mantenimiento, cerrar_mantenimiento, crear_mantenimiento_manual, generar_informe_pdf,
+    iniciar_mantenimiento, iniciar_reparacion_desde_activo, mantenimientos_atrasados,
+    mantenimientos_programados_por_vencer, notificar_mantenimientos_proximos_y_atrasados,
     registrar_repuesto_utilizado,
 )
 
@@ -614,3 +616,91 @@ class MantenimientoManualFormTests(TestCase):
         })
         self.assertFalse(form.is_valid())
         self.assertIn('equipos', form.errors)
+
+
+class SlaTests(TestCase):
+    """El SLA reemplaza al umbral único de días: una falla crítica y un preventivo de
+    rutina ya no vencen al mismo tiempo. El reloj corre desde `fecha_programada`."""
+
+    def setUp(self):
+        self.tecnico = User.objects.create_user(username='u_sla', password='x')
+        self.equipo = Activo.objects.create(codigo='CR-DSK-9001', tipo=Activo.Tipo.DESKTOP)
+
+    def _crear(self, prioridad, horas_atras):
+        return crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.tecnico, descripcion='x',
+            fecha_programada=timezone.now() - timedelta(hours=horas_atras),
+            usuario=self.tecnico, prioridad=prioridad,
+        )
+
+    def test_los_acuerdos_vienen_sembrados_por_migracion(self):
+        self.assertEqual(AcuerdoNivelServicio.objects.count(), 4)
+        critica = AcuerdoNivelServicio.objects.get(prioridad=PrioridadMantenimiento.CRITICA)
+        self.assertEqual(critica.horas_resolucion, 4)
+
+    def test_critica_vence_mucho_antes_que_normal(self):
+        # 6 horas abierto: la crítica (4h) ya incumplió, la normal (72h) no.
+        critica = self._crear(PrioridadMantenimiento.CRITICA, horas_atras=6)
+        self.assertTrue(critica.sla_resolucion_incumplido)
+        self.assertEqual(critica.estado_sla, 'incumplido')
+
+        self.equipo2 = Activo.objects.create(codigo='CR-DSK-9002', tipo=Activo.Tipo.DESKTOP)
+        normal = crear_mantenimiento_manual(
+            equipos=[self.equipo2], tecnico=self.tecnico, descripcion='x',
+            fecha_programada=timezone.now() - timedelta(hours=6),
+            usuario=self.tecnico, prioridad=PrioridadMantenimiento.NORMAL,
+        )
+        self.assertFalse(normal.sla_resolucion_incumplido)
+
+    def test_atrasados_usa_el_sla_de_cada_prioridad(self):
+        critica = self._crear(PrioridadMantenimiento.CRITICA, horas_atras=6)
+        equipo2 = Activo.objects.create(codigo='CR-DSK-9003', tipo=Activo.Tipo.DESKTOP)
+        crear_mantenimiento_manual(
+            equipos=[equipo2], tecnico=self.tecnico, descripcion='x',
+            fecha_programada=timezone.now() - timedelta(hours=6),
+            usuario=self.tecnico, prioridad=PrioridadMantenimiento.NORMAL,
+        )
+        atrasados = list(mantenimientos_atrasados())
+        self.assertEqual([m.pk for m in atrasados], [critica.pk])
+
+    def test_cerrado_a_tiempo_queda_cumplido(self):
+        m = self._crear(PrioridadMantenimiento.CRITICA, horas_atras=1)
+        cerrar_mantenimiento(mantenimiento=m, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
+        m.refresh_from_db()
+        self.assertEqual(m.estado_sla, 'cumplido')
+        self.assertFalse(m.sla_resolucion_incumplido)
+
+    def test_cerrado_tarde_queda_incumplido_aunque_ya_este_cerrado(self):
+        m = self._crear(PrioridadMantenimiento.CRITICA, horas_atras=10)
+        cerrar_mantenimiento(mantenimiento=m, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico)
+        m.refresh_from_db()
+        self.assertEqual(m.estado_sla, 'incumplido')
+
+    def test_respuesta_se_juzga_contra_el_inicio_real_no_contra_ahora(self):
+        # Iniciado dentro de la hora de respuesta: aunque siga abierto mucho después,
+        # la respuesta NO se incumplió.
+        m = self._crear(PrioridadMantenimiento.CRITICA, horas_atras=0)
+        iniciar_mantenimiento(mantenimiento=m, usuario=self.tecnico)
+        m.refresh_from_db()
+        self.assertFalse(m.sla_respuesta_incumplido)
+
+    def test_sin_acuerdo_no_afirma_incumplimiento(self):
+        AcuerdoNivelServicio.objects.all().delete()
+        m = self._crear(PrioridadMantenimiento.CRITICA, horas_atras=999)
+        self.assertIsNone(m.limite_resolucion)
+        self.assertFalse(m.sla_resolucion_incumplido)
+        self.assertEqual(m.estado_sla, 'sin_sla')
+
+    def test_cancelado_no_cuenta_como_incumplido(self):
+        m = self._crear(PrioridadMantenimiento.CRITICA, horas_atras=999)
+        cancelar_mantenimiento(mantenimiento=m, motivo='ya no aplica', usuario=self.tecnico)
+        m.refresh_from_db()
+        self.assertFalse(m.sla_resolucion_incumplido)
+        self.assertEqual(m.estado_sla, 'sin_sla')
+
+    def test_reparacion_desde_activo_arranca_en_alta(self):
+        activo = Activo.objects.create(codigo='CR-DSK-9004', tipo=Activo.Tipo.DESKTOP)
+        m = iniciar_reparacion_desde_activo(
+            activo=activo, motivo='falla', detalle_motivo='no enciende', usuario=self.tecnico,
+        )
+        self.assertEqual(m.prioridad, PrioridadMantenimiento.ALTA)

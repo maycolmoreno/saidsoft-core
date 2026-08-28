@@ -24,6 +24,8 @@
                 <th class="text-left px-4 py-3">Cliente</th>
                 <th class="text-left px-4 py-3">Técnico</th>
                 <th class="text-left px-4 py-3">Programado</th>
+                <th class="text-left px-4 py-3">Prioridad</th>
+                <th class="text-left px-4 py-3">SLA</th>
                 <th class="text-left px-4 py-3">Estado</th>
             </tr>
         </thead>
@@ -35,6 +37,19 @@
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ m.cliente|default:"—" }}</td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ m.tecnico.username|default:"—" }}</td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ m.fecha_programada|date:"d/m/Y H:i" }}</td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if m.prioridad == 'critica' %}critical{% elif m.prioridad == 'alta' %}warning{% elif m.prioridad == 'baja' %}neutral{% else %}info{% endif %}">
+                        {{ m.get_prioridad_display }}
+                    </span>
+                </td>
+                <td class="px-4 py-3">
+                    {% with sla=m.estado_sla %}
+                    <span class="pill {% if sla == 'incumplido' %}critical{% elif sla == 'por_vencer' %}warning{% elif sla == 'cumplido' or sla == 'en_plazo' %}good{% else %}neutral{% endif %}"
+                          title="{% if m.limite_resolucion %}Límite de resolución: {{ m.limite_resolucion }}{% else %}Sin SLA cargado para esta prioridad{% endif %}">
+                        {% if sla == 'incumplido' %}Incumplido{% elif sla == 'por_vencer' %}Por vencer{% elif sla == 'cumplido' %}Cumplido{% elif sla == 'en_plazo' %}En plazo{% else %}—{% endif %}
+                    </span>
+                    {% endwith %}
+                </td>
                 <td class="px-4 py-3">
                     <span class="pill {% if m.estado_interno == 'pendiente' %}info{% elif m.estado_interno == 'en_proceso' %}warning{% elif m.estado_interno == 'cerrado' %}good{% elif m.estado_interno == 'cancelado' %}critical{% else %}neutral{% endif %}">
                         {{ m.get_estado_interno_display }}

@@ -28,7 +28,9 @@ from apps.cumplimiento.models import (
     ActividadCumplimiento, ResultadoCumplimientoEstacion, TipoObjetivoCumplimiento,
 )
 from apps.despliegues.models import Despliegue
-from apps.mantenimiento.models import EstadoGeneralEquipo, Mantenimiento, TipoMantenimiento
+from apps.mantenimiento.models import (
+    EstadoGeneralEquipo, Mantenimiento, PrioridadMantenimiento, TipoMantenimiento,
+)
 from apps.monitoreo.models import (
     Alerta, Metrica, MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
@@ -783,6 +785,7 @@ class MantenimientoCrearViewTests(TestCase):
             'cliente': self.cliente.pk,
             'tipo_mantenimiento': self.tipo_preventivo.pk,
             'estado_general': EstadoGeneralEquipo.OPERATIVO,
+            'prioridad': PrioridadMantenimiento.NORMAL,
             'descripcion': 'Revisión de rutina',
             'fecha_programada': '2026-10-01T09:00',
         })
