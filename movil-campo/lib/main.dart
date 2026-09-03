@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'comun/tema.dart';
 import 'nucleo/almacen/almacen_seguro.dart';
 import 'nucleo/almacen/sincronizador.dart';
+import 'nucleo/catalogos.dart';
 import 'nucleo/red/api.dart';
 import 'rasgos/gps/estado_gps.dart';
 import 'rasgos/gps/repo_gps.dart';
@@ -51,6 +52,8 @@ class _AppCampoState extends State<AppCampo> {
         Provider<AlmacenSeguro>.value(value: _almacen),
         Provider<Api>.value(value: _api),
         Provider<Sincronizador>(create: (_) => Sincronizador(_api)),
+        // Una sola instancia: cachea los catalogos por sesion de app.
+        Provider<RepoCatalogos>(create: (_) => RepoCatalogos(_api)),
         // A nivel de app: si colgara de la pantalla de GPS, el envio se cortaria
         // apenas el tecnico cambia de pestana para trabajar.
         ChangeNotifierProvider<EstadoGps>(create: (_) => EstadoGps(RepoGps(_api))),

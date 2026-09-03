@@ -1,5 +1,6 @@
 """API móvil (apps Flutter). Cada acción delega en apps.mantenimiento.services
 — la misma lógica que usa el panel HTMX — para no duplicar reglas de negocio."""
+from django.utils import timezone
 from rest_framework import generics, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -15,7 +16,7 @@ from .serializers import (
     ImagenAdjuntarSerializer, ImagenMantenimientoSerializer, MantenimientoCrearSerializer,
     MantenimientoDetalleSerializer, MantenimientoListSerializer, UbicacionTecnicoSerializer,
     ActividadChecklistSerializer, ActivoMovilSerializer, CerrarVisitaSerializer, NotificacionSerializer,
-    UsuarioActualSerializer, VisitaTecnicaSerializer,
+    ActivoCrearSerializer, CatalogosSerializer, UsuarioActualSerializer, VisitaTecnicaSerializer,
 )
 
 
@@ -46,10 +47,12 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
         d = serializer.validated_data
         try:
             mantenimiento = services.crear_mantenimiento_manual(
-                equipos=list(d['equipos']), tecnico=request.user, cliente=d['cliente'],
+                equipos=list(d['equipos']), tecnico=request.user, cliente=d.get('cliente'),
                 tipo_mantenimiento=d['tipo_mantenimiento'],
-                descripcion=d['descripcion'], fecha_programada=d['fecha_programada'],
-                estado_general=d['estado_general'], mantenimiento_programado=d.get('mantenimiento_programado'),
+                descripcion=d['descripcion'],
+                fecha_programada=d.get('fecha_programada') or timezone.now(),
+                estado_general=d['estado_general'], prioridad=d.get('prioridad'),
+                mantenimiento_programado=d.get('mantenimiento_programado'),
                 usuario=request.user,
             )
         except ValueError as exc:
@@ -222,6 +225,20 @@ class EquipoListView(generics.ListAPIView):
         queryset = Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA).select_related(
             'marca', 'categoria', 'farmacia', 'estacion',
         ).order_by('codigo')
+
+        # El técnico en campo tiene el equipo delante: busca por lo que puede leer de
+        # la etiqueta, no navegando una lista de cientos.
+        buscar = self.request.query_params.get('buscar', '').strip()
+        if buscar:
+            from django.db.models import Q
+            queryset = queryset.filter(
+                Q(codigo__icontains=buscar)
+                | Q(numero_serie__icontains=buscar)
+                | Q(modelo__icontains=buscar),
+            )
+        farmacia = self.request.query_params.get('farmacia')
+        if farmacia:
+            queryset = queryset.filter(farmacia_id=farmacia)
         return scope_por_unidad_negocio(queryset, self.request.user, 'unidad_negocio')
 
 
@@ -291,3 +308,51 @@ class VisitaTecnicaViewSet(viewsets.ReadOnlyModelViewSet):
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(visita).data)
+
+
+class CatalogosView(generics.GenericAPIView):
+    """Todos los catálogos que necesitan los formularios de la app, en una respuesta.
+
+    La app los cachea: en una farmacia con enlace intermitente, cinco llamadas para
+    llenar un formulario son cinco oportunidades de fallar.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = CatalogosSerializer
+
+    def get(self, request):
+        return Response(self.get_serializer({}).data)
+
+
+class ActivoCrearView(generics.CreateAPIView):
+    """Alta de un equipo desde el campo.
+
+    Delega en apps.activos.services.registrar_ingreso -- la misma función que usa el
+    panel -- para no tener dos reglas distintas sobre cómo nace un activo.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ActivoCrearSerializer
+
+    def create(self, request, *args, **kwargs):
+        if not request.user.has_perm('activos.add_activo'):
+            return Response(
+                {'detail': 'No tenes permiso para registrar equipos.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        d = serializer.validated_data
+
+        from apps.activos import services as activos_services
+
+        try:
+            activo = activos_services.registrar_ingreso(
+                tipo=d['tipo'], marca=d['marca'], categoria=d['categoria'],
+                modelo=d['modelo'], numero_serie=d['numero_serie'],
+                procesador=d['procesador'], ram_gb=d['ram_gb'],
+                almacenamiento_gb=d['almacenamiento_gb'], codigo_sap=d['codigo_sap'],
+                fecha_compra=None, vencimiento_garantia=None, orden_compra=None,
+                bodega=d['bodega'], farmacia=d['farmacia'], usuario=request.user,
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(ActivoMovilSerializer(activo).data, status=status.HTTP_201_CREATED)

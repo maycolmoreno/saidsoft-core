@@ -12,7 +12,9 @@ import 'rasgos/avisos/pantalla_avisos.dart';
 import 'rasgos/avisos/repo_avisos.dart';
 import 'rasgos/gps/estado_gps.dart';
 import 'rasgos/gps/pantalla_gps.dart';
+import 'rasgos/equipos/pantalla_nuevo_equipo.dart';
 import 'rasgos/mantenimientos/pantalla_mantenimientos.dart';
+import 'rasgos/mantenimientos/pantalla_nuevo.dart';
 import 'rasgos/sesion/estado_sesion.dart';
 import 'rasgos/sesion/sesion.dart';
 import 'rasgos/visitas/pantalla_visitas.dart';
@@ -58,6 +60,14 @@ class _InicioState extends State<Inicio> {
     } catch (_) {
       // Sin conexión o sin permiso: el contador queda como estaba.
     }
+  }
+
+  /// Abre un alta y refresca al volver, para que lo recien creado se vea sin que el
+  /// tecnico tenga que deslizar.
+  Future<void> _abrirAlta(Widget pantalla) async {
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => pantalla));
+    if (mounted) setState(() {});
+    await _contarAvisos();
   }
 
   Future<void> _sincronizar() async {
@@ -135,7 +145,18 @@ class _InicioState extends State<Inicio> {
           Expanded(child: destinos[_indice]),
         ],
       ),
-      drawer: _Menu(sesion: sesion),
+      // Solo en la pestana de trabajo: el boton crea lo que esa pestana lista.
+      floatingActionButton: _indice == 0 && estado.puede(Permiso.crearMantenimiento)
+          ? FloatingActionButton.extended(
+              onPressed: () => _abrirAlta(const PantallaNuevoMantenimiento()),
+              icon: const Icon(Icons.add),
+              label: const Text('Mantenimiento'),
+            )
+          : null,
+      drawer: _Menu(
+        sesion: sesion,
+        onRegistrarEquipo: () => _abrirAlta(const PantallaNuevoEquipo()),
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _indice,
         onDestinationSelected: (i) {
@@ -176,8 +197,9 @@ class _InicioState extends State<Inicio> {
 }
 
 class _Menu extends StatelessWidget {
-  const _Menu({required this.sesion});
+  const _Menu({required this.sesion, required this.onRegistrarEquipo});
   final Sesion? sesion;
+  final VoidCallback onRegistrarEquipo;
 
   @override
   Widget build(BuildContext context) {
@@ -221,6 +243,15 @@ class _Menu extends StatelessWidget {
               ),
             ),
             const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.add_box_outlined, color: Tema.primario),
+              title: const Text('Registrar equipo'),
+              subtitle: const Text('Inventariar uno que no esta cargado'),
+              onTap: () {
+                Navigator.of(context).pop();
+                onRegistrarEquipo();
+              },
+            ),
             const Spacer(),
             ListTile(
               leading: const Icon(Icons.logout, color: Tema.critico),

@@ -2,12 +2,13 @@
 la API es una capa de transporte, no reimplementa reglas de negocio."""
 from rest_framework import serializers
 
-from apps.activos.models import Activo, Colaborador
+from apps.activos.models import Activo, Bodega, CategoriaEquipo, Colaborador, Marca
+from apps.catalogo.models import Farmacia
 
 from .models import (
     ActividadChecklist, ConsentimientoMonitoreo, EstadoGeneralEquipo, EventoMantenimiento, FirmaMantenimiento,
     ImagenMantenimiento, Mantenimiento, MantenimientoProgramado, Notificacion, ResultadoTecnico, TipoFirma,
-    TipoMantenimiento, UbicacionTecnico, VisitaTecnica,
+    PrioridadMantenimiento, TipoMantenimiento, UbicacionTecnico, VisitaTecnica,
 )
 
 
@@ -113,13 +114,24 @@ class MantenimientoCrearSerializer(serializers.Serializer):
     equipos = serializers.PrimaryKeyRelatedField(
         many=True, queryset=Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA),
     )
-    cliente = serializers.PrimaryKeyRelatedField(queryset=Colaborador.objects.filter(activo=True))
+    # Opcional: un POS de farmacia no tiene custodio en el mismo sentido que un
+    # equipo de oficina, y exigirlo obligaría al técnico a inventar uno para poder
+    # abrir el mantenimiento del equipo que tiene delante.
+    cliente = serializers.PrimaryKeyRelatedField(
+        queryset=Colaborador.objects.filter(activo=True), required=False, allow_null=True, default=None,
+    )
     tipo_mantenimiento = serializers.PrimaryKeyRelatedField(
         queryset=TipoMantenimiento.objects.filter(activo=True), required=False, allow_null=True, default=None,
     )
+    prioridad = serializers.ChoiceField(
+        choices=PrioridadMantenimiento.choices, required=False,
+        default=PrioridadMantenimiento.NORMAL,
+    )
     estado_general = serializers.ChoiceField(choices=EstadoGeneralEquipo.choices)
     descripcion = serializers.CharField()
-    fecha_programada = serializers.DateTimeField()
+    # Por defecto AHORA: el técnico que abre un mantenimiento desde el celular está
+    # parado frente al equipo, no agendando para otro día.
+    fecha_programada = serializers.DateTimeField(required=False)
     mantenimiento_programado = serializers.PrimaryKeyRelatedField(
         queryset=MantenimientoProgramado.objects.filter(activo=True), required=False, allow_null=True,
     )
@@ -249,3 +261,97 @@ class VisitaTecnicaSerializer(serializers.ModelSerializer):
 
 class CerrarVisitaSerializer(serializers.Serializer):
     observaciones = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class ActivoCrearSerializer(serializers.Serializer):
+    """Alta de un equipo desde el campo.
+
+    Se pide farmacia O bodega, igual que el alta del panel: un técnico que encuentra
+    un equipo sin registrar está parado en la farmacia, no en un almacén, y exigirle
+    una bodega lo obligaría a inventar una por la que el equipo nunca pasó (ver
+    apps.activos.services.registrar_ingreso).
+    """
+    tipo = serializers.ChoiceField(choices=Activo.Tipo.choices)
+    marca = serializers.PrimaryKeyRelatedField(
+        queryset=Marca.objects.all(), required=False, allow_null=True, default=None,
+    )
+    categoria = serializers.PrimaryKeyRelatedField(
+        queryset=CategoriaEquipo.objects.all(), required=False, allow_null=True, default=None,
+    )
+    modelo = serializers.CharField(required=False, allow_blank=True, default='')
+    numero_serie = serializers.CharField(required=False, allow_blank=True, default='')
+    procesador = serializers.CharField(required=False, allow_blank=True, default='')
+    ram_gb = serializers.IntegerField(min_value=1, required=False, allow_null=True, default=None)
+    almacenamiento_gb = serializers.IntegerField(min_value=1, required=False, allow_null=True, default=None)
+    codigo_sap = serializers.CharField(required=False, allow_blank=True, default='')
+    farmacia = serializers.PrimaryKeyRelatedField(
+        queryset=Farmacia.objects.filter(activa=True), required=False, allow_null=True, default=None,
+    )
+    bodega = serializers.PrimaryKeyRelatedField(
+        queryset=Bodega.objects.filter(activa=True), required=False, allow_null=True, default=None,
+    )
+
+    def validate(self, datos):
+        if not datos.get('farmacia') and not datos.get('bodega'):
+            raise serializers.ValidationError(
+                'Indica la farmacia donde esta instalado el equipo, o la bodega donde ingresa.',
+            )
+        return datos
+
+
+class CatalogosSerializer(serializers.Serializer):
+    """Todos los catálogos en UNA respuesta.
+
+    En una farmacia con enlace intermitente, cinco llamadas para llenar un formulario
+    son cinco oportunidades de fallar; una sola se reintenta entera y es lo que la app
+    puede cachear.
+    """
+    tipos_equipo = serializers.SerializerMethodField()
+    marcas = serializers.SerializerMethodField()
+    categorias = serializers.SerializerMethodField()
+    tipos_mantenimiento = serializers.SerializerMethodField()
+    estados_generales = serializers.SerializerMethodField()
+    prioridades = serializers.SerializerMethodField()
+    farmacias = serializers.SerializerMethodField()
+    bodegas = serializers.SerializerMethodField()
+
+    def _opciones(self, choices):
+        return [{'valor': v, 'etiqueta': e} for v, e in choices]
+
+    def get_tipos_equipo(self, _):
+        return self._opciones(Activo.Tipo.choices)
+
+    def get_estados_generales(self, _):
+        return self._opciones(EstadoGeneralEquipo.choices)
+
+    def get_prioridades(self, _):
+        return self._opciones(PrioridadMantenimiento.choices)
+
+    def get_marcas(self, _):
+        return [{'id': m.pk, 'nombre': m.nombre} for m in Marca.objects.order_by('nombre')]
+
+    def get_categorias(self, _):
+        return [{'id': c.pk, 'nombre': c.nombre} for c in CategoriaEquipo.objects.order_by('nombre')]
+
+    def get_tipos_mantenimiento(self, _):
+        return [
+            {'id': t.pk, 'nombre': t.nombre}
+            for t in TipoMantenimiento.objects.filter(activo=True).order_by('nombre')
+        ]
+
+    def get_farmacias(self, _):
+        # Acotadas a lo que el usuario puede ver, igual que el panel.
+        from apps.cuentas.services import scope_por_unidad_negocio
+
+        queryset = scope_por_unidad_negocio(
+            Farmacia.objects.filter(activa=True), self.context['request'].user, 'unidad_negocio',
+        ).order_by('codigo')
+        return [{'id': f.pk, 'codigo': f.codigo, 'nombre': f.nombre} for f in queryset]
+
+    def get_bodegas(self, _):
+        from apps.cuentas.services import scope_opcional_por_unidad_negocio
+
+        queryset = scope_opcional_por_unidad_negocio(
+            Bodega.objects.filter(activa=True), self.context['request'].user, 'unidad_negocio',
+        ).order_by('codigo')
+        return [{'id': b.pk, 'codigo': b.codigo, 'nombre': b.nombre} for b in queryset]

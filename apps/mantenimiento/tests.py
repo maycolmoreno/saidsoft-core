@@ -1143,3 +1143,105 @@ class AvisoAlAsignarTests(TestCase):
     def test_sin_tecnico_no_avisa_a_nadie(self):
         self._crear(None, self.coordinador)
         self.assertFalse(Notificacion.objects.exists())
+
+
+class CrearDesdeAppTests(TestCase):
+    """Alta de mantenimiento y de equipo desde el campo. El técnico está parado frente
+    al equipo: el formulario tiene que pedirle lo mínimo."""
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        from django.contrib.auth.models import Permission
+        self.tecnico = User.objects.create_user(username='tec_campo', password='x')
+        self.token = Token.objects.create(user=self.tecnico)
+        PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
+        self.tecnico.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='add_activo'),
+        )
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=sg, nombre='SG Centro',
+        )
+        self.equipo = Activo.objects.create(
+            codigo='CR-DSK-2001', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia,
+            numero_serie='ABC123', unidad_negocio=sg,
+        )
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def test_crea_mantenimiento_sin_cliente_ni_fecha(self):
+        # Un POS de farmacia no tiene custodio, y quien abre desde el celular esta
+        # frente al equipo: la fecha es ahora.
+        resp = self.client.post(
+            '/api/v1/mantenimientos/',
+            {'equipos': [self.equipo.pk], 'estado_general': 'no_operativo',
+             'descripcion': 'No enciende', 'prioridad': 'critica'},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        datos = resp.json()
+        self.assertEqual(datos['prioridad'], 'critica')
+        m = Mantenimiento.objects.get(pk=datos['id'])
+        self.assertEqual(m.tecnico, self.tecnico)
+        self.assertIsNone(m.cliente)
+        self.assertIsNotNone(m.fecha_programada)
+
+    def test_el_tecnico_es_siempre_quien_lo_crea(self):
+        otro = User.objects.create_user(username='ajeno', password='x')
+        resp = self.client.post(
+            '/api/v1/mantenimientos/',
+            {'equipos': [self.equipo.pk], 'estado_general': 'operativo',
+             'descripcion': 'x', 'tecnico': otro.pk},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(Mantenimiento.objects.get(pk=resp.json()['id']).tecnico, self.tecnico)
+
+    def test_busca_equipos_por_serie_o_codigo(self):
+        for termino in ('ABC123', 'abc', 'DSK-2001'):
+            datos = self.client.get(f'/api/v1/equipos/?buscar={termino}', **self._auth()).json()
+            self.assertEqual([e['codigo'] for e in datos], ['CR-DSK-2001'], termino)
+        vacio = self.client.get('/api/v1/equipos/?buscar=NADA', **self._auth()).json()
+        self.assertEqual(vacio, [])
+
+    def test_registra_un_equipo_en_la_farmacia_sin_bodega(self):
+        resp = self.client.post(
+            '/api/v1/equipos/nuevo/',
+            {'tipo': Activo.Tipo.DESKTOP, 'modelo': 'OptiPlex', 'numero_serie': 'XYZ789',
+             'farmacia': self.farmacia.pk},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        activo = Activo.objects.get(numero_serie='XYZ789')
+        self.assertEqual(activo.farmacia, self.farmacia)
+        self.assertIsNone(activo.bodega_actual)
+
+    def test_no_se_puede_registrar_sin_indicar_donde_esta(self):
+        resp = self.client.post(
+            '/api/v1/equipos/nuevo/',
+            {'tipo': Activo.Tipo.DESKTOP, 'modelo': 'OptiPlex'},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_sin_permiso_no_puede_registrar_equipos(self):
+        sin = User.objects.create_user(username='sin_alta', password='x')
+        PerfilUsuario.objects.create(usuario=sin, acceso_todas_unidades=True)
+        from rest_framework.authtoken.models import Token
+        token = Token.objects.create(user=sin)
+        resp = self.client.post(
+            '/api/v1/equipos/nuevo/',
+            {'tipo': Activo.Tipo.DESKTOP, 'farmacia': self.farmacia.pk},
+            content_type='application/json',
+            HTTP_AUTHORIZATION=f'Token {token.key}',
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_los_catalogos_vienen_en_una_sola_respuesta(self):
+        datos = self.client.get('/api/v1/catalogos/', **self._auth()).json()
+        for clave in ('tipos_equipo', 'marcas', 'categorias', 'tipos_mantenimiento',
+                      'estados_generales', 'prioridades', 'farmacias', 'bodegas'):
+            self.assertIn(clave, datos)
+        self.assertEqual([f['codigo'] for f in datos['farmacias']], ['ML001'])
+        self.assertTrue(any(p['valor'] == 'critica' for p in datos['prioridades']))
