@@ -868,3 +868,48 @@ class VisitaTecnicaTests(TestCase):
         m.visita = v
         m.save(update_fields=['visita'])
         self.assertEqual(list(v.mantenimientos_generados.all()), [m])
+
+
+class UsuarioActualApiTests(TestCase):
+    """La app móvil necesita saber quién es y qué puede hacer: obtain_auth_token de DRF
+    solo devuelve el token."""
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.usuario = User.objects.create_user(
+            username='tecnico1', password='x', first_name='Ana', last_name='Pérez',
+            email='ana@ejemplo.com',
+        )
+        self.token = Token.objects.create(user=self.usuario)
+
+    def _get(self):
+        return self.client.get('/api/v1/auth/yo/', HTTP_AUTHORIZATION=f'Token {self.token.key}')
+
+    def test_sin_token_devuelve_401(self):
+        self.assertEqual(self.client.get('/api/v1/auth/yo/').status_code, 401)
+
+    def test_devuelve_identidad_del_usuario(self):
+        datos = self._get().json()
+        self.assertEqual(datos['username'], 'tecnico1')
+        self.assertEqual(datos['nombre'], 'Ana Pérez')
+        self.assertEqual(datos['email'], 'ana@ejemplo.com')
+        self.assertFalse(datos['es_staff'])
+
+    def test_nombre_cae_al_username_si_no_hay_nombre_completo(self):
+        self.usuario.first_name = ''
+        self.usuario.last_name = ''
+        self.usuario.save(update_fields=['first_name', 'last_name'])
+        self.assertEqual(self._get().json()['nombre'], 'tecnico1')
+
+    def test_incluye_los_permisos_de_django(self):
+        from django.contrib.auth.models import Permission
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='mantenimiento', codename='view_visitatecnica'),
+        )
+        permisos = self._get().json()['permisos']
+        self.assertIn('mantenimiento.view_visitatecnica', permisos)
+
+    def test_token_se_obtiene_con_usuario_y_clave(self):
+        resp = self.client.post('/api/v1/auth/token/', {'username': 'tecnico1', 'password': 'x'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['token'], self.token.key)

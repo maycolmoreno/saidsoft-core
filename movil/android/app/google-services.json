@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "288285178125",
+    "project_id": "cresiomobile",
+    "storage_bucket": "cresiomobile.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:288285178125:android:cafb762d14fba5e4b05844",
+        "android_client_info": {
+          "package_name": "com.cresio.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCHngL8IF7F_9YtxhdpHGrSC9HdyCT2qlg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

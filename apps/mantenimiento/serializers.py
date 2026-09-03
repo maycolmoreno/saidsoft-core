@@ -125,3 +125,31 @@ class UbicacionTecnicoSerializer(serializers.ModelSerializer):
         model = UbicacionTecnico
         fields = ['id', 'latitud', 'longitud', 'precision_metros', 'timestamp_captura']
         read_only_fields = ['id']
+
+
+class UsuarioActualSerializer(serializers.Serializer):
+    """Identidad + permisos del usuario autenticado (ver UsuarioActualView)."""
+    id = serializers.IntegerField(read_only=True)
+    username = serializers.CharField(read_only=True)
+    nombre = serializers.SerializerMethodField()
+    email = serializers.EmailField(read_only=True)
+    es_staff = serializers.BooleanField(source='is_staff', read_only=True)
+    permisos = serializers.SerializerMethodField()
+    unidades_negocio = serializers.SerializerMethodField()
+
+    def get_nombre(self, obj) -> str:
+        return obj.get_full_name() or obj.username
+
+    def get_permisos(self, obj) -> list:
+        # Lista plana de codenames "app.permiso" -- los mismos que evalúa el panel.
+        return sorted(obj.get_all_permissions())
+
+    def get_unidades_negocio(self, obj) -> list:
+        """Códigos de las unidades que este usuario puede ver. Lista vacía = acceso a
+        todas (mismo criterio que apps.cuentas.services, donde 'sin restricción' se
+        representa por ausencia de filtro, no por enumerar todo)."""
+        from apps.cuentas.services import unidades_negocio_visibles, usuario_tiene_acceso_total
+
+        if usuario_tiene_acceso_total(obj):
+            return []
+        return sorted(unidades_negocio_visibles(obj).values_list('codigo', flat=True))

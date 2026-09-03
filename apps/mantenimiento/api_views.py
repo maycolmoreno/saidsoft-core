@@ -11,6 +11,7 @@ from .serializers import (
     ConsentimientoMonitoreoSerializer, FirmaMantenimientoSerializer, FirmarMantenimientoSerializer,
     ImagenAdjuntarSerializer, ImagenMantenimientoSerializer, MantenimientoCrearSerializer,
     MantenimientoDetalleSerializer, MantenimientoListSerializer, UbicacionTecnicoSerializer,
+    UsuarioActualSerializer,
 )
 
 
@@ -161,3 +162,22 @@ class UbicacionTecnicoView(generics.ListCreateAPIView):
         serializer.is_valid(raise_exception=True)
         serializer.save(usuario=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class UsuarioActualView(generics.GenericAPIView):
+    """Identidad y permisos del usuario autenticado, para que la app móvil sepa qué
+    mostrar y qué habilitar.
+
+    Hace falta porque `obtain_auth_token` de DRF devuelve solo el token: sin esto la
+    app no sabe el nombre real del técnico ni qué acciones puede hacer, y tendría que
+    o mostrar todo (y fallar con 403 al tocar), o adivinar por el nombre de usuario.
+
+    Los permisos van con los mismos codenames de Django que ya usa el panel, para que
+    la app y la web habiliten exactamente lo mismo sin una segunda tabla de roles que
+    se desincronice.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = UsuarioActualSerializer
+
+    def get(self, request):
+        return Response(self.get_serializer(request.user).data)
