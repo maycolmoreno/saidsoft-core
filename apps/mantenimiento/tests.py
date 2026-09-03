@@ -1245,3 +1245,76 @@ class CrearDesdeAppTests(TestCase):
             self.assertIn(clave, datos)
         self.assertEqual([f['codigo'] for f in datos['farmacias']], ['ML001'])
         self.assertTrue(any(p['valor'] == 'critica' for p in datos['prioridades']))
+
+
+class BuscarEquiposTests(TestCase):
+    """Un solo campo que entiende lo que el técnico tiene a mano: la etiqueta del
+    equipo, el código de la farmacia donde está parado, o quién lo usa."""
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_busca', password='x')
+        self.token = Token.objects.create(user=self.tecnico)
+        PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='MAM06', grupo=grupo, unidad_negocio=sg, nombre='FARMACIAS MIA MAM06',
+        )
+        otra = Farmacia.objects.create(
+            codigo='ML006', grupo=grupo, unidad_negocio=sg, nombre='SG Loja',
+        )
+        self.custodio = Colaborador.objects.create(
+            nombre='Alvarez Mendoza Wellington', cedula='1314821941', unidad_negocio=sg,
+        )
+        self.equipo = Activo.objects.create(
+            codigo='CR-DSK-9101', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia,
+            numero_serie='BB3VJD3', colaborador_actual=self.custodio, unidad_negocio=sg,
+        )
+        self.ajeno = Activo.objects.create(
+            codigo='CR-DSK-9102', tipo=Activo.Tipo.DESKTOP, farmacia=otra,
+            numero_serie='OTRA999', unidad_negocio=sg,
+        )
+
+    def _buscar(self, termino='', **extra):
+        params = f'buscar={termino}' if termino else ''
+        for k, v in extra.items():
+            params += f'&{k}={v}' if params else f'{k}={v}'
+        resp = self.client.get(
+            f'/api/v1/equipos/?{params}', HTTP_AUTHORIZATION=f'Token {self.token.key}',
+        )
+        return [e['codigo'] for e in resp.json()]
+
+    def test_busca_por_codigo_de_farmacia(self):
+        self.assertEqual(self._buscar('MAM06'), ['CR-DSK-9101'])
+
+    def test_busca_por_nombre_de_farmacia(self):
+        self.assertEqual(self._buscar('MIA'), ['CR-DSK-9101'])
+
+    def test_busca_por_nombre_del_custodio(self):
+        self.assertEqual(self._buscar('Wellington'), ['CR-DSK-9101'])
+
+    def test_sigue_buscando_por_serie_y_codigo(self):
+        self.assertEqual(self._buscar('BB3VJD3'), ['CR-DSK-9101'])
+        self.assertEqual(self._buscar('9102'), ['CR-DSK-9102'])
+
+    def test_filtro_explicito_por_farmacia(self):
+        # Para listar TODO lo de una farmacia sin depender de que el texto coincida.
+        self.assertEqual(self._buscar(farmacia=self.farmacia.pk), ['CR-DSK-9101'])
+
+    def test_filtro_explicito_por_cliente(self):
+        self.assertEqual(self._buscar(cliente=self.custodio.pk), ['CR-DSK-9101'])
+
+    def test_el_resultado_dice_farmacia_y_custodio(self):
+        resp = self.client.get(
+            '/api/v1/equipos/?buscar=MAM06', HTTP_AUTHORIZATION=f'Token {self.token.key}',
+        ).json()[0]
+        self.assertEqual(resp['farmacia']['codigo'], 'MAM06')
+        self.assertEqual(resp['custodio'], 'Alvarez Mendoza Wellington')
+
+    def test_los_colaboradores_vienen_en_el_catalogo(self):
+        datos = self.client.get(
+            '/api/v1/catalogos/', HTTP_AUTHORIZATION=f'Token {self.token.key}',
+        ).json()
+        self.assertIn('colaboradores', datos)
+        self.assertTrue(any(c['nombre'].startswith('Alvarez') for c in datos['colaboradores']))

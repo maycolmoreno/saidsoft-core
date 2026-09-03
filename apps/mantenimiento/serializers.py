@@ -218,9 +218,14 @@ class ActivoMovilSerializer(ActivoResumenSerializer):
     """Equipos para la app: suma la farmacia donde está y su estación RMM si tiene."""
     farmacia = serializers.SerializerMethodField()
     estacion = serializers.CharField(source='estacion.codigo', read_only=True, default=None)
+    custodio = serializers.CharField(
+        source='colaborador_actual.nombre', read_only=True, default=None,
+    )
 
     class Meta(ActivoResumenSerializer.Meta):
-        fields = ActivoResumenSerializer.Meta.fields + ['farmacia', 'estacion', 'estado_fisico_actual']
+        fields = ActivoResumenSerializer.Meta.fields + [
+            'farmacia', 'estacion', 'estado_fisico_actual', 'custodio',
+        ]
 
     def get_farmacia(self, obj):
         if obj.farmacia_id is None:
@@ -314,6 +319,7 @@ class CatalogosSerializer(serializers.Serializer):
     prioridades = serializers.SerializerMethodField()
     farmacias = serializers.SerializerMethodField()
     bodegas = serializers.SerializerMethodField()
+    colaboradores = serializers.SerializerMethodField()
 
     def _opciones(self, choices):
         return [{'valor': v, 'etiqueta': e} for v, e in choices]
@@ -347,6 +353,14 @@ class CatalogosSerializer(serializers.Serializer):
             Farmacia.objects.filter(activa=True), self.context['request'].user, 'unidad_negocio',
         ).order_by('codigo')
         return [{'id': f.pk, 'codigo': f.codigo, 'nombre': f.nombre} for f in queryset]
+
+    def get_colaboradores(self, _):
+        from apps.cuentas.services import scope_opcional_por_unidad_negocio
+
+        queryset = scope_opcional_por_unidad_negocio(
+            Colaborador.objects.filter(activo=True), self.context['request'].user, 'unidad_negocio',
+        ).order_by('nombre')
+        return [{'id': c.pk, 'nombre': c.nombre} for c in queryset]
 
     def get_bodegas(self, _):
         from apps.cuentas.services import scope_opcional_por_unidad_negocio

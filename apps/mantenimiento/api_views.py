@@ -223,22 +223,32 @@ class EquipoListView(generics.ListAPIView):
         from apps.cuentas.services import scope_por_unidad_negocio
 
         queryset = Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA).select_related(
-            'marca', 'categoria', 'farmacia', 'estacion',
+            'marca', 'categoria', 'farmacia', 'estacion', 'colaborador_actual',
         ).order_by('codigo')
 
-        # El técnico en campo tiene el equipo delante: busca por lo que puede leer de
-        # la etiqueta, no navegando una lista de cientos.
+        # Un solo campo de busqueda que entiende todo lo que el tecnico tiene a mano:
+        # la etiqueta del equipo, el codigo de la farmacia donde esta parado, o el
+        # nombre de la persona que lo usa. Obligarlo a elegir ANTES por que criterio
+        # busca es trabajo que la consulta puede hacer sola.
         buscar = self.request.query_params.get('buscar', '').strip()
         if buscar:
             from django.db.models import Q
             queryset = queryset.filter(
                 Q(codigo__icontains=buscar)
                 | Q(numero_serie__icontains=buscar)
-                | Q(modelo__icontains=buscar),
+                | Q(modelo__icontains=buscar)
+                | Q(farmacia__codigo__icontains=buscar)
+                | Q(farmacia__nombre__icontains=buscar)
+                | Q(colaborador_actual__nombre__icontains=buscar),
             )
+        # Filtros explicitos, para listar TODO lo de una farmacia o de una persona sin
+        # depender de que el texto coincida.
         farmacia = self.request.query_params.get('farmacia')
         if farmacia:
             queryset = queryset.filter(farmacia_id=farmacia)
+        cliente = self.request.query_params.get('cliente')
+        if cliente:
+            queryset = queryset.filter(colaborador_actual_id=cliente)
         return scope_por_unidad_negocio(queryset, self.request.user, 'unidad_negocio')
 
 

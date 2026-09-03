@@ -31,6 +31,8 @@ class _PantallaNuevoMantenimientoState extends State<PantallaNuevoMantenimiento>
   bool _buscando = false;
   bool _guardando = false;
   String? _prioridad = 'normal';
+  String? _filtroFarmacia;
+  String? _filtroCliente;
   String? _estadoGeneral;
   String? _tipo;
   String? _error;
@@ -49,21 +51,32 @@ class _PantallaNuevoMantenimientoState extends State<PantallaNuevoMantenimiento>
     super.dispose();
   }
 
+  /// Busca por texto libre y/o por los filtros. Con la farmacia elegida y sin texto
+  /// lista TODO lo que hay ahi: el tecnico que llega a un local quiere ver el
+  /// inventario del sitio, no adivinar el codigo de cada equipo.
   Future<void> _buscar() async {
     final termino = _busqueda.text.trim();
-    if (termino.isEmpty) return;
+    if (termino.isEmpty && _filtroFarmacia == null && _filtroCliente == null) {
+      setState(() => _error = 'Escribi algo para buscar, o elegi una farmacia.');
+      return;
+    }
     setState(() {
       _buscando = true;
       _error = null;
     });
     try {
-      final datos = await _api.obtener('/equipos/?buscar=$termino') as List;
+      final partes = <String>[
+        if (termino.isNotEmpty) 'buscar=${Uri.encodeQueryComponent(termino)}',
+        if (_filtroFarmacia != null) 'farmacia=$_filtroFarmacia',
+        if (_filtroCliente != null) 'cliente=$_filtroCliente',
+      ];
+      final datos = await _api.obtener('/equipos/?${partes.join('&')}') as List;
       setState(() {
         _resultados = datos
             .map((e) => Equipo.desdeJson(Map<String, dynamic>.from(e as Map)))
             .toList();
         if (_resultados.isEmpty) {
-          _error = 'No se encontro ningun equipo con "$termino".';
+          _error = 'No se encontro ningun equipo con esos criterios.';
         }
       });
     } on ErrorApi catch (e) {
@@ -140,7 +153,7 @@ class _PantallaNuevoMantenimientoState extends State<PantallaNuevoMantenimiento>
                     child: TextField(
                       controller: _busqueda,
                       decoration: const InputDecoration(
-                        labelText: 'Codigo, serie o modelo',
+                        labelText: 'Codigo, serie, farmacia o persona',
                         prefixIcon: Icon(Icons.search),
                       ),
                       onSubmitted: (_) => _buscar(),
@@ -161,6 +174,44 @@ class _PantallaNuevoMantenimientoState extends State<PantallaNuevoMantenimiento>
                   ),
                 ],
               ),
+              const SizedBox(height: 12),
+              // Filtros para RECORRER, no para adivinar: el tecnico llega a una
+              // farmacia y quiere ver todo lo que hay ahi.
+              DropdownButtonFormField<String>(
+                initialValue: _filtroFarmacia,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Filtrar por farmacia',
+                  isDense: true,
+                ),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Todas')),
+                  for (final o in catalogos.farmacias)
+                    DropdownMenuItem(value: o.valor, child: Text(o.etiqueta)),
+                ],
+                onChanged: (v) {
+                  setState(() => _filtroFarmacia = v);
+                  _buscar();
+                },
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: _filtroCliente,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Filtrar por persona',
+                  isDense: true,
+                ),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Todas')),
+                  for (final o in catalogos.colaboradores)
+                    DropdownMenuItem(value: o.valor, child: Text(o.etiqueta)),
+                ],
+                onChanged: (v) {
+                  setState(() => _filtroCliente = v);
+                  _buscar();
+                },
+              ),
               if (_elegido != null) ...[
                 const SizedBox(height: 12),
                 Card(
@@ -168,11 +219,7 @@ class _PantallaNuevoMantenimientoState extends State<PantallaNuevoMantenimiento>
                     leading: const Icon(Icons.check_circle, color: Tema.bien),
                     title: Text(_elegido!.codigo,
                         style: const TextStyle(fontWeight: FontWeight.w700)),
-                    subtitle: Text(
-                      [_elegido!.modelo, _elegido!.numeroSerie]
-                          .where((t) => t.isNotEmpty)
-                          .join(' · '),
-                    ),
+                    subtitle: Text(_elegido!.detalle),
                     trailing: TextButton(
                       onPressed: () => setState(() => _elegido = null),
                       child: const Text('Cambiar'),
@@ -185,11 +232,7 @@ class _PantallaNuevoMantenimientoState extends State<PantallaNuevoMantenimiento>
                     margin: const EdgeInsets.only(top: 8),
                     child: ListTile(
                       title: Text(equipo.codigo),
-                      subtitle: Text(
-                        [equipo.modelo, equipo.numeroSerie]
-                            .where((t) => t.isNotEmpty)
-                            .join(' · '),
-                      ),
+                      subtitle: Text(equipo.detalle),
                       onTap: () => setState(() {
                         _elegido = equipo;
                         _resultados = const [];

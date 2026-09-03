@@ -40,6 +40,7 @@ class Catalogos {
     required this.prioridades,
     required this.farmacias,
     required this.bodegas,
+    required this.colaboradores,
   });
 
   final List<Opcion> tiposEquipo;
@@ -50,6 +51,7 @@ class Catalogos {
   final List<Opcion> prioridades;
   final List<Opcion> farmacias;
   final List<Opcion> bodegas;
+  final List<Opcion> colaboradores;
 
   static List<Opcion> _choices(dynamic lista) => (lista as List? ?? const [])
       .map((o) => Opcion.desdeChoice(Map<String, dynamic>.from(o as Map)))
@@ -68,6 +70,7 @@ class Catalogos {
         tiposMantenimiento: _modelos(json['tipos_mantenimiento']),
         farmacias: _modelos(json['farmacias']),
         bodegas: _modelos(json['bodegas']),
+        colaboradores: _modelos(json['colaboradores']),
       );
 }
 

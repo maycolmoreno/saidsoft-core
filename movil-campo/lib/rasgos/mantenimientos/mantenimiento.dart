@@ -47,6 +47,8 @@ class Equipo {
     required this.codigo,
     required this.modelo,
     required this.numeroSerie,
+    this.farmacia,
+    this.custodio = '',
   });
 
   final int id;
@@ -54,11 +56,26 @@ class Equipo {
   final String modelo;
   final String numeroSerie;
 
+  /// Dónde está y quién lo usa. Vienen al buscar, para que el técnico distinga dos
+  /// equipos del mismo modelo sin abrir cada uno.
+  final Farmacia? farmacia;
+  final String custodio;
+
+  /// Segunda línea del resultado de búsqueda: lo que permite reconocerlo.
+  String get detalle => [
+        if (modelo.isNotEmpty) modelo,
+        if (numeroSerie.isNotEmpty) numeroSerie,
+        if (farmacia != null) farmacia!.codigo,
+        if (custodio.isNotEmpty) custodio,
+      ].join(' · ');
+
   factory Equipo.desdeJson(Map<String, dynamic> json) => Equipo(
         id: json['id'] as int? ?? 0,
         codigo: json['codigo']?.toString() ?? '',
         modelo: json['modelo']?.toString() ?? '',
         numeroSerie: json['numero_serie']?.toString() ?? '',
+        farmacia: Farmacia.desdeJson(json['farmacia']),
+        custodio: json['custodio']?.toString() ?? '',
       );
 }
 
