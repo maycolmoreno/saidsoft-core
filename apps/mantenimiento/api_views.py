@@ -11,7 +11,7 @@ from .serializers import (
     ConsentimientoMonitoreoSerializer, FirmaMantenimientoSerializer, FirmarMantenimientoSerializer,
     ImagenAdjuntarSerializer, ImagenMantenimientoSerializer, MantenimientoCrearSerializer,
     MantenimientoDetalleSerializer, MantenimientoListSerializer, UbicacionTecnicoSerializer,
-    UsuarioActualSerializer,
+    ActividadChecklistSerializer, UsuarioActualSerializer,
 )
 
 
@@ -22,7 +22,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         return Mantenimiento.objects.filter(tecnico=self.request.user).select_related(
             'cliente', 'tecnico',
-        ).prefetch_related('equipos__equipo', 'firmas', 'imagenes', 'eventos__usuario')
+        ).prefetch_related('equipos__equipo__farmacia', 'firmas', 'imagenes', 'eventos__usuario')
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -89,6 +89,8 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
             services.cerrar_mantenimiento(
                 mantenimiento=mantenimiento, resultado_tecnico=serializer.validated_data['resultado_tecnico'],
                 usuario=request.user,
+                tiempo_real_minutos=serializer.validated_data.get('tiempo_real_minutos'),
+                estado_general=serializer.validated_data.get('estado_general', ''),
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -162,6 +164,21 @@ class UbicacionTecnicoView(generics.ListCreateAPIView):
         serializer.is_valid(raise_exception=True)
         serializer.save(usuario=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class ActividadChecklistView(generics.ListAPIView):
+    """Catálogo global de actividades de checklist.
+
+    La app lo necesita al CREAR un mantenimiento, cuando todavía no existe un id
+    contra el que pedir `/mantenimientos/{id}/checklist/`. Es solo lectura: el
+    catálogo se administra desde el panel.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ActividadChecklistSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        return ActividadChecklist.objects.filter(activo=True).order_by('orden', 'nombre')
 
 
 class UsuarioActualView(generics.GenericAPIView):

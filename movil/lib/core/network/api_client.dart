@@ -43,22 +43,31 @@ class ApiClient {
 
   Future<dynamic> delete(String path) => _send('DELETE', path);
 
+  /// [campoArchivo] es el nombre del campo del formulario. DRF espera uno concreto
+  /// por endpoint (ej. "archivo" al adjuntar una imagen); la API anterior recibía
+  /// todo bajo "files", que sigue siendo el valor por defecto.
   Future<dynamic> postMultipart(
     String path,
     List<File> files,
-    Map<String, String> fields,
-  ) async {
+    Map<String, String> fields, {
+    String campoArchivo = 'files',
+  }) async {
     await _ensureConnectivity();
     final uri = Uri.parse('${AppConfig.baseUrl}$path');
     final request = http.MultipartRequest('POST', uri);
     request.headers.addAll(await _headers(includeJson: false));
     request.fields.addAll(fields);
     for (final file in files) {
-      request.files.add(await http.MultipartFile.fromPath('files', file.path));
+      request.files
+          .add(await http.MultipartFile.fromPath(campoArchivo, file.path));
     }
 
     try {
-      final streamed = await request.send().timeout(_timeout);
+      // request.send() crearía un Client propio, sin el certificado de SAIDSOFT
+      // confiado -- la subida fallaría con error de TLS aunque el resto de la app
+      // funcione. Se envía por nuestro cliente.
+      final cliente = await _cliente;
+      final streamed = await cliente.send(request).timeout(_timeout);
       final response = await http.Response.fromStream(streamed);
       return _parseResponse(response);
     } on SocketException {

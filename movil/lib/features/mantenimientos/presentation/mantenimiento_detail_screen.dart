@@ -21,8 +21,36 @@ class MantenimientoDetailScreen extends StatefulWidget {
 
 class _MantenimientoDetailScreenState extends State<MantenimientoDetailScreen> {
   final _observacionesController = TextEditingController();
+  final _tiempoController = TextEditingController();
   late Future<Map<String, dynamic>> _future;
   bool _closing = false;
+  String? _resultadoTecnico;
+  String? _estadoGeneral;
+
+  /// Espejo del catálogo ResultadoTecnico del backend. Se mantiene acá y no se pide
+  /// por API para que la pantalla de cierre funcione sin conexión, que es
+  /// justamente cuando el técnico está en la farmacia. Si el backend agrega un
+  /// resultado nuevo, hay que sumarlo también acá.
+  static const _resultados = <String, String>{
+    'reparado': 'Reparado',
+    'sin_falla': 'Sin falla encontrada',
+    'sin_intervencion': 'Sin intervencion',
+    'parcialmente_reparado': 'Parcialmente reparado',
+    'requiere_repuesto': 'Requiere repuesto',
+    'escalado_a_proveedor': 'Escalado a proveedor',
+    'irreparable': 'Irreparable',
+    'requiere_baja': 'Requiere baja',
+    'garantia_aplicada': 'Garantia aplicada',
+    'garantia_rechazada': 'Garantia rechazada',
+    'actualizado': 'Actualizado',
+    'instalado': 'Instalado',
+  };
+
+  static const _estadosGenerales = <String, String>{
+    'operativo': 'Operativo',
+    'requiere_revision': 'Requiere revision',
+    'no_operativo': 'No operativo',
+  };
 
   @override
   void initState() {
@@ -33,6 +61,7 @@ class _MantenimientoDetailScreenState extends State<MantenimientoDetailScreen> {
   @override
   void dispose() {
     _observacionesController.dispose();
+    _tiempoController.dispose();
     super.dispose();
   }
 
@@ -50,12 +79,14 @@ class _MantenimientoDetailScreenState extends State<MantenimientoDetailScreen> {
   }
 
   Future<void> _cerrar() async {
-    final observaciones = _observacionesController.text.trim();
-    if (observaciones.isEmpty) {
+    // El backend exige un resultado técnico del catálogo: decide si el equipo
+    // vuelve a bodega y si se recomienda darlo de baja. No se puede inferir del
+    // texto libre, así que se pregunta.
+    if (_resultadoTecnico == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content:
-                Text('Ingresa una descripcion para cerrar el mantenimiento.')),
+          content: Text('Elige el resultado tecnico para cerrar.'),
+        ),
       );
       return;
     }
@@ -66,9 +97,12 @@ class _MantenimientoDetailScreenState extends State<MantenimientoDetailScreen> {
           await MantenimientosRepository(context.read<ApiClient>())
               .cerrarConFallback(
         mantenimientoId: widget.mantenimientoId,
-        observaciones: observaciones,
+        resultadoTecnico: _resultadoTecnico!,
+        tiempoRealMinutos: int.tryParse(_tiempoController.text.trim()),
+        estadoGeneral: _estadoGeneral ?? '',
       );
       _observacionesController.clear();
+      _tiempoController.clear();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -117,8 +151,14 @@ class _MantenimientoDetailScreenState extends State<MantenimientoDetailScreen> {
           }
 
           final item = snapshot.data ?? const {};
-          final cerrado =
-              _text(item['estadoInterno']).toUpperCase() == 'CERRADO';
+          final cerrado = _text(item['estado_interno']) == 'cerrado';
+          final equipos = (item['equipos'] as List?) ?? const [];
+          final equipo = equipos.isNotEmpty
+              ? Map<String, dynamic>.from(equipos.first as Map)
+              : const <String, dynamic>{};
+          final farmacia = item['farmacia'] == null
+              ? const <String, dynamic>{}
+              : Map<String, dynamic>.from(item['farmacia'] as Map);
 
           return RefreshIndicator(
             onRefresh: _reload,
@@ -133,26 +173,75 @@ class _MantenimientoDetailScreenState extends State<MantenimientoDetailScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          _text(item['equipoCodigoSap'],
-                              fallback: 'Sin codigo'),
+                          _text(equipo['codigo'], fallback: 'Sin codigo'),
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
                         const SizedBox(height: 12),
-                        _line('Equipo', item['equipoDescripcion']),
-                        _line('Tecnico', item['tecnicoNombre']),
-                        _line('Estado', item['estadoInterno']),
-                        _line('Fecha', item['fechaMantenimiento']),
-                        _line('SINE', item['sineSnapshoted']),
-                        _line('Ticket', item['ticketId']),
+                        _line('Equipo', equipo['modelo']),
+                        _line('Serie', equipo['numero_serie']),
+                        _line('Prioridad', item['prioridad']),
+                        // El SLA es lo que le dice al tecnico si esto corre o no.
+                        _line('SLA', item['estado_sla']),
+                        _line('Limite de resolucion', item['limite_resolucion']),
+                        _line('Farmacia', farmacia['nombre']),
+                        _line('Direccion', farmacia['direccion']),
+                        _line('Cliente', item['cliente']),
+                        _line('Estado', item['estado_interno']),
+                        _line('Programado', item['fecha_programada']),
                         _line('Descripcion', item['descripcion']),
-                        _line('Trabajo realizado',
-                            item['descripcionTrabajoRealizado']),
+                        _line('Resultado', item['resultado_tecnico']),
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(height: 12),
                 if (!cerrado && canClose) ...[
+                  DropdownButtonFormField<String>(
+                    initialValue: _resultadoTecnico,
+                    decoration: const InputDecoration(
+                      labelText: 'Resultado tecnico *',
+                      helperText:
+                          'Decide si el equipo vuelve a bodega o se recomienda la baja.',
+                    ),
+                    items: [
+                      for (final entrada in _resultados.entries)
+                        DropdownMenuItem(
+                          value: entrada.key,
+                          child: Text(entrada.value),
+                        ),
+                    ],
+                    onChanged: _closing
+                        ? null
+                        : (valor) => setState(() => _resultadoTecnico = valor),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: _estadoGeneral,
+                    decoration: const InputDecoration(
+                      labelText: 'Estado del equipo al cierre',
+                      helperText: 'Opcional.',
+                    ),
+                    items: [
+                      for (final entrada in _estadosGenerales.entries)
+                        DropdownMenuItem(
+                          value: entrada.key,
+                          child: Text(entrada.value),
+                        ),
+                    ],
+                    onChanged: _closing
+                        ? null
+                        : (valor) => setState(() => _estadoGeneral = valor),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _tiempoController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Tiempo real de intervencion (minutos)',
+                      helperText: 'Opcional.',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   TextField(
                     controller: _observacionesController,
                     minLines: 3,

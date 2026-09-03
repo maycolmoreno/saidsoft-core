@@ -14,7 +14,7 @@ class MantenimientosRepository implements IMantenimientosRepository {
 
   @override
   Future<List<Map<String, dynamic>>> listar() async {
-    final data = await _apiClient.get('/mantenimiento');
+    final data = await _apiClient.get('/mantenimientos/');
     return (data as List)
         .map((item) => Map<String, dynamic>.from(item as Map))
         .toList();
@@ -23,8 +23,8 @@ class MantenimientosRepository implements IMantenimientosRepository {
   @override
   Future<PaginaResponse<Map<String, dynamic>>> listarPaginado(
       {int page = 0, int size = 20}) async {
-    final data =
-        await _apiClient.get('/mantenimiento/paginado?page=$page&size=$size');
+    final data = await _apiClient
+        .get('/mantenimientos/?page=${page + 1}&page_size=$size');
     return PaginaResponse.fromJson(
       Map<String, dynamic>.from(data as Map),
       (json) => json,
@@ -33,7 +33,7 @@ class MantenimientosRepository implements IMantenimientosRepository {
 
   @override
   Future<Map<String, dynamic>> obtenerDetalle(int mantenimientoId) async {
-    final data = await _apiClient.get('/mantenimiento/$mantenimientoId');
+    final data = await _apiClient.get('/mantenimientos/$mantenimientoId/');
     return Map<String, dynamic>.from(data as Map);
   }
 
@@ -57,7 +57,7 @@ class MantenimientosRepository implements IMantenimientosRepository {
 
   @override
   Future<List<Map<String, dynamic>>> listarActividadesChecklist() async {
-    final data = await _apiClient.get('/actividades-checklist');
+    final data = await _apiClient.get('/actividades-checklist/');
     final items = (data as List)
         .map((item) => Map<String, dynamic>.from(item as Map))
         .toList();
@@ -111,19 +111,54 @@ class MantenimientosRepository implements IMantenimientosRepository {
     String? firmaTecnico,
     String? firmaCustodio,
   }) async {
-    final data = await _apiClient.post('/mantenimiento', {
-      'equipoIds': equipoIds,
-      'custodioId': custodioId,
-      'tipoMantenimiento': tipoMantenimiento,
-      'fechaMantenimiento': fechaMantenimiento,
-      'detalle': detalle,
-      'estadoGeneral': estadoGeneral,
-      'firmaTecnico': firmaTecnico,
-      'firmaCustodio': firmaCustodio,
-      'actividades': actividades,
-      'imagenes': <Map<String, dynamic>>[],
+    // Un solo POST con todos los equipos: el backend crea UN mantenimiento que los
+    // cubre a todos (MantenimientoEquipo), no uno por equipo.
+    final data = await _apiClient.post('/mantenimientos/', {
+      'equipos': equipoIds,
+      'cliente': custodioId,
+      if (tipoMantenimiento.trim().isNotEmpty)
+        'tipo_mantenimiento': int.tryParse(tipoMantenimiento),
+      'fecha_programada': fechaMantenimiento,
+      'descripcion': detalle,
+      'estado_general': estadoGeneral,
     });
-    return [Map<String, dynamic>.from(data as Map)];
+    final creado = Map<String, dynamic>.from(data as Map);
+
+    // El checklist se registra DESPUÉS de crear, actividad por actividad: el
+    // endpoint de creación no lo acepta. Sin esto, lo que el técnico marcó en el
+    // formulario se perdía en silencio.
+    final mantenimientoId = _asInt(creado['id']);
+    if (mantenimientoId > 0) {
+      for (final actividad in actividades) {
+        final actividadId = _asInt(actividad['id']);
+        if (actividadId > 0 && actividad['realizada'] == true) {
+          await marcarChecklist(
+            mantenimientoId: mantenimientoId,
+            actividadId: actividadId,
+            realizada: true,
+          );
+        }
+      }
+    }
+
+    // Las firmas también van por su propio endpoint una vez creado.
+    if (mantenimientoId > 0) {
+      if (firmaTecnico != null && firmaTecnico.isNotEmpty) {
+        await firmar(
+          mantenimientoId: mantenimientoId,
+          tipoFirma: 'tecnico',
+          firmaBase64: firmaTecnico,
+        );
+      }
+      if (firmaCustodio != null && firmaCustodio.isNotEmpty) {
+        await firmar(
+          mantenimientoId: mantenimientoId,
+          tipoFirma: 'custodio',
+          firmaBase64: firmaCustodio,
+        );
+      }
+    }
+    return [creado];
   }
 
   @override
@@ -197,11 +232,14 @@ class MantenimientosRepository implements IMantenimientosRepository {
         .map((path) => File(path!))
         .where((file) => file.existsSync())
         .toList();
-    if (files.isNotEmpty) {
+    // Una llamada por imagen: el endpoint recibe UN archivo bajo el campo "archivo"
+    // (ImagenAdjuntarSerializer), no un lote como la API anterior.
+    for (final file in files) {
       await _apiClient.postMultipart(
-        '/mantenimiento/$mantenimientoId/imagenes/upload',
-        files,
+        '/mantenimientos/$mantenimientoId/imagenes/',
+        [file],
         <String, String>{},
+        campoArchivo: 'archivo',
       );
     }
   }
@@ -209,22 +247,71 @@ class MantenimientosRepository implements IMantenimientosRepository {
   @override
   Future<void> cerrar({
     required int mantenimientoId,
-    required String observaciones,
+    required String resultadoTecnico,
+    int? tiempoRealMinutos,
+    String estadoGeneral = '',
   }) async {
-    await _apiClient.post('/mantenimiento/cerrar/$mantenimientoId', {
-      'descripcionTrabajoRealizado': observaciones,
+    await _apiClient.post('/mantenimientos/$mantenimientoId/cerrar/', {
+      'resultado_tecnico': resultadoTecnico,
+      if (tiempoRealMinutos != null) 'tiempo_real_minutos': tiempoRealMinutos,
+      if (estadoGeneral.isNotEmpty) 'estado_general': estadoGeneral,
+    });
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> listarChecklistDeMantenimiento(
+      int mantenimientoId) async {
+    final data =
+        await _apiClient.get('/mantenimientos/$mantenimientoId/checklist/');
+    return (data as List)
+        .map((item) => Map<String, dynamic>.from(item as Map))
+        .toList();
+  }
+
+  /// Marca la llegada del técnico. Sin esto el backend no puede medir el SLA de
+  /// respuesta ni acotar la ventana contra la que verifica el GPS al cerrar.
+  Future<Map<String, dynamic>> iniciar(int mantenimientoId) async {
+    final data =
+        await _apiClient.post('/mantenimientos/$mantenimientoId/iniciar/', {});
+    return Map<String, dynamic>.from(data as Map);
+  }
+
+  Future<void> marcarChecklist({
+    required int mantenimientoId,
+    required int actividadId,
+    required bool realizada,
+  }) async {
+    await _apiClient
+        .post('/mantenimientos/$mantenimientoId/checklist/actualizar/', {
+      'actividad_id': actividadId,
+      'realizada': realizada,
+    });
+  }
+
+  Future<void> firmar({
+    required int mantenimientoId,
+    required String tipoFirma,
+    required String firmaBase64,
+  }) async {
+    await _apiClient.post('/mantenimientos/$mantenimientoId/firmar/', {
+      'tipo_firma': tipoFirma,
+      'firma_base64': firmaBase64,
     });
   }
 
   @override
   Future<bool> cerrarConFallback({
     required int mantenimientoId,
-    required String observaciones,
+    required String resultadoTecnico,
+    int? tiempoRealMinutos,
+    String estadoGeneral = '',
   }) async {
     try {
       await cerrar(
         mantenimientoId: mantenimientoId,
-        observaciones: observaciones,
+        resultadoTecnico: resultadoTecnico,
+        tiempoRealMinutos: tiempoRealMinutos,
+        estadoGeneral: estadoGeneral,
       );
       return false;
     } on OfflineException {
@@ -233,7 +320,9 @@ class MantenimientosRepository implements IMantenimientosRepository {
         operation: 'close_mantenimiento',
         payload: {
           'mantenimientoId': mantenimientoId,
-          'observaciones': observaciones,
+          'resultadoTecnico': resultadoTecnico,
+          'tiempoRealMinutos': tiempoRealMinutos,
+          'estadoGeneral': estadoGeneral,
         },
       );
       return true;
@@ -284,9 +373,14 @@ class MantenimientosRepository implements IMantenimientosRepository {
 
   @override
   Future<void> syncQueuedClose(Map<String, dynamic> payload) async {
+    final tiempo = _asInt(payload['tiempoRealMinutos']);
     await cerrar(
       mantenimientoId: _asInt(payload['mantenimientoId']),
-      observaciones: _text(payload['observaciones']),
+      resultadoTecnico: _text(payload['resultadoTecnico']),
+      // _asInt devuelve 0 cuando el valor faltaba; el backend exige >= 1, así que
+      // un 0 significa "no se registró tiempo" y no debe enviarse.
+      tiempoRealMinutos: tiempo > 0 ? tiempo : null,
+      estadoGeneral: _text(payload['estadoGeneral']),
     );
   }
 }

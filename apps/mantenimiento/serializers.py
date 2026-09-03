@@ -54,17 +54,42 @@ class MantenimientoListSerializer(serializers.ModelSerializer):
     cliente = serializers.StringRelatedField()
     tipo_mantenimiento = serializers.StringRelatedField()
     equipos = serializers.SerializerMethodField()
+    # SLA y ubicación: son lo que el técnico necesita para decidir a qué va primero y
+    # a dónde tiene que ir. Sin esto la app lista mantenimientos sin poder priorizar.
+    estado_sla = serializers.CharField(read_only=True)
+    limite_resolucion = serializers.DateTimeField(read_only=True)
+    farmacia = serializers.SerializerMethodField()
 
     class Meta:
         model = Mantenimiento
         fields = [
             'id', 'descripcion', 'tipo_mantenimiento', 'tipo_origen', 'estado_interno',
             'resultado_tecnico', 'cliente', 'fecha_programada', 'fecha_cierre', 'equipos',
+            'prioridad', 'estado_sla', 'limite_resolucion', 'farmacia',
         ]
         read_only_fields = fields
 
     def get_equipos(self, obj):
         return ActivoResumenSerializer([me.equipo for me in obj.equipos.select_related('equipo')], many=True).data
+
+    def get_farmacia(self, obj):
+        """Farmacia del equipo principal, con coordenadas para que la app pueda abrir
+        la navegación. None si el equipo no está asociado a una farmacia (equipo
+        administrativo, o el dato todavía sin cargar)."""
+        principal = next(
+            (me for me in obj.equipos.all() if me.es_principal and me.equipo_id), None,
+        )
+        farmacia = principal.equipo.farmacia if principal else None
+        if farmacia is None:
+            return None
+        return {
+            'id': farmacia.pk,
+            'codigo': farmacia.codigo,
+            'nombre': farmacia.nombre,
+            'direccion': farmacia.direccion,
+            'latitud': farmacia.latitud,
+            'longitud': farmacia.longitud,
+        }
 
 
 class MantenimientoDetalleSerializer(MantenimientoListSerializer):
@@ -72,8 +97,13 @@ class MantenimientoDetalleSerializer(MantenimientoListSerializer):
     imagenes = ImagenMantenimientoSerializer(many=True, read_only=True)
     eventos = EventoMantenimientoSerializer(many=True, read_only=True)
 
+    presencia_en_sitio = serializers.CharField(read_only=True)
+
     class Meta(MantenimientoListSerializer.Meta):
-        fields = MantenimientoListSerializer.Meta.fields + ['snapshot_equipo', 'firmas', 'imagenes', 'eventos']
+        fields = MantenimientoListSerializer.Meta.fields + [
+            'snapshot_equipo', 'firmas', 'imagenes', 'eventos',
+            'presencia_en_sitio', 'distancia_verificacion_metros',
+        ]
         read_only_fields = fields
 
 
@@ -96,7 +126,14 @@ class MantenimientoCrearSerializer(serializers.Serializer):
 
 
 class CerrarMantenimientoSerializer(serializers.Serializer):
+    """`tiempo_real_minutos` y `estado_general` ya los aceptaba services.cerrar_
+    mantenimiento y los pide el panel; faltaban acá, así que desde la app no se podían
+    registrar."""
     resultado_tecnico = serializers.ChoiceField(choices=ResultadoTecnico.choices)
+    tiempo_real_minutos = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    estado_general = serializers.ChoiceField(
+        choices=EstadoGeneralEquipo.choices, required=False, allow_blank=True, default='',
+    )
 
 
 class ChecklistActualizarSerializer(serializers.Serializer):
@@ -153,3 +190,13 @@ class UsuarioActualSerializer(serializers.Serializer):
         if usuario_tiene_acceso_total(obj):
             return []
         return sorted(unidades_negocio_visibles(obj).values_list('codigo', flat=True))
+
+
+class ActividadChecklistSerializer(serializers.ModelSerializer):
+    """Catálogo global (ver ActividadChecklistView)."""
+    categorias = serializers.StringRelatedField(many=True)
+
+    class Meta:
+        model = ActividadChecklist
+        fields = ['id', 'nombre', 'orden', 'categorias']
+        read_only_fields = fields

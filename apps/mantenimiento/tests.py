@@ -913,3 +913,76 @@ class UsuarioActualApiTests(TestCase):
         resp = self.client.post('/api/v1/auth/token/', {'username': 'tecnico1', 'password': 'x'})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()['token'], self.token.key)
+
+
+class MantenimientoApiMovilTests(TestCase):
+    """Contrato que consume la app Flutter: la lista tiene que alcanzar para que el
+    técnico priorice (SLA) y sepa a dónde ir (farmacia)."""
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_api', password='x')
+        self.token = Token.objects.create(user=self.tecnico)
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=sg, nombre='San Gregorio Centro',
+            direccion='9 de Octubre 123', latitud=-2.170998, longitud=-79.922359,
+        )
+        self.equipo = Activo.objects.create(
+            codigo='CR-DSK-5001', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia,
+        )
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.tecnico, descripcion='POS no enciende',
+            fecha_programada=timezone.now(), usuario=self.tecnico,
+            prioridad=PrioridadMantenimiento.CRITICA,
+        )
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def test_la_lista_trae_prioridad_y_sla(self):
+        datos = self.client.get('/api/v1/mantenimientos/', **self._auth()).json()[0]
+        self.assertEqual(datos['prioridad'], PrioridadMantenimiento.CRITICA)
+        self.assertIn(datos['estado_sla'], ('en_plazo', 'por_vencer', 'incumplido'))
+        self.assertIsNotNone(datos['limite_resolucion'])
+
+    def test_la_lista_trae_la_farmacia_con_coordenadas(self):
+        farmacia = self.client.get('/api/v1/mantenimientos/', **self._auth()).json()[0]['farmacia']
+        self.assertEqual(farmacia['codigo'], 'ML001')
+        self.assertEqual(farmacia['direccion'], '9 de Octubre 123')
+        self.assertAlmostEqual(farmacia['latitud'], -2.170998)
+
+    def test_equipo_sin_farmacia_devuelve_null_sin_romper(self):
+        self.equipo.farmacia = None
+        self.equipo.save(update_fields=['farmacia'])
+        datos = self.client.get('/api/v1/mantenimientos/', **self._auth()).json()[0]
+        self.assertIsNone(datos['farmacia'])
+
+    def test_no_ve_mantenimientos_de_otro_tecnico(self):
+        otro = User.objects.create_user(username='otro_tec', password='x')
+        equipo2 = Activo.objects.create(codigo='CR-DSK-5002', tipo=Activo.Tipo.DESKTOP)
+        crear_mantenimiento_manual(
+            equipos=[equipo2], tecnico=otro, descripcion='ajeno',
+            fecha_programada=timezone.now(), usuario=otro,
+        )
+        datos = self.client.get('/api/v1/mantenimientos/', **self._auth()).json()
+        self.assertEqual([m['id'] for m in datos], [self.mantenimiento.pk])
+
+    def test_cerrar_acepta_tiempo_real_y_estado_general(self):
+        from apps.mantenimiento.services import iniciar_mantenimiento
+        iniciar_mantenimiento(mantenimiento=self.mantenimiento, usuario=self.tecnico)
+        resp = self.client.post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': ResultadoTecnico.REPARADO, 'tiempo_real_minutos': 45,
+             'estado_general': EstadoGeneralEquipo.OPERATIVO},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(self.mantenimiento.tiempo_real_minutos, 45)
+        self.assertEqual(self.mantenimiento.estado_general, EstadoGeneralEquipo.OPERATIVO)
+
+    def test_el_detalle_expone_la_verificacion_de_presencia(self):
+        resp = self.client.get(f'/api/v1/mantenimientos/{self.mantenimiento.pk}/', **self._auth())
+        self.assertEqual(resp.json()['presencia_en_sitio'], 'sin_datos')

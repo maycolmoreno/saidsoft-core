@@ -10,7 +10,14 @@ abstract class IMantenimientosRepository {
   Future<Map<String, dynamic>> obtenerDetalle(int mantenimientoId);
   Future<List<Map<String, dynamic>>> listarCustodios();
   Future<List<Map<String, dynamic>>> listarCustodias();
+  /// Catálogo global de actividades, para armar el checklist al crear (cuando
+  /// todavía no hay un mantenimiento contra el que consultarlo).
   Future<List<Map<String, dynamic>>> listarActividadesChecklist();
+
+  /// Checklist de un mantenimiento concreto: cada ítem del catálogo con su marca
+  /// de realizado.
+  Future<List<Map<String, dynamic>>> listarChecklistDeMantenimiento(
+      int mantenimientoId);
 
   Future<Map<String, dynamic>> crear({
     required int equipoId,
@@ -56,16 +63,26 @@ abstract class IMantenimientosRepository {
     required List<Map<String, dynamic>> imagenes,
   });
 
+  /// Cierra el mantenimiento.
+  ///
+  /// `resultadoTecnico` es obligatorio y sale del catálogo del backend (reparado,
+  /// sin_falla, requiere_repuesto, ...). En InvTICS el cierre era solo texto libre;
+  /// acá el resultado decide si el equipo vuelve a bodega y si se recomienda darlo
+  /// de baja, así que la app tiene que preguntarlo en vez de inventarlo.
   Future<void> cerrar({
     required int mantenimientoId,
-    required String observaciones,
+    required String resultadoTecnico,
+    int? tiempoRealMinutos,
+    String estadoGeneral,
   });
 
   /// Cierra mantenimiento; si no hay red, encola para sync.
   /// Retorna `true` si fue encolado (offline), `false` si se cerró online.
   Future<bool> cerrarConFallback({
     required int mantenimientoId,
-    required String observaciones,
+    required String resultadoTecnico,
+    int? tiempoRealMinutos,
+    String estadoGeneral,
   });
 
   Future<void> syncQueuedCreate(Map<String, dynamic> payload);

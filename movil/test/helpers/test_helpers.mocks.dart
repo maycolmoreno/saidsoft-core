@@ -458,8 +458,9 @@ class MockApiClient extends _i1.Mock implements _i8.ApiClient {
   _i3.Future<dynamic> postMultipart(
     String? path,
     List<_i9.File>? files,
-    Map<String, String>? fields,
-  ) =>
+    Map<String, String>? fields, {
+    String? campoArchivo = 'files',
+  }) =>
       (super.noSuchMethod(
         Invocation.method(
           #postMultipart,
@@ -468,6 +469,7 @@ class MockApiClient extends _i1.Mock implements _i8.ApiClient {
             files,
             fields,
           ],
+          {#campoArchivo: campoArchivo},
         ),
         returnValue: _i3.Future<dynamic>.value(),
       ) as _i3.Future<dynamic>);
