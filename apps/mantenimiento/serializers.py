@@ -7,7 +7,7 @@ from apps.activos.models import Activo, Colaborador
 from .models import (
     ActividadChecklist, ConsentimientoMonitoreo, EstadoGeneralEquipo, EventoMantenimiento, FirmaMantenimiento,
     ImagenMantenimiento, Mantenimiento, MantenimientoProgramado, Notificacion, ResultadoTecnico, TipoFirma,
-    TipoMantenimiento, UbicacionTecnico,
+    TipoMantenimiento, UbicacionTecnico, VisitaTecnica,
 )
 
 
@@ -221,3 +221,31 @@ class NotificacionSerializer(serializers.ModelSerializer):
         model = Notificacion
         fields = ['id', 'mensaje', 'url', 'leida', 'mantenimiento', 'creado_en']
         read_only_fields = ['id', 'mensaje', 'url', 'mantenimiento', 'creado_en']
+
+
+class VisitaTecnicaSerializer(serializers.ModelSerializer):
+    """Visitas del técnico para la app. Incluye las coordenadas de la farmacia para
+    que la app pueda abrir la navegación y verificar presencia."""
+    farmacia = serializers.SerializerMethodField()
+    presencia_en_sitio = serializers.CharField(read_only=True)
+    atrasada = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = VisitaTecnica
+        fields = [
+            'id', 'estado', 'fecha_planificada', 'motivo', 'observaciones',
+            'fecha_inicio', 'fecha_cierre', 'farmacia', 'presencia_en_sitio',
+            'atrasada', 'distancia_verificacion_metros',
+        ]
+        read_only_fields = fields
+
+    def get_farmacia(self, obj):
+        f = obj.farmacia
+        return {
+            'id': f.pk, 'codigo': f.codigo, 'nombre': f.nombre,
+            'direccion': f.direccion, 'latitud': f.latitud, 'longitud': f.longitud,
+        }
+
+
+class CerrarVisitaSerializer(serializers.Serializer):
+    observaciones = serializers.CharField(required=False, allow_blank=True, default='')

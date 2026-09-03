@@ -4,10 +4,12 @@ from rest_framework.routers import DefaultRouter
 from .api_views import (
     ActividadChecklistView, ConsentimientoMonitoreoView, EquipoListView, MantenimientoViewSet,
     NotificacionConteoView, NotificacionLeerView, NotificacionListView, UbicacionTecnicoView, UsuarioActualView,
+    VisitaTecnicaViewSet,
 )
 
 router = DefaultRouter()
 router.register('mantenimientos', MantenimientoViewSet, basename='api-mantenimiento')
+router.register('visitas', VisitaTecnicaViewSet, basename='api-visita')
 
 urlpatterns = router.urls + [
     path('consentimiento-monitoreo/', ConsentimientoMonitoreoView.as_view(), name='api-consentimiento-monitoreo'),

@@ -1051,3 +1051,62 @@ class EquiposYNotificacionesApiTests(TestCase):
     def test_el_catalogo_de_checklist_responde(self):
         datos = self.client.get('/api/v1/actividades-checklist/', **self._auth()).json()
         self.assertEqual(len(datos), 14)
+
+
+class VisitaTecnicaApiMovilTests(TestCase):
+    """Visitas en la app: el técnico ve las suyas y las opera en campo."""
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_vis_api', password='x')
+        self.token = Token.objects.create(user=self.tecnico)
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=sg, nombre='SG Centro',
+            direccion='Av. Principal 100', latitud=-2.170998, longitud=-79.922359,
+        )
+        self.visita = crear_visita_tecnica(
+            farmacia=self.farmacia, tecnico=self.tecnico,
+            fecha_planificada=timezone.localdate(), motivo='relevamiento', usuario=self.tecnico,
+        )
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def test_lista_trae_la_farmacia_con_coordenadas(self):
+        datos = self.client.get('/api/v1/visitas/', **self._auth()).json()
+        self.assertEqual(len(datos), 1)
+        self.assertEqual(datos[0]['farmacia']['codigo'], 'ML001')
+        self.assertAlmostEqual(datos[0]['farmacia']['latitud'], -2.170998)
+        self.assertEqual(datos[0]['estado'], 'planificada')
+
+    def test_no_ve_visitas_de_otro_tecnico(self):
+        otro = User.objects.create_user(username='otro_vis', password='x')
+        crear_visita_tecnica(
+            farmacia=self.farmacia, tecnico=otro,
+            fecha_planificada=timezone.localdate(), usuario=otro,
+        )
+        datos = self.client.get('/api/v1/visitas/', **self._auth()).json()
+        self.assertEqual([v['id'] for v in datos], [self.visita.pk])
+
+    def test_iniciar_y_cerrar(self):
+        resp = self.client.post(f'/api/v1/visitas/{self.visita.pk}/iniciar/', **self._auth())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['estado'], 'en_curso')
+
+        resp = self.client.post(
+            f'/api/v1/visitas/{self.visita.pk}/cerrar/',
+            {'observaciones': 'sin novedades'},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['estado'], 'realizada')
+        self.assertEqual(resp.json()['observaciones'], 'sin novedades')
+        # Sin posiciones GPS no se puede verificar, y eso NO acusa al técnico.
+        self.assertEqual(resp.json()['presencia_en_sitio'], 'sin_datos')
+
+    def test_no_se_puede_iniciar_dos_veces(self):
+        self.client.post(f'/api/v1/visitas/{self.visita.pk}/iniciar/', **self._auth())
+        resp = self.client.post(f'/api/v1/visitas/{self.visita.pk}/iniciar/', **self._auth())
+        self.assertEqual(resp.status_code, 400)

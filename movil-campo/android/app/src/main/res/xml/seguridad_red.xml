@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  La app habla SOLO por HTTPS y confia en el certificado propio de SAIDSOFT desde
+  los assets (ver lib/nucleo/red/http_seguro.dart). Permitir trafico sin cifrar solo
+  habilitaria una degradacion a HTTP dentro de la red de una farmacia.
+-->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

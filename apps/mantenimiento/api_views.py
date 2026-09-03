@@ -7,13 +7,15 @@ from rest_framework.response import Response
 from . import services
 from .models import (
     ActividadChecklist, ConsentimientoMonitoreo, Mantenimiento, Notificacion, UbicacionTecnico,
+    VisitaTecnica,
 )
 from .serializers import (
     CerrarMantenimientoSerializer, ChecklistActualizarSerializer, ChecklistItemSerializer,
     ConsentimientoMonitoreoSerializer, FirmaMantenimientoSerializer, FirmarMantenimientoSerializer,
     ImagenAdjuntarSerializer, ImagenMantenimientoSerializer, MantenimientoCrearSerializer,
     MantenimientoDetalleSerializer, MantenimientoListSerializer, UbicacionTecnicoSerializer,
-    ActividadChecklistSerializer, ActivoMovilSerializer, NotificacionSerializer, UsuarioActualSerializer,
+    ActividadChecklistSerializer, ActivoMovilSerializer, CerrarVisitaSerializer, NotificacionSerializer,
+    UsuarioActualSerializer, VisitaTecnicaSerializer,
 )
 
 
@@ -252,3 +254,40 @@ class NotificacionLeerView(generics.GenericAPIView):
         if not actualizadas:
             return Response(status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class VisitaTecnicaViewSet(viewsets.ReadOnlyModelViewSet):
+    """Visitas asignadas al técnico autenticado (nunca las de otro).
+
+    Las transiciones delegan en services, igual que el panel: la app es transporte,
+    no reimplementa el ciclo de vida.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = VisitaTecnicaSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        return VisitaTecnica.objects.filter(tecnico=self.request.user).select_related('farmacia')
+
+    @action(detail=True, methods=['post'])
+    def iniciar(self, request, pk=None):
+        visita = self.get_object()
+        try:
+            services.iniciar_visita_tecnica(visita=visita, usuario=request.user)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(visita).data)
+
+    @action(detail=True, methods=['post'])
+    def cerrar(self, request, pk=None):
+        visita = self.get_object()
+        serializer = CerrarVisitaSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            services.cerrar_visita_tecnica(
+                visita=visita, usuario=request.user,
+                observaciones=serializer.validated_data.get('observaciones', ''),
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(visita).data)
