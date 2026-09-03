@@ -58,33 +58,10 @@ class _PantallaVisitasState extends State<PantallaVisitas> {
   }
 
   Future<void> _cerrar(Visita v) async {
-    final controlador = TextEditingController();
     final observaciones = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Cerrar visita'),
-        content: TextField(
-          controller: controlador,
-          minLines: 3,
-          maxLines: 5,
-          decoration: const InputDecoration(
-            labelText: 'Que encontraste',
-            hintText: 'Opcional',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controlador.text.trim()),
-            child: const Text('Cerrar visita'),
-          ),
-        ],
-      ),
+      builder: (_) => const _DialogoCierre(),
     );
-    controlador.dispose();
     if (observaciones == null) return;
     await _ejecutar(() => _repo.cerrar(v.id, observaciones), 'Visita cerrada.');
   }
@@ -257,6 +234,57 @@ class _TarjetaVisita extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+
+/// Diálogo de cierre. Es un StatefulWidget para que el CONTROLADOR VIVA CON ÉL.
+///
+/// Crearlo afuera y liberarlo apenas `showDialog` retorna revienta con una aserción
+/// del framework: el diálogo sigue animándose al cerrarse y su TextField se
+/// reconstruye contra un controlador ya destruido.
+class _DialogoCierre extends StatefulWidget {
+  const _DialogoCierre();
+
+  @override
+  State<_DialogoCierre> createState() => _DialogoCierreState();
+}
+
+class _DialogoCierreState extends State<_DialogoCierre> {
+  final _observaciones = TextEditingController();
+
+  @override
+  void dispose() {
+    _observaciones.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Cerrar visita'),
+      content: TextField(
+        controller: _observaciones,
+        minLines: 3,
+        maxLines: 5,
+        autofocus: true,
+        decoration: const InputDecoration(
+          labelText: 'Que encontraste',
+          hintText: 'Opcional',
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () =>
+              Navigator.of(context).pop(_observaciones.text.trim()),
+          child: const Text('Cerrar visita'),
+        ),
+      ],
     );
   }
 }
