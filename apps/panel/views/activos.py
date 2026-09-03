@@ -401,7 +401,7 @@ def especificaciones_por_serie_partial(request):
     siendo el que arma Django (widgets, clases, errores) y no hay que duplicar el
     render en JavaScript.
     """
-    serie = request.GET.get('numero_serie', '')
+    serie = request.GET.get('numero_serie', '').strip()
     datos = activos_services.datos_hardware_desde_estacion(serie)
 
     # Se conserva lo que el usuario ya haya escrito: la estación solo COMPLETA lo
@@ -414,6 +414,10 @@ def especificaciones_por_serie_partial(request):
     return render(request, 'panel/_especificaciones_computo.html', {
         'form': form,
         'estacion': (datos or {}).get('estacion'),
+        # Distingue "todavía no busqué" de "busqué y no hay": sin esto, no encontrar
+        # nada se ve igual que la carga inicial y el usuario no sabe si el botón hizo
+        # algo.
+        'serie_buscada': serie,
     })
 
 

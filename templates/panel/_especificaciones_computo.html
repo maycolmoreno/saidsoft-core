@@ -1,13 +1,21 @@
 {% load form_extras %}
 {% comment %}
 Especificaciones de cómputo. Se renderiza en el alta de activo y lo reemplaza HTMX
-cuando el número de serie coincide con una estación que el agente ya reporta
+cuando se aprieta "Buscar" junto al número de serie
 (ver panel.views.activos.especificaciones_por_serie_partial).
 {% endcomment %}
 {% if estacion %}
 <div class="mb-3 text-xs px-3 py-2 rounded-md alert sev-info">
     Datos tomados de la estación <span class="mono">{{ estacion.codigo }}</span>, que
     reporta este mismo número de serie. Podés corregirlos antes de guardar.
+</div>
+{% elif serie_buscada %}
+{# Se buscó y no hubo resultado. Es distinto de la carga inicial: sin este aviso el
+   botón parecería no hacer nada. #}
+<div class="mb-3 text-xs px-3 py-2 rounded-md alert sev-warning">
+    No se encontró ninguna estación con la serie <span class="mono">{{ serie_buscada }}</span>.
+    Puede que el equipo todavía no tenga el agente instalado, o que la serie no coincida
+    exactamente. Cargá las especificaciones a mano.
 </div>
 {% endif %}
 <div class="form-grid">

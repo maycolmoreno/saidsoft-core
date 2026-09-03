@@ -2663,10 +2663,22 @@ class EspecificacionesPorSerieTests(TestCase):
         # El disco, que el usuario no toco, si se completa.
         self.assertIn('value="446"', contenido)
 
-    def test_serie_desconocida_devuelve_campos_vacios_sin_aviso(self):
+    def test_serie_desconocida_avisa_que_no_hubo_resultados(self):
+        # Sin este aviso, no encontrar nada se ve igual que la carga inicial y el
+        # boton "Buscar" parece no haber hecho nada.
         resp = self.client.get(self._url(), {'numero_serie': 'NO-EXISTE'})
         self.assertEqual(resp.status_code, 200)
-        self.assertNotIn('ML001-A', resp.content.decode())
+        contenido = resp.content.decode()
+        self.assertIn('No se encontro', contenido.replace('ó', 'o'))
+        self.assertIn('NO-EXISTE', contenido)
+        self.assertNotIn('ML001-A', contenido)
+
+    def test_sin_buscar_todavia_no_muestra_ningun_aviso(self):
+        # Carga inicial del formulario: no se busco nada, no hay nada que avisar.
+        resp = self.client.get(self._url())
+        contenido = resp.content.decode().replace('ó', 'o')
+        self.assertNotIn('No se encontro', contenido)
+        self.assertNotIn('Datos tomados de la estacion', contenido.replace('ó', 'o'))
 
     def test_sin_permiso_devuelve_403(self):
         sin = User.objects.create_user(username='u_specs_sin', password='x')

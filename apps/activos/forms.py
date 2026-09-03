@@ -1,5 +1,4 @@
 from django import forms
-from django.urls import reverse_lazy
 
 from apps.catalogo.models import Farmacia
 
@@ -124,21 +123,10 @@ class ActivoIngresoForm(forms.Form):
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
     modelo = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
-    # Al salir del campo se consulta si alguna estación RMM ya reporta esta serie: si
-    # la hay, se completan procesador/RAM/disco con lo que el agente ya sabe, en vez
-    # de tipearlos de nuevo. hx-include manda los valores actuales para que el
-    # servidor no pise lo que el usuario haya escrito a mano.
-    numero_serie = forms.CharField(
-        required=False,
-        widget=forms.TextInput(attrs={
-            'class': INPUT_CLASS,
-            'hx-get': reverse_lazy('panel:especificaciones_por_serie_partial'),
-            'hx-trigger': 'change, blur',
-            'hx-target': '#especificaciones-computo',
-            'hx-swap': 'innerHTML',
-            'hx-include': '[name="numero_serie"],[name="procesador"],[name="ram_gb"],[name="almacenamiento_gb"]',
-        }),
-    )
+    # La búsqueda contra el RMM se dispara desde el botón "Buscar" que arma la
+    # plantilla (activo_form.html), no desde este campo: al ser explícita, el usuario
+    # sabe cuándo se completaron los datos solos y cuándo no hubo resultados.
+    numero_serie = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
     procesador = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
     ram_gb = forms.IntegerField(
         required=False, min_value=1, label='RAM (GB)', widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),

@@ -22,10 +22,24 @@
             <label for="{{ field.id_for_label }}">{{ field.label }}</label>
             {{ field }}
             {% if name == "numero_serie" %}
-            {# Al salir del campo se consulta si alguna estacion RMM ya reporta esta
-               serie; si la hay, se completan las especificaciones de computo. Se
-               mandan tambien los valores actuales para no pisar lo ya escrito. #}
-            <p class="help">Si el equipo ya tiene el agente instalado, las especificaciones se completan solas.</p>
+            {# Busqueda EXPLICITA contra el RMM: si una estacion reporta esta misma
+               serie, se completan las especificaciones de computo con lo que el
+               agente ya sabe. hx-include manda los valores actuales para que el
+               servidor no pise lo que se haya escrito a mano. #}
+            <button type="button" class="btn secondary mt-2"
+                    hx-get="{% url 'panel:especificaciones_por_serie_partial' %}"
+                    hx-target="#especificaciones-computo"
+                    hx-swap="innerHTML"
+                    hx-include="[name='numero_serie'],[name='procesador'],[name='ram_gb'],[name='almacenamiento_gb']"
+                    hx-indicator="#buscando-serie">
+                Buscar equipo por serie
+            </button>
+            <span id="buscando-serie" class="htmx-indicator text-xs text-[var(--text-faint)] ml-2">
+                Buscando...
+            </span>
+            <p class="help">
+                Si el equipo ya tiene el agente instalado, trae procesador, RAM y almacenamiento.
+            </p>
             {% endif %}
             {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
             {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}

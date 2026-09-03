@@ -307,3 +307,14 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
   .search{ display:none; }
   .clockbox .date{ display:none; }
 }
+
+/* Indicador de carga de HTMX. Sin estas reglas el elemento marcado queda SIEMPRE
+   visible, porque htmx solo alterna la clase .htmx-request en el disparador. */
+.htmx-indicator {
+    opacity: 0;
+    transition: opacity 150ms ease-in;
+}
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+    opacity: 1;
+}
