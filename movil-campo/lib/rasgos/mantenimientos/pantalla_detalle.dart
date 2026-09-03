@@ -1,12 +1,13 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:signature/signature.dart';
 
 import '../../comun/tema.dart';
+import '../../nucleo/imagen/marca_agua.dart';
 import '../../nucleo/red/api.dart';
 import '../gps/estado_gps.dart';
 import '../sesion/estado_sesion.dart';
@@ -115,14 +116,28 @@ class _PantallaDetalleState extends State<PantallaDetalle> {
   Future<void> _adjuntarFoto() async {
     final foto = await ImagePicker().pickImage(
       source: ImageSource.camera,
-      imageQuality: 70,
-      maxWidth: 1600,
+      // La calidad la define el estampado (encodeJpg en marca_agua), no acá: aplicar
+      // dos compresiones seguidas degrada la imagen sin ganar tamaño.
+      maxWidth: 2000,
     );
     if (foto == null) return;
     setState(() => _trabajando = true);
     try {
-      await _repo.adjuntarFoto(widget.id, File(foto.path));
-      _avisar('Foto adjuntada.');
+      final posicion = await _ubicacionActual();
+      final archivo = await estampar(DatosMarca(
+        rutaOrigen: foto.path,
+        latitud: posicion?.latitude,
+        longitud: posicion?.longitude,
+        precisionMetros: posicion?.accuracy,
+        momento: DateTime.now(),
+      ));
+      await _repo.adjuntarFoto(widget.id, archivo);
+      _avisar(
+        posicion == null
+            ? 'Foto adjuntada, pero sin ubicacion: activa el GPS para que quede sellada.'
+            : 'Foto adjuntada con la ubicacion sellada.',
+        pendiente: posicion == null,
+      );
     } on SinConexion {
       // Las fotos no se encolan: pesan y llenarían la base del teléfono.
       _avisar('Sin conexion: la foto no se pudo subir. Reintenta con senal.');
@@ -130,6 +145,34 @@ class _PantallaDetalleState extends State<PantallaDetalle> {
       _avisar(e.mensaje);
     } finally {
       if (mounted) setState(() => _trabajando = false);
+    }
+  }
+
+  /// Posición para sellar la foto. Se pide en el momento de la captura y no se reusa
+  /// la última del envío periódico: una foto sacada 30 segundos después podría quedar
+  /// sellada con coordenadas de otro lado.
+  ///
+  /// Devuelve null si no hay permiso o el GPS está apagado; la marca lo dice
+  /// explícitamente en vez de omitirse.
+  Future<Position?> _ubicacionActual() async {
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) return null;
+      var permiso = await Geolocator.checkPermission();
+      if (permiso == LocationPermission.denied) {
+        permiso = await Geolocator.requestPermission();
+      }
+      if (permiso == LocationPermission.denied ||
+          permiso == LocationPermission.deniedForever) {
+        return null;
+      }
+      return await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 12),
+        ),
+      );
+    } catch (_) {
+      return null;
     }
   }
 
