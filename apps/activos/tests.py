@@ -12,7 +12,7 @@ from .models import (
     OrdenCompraDetalle, RecepcionLote, StockBodega, TipoConsumible,
 )
 from .services import (
-    activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, activos_por_vencer_garantia, anular_recepcion_lote, datos_hardware_desde_estacion, registrar_ajuste_inventario, registrar_asignacion, registrar_recepcion_lote, registrar_salida_stock, registrar_traslado_bodega, registrar_ubicacion_farmacia, scope_movimientos_visibles, stock_bajo_minimo, vincular_activos_por_numero_serie,
+    activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, activos_por_vencer_garantia, anular_recepcion_lote, datos_hardware_desde_estacion, registrar_ajuste_inventario, registrar_asignacion, registrar_ingreso, registrar_recepcion_lote, registrar_salida_stock, registrar_traslado_bodega, registrar_ubicacion_farmacia, scope_movimientos_visibles, stock_bajo_minimo, vincular_activos_por_numero_serie,
 )
 
 
@@ -796,3 +796,57 @@ class DatosHardwareDesdeEstacionTests(TestCase):
         self.assertIn('procesador', datos)
         self.assertNotIn('ram_gb', datos)
         self.assertNotIn('almacenamiento_gb', datos)
+
+
+class RegistrarIngresoSinBodegaTests(TestCase):
+    """Inventariar un equipo que YA está instalado en una farmacia.
+
+    El flujo original exigía una bodega, lo que obligaba a inventar uno por el que el
+    equipo nunca pasó.
+    """
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_ingreso', password='x')
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='MAM06', grupo=grupo, unidad_negocio=sg)
+        self.bodega = Bodega.objects.create(codigo='BOD-1', nombre='Central')
+
+    def _ingresar(self, **extra):
+        return registrar_ingreso(
+            tipo=Activo.Tipo.DESKTOP, marca=None, modelo='OptiPlex', numero_serie='BB3VJD3',
+            fecha_compra=None, vencimiento_garantia=None, orden_compra=None,
+            usuario=self.usuario, **extra,
+        )
+
+    def test_con_farmacia_queda_en_servicio_y_sin_bodega(self):
+        activo = self._ingresar(farmacia=self.farmacia)
+        self.assertEqual(activo.farmacia, self.farmacia)
+        self.assertIsNone(activo.bodega_actual)
+        self.assertEqual(activo.estado, Activo.Estado.ASIGNADO)
+        # Un equipo que ya está operando no es "nuevo".
+        self.assertEqual(activo.estado_fisico_actual, Activo.EstadoFisico.BUENO)
+
+    def test_con_bodega_se_comporta_como_siempre(self):
+        activo = self._ingresar(bodega=self.bodega)
+        self.assertEqual(activo.bodega_actual, self.bodega)
+        self.assertIsNone(activo.farmacia)
+        self.assertEqual(activo.estado, Activo.Estado.EN_BODEGA)
+        self.assertEqual(activo.estado_fisico_actual, Activo.EstadoFisico.NUEVO)
+
+    def test_sin_bodega_ni_farmacia_no_se_puede(self):
+        # Un activo tiene que estar en algún lado.
+        with self.assertRaises(ValueError):
+            self._ingresar()
+
+    def test_el_evento_deja_constancia_de_donde_entro(self):
+        activo = self._ingresar(farmacia=self.farmacia)
+        evento = activo.eventos.get(tipo_evento=EventoActivo.TipoEvento.INGRESO)
+        self.assertEqual(evento.detalle['farmacia'], 'MAM06')
+        self.assertIsNone(evento.detalle['bodega'])
+
+    def test_se_puede_forzar_el_estado_fisico(self):
+        activo = self._ingresar(
+            farmacia=self.farmacia, estado_fisico=Activo.EstadoFisico.REGULAR,
+        )
+        self.assertEqual(activo.estado_fisico_actual, Activo.EstadoFisico.REGULAR)

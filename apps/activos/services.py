@@ -44,16 +44,43 @@ def generar_codigo_activo(tipo: str) -> str:
 
 @transaction.atomic
 def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
-                       vencimiento_garantia, orden_compra, bodega, usuario,
+                       vencimiento_garantia, orden_compra, usuario, bodega=None,
                        categoria=None, procesador='', ram_gb=None, almacenamiento_gb=None,
-                       codigo_sap='', condicion_al_recibir='', farmacia=None):
+                       codigo_sap='', condicion_al_recibir='', farmacia=None,
+                       estado_fisico=None):
+    """Da de alta un activo, ya sea que ENTRE a bodega o que ya esté instalado.
+
+    El flujo original asumía que todo activo nace en una bodega, lo que sirve para una
+    compra nueva pero no para inventariar lo que ya está funcionando en una farmacia:
+    obligaba a inventar una bodega por la que el equipo nunca pasó.
+
+    Se exige bodega O farmacia (no las dos, aunque se aceptan juntas si el equipo pasó
+    por bodega y ya se despachó):
+
+    - Con bodega y sin farmacia: queda EN_BODEGA, como siempre.
+    - Con farmacia: queda ASIGNADO, que en este dominio significa "en servicio", no
+      "entregado a una persona" -- un PDV no tiene colaborador en el mismo sentido que
+      un equipo de oficina (ver registrar_ubicacion_farmacia).
+
+    `estado_fisico` por defecto es NUEVO para una compra, pero un equipo que ya está
+    operando no es nuevo: cuando se registra directo en farmacia se asume BUENO, y
+    quien carga puede corregirlo.
+    """
+    if bodega is None and farmacia is None:
+        raise ValueError('Indicá la bodega donde ingresa el equipo o la farmacia donde ya está instalado.')
+
+    ya_instalado = farmacia is not None and bodega is None
+    if estado_fisico is None:
+        estado_fisico = Activo.EstadoFisico.BUENO if ya_instalado else Activo.EstadoFisico.NUEVO
+
     activo = Activo(
         tipo=tipo, marca=marca, categoria=categoria, modelo=modelo, numero_serie=numero_serie,
         procesador=procesador, ram_gb=ram_gb, almacenamiento_gb=almacenamiento_gb,
         codigo_sap=codigo_sap, condicion_al_recibir=condicion_al_recibir, farmacia=farmacia,
         fecha_compra=fecha_compra, vencimiento_garantia=vencimiento_garantia,
         orden_compra=orden_compra, bodega_actual=bodega,
-        estado=Activo.Estado.EN_BODEGA, estado_fisico_actual=Activo.EstadoFisico.NUEVO,
+        estado=Activo.Estado.ASIGNADO if farmacia is not None else Activo.Estado.EN_BODEGA,
+        estado_fisico_actual=estado_fisico,
     )
     activo.codigo = generar_codigo_activo(tipo)
     activo.save()
@@ -62,7 +89,8 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
         detalle={
             'orden_compra': orden_compra.numero_oc if orden_compra else None,
             'proveedor': orden_compra.proveedor if orden_compra else None,
-            'bodega': bodega.codigo,
+            'bodega': bodega.codigo if bodega else None,
+            'farmacia': farmacia.codigo if farmacia else None,
             'marca': marca.nombre if marca else None,
             'categoria': categoria.nombre if categoria else None,
         },

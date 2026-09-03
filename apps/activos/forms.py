@@ -152,14 +152,19 @@ class ActivoIngresoForm(forms.Form):
         queryset=OrdenCompra.objects.all(), required=False,
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
+    # Ninguno es obligatorio por separado, pero hace falta uno: un activo tiene que
+    # estar en algún lado. Ver clean().
     bodega = forms.ModelChoiceField(
-        queryset=None, widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        queryset=None, required=False, widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        label='Bodega (si ingresa a bodega)',
+        help_text='Para equipos que se reciben y quedan almacenados. Dejalo vacío si el '
+                  'equipo ya está instalado en una farmacia.',
     )
     farmacia = forms.ModelChoiceField(
         queryset=None, required=False, widget=forms.Select(attrs={'class': INPUT_CLASS}),
-        label='Farmacia (si aplica)',
-        help_text='Solo si ya sabes que este equipo va a una farmacia puntual (PDV o administrativo del local). '
-                  'Vacío = queda como administrativo/oficina hasta que se ubique.',
+        label='Farmacia (si ya está instalado)',
+        help_text='Para inventariar un equipo que ya está funcionando en un local. '
+                  'Queda como "en servicio", sin pasar por bodega.',
     )
 
     def __init__(self, *args, user=None, **kwargs):
@@ -176,6 +181,15 @@ class ActivoIngresoForm(forms.Form):
         self.fields['farmacia'].queryset = scope_opcional_por_unidad_negocio(
             Farmacia.objects.filter(activa=True), user, 'unidad_negocio',
         ).order_by('codigo')
+
+    def clean(self):
+        datos = super().clean()
+        if not datos.get('bodega') and not datos.get('farmacia'):
+            raise forms.ValidationError(
+                'Indicá dónde está el equipo: la bodega donde ingresa, o la farmacia '
+                'donde ya está instalado.',
+            )
+        return datos
 
 
 class AsignacionForm(forms.Form):

@@ -437,7 +437,11 @@ def activo_crear(request):
                 orden_compra=d['orden_compra'], bodega=d['bodega'], farmacia=d['farmacia'], usuario=request.user,
             )
             registrar_evento(usuario=request.user, accion='activo.ingreso', objeto=activo, request=request)
-            messages.success(request, f'Activo {activo.codigo} registrado en {activo.bodega_actual.codigo}.')
+            donde = (
+                activo.bodega_actual.codigo if activo.bodega_actual_id
+                else f'la farmacia {activo.farmacia.codigo}'
+            )
+            messages.success(request, f'Activo {activo.codigo} registrado en {donde}.')
             return redirect('panel:activo_detalle', pk=activo.pk)
     else:
         initial = {}
