@@ -670,14 +670,18 @@ class _RecentActivityCard extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            _text(item['equipoCodigoSap'],
+                            // El equipo viene en la lista "equipos" del
+                            // mantenimiento, no en campos planos como en la API
+                            // anterior (equipoCodigoSap/equipoDescripcion), que
+                            // siempre resolvían a "Sin codigo".
+                            _text(_primerEquipo(item)['codigo'],
                                 fallback: 'Sin codigo'),
                             style: const TextStyle(
                                 fontWeight: FontWeight.w600, fontSize: 14),
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            _text(item['equipoDescripcion']),
+                            _text(item['descripcion']),
                             style: TextStyle(
                                 fontSize: 12, color: Colors.grey.shade600),
                             maxLines: 1,
@@ -917,6 +921,15 @@ class _MoreTile extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Equipo principal de un mantenimiento, o un mapa vacío si no trae ninguno.
+Map<String, dynamic> _primerEquipo(Map<String, dynamic> item) {
+  final equipos = item['equipos'];
+  if (equipos is List && equipos.isNotEmpty) {
+    return Map<String, dynamic>.from(equipos.first as Map);
+  }
+  return const <String, dynamic>{};
 }
 
 String _text(dynamic value, {String fallback = '-'}) {
