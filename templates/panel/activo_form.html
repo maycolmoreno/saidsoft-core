@@ -21,6 +21,12 @@
         <div class="form-field {% if field|widget_ancho_completo %}span-2{% endif %}">
             <label for="{{ field.id_for_label }}">{{ field.label }}</label>
             {{ field }}
+            {% if name == "numero_serie" %}
+            {# Al salir del campo se consulta si alguna estacion RMM ya reporta esta
+               serie; si la hay, se completan las especificaciones de computo. Se
+               mandan tambien los valores actuales para no pisar lo ya escrito. #}
+            <p class="help">Si el equipo ya tiene el agente instalado, las especificaciones se completan solas.</p>
+            {% endif %}
             {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
             {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
         </div>
@@ -30,16 +36,8 @@
 
     <div class="section-divider" data-tipo-computo hidden>
         <div class="section-head"><div class="label"><h3>Especificaciones de cómputo</h3></div></div>
-        <div class="form-grid">
-            {% for name in "procesador,ram_gb,almacenamiento_gb"|split_names %}
-            {% with field=form|get_field:name %}
-            <div class="form-field">
-                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
-                {{ field }}
-                {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-            </div>
-            {% endwith %}
-            {% endfor %}
+        <div id="especificaciones-computo">
+            {% include "panel/_especificaciones_computo.html" %}
         </div>
     </div>
 

@@ -120,6 +120,10 @@ urlpatterns = [
     path('activos/', views.activos_lista, name='activos_lista'),
     path('activos/avisos/', views.activos_avisos, name='activos_avisos'),
     path('activos/nuevo/', views.activo_crear, name='activo_crear'),
+    path(
+        'activos/especificaciones-por-serie/', views.especificaciones_por_serie_partial,
+        name='especificaciones_por_serie_partial',
+    ),
     path('activos/<int:pk>/', views.activo_detalle, name='activo_detalle'),
     path('activos/<int:pk>/asignar/', views.activo_asignar, name='activo_asignar'),
     path('activos/<int:pk>/ubicar-farmacia/', views.activo_ubicar_farmacia, name='activo_ubicar_farmacia'),

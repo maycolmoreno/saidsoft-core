@@ -389,6 +389,36 @@ def activos_lista(request):
 
 @login_required
 @permission_required('activos.add_activo', raise_exception=True)
+def especificaciones_por_serie_partial(request):
+    """Precarga las especificaciones de cómputo desde la estación RMM que ya reporta
+    ese número de serie (HTMX, al salir del campo "numero_serie").
+
+    El agente ya sabe procesador/RAM/disco de cada equipo: volver a tipearlos es
+    trabajo duplicado y, peor, dos fuentes que terminan diciendo cosas distintas del
+    mismo equipo.
+
+    Se devuelven los campos del formulario ya rellenos, no un JSON: así el HTML sigue
+    siendo el que arma Django (widgets, clases, errores) y no hay que duplicar el
+    render en JavaScript.
+    """
+    serie = request.GET.get('numero_serie', '')
+    datos = activos_services.datos_hardware_desde_estacion(serie)
+
+    # Se conserva lo que el usuario ya haya escrito: la estación solo COMPLETA lo
+    # que falta, nunca pisa un dato cargado a mano.
+    inicial = {
+        campo: request.GET.get(campo) or (datos or {}).get(campo)
+        for campo in ('procesador', 'ram_gb', 'almacenamiento_gb')
+    }
+    form = ActivoIngresoForm(user=request.user, initial=inicial)
+    return render(request, 'panel/_especificaciones_computo.html', {
+        'form': form,
+        'estacion': (datos or {}).get('estacion'),
+    })
+
+
+@login_required
+@permission_required('activos.add_activo', raise_exception=True)
 def activo_crear(request):
     if request.method == 'POST':
         form = ActivoIngresoForm(request.POST, user=request.user)

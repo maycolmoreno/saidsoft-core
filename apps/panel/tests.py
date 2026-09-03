@@ -2617,3 +2617,59 @@ class VisitaTecnicaPanelTests(TestCase):
         PerfilUsuario.objects.create(usuario=sin, acceso_todas_unidades=True)
         self.client.force_login(sin)
         self.assertEqual(self.client.get(reverse('panel:visita_tecnica_lista')).status_code, 403)
+
+
+class EspecificacionesPorSerieTests(TestCase):
+    """El alta de activo completa las especificaciones desde la estación que ya
+    reporta esa serie, sin pisar lo que el usuario haya escrito."""
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, numero_serie='MXL8192898',
+            procesador='Intel i3-1115G4', ram_total_mb=7839, almacenamiento_total_gb=446,
+        )
+        self.usuario = User.objects.create_user(username='u_specs', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='add_activo'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _url(self):
+        return reverse('panel:especificaciones_por_serie_partial')
+
+    def test_completa_desde_la_estacion(self):
+        resp = self.client.get(self._url(), {'numero_serie': 'MXL8192898'})
+        self.assertEqual(resp.status_code, 200)
+        contenido = resp.content.decode()
+        self.assertIn('Intel i3-1115G4', contenido)
+        # RAM convertida de MB a GB, no el numero crudo.
+        self.assertIn('value="8"', contenido)
+        self.assertNotIn('value="7839"', contenido)
+        self.assertIn('ML001-A', contenido)
+
+    def test_no_pisa_lo_que_el_usuario_escribio(self):
+        resp = self.client.get(self._url(), {
+            'numero_serie': 'MXL8192898',
+            'procesador': 'Procesador cargado a mano',
+            'ram_gb': '16',
+        })
+        contenido = resp.content.decode()
+        self.assertIn('Procesador cargado a mano', contenido)
+        self.assertIn('value="16"', contenido)
+        # El disco, que el usuario no toco, si se completa.
+        self.assertIn('value="446"', contenido)
+
+    def test_serie_desconocida_devuelve_campos_vacios_sin_aviso(self):
+        resp = self.client.get(self._url(), {'numero_serie': 'NO-EXISTE'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn('ML001-A', resp.content.decode())
+
+    def test_sin_permiso_devuelve_403(self):
+        sin = User.objects.create_user(username='u_specs_sin', password='x')
+        PerfilUsuario.objects.create(usuario=sin, acceso_todas_unidades=True)
+        self.client.force_login(sin)
+        self.assertEqual(self.client.get(self._url()).status_code, 403)

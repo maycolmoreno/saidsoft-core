@@ -537,3 +537,40 @@ def stock_bajo_minimo():
     return StockBodega.objects.filter(
         tipo_consumible__stock_minimo__gt=0, cantidad__lt=F('tipo_consumible__stock_minimo'),
     ).select_related('bodega', 'tipo_consumible')
+
+
+def datos_hardware_desde_estacion(numero_serie: str) -> dict | None:
+    """Especificaciones que el agente RMM ya reportó para ese número de serie.
+
+    Evita reingresar a mano lo que la estación reporta sola, y —más importante—
+    evita que el inventario y el monitoreo digan cosas distintas del mismo equipo.
+
+    Devuelve None si no hay serie, si ninguna estación coincide, o si coincide más de
+    una (serie duplicada o dato sucio): en ese caso NO se adivina, mismo criterio que
+    vincular_activos_por_numero_serie.
+
+    Solo se incluyen los campos que la estación realmente tiene cargados, para no
+    pisar con vacíos lo que el usuario ya haya escrito.
+    """
+    from apps.catalogo.models import Estacion
+
+    serie = (numero_serie or '').strip()
+    if not serie:
+        return None
+
+    coincidencias = list(Estacion.objects.filter(numero_serie__iexact=serie)[:2])
+    if len(coincidencias) != 1:
+        return None
+
+    estacion = coincidencias[0]
+    datos: dict = {'estacion': estacion}
+    if estacion.procesador:
+        datos['procesador'] = estacion.procesador
+    if estacion.ram_total_mb:
+        # La estación reporta MB y el activo se lleva en GB: copiar el número tal cual
+        # metería "7839" en un campo de gigabytes. Se redondea al entero más cercano
+        # porque el fabricante reserva algo de RAM y 7839 MB es un equipo de 8 GB.
+        datos['ram_gb'] = round(estacion.ram_total_mb / 1024)
+    if estacion.almacenamiento_total_gb:
+        datos['almacenamiento_gb'] = estacion.almacenamiento_total_gb
+    return datos

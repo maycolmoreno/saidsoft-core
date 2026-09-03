@@ -12,10 +12,7 @@ from .models import (
     OrdenCompraDetalle, RecepcionLote, StockBodega, TipoConsumible,
 )
 from .services import (
-    activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, activos_por_vencer_garantia,
-    anular_recepcion_lote, registrar_ajuste_inventario, registrar_asignacion, registrar_recepcion_lote,
-    registrar_salida_stock, registrar_traslado_bodega, registrar_ubicacion_farmacia, scope_movimientos_visibles,
-    stock_bajo_minimo, vincular_activos_por_numero_serie,
+    activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, activos_por_vencer_garantia, anular_recepcion_lote, datos_hardware_desde_estacion, registrar_ajuste_inventario, registrar_asignacion, registrar_recepcion_lote, registrar_salida_stock, registrar_traslado_bodega, registrar_ubicacion_farmacia, scope_movimientos_visibles, stock_bajo_minimo, vincular_activos_por_numero_serie,
 )
 
 
@@ -739,3 +736,63 @@ class StockBajoMinimoTests(TestCase):
         tipo = TipoConsumible.objects.create(codigo='MOUSE', nombre='Mouse USB', stock_minimo=5)
         StockBodega.objects.create(bodega=bodega, tipo_consumible=tipo, cantidad=10)
         self.assertEqual(stock_bajo_minimo().count(), 0)
+
+
+class DatosHardwareDesdeEstacionTests(TestCase):
+    """Precarga del alta de activo desde lo que el agente RMM ya reporta.
+
+    Evita reingresar a mano lo que la estación sabe, y que inventario y monitoreo
+    terminen diciendo cosas distintas del mismo equipo.
+    """
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, numero_serie='MXL8192898',
+            procesador='11th Gen Intel(R) Core(TM) i3-1115G4', ram_total_mb=7839,
+            almacenamiento_total_gb=446,
+        )
+
+    def test_convierte_la_ram_de_mb_a_gb(self):
+        # La estación reporta MB y el activo se lleva en GB: copiar el número tal cual
+        # metería "7839" en un campo de gigabytes.
+        datos = datos_hardware_desde_estacion('MXL8192898')
+        self.assertEqual(datos['ram_gb'], 8)
+        self.assertEqual(datos['almacenamiento_gb'], 446)
+        self.assertEqual(datos['procesador'], '11th Gen Intel(R) Core(TM) i3-1115G4')
+        self.assertEqual(datos['estacion'], self.estacion)
+
+    def test_la_busqueda_ignora_mayusculas_y_espacios(self):
+        self.assertIsNotNone(datos_hardware_desde_estacion('  mxl8192898  '))
+
+    def test_sin_serie_devuelve_none(self):
+        self.assertIsNone(datos_hardware_desde_estacion(''))
+        self.assertIsNone(datos_hardware_desde_estacion('   '))
+
+    def test_serie_desconocida_devuelve_none(self):
+        self.assertIsNone(datos_hardware_desde_estacion('NO-EXISTE'))
+
+    def test_con_series_duplicadas_no_adivina(self):
+        # Dato sucio: dos estaciones con la misma serie. Devolver una al azar sería
+        # peor que no completar nada.
+        otra_farmacia = Farmacia.objects.create(
+            codigo='ML002', grupo=Grupo.objects.get(codigo='TRX001'),
+            unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        Estacion.objects.create(
+            codigo='ML002-A', farmacia=otra_farmacia, numero_serie='MXL8192898',
+        )
+        self.assertIsNone(datos_hardware_desde_estacion('MXL8192898'))
+
+    def test_solo_devuelve_los_campos_que_la_estacion_tiene(self):
+        # Sin RAM ni disco cargados no se manda la clave, para no pisar con vacíos lo
+        # que el usuario ya haya escrito.
+        self.estacion.ram_total_mb = None
+        self.estacion.almacenamiento_total_gb = None
+        self.estacion.save(update_fields=['ram_total_mb', 'almacenamiento_total_gb'])
+        datos = datos_hardware_desde_estacion('MXL8192898')
+        self.assertIn('procesador', datos)
+        self.assertNotIn('ram_gb', datos)
+        self.assertNotIn('almacenamiento_gb', datos)
