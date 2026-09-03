@@ -7,14 +7,14 @@ class NotificacionesRepository {
   final ApiClient _apiClient;
 
   Future<List<Notificacion>> listar() async {
-    final data = await _apiClient.get('/notificaciones');
+    final data = await _apiClient.get('/notificaciones/');
     return (data as List)
         .map((item) => Notificacion.fromJson(Map<String, dynamic>.from(item as Map)))
         .toList();
   }
 
   Future<int> obtenerConteo() async {
-    final data = await _apiClient.get('/notificaciones/count');
+    final data = await _apiClient.get('/notificaciones/count/');
     if (data is Map) {
       final count = data['count'];
       if (count is int) {
@@ -35,6 +35,6 @@ class NotificacionesRepository {
   }
 
   Future<void> marcarLeida(int notificacionId) async {
-    await _apiClient.post('/notificaciones/$notificacionId/leer', {});
+    await _apiClient.post('/notificaciones/$notificacionId/leer/', {});
   }
 }

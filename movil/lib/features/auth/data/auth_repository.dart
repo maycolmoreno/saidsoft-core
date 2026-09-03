@@ -111,9 +111,11 @@ class AuthRepository {
       token: token,
       username: datos['username']?.toString() ?? usernamePorDefecto,
       displayName: datos['nombre']?.toString() ?? usernamePorDefecto,
-      // Django no tiene un "rol" unico: la app decide por permisos. Se conserva
-      // "staff"/"tecnico" solo para los textos que muestran un rol.
-      role: (datos['es_staff'] == true) ? 'staff' : 'tecnico',
+      // Django no tiene un "rol" unico: la app decide por permisos (ver
+      // AuthSession._permisoACapacidad). El rol solo alimenta las etiquetas y el
+      // respaldo por rol; "admin"/"tecnico" son los valores que userRole reconoce
+      // -- "staff" caia en UserRole.unknown y dejaba la sesion sin capacidades.
+      role: (datos['es_staff'] == true) ? 'admin' : 'tecnico',
       userId: datos['id'] is int
           ? datos['id'] as int
           : int.tryParse(datos['id']?.toString() ?? ''),

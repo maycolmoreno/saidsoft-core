@@ -6,6 +6,7 @@ from django.utils import timezone
 
 from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoConsumible
 from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
+from apps.cuentas.models import PerfilUsuario
 
 from .models import (
     AcuerdoNivelServicio, EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado,
@@ -986,3 +987,67 @@ class MantenimientoApiMovilTests(TestCase):
     def test_el_detalle_expone_la_verificacion_de_presencia(self):
         resp = self.client.get(f'/api/v1/mantenimientos/{self.mantenimiento.pk}/', **self._auth())
         self.assertEqual(resp.json()['presencia_en_sitio'], 'sin_datos')
+
+
+class EquiposYNotificacionesApiTests(TestCase):
+    """Endpoints que consume el dashboard de la app. Antes no existían y su 404
+    tumbaba toda la pantalla (las tres llamadas van en un Future.wait)."""
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.usuario = User.objects.create_user(username='tec_dash', password='x')
+        self.token = Token.objects.create(user=self.usuario)
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=sg, nombre='SG Centro',
+        )
+        self.activo = Activo.objects.create(
+            codigo='CR-DSK-4001', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia, unidad_negocio=sg,
+        )
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def test_equipos_devuelve_la_farmacia_donde_esta(self):
+        datos = self.client.get('/api/v1/equipos/', **self._auth()).json()
+        self.assertEqual(len(datos), 1)
+        self.assertEqual(datos[0]['codigo'], 'CR-DSK-4001')
+        self.assertEqual(datos[0]['farmacia']['codigo'], 'ML001')
+
+    def test_equipos_excluye_los_dados_de_baja(self):
+        self.activo.estado = Activo.Estado.DADO_DE_BAJA
+        self.activo.save(update_fields=['estado'])
+        self.assertEqual(self.client.get('/api/v1/equipos/', **self._auth()).json(), [])
+
+    def test_conteo_de_notificaciones_no_leidas(self):
+        Notificacion.objects.create(usuario=self.usuario, mensaje='una', leida=False)
+        Notificacion.objects.create(usuario=self.usuario, mensaje='otra', leida=True)
+        resp = self.client.get('/api/v1/notificaciones/count/', **self._auth())
+        self.assertEqual(resp.json()['count'], 1)
+
+    def test_no_se_ven_notificaciones_de_otro_usuario(self):
+        otro = User.objects.create_user(username='otro_dash', password='x')
+        Notificacion.objects.create(usuario=otro, mensaje='ajena', leida=False)
+        self.assertEqual(self.client.get('/api/v1/notificaciones/', **self._auth()).json(), [])
+
+    def test_marcar_leida(self):
+        n = Notificacion.objects.create(usuario=self.usuario, mensaje='una', leida=False)
+        resp = self.client.post(f'/api/v1/notificaciones/{n.pk}/leer/', **self._auth())
+        self.assertEqual(resp.status_code, 204)
+        n.refresh_from_db()
+        self.assertTrue(n.leida)
+
+    def test_no_se_puede_marcar_leida_la_de_otro(self):
+        otro = User.objects.create_user(username='otro_leer', password='x')
+        n = Notificacion.objects.create(usuario=otro, mensaje='ajena', leida=False)
+        self.assertEqual(
+            self.client.post(f'/api/v1/notificaciones/{n.pk}/leer/', **self._auth()).status_code, 404,
+        )
+        n.refresh_from_db()
+        self.assertFalse(n.leida)
+
+    def test_el_catalogo_de_checklist_responde(self):
+        datos = self.client.get('/api/v1/actividades-checklist/', **self._auth()).json()
+        self.assertEqual(len(datos), 14)

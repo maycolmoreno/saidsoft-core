@@ -5,13 +5,15 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from . import services
-from .models import ActividadChecklist, ConsentimientoMonitoreo, Mantenimiento, UbicacionTecnico
+from .models import (
+    ActividadChecklist, ConsentimientoMonitoreo, Mantenimiento, Notificacion, UbicacionTecnico,
+)
 from .serializers import (
     CerrarMantenimientoSerializer, ChecklistActualizarSerializer, ChecklistItemSerializer,
     ConsentimientoMonitoreoSerializer, FirmaMantenimientoSerializer, FirmarMantenimientoSerializer,
     ImagenAdjuntarSerializer, ImagenMantenimientoSerializer, MantenimientoCrearSerializer,
     MantenimientoDetalleSerializer, MantenimientoListSerializer, UbicacionTecnicoSerializer,
-    ActividadChecklistSerializer, UsuarioActualSerializer,
+    ActividadChecklistSerializer, ActivoMovilSerializer, NotificacionSerializer, UsuarioActualSerializer,
 )
 
 
@@ -198,3 +200,55 @@ class UsuarioActualView(generics.GenericAPIView):
 
     def get(self, request):
         return Response(self.get_serializer(request.user).data)
+
+
+class EquipoListView(generics.ListAPIView):
+    """Equipos visibles para el técnico, acotados a sus unidades de negocio.
+
+    Mismo alcance por tenant que el panel (apps.cuentas.services): un técnico de MIA
+    no ve los activos de San Gregorio. Excluye los dados de baja, que no son
+    accionables en campo.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ActivoMovilSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        from apps.activos.models import Activo
+        from apps.cuentas.services import scope_por_unidad_negocio
+
+        queryset = Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA).select_related(
+            'marca', 'categoria', 'farmacia', 'estacion',
+        ).order_by('codigo')
+        return scope_por_unidad_negocio(queryset, self.request.user, 'unidad_negocio')
+
+
+class NotificacionListView(generics.ListAPIView):
+    """Bandeja del usuario autenticado -- nunca la de otro."""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = NotificacionSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        return Notificacion.objects.filter(usuario=self.request.user).select_related('mantenimiento')
+
+
+class NotificacionConteoView(generics.GenericAPIView):
+    """Cantidad de no leídas, para el badge del dashboard."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        total = Notificacion.objects.filter(usuario=request.user, leida=False).count()
+        return Response({'count': total})
+
+
+class NotificacionLeerView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        actualizadas = Notificacion.objects.filter(
+            pk=pk, usuario=request.user, leida=False,
+        ).update(leida=True)
+        if not actualizadas:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)

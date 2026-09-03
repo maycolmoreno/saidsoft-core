@@ -10,7 +10,7 @@ class EquiposRepository implements IEquiposRepository {
 
   @override
   Future<List<EquipoListItem>> listar() async {
-    final data = await _apiClient.get('/equipos');
+    final data = await _apiClient.get('/equipos/');
     final items = (data as List)
         .map((item) =>
             EquipoListItem.fromJson(Map<String, dynamic>.from(item as Map)))

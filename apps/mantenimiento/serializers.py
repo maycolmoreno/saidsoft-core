@@ -6,8 +6,8 @@ from apps.activos.models import Activo, Colaborador
 
 from .models import (
     ActividadChecklist, ConsentimientoMonitoreo, EstadoGeneralEquipo, EventoMantenimiento, FirmaMantenimiento,
-    ImagenMantenimiento, Mantenimiento, MantenimientoProgramado, ResultadoTecnico, TipoFirma, TipoMantenimiento,
-    UbicacionTecnico,
+    ImagenMantenimiento, Mantenimiento, MantenimientoProgramado, Notificacion, ResultadoTecnico, TipoFirma,
+    TipoMantenimiento, UbicacionTecnico,
 )
 
 
@@ -200,3 +200,24 @@ class ActividadChecklistSerializer(serializers.ModelSerializer):
         model = ActividadChecklist
         fields = ['id', 'nombre', 'orden', 'categorias']
         read_only_fields = fields
+
+
+class ActivoMovilSerializer(ActivoResumenSerializer):
+    """Equipos para la app: suma la farmacia donde está y su estación RMM si tiene."""
+    farmacia = serializers.SerializerMethodField()
+    estacion = serializers.CharField(source='estacion.codigo', read_only=True, default=None)
+
+    class Meta(ActivoResumenSerializer.Meta):
+        fields = ActivoResumenSerializer.Meta.fields + ['farmacia', 'estacion', 'estado_fisico_actual']
+
+    def get_farmacia(self, obj):
+        if obj.farmacia_id is None:
+            return None
+        return {'id': obj.farmacia_id, 'codigo': obj.farmacia.codigo, 'nombre': obj.farmacia.nombre}
+
+
+class NotificacionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notificacion
+        fields = ['id', 'mensaje', 'url', 'leida', 'mantenimiento', 'creado_en']
+        read_only_fields = ['id', 'mensaje', 'url', 'mantenimiento', 'creado_en']

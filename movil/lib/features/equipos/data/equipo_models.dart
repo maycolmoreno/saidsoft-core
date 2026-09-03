@@ -25,21 +25,26 @@ class EquipoListItem {
   final String estadoMantenimiento;
   final int diasSinMantenimiento;
 
+  /// Nombres de campo de DRF (snake_case). El backend Django no expone
+  /// procesador/mac/custodio ni el resumen de mantenimiento del equipo, así que esos
+  /// quedan vacíos y la UI los omite en vez de mostrar basura.
   factory EquipoListItem.fromJson(Map<String, dynamic> json) {
+    final farmacia = json['farmacia'] is Map
+        ? Map<String, dynamic>.from(json['farmacia'] as Map)
+        : const <String, dynamic>{};
     return EquipoListItem(
-      id: _asInt(json['idEquipo']) != 0
-          ? _asInt(json['idEquipo'])
-          : _asInt(json['id']),
-      codigoSap: _text(json['codigoSap'], fallback: 'Sin codigo'),
+      id: _asInt(json['id']),
+      codigoSap: _text(json['codigo'], fallback: 'Sin codigo'),
       modelo: _text(json['modelo'], fallback: '-'),
-      serial: _text(json['serial'], fallback: '-'),
-      estadoEquipo: _text(json['estadoEquipo'], fallback: '-'),
-      procesador: _text(json['procesador'], fallback: ''),
-      mac: _text(json['mac'], fallback: ''),
-      custodioNombre: _text(json['custodioNombre'], fallback: ''),
-      ubicacionNombre: _text(json['ubicacionNombre'], fallback: ''),
-      estadoMantenimiento: _text(json['estadoMantenimiento'], fallback: ''),
-      diasSinMantenimiento: _asInt(json['diasSinMantenimiento']),
+      serial: _text(json['numero_serie'], fallback: '-'),
+      estadoEquipo: _text(json['estado'], fallback: '-'),
+      procesador: '',
+      mac: '',
+      custodioNombre: '',
+      // La ubicación del equipo es la farmacia donde está instalado.
+      ubicacionNombre: _text(farmacia['nombre'], fallback: ''),
+      estadoMantenimiento: _text(json['estado_fisico_actual'], fallback: ''),
+      diasSinMantenimiento: 0,
     );
   }
 }

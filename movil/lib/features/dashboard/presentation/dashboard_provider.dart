@@ -62,7 +62,7 @@ class DashboardProvider extends ChangeNotifier {
 
       // Llamadas paralelas: equipos, mantenimientos y notificaciones son independientes
       final results = await Future.wait([
-        _apiClient.get('/equipos'),
+        _apiClient.get('/equipos/'),
         _mantenimientosRepo.listar(),
         _notificacionesRepo.obtenerConteo(),
       ]);
@@ -73,18 +73,20 @@ class DashboardProvider extends ChangeNotifier {
       final mantenimientos = results[1] as List<Map<String, dynamic>>;
       _pendingNotifications = results[2] as int;
 
+      // Nombres de campo de DRF (snake_case). Con los del contrato anterior
+      // (estadoInterno/estadoEquipo) las comparaciones daban siempre "no cerrado"
+      // y los contadores mentían.
       _openMantenimientos = mantenimientos
-          .where(
-              (item) => _text(item['estadoInterno']).toUpperCase() != 'CERRADO')
+          .where((item) => _text(item['estado_interno']) != 'cerrado')
           .length;
       _activeEquipos = equipos
-          .where((item) => _text(item['estadoEquipo']).toUpperCase() != 'BAJA')
+          .where((item) => _text(item['estado']) != 'dado_de_baja')
           .length;
 
       final recent = List<Map<String, dynamic>>.from(mantenimientos)
         ..sort(
-          (a, b) => _text(b['fechaMantenimiento'])
-              .compareTo(_text(a['fechaMantenimiento'])),
+          (a, b) => _text(b['fecha_programada'])
+              .compareTo(_text(a['fecha_programada'])),
         );
       _recentMantenimientos = recent.take(4).toList();
     } catch (e) {

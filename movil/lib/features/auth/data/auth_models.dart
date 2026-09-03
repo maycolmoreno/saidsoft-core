@@ -160,40 +160,34 @@ class AuthSession {
     }
   }
 
+  /// Traduce los permisos que devuelve `/auth/yo/` a capacidades de la app.
+  ///
+  /// `modules` ya no trae nombres de módulo de InvTICS ("MANTENIMIENTO") sino los
+  /// codenames de Django ("mantenimiento.view_mantenimiento"): son los MISMOS que
+  /// evalúa el panel web, así que la app y la web habilitan exactamente lo mismo sin
+  /// una segunda tabla de roles que se desincronice.
+  ///
+  /// La comparación es en minúscula porque `normalizedModules` viene en mayúsculas
+  /// (heredado del esquema anterior) y los codenames de Django son minúscula.
+  static const _permisoACapacidad = <String, UserCapability>{
+    'mantenimiento.view_mantenimiento': UserCapability.viewMantenimientos,
+    'mantenimiento.add_mantenimiento': UserCapability.createMantenimiento,
+    'mantenimiento.change_mantenimiento': UserCapability.closeMantenimiento,
+    'mantenimiento.view_actividadplanificada': UserCapability.viewPlanificacion,
+    'mantenimiento.view_visitatecnica': UserCapability.viewVisitas,
+    'mantenimiento.view_notificacion': UserCapability.viewNotificaciones,
+    'mantenimiento.add_ubicaciontecnico': UserCapability.sendGpsLocation,
+    'mantenimiento.view_ubicaciontecnico': UserCapability.viewGpsRealtime,
+    'activos.view_activo': UserCapability.viewEquipos,
+    'activos.change_ubicacion': UserCapability.manageUbicaciones,
+  };
+
   Set<UserCapability> _moduleCapabilities() {
     final values = <UserCapability>{};
-    for (final module in normalizedModules) {
-      switch (module) {
-        case 'MANTENIMIENTO':
-          values.addAll(const {
-            UserCapability.viewMantenimientos,
-            UserCapability.createMantenimiento,
-            UserCapability.closeMantenimiento,
-          });
-          break;
-        case 'PLANIFICACION':
-          values.add(UserCapability.viewPlanificacion);
-          break;
-        case 'VISITA_TECNICA':
-          values.add(UserCapability.viewVisitas);
-          break;
-        case 'EQUIPOS':
-          values.add(UserCapability.viewEquipos);
-          break;
-        case 'NOTIFICACIONES':
-          values.add(UserCapability.viewNotificaciones);
-          break;
-        case 'UBICACIONES':
-          values.add(UserCapability.manageUbicaciones);
-          break;
-        case 'MONITOREO_GPS':
-          values.add(UserCapability.sendGpsLocation);
-          break;
-        case 'GPS_TIEMPO_REAL':
-          values.add(UserCapability.viewGpsRealtime);
-          break;
-        default:
-          break;
+    for (final permiso in modules) {
+      final capacidad = _permisoACapacidad[permiso.trim().toLowerCase()];
+      if (capacidad != null) {
+        values.add(capacidad);
       }
     }
     return values;

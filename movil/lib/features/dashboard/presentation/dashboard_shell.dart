@@ -628,7 +628,7 @@ class _RecentActivityCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final estado = _text(item['estadoInterno']).toUpperCase();
+    final estado = _text(item['estado_interno']).toUpperCase();
     final Color indicatorColor;
     if (estado == 'CERRADO') {
       indicatorColor = AppTheme.success;
@@ -707,7 +707,7 @@ class _RecentActivityCard extends StatelessWidget {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          _text(item['fechaMantenimiento'], fallback: '-'),
+                          _text(item['fecha_programada'], fallback: '-'),
                           style: TextStyle(
                               fontSize: 11, color: Colors.grey.shade500),
                         ),
