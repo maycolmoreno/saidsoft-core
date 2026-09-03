@@ -1,11 +1,14 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
+from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from apps.activos.models import Activo, Colaborador
 from apps.auditoria.models import registrar_evento
-from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa, verificar_acceso
+from apps.cuentas.services import (
+    scope_opcional_por_unidad_negocio, scope_opcional_por_unidad_negocio_activa, verificar_acceso,
+)
 from apps.mantenimiento import services as mantenimiento_services
 from apps.mantenimiento.forms import (
     ActividadPlanificadaForm, CancelarMantenimientoForm, CerrarMantenimientoForm, CompletarActividadForm,
@@ -56,27 +59,54 @@ def mantenimientos_lista(request):
 @login_required
 @permission_required('mantenimiento.add_mantenimiento', raise_exception=True)
 def equipos_por_cliente_partial(request):
-    """Partial HTMX consumido por MantenimientoManualForm.cliente (ver
-    apps.mantenimiento.forms): repuebla las <option> de `equipos` con los activos
-    asignados al cliente elegido, sin recargar la página. Antes "nuevo mantenimiento"
-    mostraba todos los equipos de cualquier persona en un único selector, sin relación
-    con el cliente elegido."""
+    """Repuebla las <option> de `equipos` a partir de una búsqueda.
+
+    Antes solo filtraba por el cliente elegido, lo que obligaba a saber DE QUIÉN es el
+    equipo para poder cargarle un mantenimiento. Un POS de farmacia no siempre tiene
+    custodio, y quien carga suele conocer la farmacia o el número de serie, no a la
+    persona.
+
+    La búsqueda cubre lo que alguien puede tener a mano: código o serie del equipo,
+    modelo, código o nombre de la farmacia, y nombre o CÉDULA del custodio.
+    """
+    termino = request.GET.get('buscar', '').strip()
     cliente_id = request.GET.get('cliente')
-    equipos = Activo.objects.none()
+
+    equipos = Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA).select_related(
+        'farmacia', 'colaborador_actual',
+    ).order_by('codigo')
+    equipos = scope_opcional_por_unidad_negocio(equipos, request.user, 'unidad_negocio')
+
     if cliente_id:
         colaborador = get_object_or_404(Colaborador, pk=cliente_id)
         verificar_acceso(request.user, colaborador.unidad_negocio)
-        equipos = Activo.objects.filter(
-            colaborador_actual_id=cliente_id,
-        ).exclude(estado=Activo.Estado.DADO_DE_BAJA).order_by('codigo')
-    return render(request, 'panel/_equipos_por_cliente_options.html', {'equipos': equipos})
+        equipos = equipos.filter(colaborador_actual_id=cliente_id)
+    if termino:
+        equipos = equipos.filter(
+            Q(codigo__icontains=termino)
+            | Q(numero_serie__icontains=termino)
+            | Q(modelo__icontains=termino)
+            | Q(farmacia__codigo__icontains=termino)
+            | Q(farmacia__nombre__icontains=termino)
+            | Q(colaborador_actual__nombre__icontains=termino)
+            | Q(colaborador_actual__cedula__icontains=termino),
+        )
+    elif not cliente_id:
+        # Sin criterio no se listan cientos de equipos: el <select> quedaría
+        # inmanejable y nadie elige asi.
+        equipos = Activo.objects.none()
+
+    return render(request, 'panel/_equipos_por_cliente_options.html', {
+        'equipos': equipos[:100],
+        'busco': bool(termino or cliente_id),
+    })
 
 
 @login_required
 @permission_required('mantenimiento.add_mantenimiento', raise_exception=True)
 def mantenimiento_crear(request):
     if request.method == 'POST':
-        form = MantenimientoManualForm(request.POST)
+        form = MantenimientoManualForm(request.POST, user=request.user)
         if form.is_valid():
             d = form.cleaned_data
             try:
@@ -96,7 +126,7 @@ def mantenimiento_crear(request):
                 messages.success(request, f'Mantenimiento #{mantenimiento.pk} creado.')
                 return redirect('panel:mantenimiento_detalle', pk=mantenimiento.pk)
     else:
-        form = MantenimientoManualForm()
+        form = MantenimientoManualForm(user=request.user)
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': 'Nuevo mantenimiento', 'boton': 'Crear mantenimiento',
         'volver_url': reverse('panel:mantenimientos_lista'),

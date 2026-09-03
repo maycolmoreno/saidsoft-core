@@ -18,23 +18,47 @@ User = get_user_model()
 
 
 class MantenimientoManualForm(forms.Form):
-    """El cliente va primero a propósito: `equipos` se filtra a los activos asignados a
-    ese colaborador (ver __init__) -- antes se elegían por separado y se podía armar un
-    mantenimiento con equipos de cualquier persona, sin relación con el cliente elegido."""
+    """`equipos` se puebla BUSCANDO, no eligiendo primero un custodio.
+
+    El diseño anterior exigía elegir el colaborador para que aparecieran sus equipos.
+    Eso funciona para un equipo de oficina, pero deja fuera a los POS de farmacia, que
+    no tienen custodio, y obliga a saber de quién es el equipo cuando lo que se tiene a
+    mano suele ser la farmacia o el número de serie.
+    """
+    # Búsqueda para poblar `equipos`. No se guarda: solo filtra. Cubre lo que quien
+    # carga puede tener a mano -- serie del equipo, farmacia, o el nombre/cédula del
+    # custodio -- porque exigir saber DE QUIÉN es el equipo dejaba fuera a los POS de
+    # farmacia, que no tienen custodio.
+    buscar = forms.CharField(
+        required=False, label='Buscar equipo',
+        widget=forms.TextInput(attrs={
+            'class': INPUT_CLASS,
+            'placeholder': 'Codigo, serie, modelo, farmacia, nombre o cedula',
+            'hx-get': reverse_lazy('panel:equipos_por_cliente_partial'),
+            'hx-target': '#id_equipos',
+            'hx-trigger': 'keyup changed delay:400ms, search',
+            'hx-swap': 'innerHTML',
+            'hx-include': '[name="buscar"],[name="cliente"]',
+        }),
+        help_text='Escribi para filtrar la lista de abajo.',
+    )
     cliente = forms.ModelChoiceField(
-        queryset=Colaborador.objects.filter(activo=True),
+        queryset=Colaborador.objects.filter(activo=True), required=False,
+        label='Custodio (opcional)',
         widget=forms.Select(attrs={
             'class': INPUT_CLASS,
             'hx-get': reverse_lazy('panel:equipos_por_cliente_partial'),
             'hx-target': '#id_equipos',
             'hx-trigger': 'change',
             'hx-swap': 'innerHTML',
+            'hx-include': '[name="buscar"],[name="cliente"]',
         }),
+        help_text='Un POS de farmacia no tiene custodio; dejalo vacio si no aplica.',
     )
     equipos = forms.ModelMultipleChoiceField(
         queryset=Activo.objects.none(),
-        widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 6}),
-        help_text='Solo se listan los equipos asignados al cliente elegido arriba.',
+        widget=forms.SelectMultiple(attrs={'class': INPUT_CLASS, 'size': 8}),
+        help_text='Busca arriba para poblar esta lista.',
     )
     prioridad = forms.ChoiceField(
         choices=PrioridadMantenimiento.choices, initial=PrioridadMantenimiento.NORMAL,
@@ -66,19 +90,29 @@ class MantenimientoManualForm(forms.Form):
         help_text='Si se elige, al cerrar este mantenimiento se recalcula la próxima fecha del plan.',
     )
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
-        # Sin cliente elegido todavía (primera carga de la página), `equipos` empieza
-        # vacío -- el HTMX del campo `cliente` lo repuebla en el navegador sin recargar
-        # la página. Al reenviar el formulario (incluyendo un reintento tras un error
-        # que no sea de validación, ver mantenimiento_crear), se vuelve a resolver
-        # desde el cliente ya elegido para que la validación del backend no dependa de
-        # lo que haya quedado pintado en el navegador.
-        cliente_id = self.data.get('cliente') if self.is_bound else None
-        if cliente_id:
-            self.fields['equipos'].queryset = Activo.objects.filter(
-                colaborador_actual_id=cliente_id,
-            ).exclude(estado=Activo.Estado.DADO_DE_BAJA).order_by('codigo')
+        # "Nombre · cedula": el type-ahead del navegador busca por el principio del
+        # texto, y quien carga suele tener la cedula a mano.
+        self.fields['cliente'].label_from_instance = (
+            lambda c: f'{c.nombre} · {c.cedula}'
+        )
+        if user is not None:
+            self.fields['cliente'].queryset = scope_opcional_por_unidad_negocio(
+                Colaborador.objects.filter(activo=True), user, 'unidad_negocio',
+            ).order_by('nombre')
+
+        # Al reenviar hay que aceptar los equipos que el navegador cargó por HTMX, que
+        # ya no son "los del cliente" sino los que devolvió la búsqueda. Pero SÍ se
+        # mantiene el alcance por unidad de negocio: sin eso, alguien podría forzar el
+        # id de un activo de otro tenant en el POST.
+        if self.is_bound:
+            equipos = Activo.objects.exclude(
+                estado=Activo.Estado.DADO_DE_BAJA,
+            ).order_by('codigo')
+            if user is not None:
+                equipos = scope_opcional_por_unidad_negocio(equipos, user, 'unidad_negocio')
+            self.fields['equipos'].queryset = equipos
 
 
 class CerrarMantenimientoForm(forms.Form):

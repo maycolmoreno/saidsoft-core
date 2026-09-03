@@ -1,5 +1,16 @@
+{% comment %}
+Opciones de `equipos` en el alta de mantenimiento. Las repuebla HTMX al escribir en
+"Buscar equipo" o al elegir un custodio (ver
+panel.views.mantenimiento.equipos_por_cliente_partial).
+{% endcomment %}
 {% for activo in equipos %}
-<option value="{{ activo.pk }}">{{ activo.codigo }} — {{ activo.get_tipo_display }}{% if activo.modelo %} {{ activo.modelo }}{% endif %}</option>
+<option value="{{ activo.pk }}">
+    {{ activo.codigo }} — {{ activo.get_tipo_display }}{% if activo.modelo %} {{ activo.modelo }}{% endif %}{% if activo.numero_serie %} · {{ activo.numero_serie }}{% endif %}{% if activo.farmacia %} · {{ activo.farmacia.codigo }}{% endif %}{% if activo.colaborador_actual %} · {{ activo.colaborador_actual.nombre }}{% endif %}
+</option>
 {% empty %}
-<option value="" disabled>Este cliente no tiene equipos asignados.</option>
+{# Distingue "todavia no busque" de "busque y no hay": sin eso, el desplegable vacio
+   no dice si el filtro no encontro nada o si falta escribir algo. #}
+<option value="" disabled>
+    {% if busco %}Ningun equipo coincide con la busqueda.{% else %}Busca por codigo, serie, farmacia o custodio para ver equipos.{% endif %}
+</option>
 {% endfor %}

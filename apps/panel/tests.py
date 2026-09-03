@@ -811,10 +811,12 @@ class MantenimientoCrearViewTests(TestCase):
         self.assertContains(resp, 'CR-DSK-0099')
         self.assertNotContains(resp, 'CR-DSK-0098')
 
-    def test_partial_sin_cliente_no_devuelve_equipos(self):
+    def test_partial_sin_criterio_no_devuelve_equipos(self):
+        # Sin busqueda ni custodio no se listan cientos de equipos: el <select>
+        # quedaria inmanejable. El texto explica que hay que buscar.
         resp = self.client.get(reverse('panel:equipos_por_cliente_partial'))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'no tiene equipos asignados')
+        self.assertContains(resp, 'Busca por codigo')
 
     def test_partial_de_cliente_de_otro_tenant_da_403(self):
         from apps.catalogo.models import UnidadNegocio
@@ -2685,3 +2687,84 @@ class EspecificacionesPorSerieTests(TestCase):
         PerfilUsuario.objects.create(usuario=sin, acceso_todas_unidades=True)
         self.client.force_login(sin)
         self.assertEqual(self.client.get(self._url()).status_code, 403)
+
+
+class BuscarEquiposParaMantenimientoTests(TestCase):
+    """El alta de mantenimiento se puebla BUSCANDO. Antes exigia elegir el custodio,
+    lo que dejaba fuera a los POS de farmacia -- que no tienen -- y obligaba a saber
+    de quien es el equipo cuando lo que se tiene a mano es la farmacia o la serie."""
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='MAM06', grupo=grupo, unidad_negocio=sg, nombre='FARMACIAS MIA',
+        )
+        self.custodio = Colaborador.objects.create(
+            nombre='Wellington Alvarez', cedula='1314821941', unidad_negocio=sg,
+        )
+        self.equipo = Activo.objects.create(
+            codigo='CR-DSK-9100', tipo=Activo.Tipo.DESKTOP, numero_serie='BB3VJD3',
+            modelo='OptiPlex', farmacia=self.farmacia, colaborador_actual=self.custodio,
+        )
+        self.otro = Activo.objects.create(
+            codigo='CR-LAP-9200', tipo=Activo.Tipo.LAPTOP, numero_serie='ZZZ999',
+        )
+        self.usuario = User.objects.create_user(username='u_buscar', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='mantenimiento', codename='add_mantenimiento'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _buscar(self, **params):
+        return self.client.get(
+            reverse('panel:equipos_por_cliente_partial'), params,
+        ).content.decode()
+
+    def test_sin_criterio_no_lista_nada_y_lo_explica(self):
+        # Volcar cientos de equipos en un <select> no ayuda a nadie.
+        html = self._buscar()
+        self.assertNotIn('CR-DSK-9100', html)
+        self.assertIn('Busca por codigo', html)
+
+    def test_busca_por_codigo_de_farmacia(self):
+        html = self._buscar(buscar='MAM06')
+        self.assertIn('CR-DSK-9100', html)
+        self.assertNotIn('CR-LAP-9200', html)
+
+    def test_busca_por_nombre_de_farmacia(self):
+        self.assertIn('CR-DSK-9100', self._buscar(buscar='FARMACIAS MIA'))
+
+    def test_busca_por_cedula_del_custodio(self):
+        self.assertIn('CR-DSK-9100', self._buscar(buscar='1314821941'))
+
+    def test_busca_por_nombre_del_custodio(self):
+        self.assertIn('CR-DSK-9100', self._buscar(buscar='Wellington'))
+
+    def test_busca_por_serie_y_por_codigo_del_equipo(self):
+        self.assertIn('CR-DSK-9100', self._buscar(buscar='BB3VJD3'))
+        self.assertIn('CR-LAP-9200', self._buscar(buscar='ZZZ999'))
+
+    def test_sin_coincidencias_lo_dice(self):
+        html = self._buscar(buscar='NOEXISTE')
+        self.assertIn('Ningun equipo coincide', html)
+
+    def test_no_lista_equipos_dados_de_baja(self):
+        self.equipo.estado = Activo.Estado.DADO_DE_BAJA
+        self.equipo.save(update_fields=['estado'])
+        self.assertNotIn('CR-DSK-9100', self._buscar(buscar='MAM06'))
+
+    def test_se_puede_crear_sin_custodio(self):
+        # Un POS de farmacia no tiene custodio; exigirlo obligaba a inventar uno.
+        resp = self.client.post(reverse('panel:mantenimiento_crear'), {
+            'equipos': [self.equipo.pk],
+            'prioridad': PrioridadMantenimiento.ALTA,
+            'estado_general': EstadoGeneralEquipo.NO_OPERATIVO,
+            'descripcion': 'No enciende',
+            'fecha_programada': '2026-10-01T09:00',
+        })
+        self.assertEqual(resp.status_code, 302, getattr(resp, 'context', {}))
+        m = Mantenimiento.objects.get()
+        self.assertIsNone(m.cliente)
+        self.assertEqual(m.prioridad, PrioridadMantenimiento.ALTA)

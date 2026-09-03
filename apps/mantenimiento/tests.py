@@ -584,41 +584,82 @@ class ResumenMantenimientoPeriodoTests(TestCase):
 
 
 class MantenimientoManualFormTests(TestCase):
-    """El cliente va primero: `equipos` se filtra a lo que tiene asignado ese
-    colaborador -- antes se elegían por separado, sin ninguna relación entre sí
-    (23-ago-2026)."""
+    """`equipos` se puebla BUSCANDO, no eligiendo primero un custodio.
+
+    El diseño anterior filtraba los equipos por el colaborador elegido. Servía para un
+    equipo de oficina, pero dejaba fuera a los POS de farmacia -- que no tienen
+    custodio -- y obligaba a saber de quién es el equipo cuando lo que se tiene a mano
+    es la farmacia o el número de serie.
+
+    Lo que SÍ se sigue impidiendo es cruzar de unidad de negocio.
+    """
 
     def setUp(self):
         from apps.mantenimiento.forms import MantenimientoManualForm
 
         self.Form = MantenimientoManualForm
-        self.cliente = Colaborador.objects.create(nombre='Ana', cedula='9201')
-        self.otro_cliente = Colaborador.objects.create(nombre='Luis', cedula='9202')
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.cliente = Colaborador.objects.create(nombre='Ana', cedula='9201', unidad_negocio=self.sg)
+        self.otro_cliente = Colaborador.objects.create(nombre='Luis', cedula='9202', unidad_negocio=self.sg)
         self.equipo_de_ana = Activo.objects.create(
             codigo='CR-DSK-0400', tipo=Activo.Tipo.DESKTOP, colaborador_actual=self.cliente,
         )
         self.equipo_de_luis = Activo.objects.create(
             codigo='CR-DSK-0401', tipo=Activo.Tipo.DESKTOP, colaborador_actual=self.otro_cliente,
         )
+        self.equipo_de_otro_tenant = Activo.objects.create(
+            codigo='CR-DSK-0402', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.mia,
+        )
 
     def test_formulario_sin_enviar_no_ofrece_ningun_equipo(self):
+        # La lista arranca vacia y la puebla HTMX al buscar: volcar cientos de equipos
+        # en un <select> no ayuda a nadie.
         form = self.Form()
         self.assertEqual(form.fields['equipos'].queryset.count(), 0)
 
-    def test_formulario_enviado_solo_ofrece_equipos_del_cliente_elegido(self):
+    def test_al_enviar_se_aceptan_equipos_de_cualquier_custodio(self):
+        # La lista la poblo una busqueda, no el custodio: acotar por cliente acá
+        # rechazaria selecciones legitimas.
         form = self.Form(data={'cliente': self.cliente.pk})
         queryset = form.fields['equipos'].queryset
         self.assertIn(self.equipo_de_ana, queryset)
-        self.assertNotIn(self.equipo_de_luis, queryset)
+        self.assertIn(self.equipo_de_luis, queryset)
 
-    def test_no_se_puede_enviar_un_equipo_de_otro_cliente(self):
+    def test_el_cliente_es_opcional(self):
+        # Un POS de farmacia no tiene custodio.
         form = self.Form(data={
-            'cliente': self.cliente.pk, 'equipos': [self.equipo_de_luis.pk],
+            'equipos': [self.equipo_de_ana.pk],
+            'estado_general': EstadoGeneralEquipo.OPERATIVO, 'descripcion': 'x',
+            'prioridad': PrioridadMantenimiento.NORMAL,
+            'fecha_programada': timezone.now(),
+        })
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertIsNone(form.cleaned_data['cliente'])
+
+    def test_no_se_puede_enviar_un_equipo_de_otra_unidad_de_negocio(self):
+        # Sin esto, alguien podria forzar el id de un activo de otro tenant en el POST.
+        usuario = User.objects.create_user(username='u_form_sg', password='x')
+        perfil = PerfilUsuario.objects.create(usuario=usuario)
+        perfil.unidades_negocio.add(self.sg)
+
+        form = self.Form(user=usuario, data={
+            'equipos': [self.equipo_de_otro_tenant.pk],
             'estado_general': EstadoGeneralEquipo.OPERATIVO, 'descripcion': 'x',
             'fecha_programada': timezone.now(),
         })
         self.assertFalse(form.is_valid())
         self.assertIn('equipos', form.errors)
+
+    def test_los_equipos_sin_unidad_de_negocio_siguen_siendo_elegibles(self):
+        # Un activo sin unidad asignada se trata como compartido, mismo criterio que
+        # el resto del panel.
+        usuario = User.objects.create_user(username='u_form_sg2', password='x')
+        perfil = PerfilUsuario.objects.create(usuario=usuario)
+        perfil.unidades_negocio.add(self.sg)
+
+        form = self.Form(user=usuario, data={'cliente': self.cliente.pk})
+        self.assertIn(self.equipo_de_ana, form.fields['equipos'].queryset)
 
 
 class SlaTests(TestCase):
