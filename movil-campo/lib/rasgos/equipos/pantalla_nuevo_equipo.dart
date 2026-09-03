@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../comun/selector_busqueda.dart';
 import '../../comun/tema.dart';
 import '../../nucleo/catalogos.dart';
 import '../../nucleo/red/api.dart';
@@ -121,30 +122,23 @@ class _PantallaNuevoEquipoState extends State<PantallaNuevoEquipo> {
                 onChanged: (v) => setState(() => _tipo = v),
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: _farmacia,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: 'Farmacia donde esta *',
-                  helperText: 'Queda registrado como en servicio, sin pasar por bodega.',
-                  helperMaxLines: 2,
-                ),
-                items: [
-                  for (final o in catalogos.farmacias)
-                    DropdownMenuItem(value: o.valor, child: Text(o.etiqueta)),
-                ],
-                onChanged: (v) => setState(() => _farmacia = v),
+              // Con buscador: son 700 farmacias, desplegarlas todas no sirve.
+              SelectorBusqueda(
+                etiqueta: 'Farmacia donde esta *',
+                ayuda: 'Queda registrado como en servicio, sin pasar por bodega.',
+                opciones: catalogos.farmacias,
+                valor: _farmacia,
+                textoVacio: 'Elegi la farmacia',
+                permiteVacio: false,
+                onCambio: (v) => setState(() => _farmacia = v),
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: _marca,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Marca'),
-                items: [
-                  for (final o in catalogos.marcas)
-                    DropdownMenuItem(value: o.valor, child: Text(o.etiqueta)),
-                ],
-                onChanged: (v) => setState(() => _marca = v),
+              SelectorBusqueda(
+                etiqueta: 'Marca',
+                opciones: catalogos.marcas,
+                valor: _marca,
+                textoVacio: 'Sin marca',
+                onCambio: (v) => setState(() => _marca = v),
               ),
               const SizedBox(height: 12),
               TextField(

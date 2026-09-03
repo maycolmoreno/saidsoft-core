@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../comun/selector_busqueda.dart';
 import '../../comun/tema.dart';
 import '../../nucleo/catalogos.dart';
 import '../../nucleo/red/api.dart';
@@ -176,38 +177,23 @@ class _PantallaNuevoMantenimientoState extends State<PantallaNuevoMantenimiento>
               ),
               const SizedBox(height: 12),
               // Filtros para RECORRER, no para adivinar: el tecnico llega a una
-              // farmacia y quiere ver todo lo que hay ahi.
-              DropdownButtonFormField<String>(
-                initialValue: _filtroFarmacia,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: 'Filtrar por farmacia',
-                  isDense: true,
-                ),
-                items: [
-                  const DropdownMenuItem(value: null, child: Text('Todas')),
-                  for (final o in catalogos.farmacias)
-                    DropdownMenuItem(value: o.valor, child: Text(o.etiqueta)),
-                ],
-                onChanged: (v) {
+              // farmacia y quiere ver todo lo que hay ahi. Con buscador porque son
+              // 700 locales: desplegarlos todos no sirve ni funciona.
+              SelectorBusqueda(
+                etiqueta: 'Filtrar por farmacia',
+                opciones: catalogos.farmacias,
+                valor: _filtroFarmacia,
+                onCambio: (v) {
                   setState(() => _filtroFarmacia = v);
                   _buscar();
                 },
               ),
               const SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                initialValue: _filtroCliente,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: 'Filtrar por persona',
-                  isDense: true,
-                ),
-                items: [
-                  const DropdownMenuItem(value: null, child: Text('Todas')),
-                  for (final o in catalogos.colaboradores)
-                    DropdownMenuItem(value: o.valor, child: Text(o.etiqueta)),
-                ],
-                onChanged: (v) {
+              SelectorBusqueda(
+                etiqueta: 'Filtrar por persona',
+                opciones: catalogos.colaboradores,
+                valor: _filtroCliente,
+                onCambio: (v) {
                   setState(() => _filtroCliente = v);
                   _buscar();
                 },
