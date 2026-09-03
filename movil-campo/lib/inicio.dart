@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'comun/tema.dart';
 import 'nucleo/almacen/cola_offline.dart';
 import 'nucleo/almacen/sincronizador.dart';
+import 'rasgos/gps/estado_gps.dart';
 import 'rasgos/gps/pantalla_gps.dart';
 import 'rasgos/mantenimientos/pantalla_mantenimientos.dart';
 import 'rasgos/sesion/estado_sesion.dart';
@@ -59,9 +60,30 @@ class _InicioState extends State<Inicio> {
       const PantallaGps(),
     ];
 
+    final gpsActivo = context.watch<EstadoGps>().enviando;
     return Scaffold(
       body: Column(
         children: [
+          // Que el envio este activo tiene que verse SIEMPRE, no solo en su pantalla:
+          // es la diferencia entre que la presencia quede verificada o "sin datos".
+          if (gpsActivo)
+            Material(
+              color: Tema.bien.withValues(alpha: 0.12),
+              child: const SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Row(
+                    children: [
+                      Icon(Icons.gps_fixed, size: 16, color: Tema.bien),
+                      SizedBox(width: 8),
+                      Text('Enviando tu ubicacion',
+                          style: TextStyle(fontSize: 12, color: Tema.bien)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           if (_pendientes > 0)
             Material(
               color: Tema.advertencia.withValues(alpha: 0.15),

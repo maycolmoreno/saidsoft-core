@@ -5,6 +5,8 @@ import 'comun/tema.dart';
 import 'nucleo/almacen/almacen_seguro.dart';
 import 'nucleo/almacen/sincronizador.dart';
 import 'nucleo/red/api.dart';
+import 'rasgos/gps/estado_gps.dart';
+import 'rasgos/gps/repo_gps.dart';
 import 'rasgos/sesion/estado_sesion.dart';
 import 'rasgos/sesion/pantalla_ingreso.dart';
 import 'rasgos/sesion/pantalla_servidor.dart';
@@ -49,6 +51,9 @@ class _AppCampoState extends State<AppCampo> {
         Provider<AlmacenSeguro>.value(value: _almacen),
         Provider<Api>.value(value: _api),
         Provider<Sincronizador>(create: (_) => Sincronizador(_api)),
+        // A nivel de app: si colgara de la pantalla de GPS, el envio se cortaria
+        // apenas el tecnico cambia de pestana para trabajar.
+        ChangeNotifierProvider<EstadoGps>(create: (_) => EstadoGps(RepoGps(_api))),
         ChangeNotifierProvider<EstadoSesion>.value(value: _sesion),
       ],
       child: MaterialApp(

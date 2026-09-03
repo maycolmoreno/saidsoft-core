@@ -8,6 +8,7 @@ import 'package:signature/signature.dart';
 
 import '../../comun/tema.dart';
 import '../../nucleo/red/api.dart';
+import '../gps/estado_gps.dart';
 import '../sesion/estado_sesion.dart';
 import '../sesion/sesion.dart';
 import 'mantenimiento.dart';
@@ -77,6 +78,37 @@ class _PantallaDetalleState extends State<PantallaDetalle> {
       _avisar(e.mensaje);
     } finally {
       if (mounted) setState(() => _trabajando = false);
+    }
+  }
+
+  /// Registra la llegada y arranca el envío de ubicación.
+  ///
+  /// Encenderlo acá y no dejarlo a mano es lo que hace que la verificación de
+  /// presencia sirva: la ventana que el backend mira empieza EN ESTE MOMENTO, así que
+  /// un GPS que se enciende después del cierre no aporta ninguna posición y el
+  /// mantenimiento queda "sin datos" aunque el técnico haya estado ahí.
+  ///
+  /// El consentimiento NO se saltea: si falta, se avisa en vez de mandar la posición
+  /// igual. Y si el GPS falla, la llegada YA quedó registrada -- no se pierde el
+  /// trabajo por un permiso.
+  Future<void> _registrarLlegada() async {
+    await _ejecutar(() => _repo.iniciar(widget.id), 'Llegada registrada.');
+    if (!mounted) return;
+
+    final gps = context.read<EstadoGps>();
+    if (!gps.consultado) await gps.cargarConsentimiento();
+    if (!mounted) return;
+
+    if (!gps.consentimiento) {
+      _avisar(
+        'Llegada registrada. Acepta el monitoreo en "Ubicacion" para que se pueda '
+        'verificar tu presencia.',
+        pendiente: true,
+      );
+      return;
+    }
+    if (!gps.enviando && !await gps.comenzar() && mounted) {
+      _avisar(gps.error ?? 'No se pudo activar el envio de ubicacion.', pendiente: true);
     }
   }
 
@@ -205,12 +237,7 @@ class _PantallaDetalleState extends State<PantallaDetalle> {
               padding: const EdgeInsets.all(16),
               child: m.pendiente
                   ? FilledButton.icon(
-                      onPressed: _trabajando
-                          ? null
-                          : () => _ejecutar(
-                                () => _repo.iniciar(widget.id),
-                                'Llegada registrada.',
-                              ),
+                      onPressed: _trabajando ? null : _registrarLlegada,
                       icon: const Icon(Icons.play_arrow),
                       label: const Text('Registrar llegada'),
                     )
