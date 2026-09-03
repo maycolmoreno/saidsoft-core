@@ -24,9 +24,7 @@ class _PantallaGpsState extends State<PantallaGps> {
   @override
   Widget build(BuildContext context) {
     final gps = context.watch<EstadoGps>();
-    return Scaffold(
-      appBar: AppBar(title: const Text('Mi ubicacion')),
-      body: !gps.consultado
+    return !gps.consultado
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(20),
@@ -124,7 +122,6 @@ class _PantallaGpsState extends State<PantallaGps> {
                   ),
                 ],
               ],
-            ),
-    );
+            );
   }
 }

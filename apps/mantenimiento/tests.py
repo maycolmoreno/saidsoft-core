@@ -1110,3 +1110,36 @@ class VisitaTecnicaApiMovilTests(TestCase):
         self.client.post(f'/api/v1/visitas/{self.visita.pk}/iniciar/', **self._auth())
         resp = self.client.post(f'/api/v1/visitas/{self.visita.pk}/iniciar/', **self._auth())
         self.assertEqual(resp.status_code, 400)
+
+
+class AvisoAlAsignarTests(TestCase):
+    """Asignar trabajo tiene que avisarle al técnico. Antes la bandeja solo se poblaba
+    desde la tarea diaria de vencimientos, así que una asignación nueva no generaba
+    ningún aviso."""
+
+    def setUp(self):
+        self.coordinador = User.objects.create_user(username='coord', password='x')
+        self.tecnico = User.objects.create_user(username='tec_aviso', password='x')
+        self.equipo = Activo.objects.create(codigo='CR-DSK-3001', tipo=Activo.Tipo.DESKTOP)
+
+    def _crear(self, tecnico, usuario):
+        return crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=tecnico, descripcion='x',
+            fecha_programada=timezone.now(), usuario=usuario,
+        )
+
+    def test_avisa_al_tecnico_asignado(self):
+        m = self._crear(self.tecnico, self.coordinador)
+        aviso = Notificacion.objects.get(usuario=self.tecnico)
+        self.assertIn('CR-DSK-3001', aviso.mensaje)
+        self.assertEqual(aviso.mantenimiento, m)
+        self.assertFalse(aviso.leida)
+
+    def test_no_se_avisa_a_si_mismo(self):
+        # Autoservicio desde la app: el técnico ya sabe que lo creó.
+        self._crear(self.tecnico, self.tecnico)
+        self.assertFalse(Notificacion.objects.exists())
+
+    def test_sin_tecnico_no_avisa_a_nadie(self):
+        self._crear(None, self.coordinador)
+        self.assertFalse(Notificacion.objects.exists())

@@ -93,10 +93,10 @@ class _PantallaVisitasState extends State<PantallaVisitas> {
   Widget build(BuildContext context) {
     final puedeGestionar =
         context.watch<EstadoSesion>().puede(Permiso.gestionarVisitas);
-    return Scaffold(
-      appBar: AppBar(title: const Text('Mis visitas')),
-      body: Stack(
-        children: [
+    // Sin Scaffold ni AppBar propios: la barra la arma el contenedor (Inicio), que
+    // es donde vive el menu de la sesion.
+    return Stack(
+      children: [
           FutureBuilder<List<Visita>>(
             future: _futuro,
             builder: (context, snap) {
@@ -147,15 +147,14 @@ class _PantallaVisitasState extends State<PantallaVisitas> {
               );
             },
           ),
-          if (_trabajando)
-            const Positioned.fill(
-              child: ColoredBox(
-                color: Color(0x22000000),
-                child: Center(child: CircularProgressIndicator()),
-              ),
+        if (_trabajando)
+          const Positioned.fill(
+            child: ColoredBox(
+              color: Color(0x22000000),
+              child: Center(child: CircularProgressIndicator()),
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 }

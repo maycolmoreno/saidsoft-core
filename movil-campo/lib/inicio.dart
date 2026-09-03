@@ -6,7 +6,10 @@ import 'package:provider/provider.dart';
 
 import 'comun/tema.dart';
 import 'nucleo/almacen/cola_offline.dart';
+import 'nucleo/red/api.dart';
 import 'nucleo/almacen/sincronizador.dart';
+import 'rasgos/avisos/pantalla_avisos.dart';
+import 'rasgos/avisos/repo_avisos.dart';
 import 'rasgos/gps/estado_gps.dart';
 import 'rasgos/gps/pantalla_gps.dart';
 import 'rasgos/mantenimientos/pantalla_mantenimientos.dart';
@@ -25,12 +28,14 @@ class Inicio extends StatefulWidget {
 class _InicioState extends State<Inicio> {
   int _indice = 0;
   int _pendientes = 0;
+  int _avisos = 0;
   StreamSubscription<List<ConnectivityResult>>? _suscripcionRed;
 
   @override
   void initState() {
     super.initState();
     _sincronizar();
+    _contarAvisos();
     // Al recuperar señal se sube solo lo que quedó pendiente: el técnico no tiene
     // que acordarse de nada ni apretar un botón de "sincronizar".
     _suscripcionRed = Connectivity().onConnectivityChanged.listen((estado) {
@@ -42,6 +47,17 @@ class _InicioState extends State<Inicio> {
   void dispose() {
     _suscripcionRed?.cancel();
     super.dispose();
+  }
+
+  /// Contador de la bandeja. Falla en silencio: un aviso no visto es molesto, pero
+  /// una pantalla rota por no poder contarlos es peor.
+  Future<void> _contarAvisos() async {
+    try {
+      final total = await RepoAvisos(context.read<Api>()).sinLeer();
+      if (mounted) setState(() => _avisos = total);
+    } catch (_) {
+      // Sin conexión o sin permiso: el contador queda como estaba.
+    }
   }
 
   Future<void> _sincronizar() async {
@@ -57,11 +73,17 @@ class _InicioState extends State<Inicio> {
     final destinos = <Widget>[
       const PantallaMantenimientos(),
       const PantallaVisitas(),
+      const PantallaAvisos(),
       const PantallaGps(),
     ];
 
     final gpsActivo = context.watch<EstadoGps>().enviando;
+    const titulos = ['Mis mantenimientos', 'Mis visitas', 'Avisos', 'Mi ubicacion'];
     return Scaffold(
+      // La barra la arma ACA y no cada pantalla: si cada una trae su propio
+      // Scaffold, el cajon del menu queda tapado y sin boton para abrirlo --
+      // dejaba la app sin forma de cerrar sesion.
+      appBar: AppBar(title: Text(titulos[_indice])),
       body: Column(
         children: [
           // Que el envio este activo tiene que verse SIEMPRE, no solo en su pantalla:
@@ -116,19 +138,33 @@ class _InicioState extends State<Inicio> {
       drawer: _Menu(sesion: sesion),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _indice,
-        onDestinationSelected: (i) => setState(() => _indice = i),
-        destinations: const [
-          NavigationDestination(
+        onDestinationSelected: (i) {
+          setState(() => _indice = i);
+          // Al entrar a la bandeja se refresca el contador: si el técnico marca
+          // avisos como leídos, el badge tiene que bajar.
+          if (i == 2) _contarAvisos();
+        },
+        destinations: [
+          const NavigationDestination(
             icon: Icon(Icons.build_outlined),
             selectedIcon: Icon(Icons.build),
             label: 'Trabajo',
           ),
-          NavigationDestination(
+          const NavigationDestination(
             icon: Icon(Icons.storefront_outlined),
             selectedIcon: Icon(Icons.storefront),
             label: 'Visitas',
           ),
           NavigationDestination(
+            icon: Badge(
+              isLabelVisible: _avisos > 0,
+              label: Text('$_avisos'),
+              child: const Icon(Icons.notifications_none),
+            ),
+            selectedIcon: const Icon(Icons.notifications),
+            label: 'Avisos',
+          ),
+          const NavigationDestination(
             icon: Icon(Icons.my_location_outlined),
             selectedIcon: Icon(Icons.my_location),
             label: 'Ubicacion',

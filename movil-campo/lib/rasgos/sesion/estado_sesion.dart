@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../nucleo/config.dart';
 import '../../nucleo/red/api.dart';
@@ -56,6 +57,7 @@ class EstadoSesion extends ChangeNotifier {
     try {
       _sesion = await _repo.iniciarSesion(usuario.trim(), clave);
       _fase = FaseSesion.autenticado;
+      await _pedirPermisos();
       return true;
     } on ErrorApi catch (e) {
       _error = e.mensaje;
@@ -63,6 +65,22 @@ class EstadoSesion extends ChangeNotifier {
     } finally {
       _ocupado = false;
       notifyListeners();
+    }
+  }
+
+  /// Pide ubicación y notificaciones al entrar, no cuando ya hacen falta.
+  ///
+  /// Pedirlos recién al registrar la llegada significaría interrumpir al técnico
+  /// justo cuando llegó a la farmacia, y si los rechaza en ese momento la visita
+  /// queda sin verificar. Acá tiene tiempo de decidir.
+  ///
+  /// Nunca lanza ni bloquea: si los rechaza, la app funciona igual -- solo pierde la
+  /// verificación de presencia y los avisos, y cada pantalla lo dice cuando toca.
+  Future<void> _pedirPermisos() async {
+    try {
+      await [Permission.location, Permission.notification].request();
+    } catch (_) {
+      // Sin permisos la app sigue siendo usable; no hay nada que reportar acá.
     }
   }
 

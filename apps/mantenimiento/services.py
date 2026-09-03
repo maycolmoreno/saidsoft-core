@@ -85,6 +85,19 @@ def crear_mantenimiento_manual(*, equipos, tecnico, descripcion, fecha_programad
         mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.PROGRAMADO, usuario=usuario,
         detalle={'equipos': [e.codigo for e in equipos], 'tecnico': tecnico.username if tecnico else None},
     )
+    # Avisar al técnico que le asignaron trabajo. Hasta ahora la bandeja solo se
+    # poblaba desde la tarea diaria de vencimientos, así que una asignación nueva no
+    # generaba ningún aviso: el técnico se enteraba recién si entraba a mirar.
+    #
+    # No se avisa cuando alguien se asigna a sí mismo (autoservicio desde la app): ya
+    # sabe que lo creó.
+    if tecnico is not None and tecnico != usuario:
+        codigos = ', '.join(e.codigo for e in equipos)
+        notificar(
+            usuario=tecnico,
+            mensaje=f'Te asignaron un mantenimiento de {codigos}.',
+            mantenimiento=mantenimiento,
+        )
     return mantenimiento
 
 

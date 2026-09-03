@@ -73,18 +73,23 @@ class _PantallaMantenimientosState extends State<PantallaMantenimientos> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Mis mantenimientos'),
-        actions: [
-          IconButton(
-            tooltip: _soloAbiertos ? 'Ver todos' : 'Ver solo abiertos',
-            icon: Icon(_soloAbiertos ? Icons.filter_alt : Icons.filter_alt_off),
-            onPressed: () => setState(() => _soloAbiertos = !_soloAbiertos),
+    return Column(
+      children: [
+        // El filtro vive acá y no en la barra superior: la barra la arma el
+        // contenedor (Inicio), que es el que tiene el menu de la sesion.
+        Align(
+          alignment: Alignment.centerRight,
+          child: Padding(
+            padding: const EdgeInsets.only(right: 8, top: 4),
+            child: TextButton.icon(
+              onPressed: () => setState(() => _soloAbiertos = !_soloAbiertos),
+              icon: Icon(_soloAbiertos ? Icons.filter_alt : Icons.filter_alt_off, size: 18),
+              label: Text(_soloAbiertos ? 'Solo abiertos' : 'Todos'),
+            ),
           ),
-        ],
-      ),
-      body: FutureBuilder<List<Mantenimiento>>(
+        ),
+        Expanded(
+          child: FutureBuilder<List<Mantenimiento>>(
         future: _futuro,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
@@ -146,8 +151,10 @@ class _PantallaMantenimientosState extends State<PantallaMantenimientos> {
               ),
             ),
           );
-        },
-      ),
+            },
+          ),
+        ),
+      ],
     );
   }
 }
