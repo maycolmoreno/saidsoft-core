@@ -148,7 +148,7 @@ class ActivoIngresoForm(forms.Form):
         widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),
     )
     codigo_sap = forms.CharField(
-        required=False, label='Código SAP', widget=forms.TextInput(attrs={'class': INPUT_CLASS}),
+        required=False, label='Código Activo', widget=forms.TextInput(attrs={'class': INPUT_CLASS}),
     )
     condicion_al_recibir = forms.ChoiceField(
         choices=[('', '—')] + list(CondicionAlRecibir.choices), required=False,

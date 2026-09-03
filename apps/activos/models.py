@@ -425,7 +425,7 @@ class Activo(models.Model):
     procesador = models.CharField(max_length=100, blank=True)
     ram_gb = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name='RAM (GB)')
     almacenamiento_gb = models.PositiveIntegerField(null=True, blank=True, verbose_name='Almacenamiento (GB)')
-    codigo_sap = models.CharField(max_length=30, blank=True, verbose_name='Código SAP')
+    codigo_sap = models.CharField(max_length=30, blank=True, verbose_name='Código Activo')
     condicion_al_recibir = models.CharField(max_length=20, choices=CondicionAlRecibir.choices, blank=True)
     baja_recomendada = models.BooleanField(
         default=False,
