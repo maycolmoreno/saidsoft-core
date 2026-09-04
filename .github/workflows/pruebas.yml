@@ -1,0 +1,85 @@
+# Corre la suite completa en cada push y pull request.
+#
+# Hasta ahora las ~800 pruebas solo corrían cuando alguien se acordaba de correrlas a
+# mano, con 160+ commits por mes entrando a master. Esto no reemplaza la verificación
+# local que pide CLAUDE.md — la hace exigible.
+name: Pruebas
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+# Un push nuevo sobre la misma rama cancela la corrida anterior: no tiene sentido gastar
+# minutos verificando un commit que ya quedó atrás.
+concurrency:
+  group: pruebas-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  django:
+    name: Django
+    runs-on: ubuntu-latest
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.desarrollo
+      # Valores descartables SOLO para las pruebas. No son secretos reales: se generan
+      # acá a la vista justamente para que nadie los confunda con los de producción, que
+      # viven en deploy/.env del servidor y nunca se versionan.
+      SECRET_KEY: clave-de-pruebas-sin-valor-en-produccion
+      COMANDO_HMAC_SECRET: hmac-de-pruebas-sin-valor-en-produccion
+      DEBUG: "False"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Generar clave Fernet para las pruebas
+        # BITLOCKER_ENCRYPTION_KEY no tiene default a propósito (ver base.py) y tiene que
+        # ser una clave Fernet válida, no cualquier string — por eso se genera en vez de
+        # hardcodearse.
+        run: |
+          echo "BITLOCKER_ENCRYPTION_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
+
+      - name: Chequeo del sistema
+        run: python manage.py check
+
+      - name: Sin migraciones pendientes de generar
+        # Atrapa el caso clásico: alguien cambia un modelo (o un verbose_name) y se
+        # olvida de la migración; el deploy funciona en su máquina y truena en el server.
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Suite completa
+        run: python manage.py test --verbosity 2
+
+  movil:
+    name: App móvil (Flutter)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: movil-campo
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Instalar dependencias
+        run: flutter pub get
+
+      - name: Análisis estático
+        run: flutter analyze
+
+      - name: Pruebas
+        run: flutter test
