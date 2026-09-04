@@ -1634,6 +1634,56 @@ el usuario. Se van cerrando en ese orden, cada uno como entrada propia en esta s
     despliegue al servidor. Vive versionada junto con el código en vez de como un
     documento aparte, para que quede sincronizada cuando algo cambie.
 
+**Z. Credenciales del agente publicadas sin autenticación, y cierre del vector
+(4-sep-2026) — 🟢 cerrado para las estaciones en línea, 🟡 4 estaciones apagadas
+pendientes:** al levantar un informe de estado se encontró que
+`/media/agente-instalador/agente-instalador.zip` — el paquete "un clic" de §10-M —
+seguía publicado y se descargaba **sin autenticación y por HTTP plano** desde
+`http://10.111.6.20:8080` (HTTP 200, 16,7 MB). Su `config.txt` lleva `MqttPassword` y
+`ComandoHmacSecret`: con ese par, cualquiera que alcanzara el puerto 8080 podía firmar
+comandos válidos y publicarlos a cualquier estación de la flota (reiniciar, ejecutar
+scripts). La ACL del usuario compartido era `/saidsof/#` allow-all, así que nada lo
+frenaba del lado del broker.
+
+Lo que se hizo, en ese orden:
+
+- **Paquete borrado** del volumen `media` (la URL responde 404). Se revisó el resto de
+  `/media/` servido sin auth: solo quedan los `.exe` del agente y paquetes de
+  despliegue, ninguno con credenciales adentro.
+- **Aprovisionamiento de credenciales por estación activado por primera vez.**
+  `apps.mqtt_worker.emqx_admin` existía desde R-6b pero nunca corrió: sus tres
+  variables (`EMQX_API_URL/KEY/SECRET`) no estaban en el `environment:` de ningún
+  servicio, y `docker-compose.yml` no usa `env_file` — ponerlas en `deploy/.env` no
+  alcanzaba. Se creó una API Key en EMQX y se agregaron las variables a los cinco
+  servicios que comparten la imagen de la app.
+- **Las 4 estaciones en línea migradas** con el script `Migrar a credencial MQTT propia`
+  (`seed_scripts_migracion_mqtt`, escrito para esto y nunca usado hasta hoy): borra
+  `identidad.json` y reinicia el servicio, forzando un re-enrolamiento que ahora sí
+  devuelve credencial propia. Verificado contra la API de EMQX: `MAM06-A`, `ML002-B`,
+  `ML006-A` y `ML027-ADM` conectan con usuario propio; ninguna usa ya `saidsof_agente`.
+  El re-enrolamiento conserva la aprobación (`manejar_enrolamiento` devuelve
+  `_respuesta_aceptado` para una estación existente) y exige `hardware_id` coincidente,
+  así que no hubo que reaprobar nada.
+- **ACL del usuario compartido endurecida** con un script nuevo,
+  `deploy/emqx-acl-agente-sin-comandos.sh`: `deny publish` sobre los tópicos
+  servidor→agente (`comando`, `actualizar_agente`, `software`, `despliegue`,
+  `enrolamiento/respuesta`) y `allow all` sobre el resto. Una estación legítima nunca
+  publica ahí — solo se suscribe — así que esto mata el vector sin cortarle el
+  heartbeat ni la recepción de trabajo a las que todavía dependen de la credencial
+  compartida. Es el paso intermedio que faltaba: `emqx-narrow-acl-agente.sh` sigue
+  siendo el cierre definitivo, pero exige que la flota entera haya migrado y hoy hay 4
+  estaciones apagadas.
+- **Verificado de punta a punta**: `consultar_info` sobre `ML027-ADM` después del cambio
+  volvió con hardware fresco (procesador/RAM/disco actualizados el 4-sep contra el
+  27-ago anterior), y las 4 estaciones en línea siguen con heartbeat de ~25 s.
+
+**Pendiente:** `ML016-A`, `ML016-B`, `MC001-B` y `MC001-C` están apagadas y siguen
+configuradas con la credencial compartida. Cuando vuelvan hay que correrles el mismo
+script de migración; recién ahí tiene sentido rotar `MQTT_PASSWORD_AGENTE` /
+`COMANDO_HMAC_SECRET` y correr `emqx-narrow-acl-agente.sh`. Rotarlos antes las dejaría
+sin poder reconectar, y el vector de ataque ya está cerrado por ACL, así que la rotación
+dejó de ser urgente.
+
 ## Directorio real de sucursales y técnicos de soporte (22-ago-2026)
 
 Con la auditoría de gobernanza cerrada, el usuario pasó dos archivos reales de RRHH/
