@@ -1,0 +1,34 @@
+{% extends "panel/base.html" %}
+{% block title %}{{ titulo }} · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-xl font-semibold">{{ titulo }}</h1>
+    <p class="text-sm text-[var(--text-faint)]">
+        Se registra a nombre de {{ colaborador.nombre }}. Topes vigentes (GFI-GTC-PR002):
+        hospedaje $30.00 por noche · alimentación $4.00 por comida · movilización $25.00 por día.
+    </p>
+</div>
+
+<form method="post" enctype="multipart/form-data" class="card p-5 max-w-2xl">
+    {% csrf_token %}
+    {% if form.non_field_errors %}
+    <div class="alert sev-critical text-sm px-3 py-2 rounded-md mb-4">{{ form.non_field_errors }}</div>
+    {% endif %}
+    {% for campo in form %}
+    <div class="mb-4">
+        <label for="{{ campo.id_for_label }}" class="block text-sm font-medium mb-1">{{ campo.label }}</label>
+        {{ campo }}
+        {% if campo.help_text %}
+        <p class="text-xs text-[var(--text-faint)] mt-1">{{ campo.help_text }}</p>
+        {% endif %}
+        {% for error in campo.errors %}
+        <p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>
+        {% endfor %}
+    </div>
+    {% endfor %}
+    <div class="flex gap-2 mt-6">
+        <button type="submit" class="btn primary">Registrar reporte</button>
+        <a href="{% url 'panel:viaticos_mis_reportes' %}" class="btn">Cancelar</a>
+    </div>
+</form>
+{% endblock %}

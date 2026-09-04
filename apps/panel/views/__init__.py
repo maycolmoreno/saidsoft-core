@@ -65,6 +65,11 @@ from .software import (
     solicitud_instalacion_publicar, solicitudes_instalacion_lista, version_crear,
 )
 from .tenant import unidad_negocio_activar
+from .viaticos import (
+    viatico_crear, viatico_detalle, viatico_revisar, viaticos_bandeja, viaticos_consolidado,
+    viaticos_consolidado_csv, viaticos_farmacias_partial, viaticos_mis_reportes, zona_crear,
+    zonas_lista,
+)
 
 __all__ = [
     'activo_asignar', 'activo_baja', 'activo_consumible_entregar', 'activo_crear', 'activo_detalle',
@@ -111,5 +116,8 @@ __all__ = [
     'solicitud_instalacion_crear', 'solicitud_instalacion_detalle', 'solicitud_instalacion_progreso_partial',
     'solicitud_instalacion_publicar', 'solicitudes_instalacion_lista', 'version_crear',
     'unidad_negocio_activar',
+    'viatico_crear', 'viatico_detalle', 'viatico_revisar', 'viaticos_bandeja', 'viaticos_consolidado',
+    'viaticos_consolidado_csv', 'viaticos_farmacias_partial', 'viaticos_mis_reportes',
+    'zona_crear', 'zonas_lista',
     'visita_tecnica_accion', 'visita_tecnica_crear', 'visita_tecnica_lista',
 ]

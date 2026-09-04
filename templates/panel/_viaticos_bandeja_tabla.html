@@ -1,0 +1,57 @@
+{% comment %}
+Tabla de la bandeja del coordinador. Vive aparte porque el mismo render sirve para la
+carga completa y para el refresco HTMX de los filtros -- si estuviera embebida en la
+página, filtrar recargaría todo y perdería el scroll.
+{% endcomment %}
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Fecha</th>
+                <th class="text-left px-4 py-3">Colaborador</th>
+                <th class="text-left px-4 py-3">Farmacia</th>
+                <th class="text-left px-4 py-3">Rubro</th>
+                <th class="text-right px-4 py-3">Monto</th>
+                <th class="text-left px-4 py-3">Alertas</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in reportes %}
+            {% comment %} Con alertas abiertas la fila entera se marca: el coordinador
+            escanea la columna, no lee reporte por reporte. {% endcomment %}
+            <tr style="border-top:1px solid var(--border-soft);{% if r.alertas_count %}background:var(--critical-dim);{% endif %}">
+                <td class="px-4 py-3 whitespace-nowrap">{{ r.fecha|date:"d/m/Y" }}</td>
+                <td class="px-4 py-3 font-medium">{{ r.colaborador.nombre }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.farmacia_visitada.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.get_rubro_display }}</td>
+                <td class="px-4 py-3 text-right" style="font-variant-numeric:tabular-nums;">
+                    ${{ r.monto }}
+                    {% if r.excede_tope %}<span class="pill critical ml-1">tope ${{ r.tope }}</span>{% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% for a in r.alertas.all %}{% if not a.resuelta %}
+                        <span class="pill {% if a.exige_justificacion %}critical{% else %}warning{% endif %}"
+                              title="{{ a.detalle }}">{{ a.get_tipo_alerta_display }}</span>
+                    {% endif %}{% empty %}
+                        <span class="text-[var(--text-faint)] text-xs">—</span>
+                    {% endfor %}
+                </td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if r.estado == 'aprobado' %}good{% elif r.estado == 'rechazado' %}critical{% elif r.estado == 'observado' %}warning{% else %}neutral{% endif %}">
+                        {{ r.get_estado_display }}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-right">
+                    <a href="{% url 'panel:viatico_detalle' r.pk %}" class="btn">Revisar</a>
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="8" class="px-4 py-8 text-center text-[var(--text-faint)]">
+                Sin reportes que coincidan con el filtro.
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>

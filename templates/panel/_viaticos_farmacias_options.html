@@ -1,0 +1,9 @@
+{% if not busco %}
+<option value="">Buscá una farmacia arriba</option>
+{% elif not farmacias %}
+<option value="">Sin resultados para esa búsqueda</option>
+{% else %}
+{% for f in farmacias %}
+<option value="{{ f.pk }}">{{ f.codigo }} — {{ f.nombre|default:f.ubicacion|default:"sin nombre" }}</option>
+{% endfor %}
+{% endif %}

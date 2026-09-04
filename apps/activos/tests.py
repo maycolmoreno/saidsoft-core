@@ -58,6 +58,30 @@ class SeedPermisosTests(TestCase):
         self.assertNotIn('ver_clave_bitlocker', codenames)
         self.assertNotIn('supervision_auditoria_estacion', codenames)
 
+    def test_solicitante_de_viaticos_carga_pero_no_aprueba(self):
+        """El técnico ("Solicitante" de GFI-GTC-PR002) reporta su gasto y ve el suyo.
+        `change_reporteviatico` es lo que habilita aprobar: dárselo sería dejar que
+        apruebe su propio viático, que es justo lo que el módulo viene a impedir."""
+        call_command('seed_permisos')
+        codenames = set(
+            Group.objects.get(name='Soporte Técnico')
+            .permissions.filter(content_type__app_label='viaticos')
+            .values_list('codename', flat=True)
+        )
+        self.assertEqual(codenames, {'view_reporteviatico', 'add_reporteviatico'})
+
+    def test_coordinador_de_viaticos_aprueba_pero_no_carga(self):
+        """Quien aprueba no es quien gasta: el coordinador no tiene `add`."""
+        call_command('seed_permisos')
+        codenames = set(
+            Group.objects.get(name='Coordinador de Viáticos')
+            .permissions.filter(content_type__app_label='viaticos')
+            .values_list('codename', flat=True)
+        )
+        self.assertIn('change_reporteviatico', codenames)
+        self.assertIn('view_colaboradorzona', codenames)
+        self.assertNotIn('add_reporteviatico', codenames)
+
     def test_soporte_tecnico_tiene_inventario_como_el_rol_tecnico(self):
         # Confirmado con el usuario (22-ago-2026): el técnico de campo registra en
         # SAIDSOFT los equipos que reemplaza/mueve en una farmacia, mismo set que el

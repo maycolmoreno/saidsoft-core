@@ -232,4 +232,16 @@ urlpatterns = [
         'cumplimiento/<int:pk>/resultados/<int:resultado_pk>/completar/',
         views.cumplimiento_resultado_completar, name='cumplimiento_resultado_completar',
     ),
+
+    # Control de viáticos (política GFI-GTC-PR002)
+    path('viaticos/nuevo/', views.viatico_crear, name='viatico_crear'),
+    path('viaticos/mis-reportes/', views.viaticos_mis_reportes, name='viaticos_mis_reportes'),
+    path('viaticos/farmacias-partial/', views.viaticos_farmacias_partial, name='viaticos_farmacias_partial'),
+    path('viaticos/bandeja/', views.viaticos_bandeja, name='viaticos_bandeja'),
+    path('viaticos/consolidado/', views.viaticos_consolidado, name='viaticos_consolidado'),
+    path('viaticos/consolidado.csv', views.viaticos_consolidado_csv, name='viaticos_consolidado_csv'),
+    path('viaticos/zonas/', views.zonas_lista, name='viaticos_zonas_lista'),
+    path('viaticos/zonas/nueva/', views.zona_crear, name='viaticos_zona_crear'),
+    path('viaticos/<int:pk>/', views.viatico_detalle, name='viatico_detalle'),
+    path('viaticos/<int:pk>/<str:accion>/', views.viatico_revisar, name='viatico_revisar'),
 ]

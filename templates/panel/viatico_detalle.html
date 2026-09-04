@@ -1,0 +1,107 @@
+{% extends "panel/base.html" %}
+{% block title %}Reporte de viático · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold">{{ reporte.get_rubro_display }} · ${{ reporte.monto }}</h1>
+        <p class="text-sm text-[var(--text-faint)]">
+            {{ reporte.colaborador.nombre }} · {{ reporte.farmacia_visitada.codigo }} · {{ reporte.fecha|date:"d/m/Y" }}
+        </p>
+    </div>
+    <span class="pill {% if reporte.estado == 'aprobado' %}good{% elif reporte.estado == 'rechazado' %}critical{% elif reporte.estado == 'observado' %}warning{% else %}neutral{% endif %}">
+        {{ reporte.get_estado_display }}
+    </span>
+</div>
+
+{% if alertas %}
+<div class="card mb-6" style="border-color:var(--critical-dim); overflow:hidden;">
+    <div class="px-4 py-3 text-sm font-medium" style="background:var(--critical-dim); color:var(--critical);">
+        {{ alertas|length }} hallazgo(s) de la validación automática
+    </div>
+    <ul class="divide-y" style="border-color:var(--border-soft);">
+    {% for a in alertas %}
+        <li class="px-4 py-3 text-sm {% if a.resuelta %}opacity-50{% endif %}">
+            <span class="pill {% if a.exige_justificacion %}critical{% else %}warning{% endif %}">
+                {{ a.get_tipo_alerta_display }}
+            </span>
+            {% if a.resuelta %}<span class="pill good ml-1">resuelta</span>{% endif %}
+            <p class="mt-1.5 text-[var(--text-dim)]">{{ a.detalle }}</p>
+        </li>
+    {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<div class="card p-4 mb-6 grid gap-4" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));">
+    <div>
+        <div class="text-xs text-[var(--text-faint)] uppercase tracking-wide">Tope de la política</div>
+        <div class="text-sm mt-1">
+            {% if reporte.tope %}${{ reporte.tope }}{% else %}—{% endif %}
+            {% if reporte.excede_tope %}<span class="pill critical ml-1">excedido</span>{% endif %}
+        </div>
+    </div>
+    {% if reporte.rubro == 'movilizacion' %}
+    <div>
+        <div class="text-xs text-[var(--text-faint)] uppercase tracking-wide">Tramo</div>
+        <div class="text-sm mt-1">{{ reporte.origen }} → {{ reporte.destino }}</div>
+    </div>
+    {% endif %}
+    <div>
+        <div class="text-xs text-[var(--text-faint)] uppercase tracking-wide">Factura</div>
+        <div class="text-sm mt-1">
+            {% if reporte.factura_adjunta %}
+                <a href="{{ reporte.factura_adjunta.url }}" class="underline">Ver adjunto</a>
+                {% if reporte.total_factura %}<span class="text-[var(--text-faint)]"> · total ${{ reporte.total_factura }}</span>{% endif %}
+            {% else %}<span class="text-[var(--text-faint)]">Sin adjunto</span>{% endif %}
+        </div>
+    </div>
+    {% if reporte.descripcion %}
+    <div style="grid-column:1/-1;">
+        <div class="text-xs text-[var(--text-faint)] uppercase tracking-wide">Descripción</div>
+        <p class="text-sm mt-1 text-[var(--text-dim)]">{{ reporte.descripcion }}</p>
+    </div>
+    {% endif %}
+    {% if reporte.revisado_por %}
+    <div style="grid-column:1/-1;">
+        <div class="text-xs text-[var(--text-faint)] uppercase tracking-wide">Revisión</div>
+        <p class="text-sm mt-1 text-[var(--text-dim)]">
+            {{ reporte.revisado_por }} · {{ reporte.revisado_en|date:"d/m/Y H:i" }}
+            {% if reporte.comentario_coordinador %}<br>{{ reporte.comentario_coordinador }}{% endif %}
+        </p>
+    </div>
+    {% endif %}
+</div>
+
+{% if puede_revisar %}
+<div class="card p-4">
+    <h2 class="text-sm font-semibold mb-3">Decisión del coordinador</h2>
+    {% if reporte.requiere_justificacion %}
+    <p class="alert sev-critical text-sm px-3 py-2 rounded-md mb-3">
+        Tiene alertas de zona o tope: para aprobarlo hay que escribir por qué se aprueba igual.
+    </p>
+    {% endif %}
+    {% comment %}
+    Un solo <form> con tres botones que apuntan a rutas distintas via `formaction`: el
+    comentario es el mismo campo para las tres acciones, y duplicarlo en tres formularios
+    obligaría al coordinador a escribirlo en el cuadro correcto.
+    {% endcomment %}
+    <form method="post" action="{% url 'panel:viatico_revisar' reporte.pk 'aprobar' %}">
+        {% csrf_token %}
+        <textarea name="comentario" rows="3" placeholder="Justificación / comentario"
+                  class="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-3 py-2 text-sm"></textarea>
+        <div class="flex gap-2 mt-3">
+            <button type="submit" class="btn primary" style="background:var(--good);">Aprobar</button>
+            <button type="submit" class="btn"
+                    formaction="{% url 'panel:viatico_revisar' reporte.pk 'observar' %}">Observar</button>
+            <button type="submit" class="btn"
+                    formaction="{% url 'panel:viatico_revisar' reporte.pk 'rechazar' %}"
+                    style="color:var(--critical);">Rechazar</button>
+        </div>
+    </form>
+</div>
+{% endif %}
+
+<div class="mt-6">
+    <a href="{% url 'panel:viaticos_bandeja' %}" class="text-sm text-[var(--text-faint)] underline">← Volver a la bandeja</a>
+</div>
+{% endblock %}

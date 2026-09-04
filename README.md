@@ -735,6 +735,74 @@ criterio conservador que Windows Update v1 en equipos de farmacia.
   de alcance a propósito — sería una acción de riesgo comparable a "reiniciar",
   pendiente de una decisión de negocio explícita antes de construirla.
 
+## Control de viáticos (política GFI-GTC-PR002)
+
+Reemplaza la validación manual de los reportes de viáticos del personal de Soporte
+Técnico. Cada gasto se cruza automáticamente contra la zona de cobertura del
+colaborador y contra los topes de la política, y el coordinador aprueba sobre una
+bandeja donde lo dudoso ya viene marcado.
+
+**Modelos** (`apps/viaticos`):
+
+- `ColaboradorZona` — zona de cobertura de un técnico y las farmacias que le
+  corresponden. Es `OneToOne` con `activos.Colaborador`: la regla "fuera de zona"
+  necesita UNA respuesta a qué le toca a cada uno. Convive con
+  `Colaborador.zona` (texto libre, descriptivo); el que manda para validar es este,
+  porque es el único que lista farmacias.
+- `ReporteViatico` — el gasto: fecha, farmacia visitada, rubro, monto, origen/destino,
+  factura y estado (`pendiente`/`aprobado`/`observado`/`rechazado`).
+- `AlertaViatico` — hallazgo automático sobre un reporte. Único por (reporte, tipo),
+  así que revalidar actualiza en vez de acumular duplicados.
+
+**Topes vigentes** (`apps/viaticos/models.py::TOPES_POR_RUBRO`): hospedaje $30.00 por
+noche · alimentación $4.00 por comida · movilización $25.00 por día. Son constantes en
+un solo lugar y no un modelo editable a propósito: cambiarlos debería ser una decisión
+versionada, no una edición silenciosa en el admin.
+
+**Reglas** (`apps/viaticos/services.py`), divididas en dos clases deliberadamente
+distintas:
+
+| Regla | Qué hace |
+|---|---|
+| Movilización sin origen/destino | **Bloquea** el guardado (`ReporteViatico.clean()`) |
+| Monto ≠ total de la factura | **Bloquea** — no se admiten reembolsos parciales |
+| Monto > tope del rubro | Alerta `excede_tope` |
+| Farmacia fuera de las asignadas | Alerta `fuera_de_zona`, con quién sí la tiene |
+| 3+ reportes del mismo monto/rubro en el mes | Alerta `monto_repetido` |
+| Sin visita ni mantenimiento ese día | Alerta `sin_planificacion` |
+
+Lo que bloquea vive en `clean()` para que valga igual desde el panel, el admin o una
+carga futura. Lo que solo avisa se guarda igual: quien decide es el coordinador, y
+esconder el reporte le sacaría justamente lo que tiene que revisar.
+
+`evaluar_alertas()` es idempotente y **sincronizante**: si el técnico corrige el monto,
+la alerta de tope se marca `resuelta` en vez de quedar colgada. Se marca en vez de
+borrarse para no perder el rastro.
+
+**Falsos positivos evitados a propósito** — sin zona asignada, con la zona sin
+farmacias cargadas, o con un colaborador sin usuario de panel, la regla correspondiente
+NO se dispara. Una alerta falsa es peor que ninguna: el coordinador deja de mirarlas.
+
+**Flujo y permisos** (grupos creados por `seed_permisos`):
+
+- *Soporte Técnico* (Solicitante) — `view`/`add` sobre `ReporteViatico`. Sin `change`:
+  aprobar el propio viático es lo que el módulo viene a impedir.
+- *Coordinador de Viáticos* — `view`/`change` sobre `ReporteViatico` y las zonas. Sin
+  `add`: quien aprueba no es quien gasta.
+
+Un reporte con alertas de **zona o tope** no se puede aprobar sin comentario de
+justificación (`services.aprobar_reporte` lanza `JustificacionRequerida`). Observar y
+rechazar también exigen texto: son la decisión que el técnico va a discutir.
+
+**Pantallas**: `/viaticos/bandeja/` (bandeja HTMX del coordinador, filtrable por
+colaborador/zona/mes/estado, filas con alerta resaltadas), `/viaticos/nuevo/` +
+`/viaticos/mis-reportes/` (el técnico), `/viaticos/consolidado/` (total por rubro,
+alertas y tendencia de 3 meses) con exportable en `/viaticos/consolidado.csv`, y
+`/viaticos/zonas/`.
+
+Todo escopado por unidad de negocio vía `colaborador__unidad_negocio` con el criterio
+"compartido o del tenant" (`Colaborador.unidad_negocio` es opcional).
+
 ## Roles y permisos (RBAC)
 
 No hay un modelo `Rol`/`Modulo` propio: se usa el sistema de permisos estándar de

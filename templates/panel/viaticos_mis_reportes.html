@@ -1,0 +1,48 @@
+{% extends "panel/base.html" %}
+{% block title %}Mis viáticos · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold">Mis viáticos</h1>
+        <p class="text-sm text-[var(--text-faint)]">{{ colaborador.nombre }}</p>
+    </div>
+    {% if perms.viaticos.add_reporteviatico %}
+    <a href="{% url 'panel:viatico_crear' %}" class="btn primary">+ Nuevo reporte</a>
+    {% endif %}
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Fecha</th>
+                <th class="text-left px-4 py-3">Farmacia</th>
+                <th class="text-left px-4 py-3">Rubro</th>
+                <th class="text-right px-4 py-3">Monto</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Observación del coordinador</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in reportes %}
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-4 py-3 whitespace-nowrap">{{ r.fecha|date:"d/m/Y" }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.farmacia_visitada.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ r.get_rubro_display }}</td>
+                <td class="px-4 py-3 text-right" style="font-variant-numeric:tabular-nums;">${{ r.monto }}</td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if r.estado == 'aprobado' %}good{% elif r.estado == 'rechazado' %}critical{% elif r.estado == 'observado' %}warning{% else %}neutral{% endif %}">
+                        {{ r.get_estado_display }}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-[var(--text-dim)] text-xs">{{ r.comentario_coordinador|default:"—" }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">
+                Todavía no cargaste ningún viático.
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

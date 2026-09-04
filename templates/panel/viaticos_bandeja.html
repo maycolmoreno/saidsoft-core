@@ -1,0 +1,60 @@
+{% extends "panel/base.html" %}
+{% block title %}Bandeja de viáticos · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold">Bandeja de viáticos</h1>
+        <p class="text-sm text-[var(--text-faint)]">
+            Reportes del equipo. Las filas marcadas tienen alertas de la política GFI-GTC-PR002.
+        </p>
+    </div>
+    <a href="{% url 'panel:viaticos_consolidado' %}" class="btn">Consolidado mensual</a>
+</div>
+
+{% comment %}
+Los filtros refrescan solo la tabla. `hx-trigger` incluye `change` para los <select> y
+un `keyup` con delay para el mes, para no disparar una consulta por tecla.
+{% endcomment %}
+<form class="card p-4 mb-6 grid gap-3"
+      style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));"
+      hx-get="{% url 'panel:viaticos_bandeja' %}"
+      hx-target="#bandeja-tabla" hx-swap="innerHTML"
+      hx-trigger="change, keyup changed delay:400ms from:input[type=month]">
+    <label class="text-xs text-[var(--text-faint)]">Colaborador
+        <select name="colaborador" class="w-full mt-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm">
+            <option value="">Todos</option>
+            {% for c in colaboradores %}
+            <option value="{{ c.pk }}" {% if filtros.colaborador == c.pk|stringformat:"s" %}selected{% endif %}>{{ c.nombre }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label class="text-xs text-[var(--text-faint)]">Zona
+        <select name="zona" class="w-full mt-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm">
+            <option value="">Todas</option>
+            {% for z in zonas %}
+            <option value="{{ z }}" {% if filtros.zona == z %}selected{% endif %}>{{ z }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label class="text-xs text-[var(--text-faint)]">Estado
+        <select name="estado" class="w-full mt-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm">
+            <option value="">Todos</option>
+            {% for valor, etiqueta in estados %}
+            <option value="{{ valor }}" {% if filtros.estado == valor %}selected{% endif %}>{{ etiqueta }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label class="text-xs text-[var(--text-faint)]">Mes
+        <input type="month" name="mes" value="{{ filtros.mes }}"
+               class="w-full mt-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm">
+    </label>
+    <label class="text-xs text-[var(--text-faint)] flex items-end gap-2 pb-1">
+        <input type="checkbox" name="solo_alertas" value="1" {% if filtros.solo_alertas %}checked{% endif %}>
+        Solo con alertas
+    </label>
+</form>
+
+<div id="bandeja-tabla">
+    {% include "panel/_viaticos_bandeja_tabla.html" %}
+</div>
+{% endblock %}

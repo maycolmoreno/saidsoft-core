@@ -1,0 +1,56 @@
+{% extends "panel/base.html" %}
+{% block title %}Zonas de cobertura · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold">Zonas de cobertura</h1>
+        <p class="text-sm text-[var(--text-faint)]">
+            Las farmacias asignadas son contra lo que se valida la alerta "fuera de zona".
+        </p>
+    </div>
+    {% if perms.viaticos.add_colaboradorzona %}
+    <a href="{% url 'panel:viaticos_zona_crear' %}" class="btn primary">+ Asignar zona</a>
+    {% endif %}
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Colaborador</th>
+                <th class="text-left px-4 py-3">Zona</th>
+                <th class="text-left px-4 py-3">Farmacias asignadas</th>
+                <th class="text-left px-4 py-3">Estado</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for z in zonas %}
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-4 py-3 font-medium">{{ z.colaborador.nombre }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ z.zona_cobertura }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)] text-xs">
+                    {% with total=z.farmacias_asignadas.count %}
+                    {% if total %}
+                        {{ total }}: {% for f in z.farmacias_asignadas.all|slice:":8" %}{{ f.codigo }}{% if not forloop.last %}, {% endif %}{% endfor %}{% if total > 8 %} …{% endif %}
+                    {% else %}
+                        {% comment %} Sin farmacias la zona no valida nada: hay que decirlo,
+                        o el coordinador cree que el control está activo cuando no lo está. {% endcomment %}
+                        <span class="pill warning">sin farmacias — no valida</span>
+                    {% endif %}
+                    {% endwith %}
+                </td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if z.activa %}good{% else %}neutral{% endif %}">
+                        {% if z.activa %}Activa{% else %}Inactiva{% endif %}
+                    </span>
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="4" class="px-4 py-8 text-center text-[var(--text-faint)]">
+                Sin zonas asignadas. Mientras no haya ninguna, la alerta "fuera de zona" no se dispara.
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

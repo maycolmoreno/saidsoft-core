@@ -1,0 +1,74 @@
+{% extends "panel/base.html" %}
+{% block title %}Consolidado de viáticos · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-xl font-semibold">Consolidado {{ mes|stringformat:"02d" }}/{{ anio }}</h1>
+        <p class="text-sm text-[var(--text-faint)]">
+            Totales por rubro y alertas abiertas, por colaborador. No incluye rechazados.
+        </p>
+    </div>
+    <div class="flex items-center gap-2">
+        <form method="get" class="flex items-center gap-2">
+            <input type="month" name="mes" value="{{ mes_iso }}"
+                   class="rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm">
+            <button class="btn">Ver</button>
+        </form>
+        <a href="{% url 'panel:viaticos_consolidado_csv' %}?mes={{ mes_iso }}" class="btn primary">Exportar CSV</a>
+    </div>
+</div>
+
+<div class="card p-4 mb-6">
+    <h2 class="text-sm font-semibold mb-3">Tendencia (últimos 3 meses)</h2>
+    <div class="grid gap-3" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));">
+    {% for t in tendencia %}
+        <div class="rounded-md px-3 py-2" style="background:var(--panel);">
+            <div class="text-xs text-[var(--text-faint)]">{{ t.etiqueta }}</div>
+            <div class="text-lg font-semibold" style="font-variant-numeric:tabular-nums;">${{ t.total|floatformat:2 }}</div>
+            <div class="text-xs text-[var(--text-faint)]">
+                {{ t.reportes }} reporte(s)
+                {% if t.alertas %}· <span style="color:var(--critical);">{{ t.alertas }} alerta(s)</span>{% endif %}
+            </div>
+        </div>
+    {% endfor %}
+    </div>
+</div>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Colaborador</th>
+                <th class="text-left px-4 py-3">Cédula</th>
+                <th class="text-right px-4 py-3">Hospedaje</th>
+                <th class="text-right px-4 py-3">Alimentación</th>
+                <th class="text-right px-4 py-3">Movilización</th>
+                <th class="text-right px-4 py-3">Total</th>
+                <th class="text-right px-4 py-3">Reportes</th>
+                <th class="text-right px-4 py-3">Alertas</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for f in filas %}
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-4 py-3 font-medium">{{ f.colaborador__nombre }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ f.colaborador__cedula }}</td>
+                <td class="px-4 py-3 text-right" style="font-variant-numeric:tabular-nums;">${{ f.hospedaje|floatformat:2 }}</td>
+                <td class="px-4 py-3 text-right" style="font-variant-numeric:tabular-nums;">${{ f.alimentacion|floatformat:2 }}</td>
+                <td class="px-4 py-3 text-right" style="font-variant-numeric:tabular-nums;">${{ f.movilizacion|floatformat:2 }}</td>
+                <td class="px-4 py-3 text-right font-semibold" style="font-variant-numeric:tabular-nums;">${{ f.total|floatformat:2 }}</td>
+                <td class="px-4 py-3 text-right text-[var(--text-dim)]">{{ f.reportes }}</td>
+                <td class="px-4 py-3 text-right">
+                    {% if f.alertas %}<span class="pill critical">{{ f.alertas }}</span>
+                    {% else %}<span class="text-[var(--text-faint)]">—</span>{% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="8" class="px-4 py-8 text-center text-[var(--text-faint)]">
+                Sin reportes en {{ mes|stringformat:"02d" }}/{{ anio }}.
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

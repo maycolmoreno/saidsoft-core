@@ -1,0 +1,16 @@
+{% extends "panel/base.html" %}
+{% block title %}Viáticos · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="card p-6 max-w-xl">
+    <h1 class="text-lg font-semibold mb-2">Tu usuario no está vinculado a un colaborador</h1>
+    <p class="text-sm text-[var(--text-dim)]">
+        Un reporte de viático se registra a nombre de un colaborador: es contra él que se
+        valida la zona de cobertura y contra el que se consolida el gasto del mes. Tu usuario
+        todavía no tiene uno asociado, así que no hay a nombre de quién cargarlo.
+    </p>
+    <p class="text-sm text-[var(--text-dim)] mt-3">
+        Pedile a Soporte que vincule tu usuario en la ficha del colaborador (campo
+        <em>Usuario</em>) o en tu perfil.
+    </p>
+</div>
+{% endblock %}

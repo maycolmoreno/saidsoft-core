@@ -68,6 +68,21 @@ ROLES = {
         # Mismo motivo que en 'Técnico' de arriba: "enviar a reparación" abre un
         # Mantenimiento vinculado, y sin este permiso no podrían cerrarlo ellos mismos.
         ('mantenimiento', 'mantenimiento', ['view', 'add', 'change']),
+        # Rol "Solicitante" del control de viáticos (GFI-GTC-PR002): carga su propio
+        # gasto y ve el suyo. SIN `change`: corregir un reporte ya revisado o aprobar
+        # el propio es justamente lo que el módulo viene a impedir.
+        ('viaticos', 'reporteviatico', ['view', 'add']),
+    ],
+    # Rol "Coordinador" del control de viáticos: la jefatura que aprueba/observa/rechaza
+    # lo que reporta su equipo. Grupo propio y no un agregado a 'Soporte Técnico' porque
+    # el punto del control es que quien aprueba no sea quien gasta.
+    'Coordinador de Viáticos': [
+        ('viaticos', 'reporteviatico', ['view', 'change']),
+        ('viaticos', 'alertaviatico', ['view']),
+        # Las zonas definen contra qué se valida "fuera de zona": las mantiene quien
+        # reparte la cobertura, que es el mismo coordinador.
+        ('viaticos', 'colaboradorzona', ['view', 'add', 'change']),
+        ('activos', 'colaborador', ['view']),
     ],
 }
 

@@ -1,4 +1,5 @@
 import csv
+from decimal import Decimal
 import io
 
 from django.conf import settings
@@ -2818,3 +2819,189 @@ class MenuLateralSegunPermisosTests(TestCase):
 
         for etiqueta in ('Estaciones', 'Inventario', 'Mantenimientos', 'Bodegas y stock'):
             self.assertIn(f'<span class="lbl">{etiqueta}</span>', html)
+
+
+class ViaticosPanelTests(TestCase):
+    """Bandeja de aprobación: permisos, aislamiento por tenant y el control de que una
+    alerta de zona/tope no se pueda aprobar en un clic."""
+
+    def setUp(self):
+        from apps.viaticos import services as viaticos_services
+        from apps.viaticos.models import ColaboradorZona, ReporteViatico, RubroViatico
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia_un = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001', version_objetivo='4.2.1')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML006', grupo=grupo, unidad_negocio=self.sg)
+        self.farmacia_ajena = Farmacia.objects.create(codigo='ML099', grupo=grupo, unidad_negocio=self.sg)
+
+        self.tecnico = Colaborador.objects.create(
+            nombre='Ana Pérez', cedula='0912345678', unidad_negocio=self.sg,
+        )
+        zona = ColaboradorZona.objects.create(colaborador=self.tecnico, zona_cobertura='Machala Norte')
+        zona.farmacias_asignadas.add(self.farmacia_sg)
+
+        # Reporte con las dos alertas que exigen justificación para aprobarse.
+        self.reporte = ReporteViatico.objects.create(
+            colaborador=self.tecnico, fecha=date(2026, 9, 10), farmacia_visitada=self.farmacia_ajena,
+            rubro=RubroViatico.HOSPEDAJE, monto=Decimal('45.00'),
+        )
+        viaticos_services.evaluar_alertas(self.reporte)
+
+        self.coordinador = self._usuario(
+            'coordinador_v', True, 'view_reporteviatico', 'change_reporteviatico',
+        )
+
+    def _usuario(self, nombre, acceso_total, *codenames, unidades=()):
+        usuario = User.objects.create_user(username=nombre, password='x')
+        perfil = PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=acceso_total)
+        for unidad in unidades:
+            perfil.unidades_negocio.add(unidad)
+        for codename in codenames:
+            usuario.user_permissions.add(
+                Permission.objects.get(content_type__app_label='viaticos', codename=codename),
+            )
+        return usuario
+
+    def test_bandeja_sin_permiso_devuelve_403(self):
+        self.client.force_login(self._usuario('sin_permiso_v', True))
+        self.assertEqual(self.client.get(reverse('panel:viaticos_bandeja')).status_code, 403)
+
+    def test_bandeja_muestra_el_reporte_y_sus_alertas(self):
+        self.client.force_login(self.coordinador)
+        html = self.client.get(reverse('panel:viaticos_bandeja')).content.decode()
+        self.assertIn('Ana Pérez', html)
+        self.assertIn('Fuera de zona', html)
+        self.assertIn('Excede el tope', html)
+
+    def test_htmx_devuelve_solo_la_tabla(self):
+        """El filtro refresca la tabla; si devolviera la página entera, HTMX anidaría
+        un <html> dentro del div y rompería el layout."""
+        self.client.force_login(self.coordinador)
+        html = self.client.get(
+            reverse('panel:viaticos_bandeja'), HTTP_HX_REQUEST='true',
+        ).content.decode()
+        self.assertNotIn('<html', html)
+        self.assertIn('Ana Pérez', html)
+
+    def test_filtro_solo_alertas(self):
+        from apps.viaticos.models import ReporteViatico, RubroViatico
+        limpio = ReporteViatico.objects.create(
+            colaborador=self.tecnico, fecha=date(2026, 9, 11), farmacia_visitada=self.farmacia_sg,
+            rubro=RubroViatico.ALIMENTACION, monto=Decimal('4.00'),
+        )
+        self.client.force_login(self.coordinador)
+        html = self.client.get(
+            reverse('panel:viaticos_bandeja'), {'solo_alertas': '1'}, HTTP_HX_REQUEST='true',
+        ).content.decode()
+        self.assertIn(reverse('panel:viatico_detalle', args=[self.reporte.pk]), html)
+        self.assertNotIn(reverse('panel:viatico_detalle', args=[limpio.pk]), html)
+
+    def test_aprobar_sin_justificacion_no_cambia_el_estado(self):
+        from apps.viaticos.models import EstadoReporteViatico
+        self.client.force_login(self.coordinador)
+        self.client.post(
+            reverse('panel:viatico_revisar', args=[self.reporte.pk, 'aprobar']), {'comentario': ''},
+        )
+        self.reporte.refresh_from_db()
+        self.assertEqual(self.reporte.estado, EstadoReporteViatico.PENDIENTE)
+
+    def test_aprobar_con_justificacion_funciona(self):
+        from apps.viaticos.models import EstadoReporteViatico
+        self.client.force_login(self.coordinador)
+        self.client.post(
+            reverse('panel:viatico_revisar', args=[self.reporte.pk, 'aprobar']),
+            {'comentario': 'Único hotel disponible por feriado.'},
+        )
+        self.reporte.refresh_from_db()
+        self.assertEqual(self.reporte.estado, EstadoReporteViatico.APROBADO)
+        self.assertEqual(self.reporte.revisado_por, self.coordinador)
+
+    def test_revisar_sin_permiso_de_cambio_devuelve_403(self):
+        self.client.force_login(self._usuario('solo_lectura_v', True, 'view_reporteviatico'))
+        resp = self.client.post(
+            reverse('panel:viatico_revisar', args=[self.reporte.pk, 'aprobar']), {'comentario': 'x'},
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_otra_unidad_de_negocio_no_ve_el_reporte(self):
+        de_mia = self._usuario(
+            'coord_mia_v', False, 'view_reporteviatico', 'change_reporteviatico', unidades=[self.mia_un],
+        )
+        self.client.force_login(de_mia)
+        html = self.client.get(reverse('panel:viaticos_bandeja')).content.decode()
+        self.assertNotIn('Ana Pérez', html)
+
+    def test_forzar_el_pk_por_url_desde_otro_tenant_da_403(self):
+        de_mia = self._usuario('coord_mia_v2', False, 'view_reporteviatico', unidades=[self.mia_un])
+        self.client.force_login(de_mia)
+        resp = self.client.get(reverse('panel:viatico_detalle', args=[self.reporte.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_csv_del_consolidado_respeta_el_tenant(self):
+        de_mia = self._usuario('coord_mia_v3', False, 'view_reporteviatico', unidades=[self.mia_un])
+        self.client.force_login(de_mia)
+        resp = self.client.get(reverse('panel:viaticos_consolidado_csv'), {'mes': '2026-09'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn('Ana Pérez', resp.content.decode('utf-8'))
+
+    def test_csv_del_consolidado_trae_los_totales(self):
+        self.client.force_login(self.coordinador)
+        resp = self.client.get(reverse('panel:viaticos_consolidado_csv'), {'mes': '2026-09'})
+        self.assertEqual(resp['Content-Type'], 'text/csv; charset=utf-8')
+        self.assertIn(
+            'attachment; filename="viaticos_consolidado_2026-09.csv"', resp['Content-Disposition'],
+        )
+        cuerpo = resp.content.decode('utf-8')
+        self.assertIn('Ana Pérez', cuerpo)
+        self.assertIn('45.00', cuerpo)
+
+    def test_alta_sin_colaborador_vinculado_lo_dice(self):
+        """Un usuario sin Colaborador no tiene a nombre de quién cargar el gasto: se
+        explica qué falta en vez de guardar algo sin dueño."""
+        suelto = self._usuario('suelto_v', True, 'add_reporteviatico', 'view_reporteviatico')
+        self.client.force_login(suelto)
+        resp = self.client.get(reverse('panel:viatico_crear'))
+        self.assertEqual(resp.status_code, 409)
+        self.assertIn('no está vinculado a un colaborador', resp.content.decode())
+
+    def _tecnico_logueado(self, nombre):
+        usuario = self._usuario(nombre, True, 'add_reporteviatico', 'view_reporteviatico')
+        self.tecnico.usuario = usuario
+        self.tecnico.save(update_fields=['usuario'])
+        self.client.force_login(usuario)
+        return usuario
+
+    def test_alta_registra_a_nombre_del_usuario_logueado(self):
+        from apps.viaticos.models import ReporteViatico, RubroViatico
+        self._tecnico_logueado('tecnico_alta_v')
+        resp = self.client.post(reverse('panel:viatico_crear'), {
+            'fecha': '2026-09-12', 'farmacia_visitada': self.farmacia_sg.pk,
+            'rubro': RubroViatico.ALIMENTACION, 'monto': '4.00',
+            'origen': '', 'destino': '', 'descripcion': 'Almuerzo', 'total_factura': '',
+        })
+        self.assertEqual(resp.status_code, 302, getattr(resp, 'context', {}))
+        creado = ReporteViatico.objects.get(fecha=date(2026, 9, 12))
+        self.assertEqual(creado.colaborador, self.tecnico)
+
+    def test_movilizacion_sin_origen_destino_no_se_guarda_desde_el_panel(self):
+        from apps.viaticos.models import ReporteViatico, RubroViatico
+        self._tecnico_logueado('tecnico_mov_v')
+        resp = self.client.post(reverse('panel:viatico_crear'), {
+            'fecha': '2026-09-12', 'farmacia_visitada': self.farmacia_sg.pk,
+            'rubro': RubroViatico.MOVILIZACION, 'monto': '10.00',
+            'origen': '', 'destino': '', 'descripcion': '', 'total_factura': '',
+        })
+        self.assertEqual(resp.status_code, 200)  # vuelve al formulario con errores
+        self.assertFalse(ReporteViatico.objects.filter(fecha=date(2026, 9, 12)).exists())
+
+    def test_buscar_farmacias_exige_termino(self):
+        """Sin término no se devuelven 700 opciones: es lo que dejaba la pantalla
+        inusable en el alta de mantenimiento."""
+        self.client.force_login(self.coordinador)
+        vacio = self.client.get(reverse('panel:viaticos_farmacias_partial')).content.decode()
+        self.assertNotIn('ML006', vacio)
+        con_termino = self.client.get(
+            reverse('panel:viaticos_farmacias_partial'), {'buscar_farmacia': 'ML006'},
+        ).content.decode()
+        self.assertIn('ML006', con_termino)
