@@ -1,6 +1,0 @@
-# Copiar como key.properties (ignorado por git) para firmar un release de Android.
-# El keystore .jks NO se versiona: se guarda en el gestor de secretos del área.
-storePassword=
-keyPassword=
-keyAlias=
-storeFile=
