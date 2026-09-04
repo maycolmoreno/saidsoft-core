@@ -58,6 +58,20 @@ class SeedPermisosTests(TestCase):
         self.assertNotIn('ver_clave_bitlocker', codenames)
         self.assertNotIn('supervision_auditoria_estacion', codenames)
 
+    def test_soporte_tecnico_puede_dar_de_alta_un_equipo(self):
+        """Sin `add_activo`, la app tenia "Registrar equipo" pero nadie en campo podia
+        usarlo — y como no se abre un mantenimiento sin elegir equipo, un tecnico frente
+        a una maquina no inventariada quedaba sin salida: no podia cargarla ni atenderla."""
+        call_command('seed_permisos')
+        codenames = set(
+            Group.objects.get(name='Soporte Técnico')
+            .permissions.filter(content_type__app_label='activos')
+            .values_list('codename', flat=True)
+        )
+        self.assertIn('add_activo', codenames)
+        self.assertIn('view_activo', codenames)
+        self.assertIn('change_activo', codenames)
+
     def test_solicitante_de_viaticos_carga_pero_no_aprueba(self):
         """El técnico ("Solicitante" de GFI-GTC-PR002) reporta su gasto y ve el suyo.
         `change_reporteviatico` es lo que habilita aprobar: dárselo sería dejar que

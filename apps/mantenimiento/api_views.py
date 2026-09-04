@@ -220,7 +220,7 @@ class EquipoListView(generics.ListAPIView):
 
     def get_queryset(self):
         from apps.activos.models import Activo
-        from apps.cuentas.services import scope_por_unidad_negocio
+        from apps.cuentas.services import scope_opcional_por_unidad_negocio
 
         queryset = Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA).select_related(
             'marca', 'categoria', 'farmacia', 'estacion', 'colaborador_actual',
@@ -249,7 +249,13 @@ class EquipoListView(generics.ListAPIView):
         cliente = self.request.query_params.get('cliente')
         if cliente:
             queryset = queryset.filter(colaborador_actual_id=cliente)
-        return scope_por_unidad_negocio(queryset, self.request.user, 'unidad_negocio')
+        # `scope_opcional_*` y no la variante estricta: `Activo.unidad_negocio` es
+        # nullable y el panel (activos_lista) ya trata el vacío como "compartido,
+        # visible para todos". La app usaba la estricta, que EXCLUYE los nulos, así que
+        # el mismo equipo se veía en la web y desaparecía en el celular. Como
+        # `registrar_ingreso` no setea unidad_negocio, eso son TODOS los equipos: un
+        # técnico con tenant acotado no habría podido abrir ningún mantenimiento.
+        return scope_opcional_por_unidad_negocio(queryset, self.request.user, 'unidad_negocio')
 
 
 class NotificacionListView(generics.ListAPIView):

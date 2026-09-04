@@ -1359,3 +1359,48 @@ class BuscarEquiposTests(TestCase):
         ).json()
         self.assertIn('colaboradores', datos)
         self.assertTrue(any(c['nombre'].startswith('Alvarez') for c in datos['colaboradores']))
+
+
+class EquipoListApiScopeTests(TestCase):
+    """Un técnico con tenant acotado veía CERO equipos en la app, y sin equipo no se
+    puede abrir un mantenimiento.
+
+    La app usaba el scope estricto (excluye `unidad_negocio` nulo) mientras el panel
+    usa el opcional (nulo = compartido, visible para todos). Como `registrar_ingreso`
+    nunca setea `unidad_negocio`, "los nulos" son en la práctica TODOS los equipos.
+    """
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.compartido = Activo.objects.create(codigo='CR-DSK-9001', tipo=Activo.Tipo.DESKTOP)
+        self.de_sg = Activo.objects.create(
+            codigo='CR-DSK-9002', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg,
+        )
+        self.de_mia = Activo.objects.create(
+            codigo='CR-DSK-9003', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.mia,
+        )
+        self.tecnico = User.objects.create_user(username='tec_scope_equipos', password='x')
+        perfil = PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=False)
+        perfil.unidades_negocio.add(self.sg)
+        self.token = Token.objects.create(user=self.tecnico)
+
+    def _codigos(self):
+        resp = self.client.get('/api/v1/equipos/', HTTP_AUTHORIZATION=f'Token {self.token.key}')
+        self.assertEqual(resp.status_code, 200)
+        return {a['codigo'] for a in resp.json()}
+
+    def test_ve_los_compartidos_ademas_de_los_de_su_unidad(self):
+        codigos = self._codigos()
+        self.assertIn('CR-DSK-9001', codigos)  # sin unidad = compartido
+        self.assertIn('CR-DSK-9002', codigos)  # su propia unidad
+
+    def test_sigue_sin_ver_los_de_otra_unidad(self):
+        """El arreglo suma los compartidos; no afloja el aislamiento entre clientes."""
+        self.assertNotIn('CR-DSK-9003', self._codigos())
+
+    def test_los_dados_de_baja_no_son_accionables_en_campo(self):
+        self.compartido.estado = Activo.Estado.DADO_DE_BAJA
+        self.compartido.save(update_fields=['estado'])
+        self.assertNotIn('CR-DSK-9001', self._codigos())

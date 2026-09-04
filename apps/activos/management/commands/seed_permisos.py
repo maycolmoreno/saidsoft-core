@@ -61,7 +61,12 @@ ROLES = {
         # Mismo set que el rol 'Técnico' heredado de InvTICS -- confirmado con el
         # usuario (22-ago-2026): el técnico de campo registra en SAIDSOFT los equipos
         # que reemplaza/mueve en una farmacia, no solo hace soporte remoto.
-        ('activos', 'activo', ['view', 'change']),
+        #
+        # `add` agregado el 4-sep-2026: sin él la app tenía "Registrar equipo" pero
+        # nadie en campo podía usarlo, y como no se puede abrir un mantenimiento sin
+        # elegir un equipo, un técnico parado frente a una máquina que no estaba
+        # inventariada quedaba sin salida -- no podía cargarla NI atenderla.
+        ('activos', 'activo', ['view', 'add', 'change']),
         ('activos', 'eventoactivo', ['view', 'add']),
         ('activos', 'ubicacion', ['view']),
         ('activos', 'colaborador', ['view']),
