@@ -110,6 +110,15 @@ services:
       # faltaban aquí — el stack tal como estaba no podía levantar `web`/`worker` en limpio.
       COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
       BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      # Aprovisionamiento de credenciales MQTT por estación (apps.mqtt_worker.emqx_admin):
+      # con esto cada estación recibe, al enrolarse, su propia credencial con ACL acotada
+      # a sus propios tópicos, en vez de compartir MQTT_PASSWORD_AGENTE con toda la flota.
+      # Vacías = comportamiento anterior (credencial compartida); `_config()` trata la
+      # cadena vacía igual que la ausencia, así que el `:-` de acá es seguro pese a que
+      # django-environ no aplique default a una var presente pero vacía.
+      EMQX_API_URL: ${EMQX_API_URL:-}
+      EMQX_API_KEY: ${EMQX_API_KEY:-}
+      EMQX_API_SECRET: ${EMQX_API_SECRET:-}
       # Acceso remoto (MeshCentral) — opcional, ver servicio `meshcentral` más abajo.
       # Vacío por defecto: sin MESHCENTRAL_MESH_ID el botón de "instalar agente" y los
       # links de escritorio/terminal remotos no funcionan, pero el resto del panel sí.
@@ -176,6 +185,15 @@ services:
       MQTT_CA_CERT: /app/deploy/certs/cert.pem
       COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
       BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      # Aprovisionamiento de credenciales MQTT por estación (apps.mqtt_worker.emqx_admin):
+      # con esto cada estación recibe, al enrolarse, su propia credencial con ACL acotada
+      # a sus propios tópicos, en vez de compartir MQTT_PASSWORD_AGENTE con toda la flota.
+      # Vacías = comportamiento anterior (credencial compartida); `_config()` trata la
+      # cadena vacía igual que la ausencia, así que el `:-` de acá es seguro pese a que
+      # django-environ no aplique default a una var presente pero vacía.
+      EMQX_API_URL: ${EMQX_API_URL:-}
+      EMQX_API_KEY: ${EMQX_API_KEY:-}
+      EMQX_API_SECRET: ${EMQX_API_SECRET:-}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
@@ -204,6 +222,15 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS}
       COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
       BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      # Aprovisionamiento de credenciales MQTT por estación (apps.mqtt_worker.emqx_admin):
+      # con esto cada estación recibe, al enrolarse, su propia credencial con ACL acotada
+      # a sus propios tópicos, en vez de compartir MQTT_PASSWORD_AGENTE con toda la flota.
+      # Vacías = comportamiento anterior (credencial compartida); `_config()` trata la
+      # cadena vacía igual que la ausencia, así que el `:-` de acá es seguro pese a que
+      # django-environ no aplique default a una var presente pero vacía.
+      EMQX_API_URL: ${EMQX_API_URL:-}
+      EMQX_API_KEY: ${EMQX_API_KEY:-}
+      EMQX_API_SECRET: ${EMQX_API_SECRET:-}
       MESHCENTRAL_API_WS_URL: ${MESHCENTRAL_API_WS_URL}
       MESHCENTRAL_API_USUARIO: ${MESHCENTRAL_API_USUARIO}
       MESHCENTRAL_API_PASSWORD: ${MESHCENTRAL_API_PASSWORD}
@@ -241,6 +268,15 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS}
       COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
       BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      # Aprovisionamiento de credenciales MQTT por estación (apps.mqtt_worker.emqx_admin):
+      # con esto cada estación recibe, al enrolarse, su propia credencial con ACL acotada
+      # a sus propios tópicos, en vez de compartir MQTT_PASSWORD_AGENTE con toda la flota.
+      # Vacías = comportamiento anterior (credencial compartida); `_config()` trata la
+      # cadena vacía igual que la ausencia, así que el `:-` de acá es seguro pese a que
+      # django-environ no aplique default a una var presente pero vacía.
+      EMQX_API_URL: ${EMQX_API_URL:-}
+      EMQX_API_KEY: ${EMQX_API_KEY:-}
+      EMQX_API_SECRET: ${EMQX_API_SECRET:-}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
@@ -266,6 +302,15 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS}
       COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
       BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      # Aprovisionamiento de credenciales MQTT por estación (apps.mqtt_worker.emqx_admin):
+      # con esto cada estación recibe, al enrolarse, su propia credencial con ACL acotada
+      # a sus propios tópicos, en vez de compartir MQTT_PASSWORD_AGENTE con toda la flota.
+      # Vacías = comportamiento anterior (credencial compartida); `_config()` trata la
+      # cadena vacía igual que la ausencia, así que el `:-` de acá es seguro pese a que
+      # django-environ no aplique default a una var presente pero vacía.
+      EMQX_API_URL: ${EMQX_API_URL:-}
+      EMQX_API_KEY: ${EMQX_API_KEY:-}
+      EMQX_API_SECRET: ${EMQX_API_SECRET:-}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     depends_on:
