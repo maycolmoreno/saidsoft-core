@@ -1684,6 +1684,56 @@ script de migración; recién ahí tiene sentido rotar `MQTT_PASSWORD_AGENTE` /
 sin poder reconectar, y el vector de ataque ya está cerrado por ACL, así que la rotación
 dejó de ser urgente.
 
+**AA. Los cambios a `nginx.conf` nunca llegaban al contenedor, y nginx no re-resolvía el
+backend (4-sep-2026) — 🟢 cerrado y verificado forzando el fallo:** dos despliegues
+seguidos dejaron el panel en 502 al recrear `web`. La causa inmediata es conocida: con
+`proxy_pass http://web:8000` (nombre literal), nginx resuelve el DNS UNA vez al arrancar
+y se queda con esa IP; cada recreación del contenedor le da una IP nueva y nginx sigue
+yendo a la vieja hasta que alguien lo reinicia a mano.
+
+El arreglo es el `resolver` de Docker más el nombre en una variable — con un literal,
+nginx resuelve en el arranque y el `resolver` no se usa nunca:
+
+```nginx
+resolver 127.0.0.11 valid=10s ipv6=off;
+location / {
+    set $upstream_web web;
+    proxy_pass http://$upstream_web:8000;
+}
+```
+
+**Pero al verificarlo apareció algo bastante peor:** el cambio se desplegó (git pull en
+el servidor), `nginx -t` dio OK, se recargó nginx… y el 502 siguió igual. El contenedor
+tenía todavía la config VIEJA. `docker-compose.yml` monta un ARCHIVO suelto
+(`./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro`), y un bind mount de archivo ata
+el **inode**, no la ruta. `git pull` — como casi cualquier editor — no escribe sobre el
+archivo: escribe uno nuevo y lo renombra encima, así que el inode cambia y el contenedor
+se queda mirando el viejo, ya desenlazado.
+
+Consecuencia: **la config de nginx quedó congelada en la que existía cuando se creó el
+contenedor.** Cualquier cambio a `nginx.conf` desplegado por git desde entonces no tuvo
+ningún efecto y nadie se enteró, porque `nginx -t` y `nginx -s reload` validan y recargan
+el archivo viejo sin quejarse — la verificación daba OK sobre el contenido equivocado.
+
+- **Regla operativa**: un cambio a `deploy/nginx/nginx.conf` exige **recrear** el
+  contenedor (`stop` + `rm` + `up -d nginx`), no `reload`. Lo mismo vale para cualquier
+  otro archivo suelto bind-montado.
+- **Cómo confirmar que el cambio está vivo**, en vez de asumirlo:
+  `docker exec deploy_nginx_1 grep resolver /etc/nginx/conf.d/default.conf`.
+- **Verificación real del fix**: no alcanza con recrear `web` y ver que anda — Docker le
+  devuelve la misma IP si quedó libre, y entonces el 502 no se reproduce ni con la config
+  vieja. Se forzó el escenario ocupando las IPs libres con contenedores descartables
+  (`docker run --network <red> alpine sleep`) hasta que `web` tomó una IP distinta
+  (`.12` → `.14`): con la config nueva, nginx sirvió 302 de corrido sin tocarlo. Antes,
+  ese mismo escenario daba 502 indefinido.
+
+Queda pendiente, aparte: `docker-compose` v1 (1.29.2) no puede recrear un contenedor cuya
+imagen fue reemplazada (`KeyError: 'ContainerConfig'` al leer una imagen construida por
+BuildKit), por eso todo despliegue va con `stop` + `rm` + `up -d` en vez de `up -d`
+directo. Compose v2 ya está instalado en el servidor (v5.5.0) y lo resolvería, pero migrar
+cambia el esquema de nombres de contenedor (`deploy_web_1` → `deploy-web-1`) y hay que
+bajar el stack entero una vez.
+
 ## Directorio real de sucursales y técnicos de soporte (22-ago-2026)
 
 Con la auditoría de gobernanza cerrada, el usuario pasó dos archivos reales de RRHH/
