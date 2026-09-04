@@ -35,17 +35,30 @@ services:
   emqx:
     image: emqx/emqx:5.8.3
     restart: unless-stopped
-    # Sin esto, el contenedor arranca con una identidad interna nueva cada vez que se
-    # recrea (`docker-compose down` + `up`, o un rebuild) — el nodo Erlang de EMQX
-    # (y con él, la base Mnesia de built_in_database: usuarios/ACLs que siembra
-    # bootstrap-emqx.sh) queda atado a ese hostname, así que un hostname que cambia
-    # hace que EMQX arranque "en blanco" aunque el volumen emqx_data siga intacto —
-    # confirmado en producción (20-ago-2026): dos recreaciones seguidas del
-    # contenedor dejaron al worker/agente en loop de "Not authorized" hasta volver a
-    # correr bootstrap-emqx.sh cada vez. Un hostname fijo le da continuidad al nodo
-    # entre recreaciones.
+    # El nodo Erlang de EMQX —y con él la base Mnesia de built_in_database, o sea los
+    # usuarios y ACLs— vive en un directorio llamado como el nodo. Si el nombre cambia,
+    # EMQX arranca EN BLANCO aunque el volumen emqx_data esté intacto: worker y agentes
+    # entran en loop de "Not authorized".
+    #
+    # `hostname: emqx` se agregó el 20-ago-2026 creyendo que eso lo fijaba. NO funcionó:
+    # cuando EMQX_NODE__NAME no está definida, la imagen oficial arma el nombre como
+    # `emqx@<IP del contenedor>`, que ignora el hostname y cambia en cada recreación. La
+    # prueba quedó dentro del volumen — `mnesia/` acumula un directorio por IP
+    # (emqx@172.18.0.2, .3, .4, .5, .6, .7, .9), varios POSTERIORES a ese supuesto
+    # arreglo. Cada uno es una base vacía que obligó a re-sembrar el broker a mano.
+    #
+    # Volvió a morder el 4-sep-2026 al migrar a Compose v2 (`down` + `up` cambió la IP).
+    # Se recuperó devolviéndole al contenedor su IP anterior, exportando la base con
+    # `emqx ctl data export` e importándola bajo un nombre de nodo ya fijo.
+    #
+    # Con el nombre explícito, el nodo es el mismo sin importar qué IP le toque.
     hostname: emqx
     environment:
+      # Fijo y siempre resoluble (nodo único, sin cluster). NO quitar: sin esta variable
+      # el nombre vuelve a derivarse de la IP y se pierden usuarios/ACLs en la próxima
+      # recreación. Cambiar su valor equivale a empezar con una base vacía — si alguna
+      # vez hay que cambiarlo, exportar antes e importar después.
+      EMQX_NODE__NAME: emqx@127.0.0.1
       EMQX_NODE__COOKIE: ${EMQX_COOKIE}
       EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD}
       # Autenticación built-in (mnesia) activada; los usuarios se siembran con bootstrap-emqx.sh
