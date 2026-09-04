@@ -9,6 +9,7 @@ import 'nucleo/red/api.dart';
 import 'rasgos/gps/estado_gps.dart';
 import 'rasgos/gps/repo_gps.dart';
 import 'rasgos/sesion/estado_sesion.dart';
+import 'rasgos/sesion/pantalla_bloqueo.dart';
 import 'rasgos/sesion/pantalla_ingreso.dart';
 import 'rasgos/sesion/pantalla_servidor.dart';
 import 'rasgos/sesion/repo_sesion.dart';
@@ -41,7 +42,7 @@ class _AppCampoState extends State<AppCampo> {
       almacen: _almacen,
       alExpirarSesion: () async => _sesion.sesionExpirada(),
     );
-    _sesion = EstadoSesion(RepoSesion(almacen: _almacen, api: _api));
+    _sesion = EstadoSesion(RepoSesion(almacen: _almacen, api: _api), almacen: _almacen);
     _sesion.arrancar();
   }
 
@@ -82,6 +83,7 @@ class _Puerta extends StatelessWidget {
         ),
       FaseSesion.sinServidor => const PantallaServidor(),
       FaseSesion.sinSesion => const PantallaIngreso(),
+      FaseSesion.bloqueado => const PantallaBloqueo(),
       FaseSesion.autenticado => const Inicio(),
     };
   }

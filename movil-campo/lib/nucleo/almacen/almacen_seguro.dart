@@ -18,6 +18,7 @@ class AlmacenSeguro {
   static const _kId = 'sesion_id';
   static const _kPermisos = 'sesion_permisos';
   static const _kEsStaff = 'sesion_es_staff';
+  static const _kBloqueo = 'sesion_bloqueo_biometrico';
 
   Future<void> guardarSesion({
     required String token,
@@ -40,6 +41,15 @@ class AlmacenSeguro {
   Future<String?> leerNombre() => _almacen.read(key: _kNombre);
   Future<bool> leerEsStaff() async => (await _almacen.read(key: _kEsStaff)) == '1';
 
+  /// Si el técnico activó la cerradura biométrica. Vive en el almacén cifrado y no
+  /// en SharedPreferences porque decide si el token se entrega o no: en preferencias
+  /// claras, cualquier app con root podría apagarla sin tocar la sesión.
+  Future<bool> leerBloqueoBiometrico() async =>
+      (await _almacen.read(key: _kBloqueo)) == '1';
+
+  Future<void> guardarBloqueoBiometrico(bool activo) =>
+      _almacen.write(key: _kBloqueo, value: activo ? '1' : '0');
+
   Future<int?> leerId() async {
     final crudo = await _almacen.read(key: _kId);
     return crudo == null ? null : int.tryParse(crudo);
@@ -59,8 +69,11 @@ class AlmacenSeguro {
     return const [];
   }
 
+  /// Cerrar sesión borra TAMBIÉN la preferencia de bloqueo: es de la persona, no del
+  /// teléfono. Si quedara, el próximo técnico que entre en ese mismo celular heredaría
+  /// una cerradura que él no eligió y que se abre con la huella del anterior.
   Future<void> borrarSesion() async {
-    for (final clave in [_kToken, _kUsuario, _kNombre, _kId, _kPermisos, _kEsStaff]) {
+    for (final clave in [_kToken, _kUsuario, _kNombre, _kId, _kPermisos, _kEsStaff, _kBloqueo]) {
       await _almacen.delete(key: clave);
     }
   }

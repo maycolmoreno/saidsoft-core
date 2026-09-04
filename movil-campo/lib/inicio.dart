@@ -253,7 +253,7 @@ class _Destino {
   final bool conBadge;
 }
 
-class _Menu extends StatelessWidget {
+class _Menu extends StatefulWidget {
   const _Menu({required this.sesion, required this.onRegistrarEquipo});
   final Sesion? sesion;
 
@@ -261,7 +261,44 @@ class _Menu extends StatelessWidget {
   final VoidCallback? onRegistrarEquipo;
 
   @override
+  State<_Menu> createState() => _MenuState();
+}
+
+class _MenuState extends State<_Menu> {
+  /// null mientras se le pregunta al sistema. Se ofrece el interruptor SOLO si el
+  /// telefono ya tiene una huella registrada: mostrarlo en un equipo sin biometria
+  /// seria ofrecer un boton que no puede hacer nada.
+  bool? _biometriaUsable;
+
+  @override
+  void initState() {
+    super.initState();
+    _consultar();
+  }
+
+  Future<void> _consultar() async {
+    final estado = context.read<EstadoSesion>();
+    await estado.refrescarBloqueo();
+    final usable = await estado.biometriaUsable();
+    if (mounted) setState(() => _biometriaUsable = usable);
+  }
+
+  Future<void> _cambiar(bool valor) async {
+    final estado = context.read<EstadoSesion>();
+    final ok = await estado.cambiarBloqueo(valor);
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo verificar tu huella. El bloqueo sigue igual.')),
+      );
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final sesion = widget.sesion;
+    final onRegistrarEquipo = widget.onRegistrarEquipo;
+    final bloqueoActivo = context.watch<EstadoSesion>().bloqueoActivo;
     return Drawer(
       child: SafeArea(
         child: Column(
@@ -309,10 +346,19 @@ class _Menu extends StatelessWidget {
                 subtitle: const Text('Inventariar uno que no esta cargado'),
                 onTap: () {
                   Navigator.of(context).pop();
-                  onRegistrarEquipo!();
+                  onRegistrarEquipo();
                 },
               ),
             const Spacer(),
+            if (_biometriaUsable == true)
+              SwitchListTile(
+                secondary: const Icon(Icons.fingerprint, color: Tema.primario),
+                title: const Text('Entrar con huella'),
+                subtitle: const Text('Pide tu huella al abrir la app'),
+                value: bloqueoActivo,
+                onChanged: _cambiar,
+              ),
+            const Divider(height: 1),
             ListTile(
               leading: const Icon(Icons.logout, color: Tema.critico),
               title: const Text('Cerrar sesion'),

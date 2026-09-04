@@ -1,17 +1,25 @@
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../nucleo/almacen/almacen_seguro.dart';
 import '../../nucleo/config.dart';
 import '../../nucleo/red/api.dart';
+import 'bloqueo_biometrico.dart';
 import 'repo_sesion.dart';
 import 'sesion.dart';
 
-enum FaseSesion { cargando, sinServidor, sinSesion, autenticado }
+/// `bloqueado` es distinto de `sinSesion`: la sesión ES válida y el token está
+/// guardado, solo falta que el dueño del teléfono se identifique para usarla.
+enum FaseSesion { cargando, sinServidor, sinSesion, bloqueado, autenticado }
 
 class EstadoSesion extends ChangeNotifier {
-  EstadoSesion(this._repo);
+  EstadoSesion(this._repo, {required AlmacenSeguro almacen, BloqueoBiometrico? bloqueo})
+      : _almacen = almacen,
+        _bloqueo = bloqueo ?? BloqueoBiometrico();
 
   final RepoSesion _repo;
+  final AlmacenSeguro _almacen;
+  final BloqueoBiometrico _bloqueo;
 
   FaseSesion _fase = FaseSesion.cargando;
   Sesion? _sesion;
@@ -35,8 +43,72 @@ class EstadoSesion extends ChangeNotifier {
       return;
     }
     _sesion = await _repo.recuperarSesion();
-    _fase = _sesion == null ? FaseSesion.sinSesion : FaseSesion.autenticado;
+    if (_sesion == null) {
+      _fase = FaseSesion.sinSesion;
+      notifyListeners();
+      return;
+    }
+    // Con la cerradura activada la sesión queda retenida hasta que el técnico se
+    // identifique. Si el teléfono perdió la biometría (huella borrada, lector roto)
+    // NO se lo deja afuera: se entra igual, porque quedarse sin poder trabajar en una
+    // farmacia es peor que la protección que se pierde, y el token sigue siendo suyo.
+    final conCerradura = await _almacen.leerBloqueoBiometrico();
+    _fase = conCerradura && await _bloqueo.disponible()
+        ? FaseSesion.bloqueado
+        : FaseSesion.autenticado;
     notifyListeners();
+  }
+
+  /// Pide la huella para liberar la sesión ya guardada.
+  ///
+  /// Un fallo NO cierra la sesión ni borra el token: deja la pantalla de bloqueo para
+  /// reintentar. Cerrar sesión ante un dedo mojado obligaría a reescribir usuario y
+  /// clave en el peor momento.
+  Future<bool> desbloquear() async {
+    _ocupado = true;
+    _error = null;
+    notifyListeners();
+    try {
+      if (await _bloqueo.autenticar()) {
+        _fase = FaseSesion.autenticado;
+        return true;
+      }
+      _error = 'No se pudo verificar tu identidad.';
+      return false;
+    } finally {
+      _ocupado = false;
+      notifyListeners();
+    }
+  }
+
+  /// Salida de emergencia desde la pantalla de bloqueo: si la biometría dejó de
+  /// funcionar del todo, el técnico vuelve a usuario y clave en vez de quedar preso.
+  Future<void> olvidarSesionBloqueada() => cerrarSesion();
+
+  bool get bloqueoActivo => _bloqueoActivo;
+  bool _bloqueoActivo = false;
+
+  /// Lee la preferencia y si el teléfono puede cumplirla. Se llama al abrir el menú.
+  Future<void> refrescarBloqueo() async {
+    _bloqueoActivo = await _almacen.leerBloqueoBiometrico();
+    notifyListeners();
+  }
+
+  /// True si el teléfono tiene huella/rostro YA registrado: sin eso, ofrecer la
+  /// opción sería ofrecer un interruptor que no hace nada.
+  Future<bool> biometriaUsable() async =>
+      await _bloqueo.disponible() && await _bloqueo.hayBiometriaRegistrada();
+
+  /// Activar exige pasar la huella una vez, ahí mismo: así el técnico comprueba que
+  /// funciona ANTES de depender de ella para volver a entrar.
+  Future<bool> cambiarBloqueo(bool activar) async {
+    if (activar && !await _bloqueo.autenticar(motivo: 'Confirmá tu huella para activar el bloqueo')) {
+      return false;
+    }
+    await _almacen.guardarBloqueoBiometrico(activar);
+    _bloqueoActivo = activar;
+    notifyListeners();
+    return true;
   }
 
   /// Tras guardar la configuración del servidor.

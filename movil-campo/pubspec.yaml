@@ -1,7 +1,7 @@
 name: cresio_campo
 description: App de tecnicos en campo de SAIDSOFT (CRESIO).
 publish_to: none
-version: 1.7.0+9
+version: 1.8.0+10
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -24,6 +24,10 @@ dependencies:
   image_picker: ^1.1.2
   signature: ^5.5.0
   permission_handler: ^11.3.1
+  # Cerradura biometrica sobre la sesion guardada (ver rasgos/sesion/bloqueo_biometrico.dart).
+  # No autentica contra el servidor: solo desbloquea el token que ya esta en el almacen
+  # cifrado, para que un celular en manos ajenas no sea una sesion de tecnico abierta.
+  local_auth: ^2.3.0
   intl: ^0.19.0
   # Para estampar la ubicacion en la foto (ver nucleo/imagen/marca_agua.dart).
   image: ^4.2.0
