@@ -141,7 +141,23 @@ class _PantallaNuevoMantenimientoState extends State<PantallaNuevoMantenimiento>
               ),
             );
           }
-          final catalogos = snap.data!;
+          // Estado que "no deberia pasar": ni cargando, ni con error, ni con datos.
+          // Se reporta en vez de caer en `snap.data!`, que lanza y --segun el modo de
+          // compilacion-- puede dejar el cuerpo COMPLETAMENTE en blanco, sin
+          // formulario, sin error y sin indicador. Una pantalla muda no se puede
+          // diagnosticar a distancia: preferimos decir que algo salio mal y ofrecer
+          // reintentar.
+          final catalogos = snap.data;
+          if (catalogos == null) {
+            return EstadoMensaje(
+              icono: Icons.error_outline,
+              titulo: 'No se pudo cargar el formulario',
+              detalle: 'El catalogo llego vacio (estado: ${snap.connectionState.name}).',
+              onReintentar: () => setState(
+                () => _catalogos = context.read<RepoCatalogos>().obtener(),
+              ),
+            );
+          }
           return ListView(
             padding: const EdgeInsets.all(16),
             children: [

@@ -107,7 +107,20 @@ class _PantallaNuevoEquipoState extends State<PantallaNuevoEquipo> {
               ),
             );
           }
-          final catalogos = snap.data!;
+          // Mismo resguardo que en pantalla_nuevo.dart: `snap.data!` sobre un
+          // snapshot sin datos lanza, y segun el modo de compilacion eso deja el
+          // cuerpo en blanco -- imposible de diagnosticar a distancia.
+          final catalogos = snap.data;
+          if (catalogos == null) {
+            return EstadoMensaje(
+              icono: Icons.error_outline,
+              titulo: 'No se pudo cargar el formulario',
+              detalle: 'El catalogo llego vacio (estado: ${snap.connectionState.name}).',
+              onReintentar: () => setState(
+                () => _catalogos = context.read<RepoCatalogos>().obtener(),
+              ),
+            );
+          }
           return ListView(
             padding: const EdgeInsets.all(16),
             children: [

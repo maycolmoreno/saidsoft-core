@@ -233,7 +233,15 @@ class _PantallaDetalleState extends State<PantallaDetalle> {
             );
           }
 
-          final datos = snap.data!;
+          final datos = snap.data;
+          if (datos == null) {
+            return EstadoMensaje(
+              icono: Icons.error_outline,
+              titulo: 'No se pudo cargar',
+              detalle: 'El mantenimiento llego vacio (estado: ${snap.connectionState.name}).',
+              onReintentar: _recargar,
+            );
+          }
           final m = datos.mantenimiento;
           return Stack(
             children: [
