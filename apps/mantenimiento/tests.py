@@ -1404,3 +1404,121 @@ class EquipoListApiScopeTests(TestCase):
         self.compartido.estado = Activo.Estado.DADO_DE_BAJA
         self.compartido.save(update_fields=['estado'])
         self.assertNotIn('CR-DSK-9001', self._codigos())
+
+
+class MantenimientoApiCancelarYRepuestosTests(TestCase):
+    """Dos cosas que el panel podía hacer y la app no, y que impedían TERMINAR el
+    trabajo desde el campo (auditoría de pantallas, 4-sep-2026)."""
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_huecos', password='x')
+        self.token = Token.objects.create(user=self.tecnico)
+        PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.activo = Activo.objects.create(
+            codigo='CR-DSK-7001', tipo=Activo.Tipo.DESKTOP, farmacia=farmacia, unidad_negocio=sg,
+        )
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[self.activo], tecnico=self.tecnico, cliente=None, tipo_mantenimiento=None,
+            descripcion='revision', fecha_programada=timezone.now(),
+            estado_general=EstadoGeneralEquipo.OPERATIVO, usuario=self.tecnico,
+        )
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    # --- Cancelar ---
+
+    def test_cancelar_libera_el_equipo_para_un_mantenimiento_nuevo(self):
+        """El caso real: un mantenimiento abierto por error bloquea el equipo, y sin
+        cancelar desde la app había que entrar al panel para destrabarlo."""
+        resp = self.client.post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cancelar/',
+            {'motivo': 'Cargado por error'}, content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(self.mantenimiento.estado_interno, Mantenimiento.EstadoInterno.CANCELADO)
+
+        # Y ahora el equipo acepta uno nuevo.
+        nuevo = self.client.post(
+            '/api/v1/mantenimientos/',
+            {'equipos': [self.activo.pk], 'estado_general': 'operativo', 'descripcion': 'de verdad'},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(nuevo.status_code, 201, nuevo.content)
+
+    def test_cancelar_exige_motivo(self):
+        resp = self.client.post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cancelar/',
+            {'motivo': ''}, content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(self.mantenimiento.estado_interno, Mantenimiento.EstadoInterno.PENDIENTE)
+
+    def test_no_se_cancela_el_de_otro_tecnico(self):
+        otro = User.objects.create_user(username='otro_tec_huecos', password='x')
+        PerfilUsuario.objects.create(usuario=otro, acceso_todas_unidades=True)
+        from rest_framework.authtoken.models import Token
+        token = Token.objects.create(user=otro)
+        resp = self.client.post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cancelar/',
+            {'motivo': 'ajeno'}, content_type='application/json',
+            HTTP_AUTHORIZATION=f'Token {token.key}',
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    # --- Repuestos ---
+
+    def test_repuesto_con_bodega_descuenta_stock(self):
+        """Lo gasta el técnico en campo: si solo se podía cargar desde el panel, el
+        stock mentía hasta que alguien de oficina lo transcribiera."""
+        bodega = Bodega.objects.create(codigo='BOD-1', nombre='Central')
+        tipo = TipoConsumible.objects.create(nombre='Toner negro')
+        StockBodega.objects.create(bodega=bodega, tipo_consumible=tipo, cantidad=10)
+
+        resp = self.client.post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/repuestos/',
+            {'tipo_consumible': tipo.pk, 'cantidad': 3, 'bodega': bodega.pk},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(StockBodega.objects.get(bodega=bodega, tipo_consumible=tipo).cantidad, 7)
+
+    def test_repuesto_sin_bodega_no_toca_stock(self):
+        """Un repuesto que no salió de bodega igual se registra: sirve para el costo."""
+        tipo = TipoConsumible.objects.create(nombre='Cable HDMI')
+        resp = self.client.post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/repuestos/',
+            {'tipo_consumible': tipo.pk, 'cantidad': 1, 'costo_unitario': '12.50'},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(self.mantenimiento.repuestos_utilizados.count(), 1)
+
+    def test_stock_insuficiente_se_explica_no_revienta(self):
+        bodega = Bodega.objects.create(codigo='BOD-2', nombre='Chica')
+        tipo = TipoConsumible.objects.create(nombre='Mouse')
+        StockBodega.objects.create(bodega=bodega, tipo_consumible=tipo, cantidad=1)
+
+        resp = self.client.post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/repuestos/',
+            {'tipo_consumible': tipo.pk, 'cantidad': 5, 'bodega': bodega.pk},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('detail', resp.json())
+        self.assertEqual(StockBodega.objects.get(bodega=bodega, tipo_consumible=tipo).cantidad, 1)
+
+    # --- Catálogo ---
+
+    def test_los_catalogos_traen_los_consumibles(self):
+        """Sin esto el selector de repuestos de la app no tendría qué ofrecer."""
+        TipoConsumible.objects.create(nombre='Toner')
+        datos = self.client.get('/api/v1/catalogos/', **self._auth()).json()
+        self.assertIn('tipos_consumible', datos)
+        self.assertEqual([t['nombre'] for t in datos['tipos_consumible']], ['Toner'])

@@ -88,6 +88,7 @@ Catalogos _catalogosDePrueba({int farmacias = 3}) => Catalogos(
       farmacias: List.generate(farmacias, (i) => Opcion('$i', 'ML${i.toString().padLeft(3, '0')}')),
       bodegas: const [Opcion('1', 'BOD-LOJ')],
       colaboradores: const [Opcion('1', 'Tecnico Uno')],
+      tiposConsumible: const [Opcion('1', 'Toner negro')],
     );
 
 class _RepoFalso implements RepoCatalogos {

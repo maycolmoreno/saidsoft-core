@@ -41,6 +41,7 @@ class Catalogos {
     required this.farmacias,
     required this.bodegas,
     required this.colaboradores,
+    required this.tiposConsumible,
   });
 
   final List<Opcion> tiposEquipo;
@@ -52,6 +53,9 @@ class Catalogos {
   final List<Opcion> farmacias;
   final List<Opcion> bodegas;
   final List<Opcion> colaboradores;
+
+  /// Repuestos/consumibles que el tecnico puede declarar como gastados.
+  final List<Opcion> tiposConsumible;
 
   static List<Opcion> _choices(dynamic lista) => (lista as List? ?? const [])
       .map((o) => Opcion.desdeChoice(Map<String, dynamic>.from(o as Map)))
@@ -71,6 +75,7 @@ class Catalogos {
         farmacias: _modelos(json['farmacias']),
         bodegas: _modelos(json['bodegas']),
         colaboradores: _modelos(json['colaboradores']),
+        tiposConsumible: _modelos(json['tipos_consumible']),
       );
 }
 

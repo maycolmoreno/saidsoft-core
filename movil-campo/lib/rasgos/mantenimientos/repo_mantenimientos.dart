@@ -101,6 +101,33 @@ class RepoMantenimientos {
     return _api.subirArchivo('/mantenimientos/$mantenimientoId/imagenes/', archivo);
   }
 
+  /// Cancela el mantenimiento. NO va por la cola offline a proposito: cancelar es
+  /// una decision que el tecnico toma mirando la pantalla, y encolarla dejaria el
+  /// equipo aparentemente libre cuando en el servidor sigue trabado.
+  Future<void> cancelar({required int mantenimientoId, required String motivo}) {
+    return _api.publicar('/mantenimientos/$mantenimientoId/cancelar/', {'motivo': motivo});
+  }
+
+  /// Registra un repuesto gastado. Con `bodegaId` descuenta stock real; sin ella solo
+  /// deja el costo (repuesto que no salio de bodega).
+  ///
+  /// Tampoco se encola: si no hay stock, el servidor lo rechaza con un motivo que el
+  /// tecnico tiene que ver AHORA para agarrar otro repuesto, no dos horas despues.
+  Future<void> registrarRepuesto({
+    required int mantenimientoId,
+    required int tipoConsumibleId,
+    required int cantidad,
+    int? bodegaId,
+    String? costoUnitario,
+  }) {
+    return _api.publicar('/mantenimientos/$mantenimientoId/repuestos/', {
+      'tipo_consumible': tipoConsumibleId,
+      'cantidad': cantidad,
+      if (bodegaId != null) 'bodega': bodegaId,
+      if (costoUnitario != null && costoUnitario.isNotEmpty) 'costo_unitario': costoUnitario,
+    });
+  }
+
   Future<bool> cerrar({
     required int mantenimientoId,
     required String resultadoTecnico,

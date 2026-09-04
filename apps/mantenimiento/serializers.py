@@ -2,7 +2,7 @@
 la API es una capa de transporte, no reimplementa reglas de negocio."""
 from rest_framework import serializers
 
-from apps.activos.models import Activo, Bodega, CategoriaEquipo, Colaborador, Marca
+from apps.activos.models import Activo, Bodega, CategoriaEquipo, Colaborador, Marca, TipoConsumible
 from apps.catalogo.models import Farmacia
 
 from .models import (
@@ -145,6 +145,30 @@ class CerrarMantenimientoSerializer(serializers.Serializer):
     tiempo_real_minutos = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     estado_general = serializers.ChoiceField(
         choices=EstadoGeneralEquipo.choices, required=False, allow_blank=True, default='',
+    )
+
+
+class CancelarMantenimientoSerializer(serializers.Serializer):
+    """Cancelar desde el campo. El motivo es obligatorio y no es burocracia: un
+    mantenimiento abierto BLOQUEA abrir otro sobre el mismo equipo, así que sin
+    cancelar --y sin saber por qué-- el equipo queda trabado para siempre."""
+    motivo = serializers.CharField(min_length=3)
+
+
+class RepuestoUtilizadoSerializer(serializers.Serializer):
+    """Repuesto/consumible gastado en la intervención.
+
+    Con `bodega` descuenta stock real y deja kardex; sin ella solo registra el costo
+    (repuesto que no salió de bodega). Mismo contrato que RepuestoUtilizadoForm del
+    panel, porque ambos terminan en el mismo servicio.
+    """
+    tipo_consumible = serializers.PrimaryKeyRelatedField(queryset=TipoConsumible.objects.all())
+    cantidad = serializers.IntegerField(min_value=1)
+    bodega = serializers.PrimaryKeyRelatedField(
+        queryset=Bodega.objects.filter(activa=True), required=False, allow_null=True, default=None,
+    )
+    costo_unitario = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, allow_null=True, default=None,
     )
 
 
@@ -320,6 +344,8 @@ class CatalogosSerializer(serializers.Serializer):
     farmacias = serializers.SerializerMethodField()
     bodegas = serializers.SerializerMethodField()
     colaboradores = serializers.SerializerMethodField()
+    # Para cargar el repuesto gastado en una intervención sin salir a otra llamada.
+    tipos_consumible = serializers.SerializerMethodField()
 
     def _opciones(self, choices):
         return [{'valor': v, 'etiqueta': e} for v, e in choices]
@@ -332,6 +358,12 @@ class CatalogosSerializer(serializers.Serializer):
 
     def get_prioridades(self, _):
         return self._opciones(PrioridadMantenimiento.choices)
+
+    def get_tipos_consumible(self, _):
+        return [
+            {'id': t.pk, 'nombre': t.nombre}
+            for t in TipoConsumible.objects.order_by('nombre')
+        ]
 
     def get_marcas(self, _):
         return [{'id': m.pk, 'nombre': m.nombre} for m in Marca.objects.order_by('nombre')]

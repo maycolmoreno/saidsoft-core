@@ -1,7 +1,7 @@
 name: cresio_campo
 description: App de tecnicos en campo de SAIDSOFT (CRESIO).
 publish_to: none
-version: 1.8.1+11
+version: 1.9.0+12
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

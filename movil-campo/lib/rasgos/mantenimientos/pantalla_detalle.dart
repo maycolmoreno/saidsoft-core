@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:signature/signature.dart';
 
 import '../../comun/tema.dart';
+import '../../nucleo/catalogos.dart';
 import '../../nucleo/imagen/marca_agua.dart';
 import '../../nucleo/red/api.dart';
 import '../gps/estado_gps.dart';
@@ -212,11 +213,94 @@ class _PantallaDetalleState extends State<PantallaDetalle> {
     if (mounted) Navigator.of(context).maybePop();
   }
 
+  /// Cancelar: el equipo no estaba, era falsa alarma, se cargo duplicado.
+  ///
+  /// Importa mas de lo que parece: un mantenimiento abierto BLOQUEA abrir otro sobre
+  /// el mismo equipo, asi que sin esto un error de carga dejaba el equipo trabado
+  /// hasta que alguien entrara al panel desde una computadora.
+  Future<void> _cancelar() async {
+    final motivo = await showDialog<String>(
+      context: context,
+      builder: (_) => const _DialogoCancelar(),
+    );
+    if (motivo == null || motivo.isEmpty) return;
+    await _ejecutar(
+      // `false` = nunca queda pendiente: estas dos acciones no van por la cola offline
+      // (ver repo_mantenimientos.dart), asi que si fallan, fallan a la vista.
+      () async {
+        await _repo.cancelar(mantenimientoId: widget.id, motivo: motivo);
+        return false;
+      },
+      'Mantenimiento cancelado. El equipo queda libre.',
+    );
+    if (mounted) Navigator.of(context).maybePop();
+  }
+
+  /// Registrar un repuesto gastado. Con bodega descuenta stock real.
+  Future<void> _agregarRepuesto() async {
+    final catalogos = await _catalogosONada();
+    if (catalogos == null || !mounted) return;
+    final datos = await showModalBottomSheet<_DatosRepuesto>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _HojaRepuesto(catalogos: catalogos),
+    );
+    if (datos == null) return;
+    await _ejecutar(
+      () async {
+        await _repo.registrarRepuesto(
+          mantenimientoId: widget.id,
+          tipoConsumibleId: datos.tipoConsumibleId,
+          cantidad: datos.cantidad,
+          bodegaId: datos.bodegaId,
+          costoUnitario: datos.costoUnitario,
+        );
+        return false;
+      },
+      'Repuesto registrado.',
+    );
+  }
+
+  /// Los catalogos hacen falta para elegir el repuesto. Si no se pueden traer se dice,
+  /// en vez de abrir una hoja con listas vacias.
+  Future<Catalogos?> _catalogosONada() async {
+    try {
+      return await context.read<RepoCatalogos>().obtener();
+    } on ErrorApi catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo cargar el catalogo de repuestos: ${e.mensaje}')),
+        );
+      }
+      return null;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final puedeCerrar = context.watch<EstadoSesion>().puede(Permiso.cerrarMantenimiento);
     return Scaffold(
-      appBar: AppBar(title: const Text('Mantenimiento')),
+      appBar: AppBar(
+        title: const Text('Mantenimiento'),
+        actions: [
+          // En un menu y no como botones sueltos: son acciones de excepcion, no el
+          // camino normal, y la barra de abajo ya tiene lo que se usa siempre.
+          FutureBuilder<_Datos>(
+            future: _futuro,
+            builder: (context, snap) {
+              final m = snap.data?.mantenimiento;
+              if (m == null || m.cerrado || !puedeCerrar) return const SizedBox.shrink();
+              return PopupMenuButton<String>(
+                onSelected: (v) => v == 'cancelar' ? _cancelar() : _agregarRepuesto(),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'repuesto', child: Text('Registrar repuesto')),
+                  PopupMenuItem(value: 'cancelar', child: Text('Cancelar mantenimiento')),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
       body: FutureBuilder<_Datos>(
         future: _futuro,
         builder: (context, snap) {
@@ -645,6 +729,164 @@ class _HojaCierreState extends State<_HojaCierre> {
                       ),
                     ),
             child: const Text('Confirmar cierre'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+/// Cancelar exige un motivo escrito: alguien va a preguntar por que ese equipo quedo
+/// sin atender, y "cancelado" sin razon no responde nada.
+class _DialogoCancelar extends StatefulWidget {
+  const _DialogoCancelar();
+
+  @override
+  State<_DialogoCancelar> createState() => _DialogoCancelarState();
+}
+
+class _DialogoCancelarState extends State<_DialogoCancelar> {
+  // El controlador vive CON el dialogo: creado afuera se libera apenas showDialog
+  // retorna, y la animacion de salida lo reconstruye contra uno ya destruido.
+  final _motivo = TextEditingController();
+
+  @override
+  void dispose() {
+    _motivo.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Cancelar mantenimiento'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'El equipo queda libre para abrir otro mantenimiento.',
+            style: TextStyle(fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _motivo,
+            autofocus: true,
+            maxLines: 2,
+            decoration: const InputDecoration(
+              labelText: 'Motivo *',
+              hintText: 'Ej: cargado por error, el equipo no estaba',
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Volver'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: Tema.critico),
+          onPressed: () => Navigator.of(context).pop(_motivo.text.trim()),
+          child: const Text('Cancelar mantenimiento'),
+        ),
+      ],
+    );
+  }
+}
+
+class _DatosRepuesto {
+  const _DatosRepuesto(this.tipoConsumibleId, this.cantidad, this.bodegaId, this.costoUnitario);
+  final int tipoConsumibleId;
+  final int cantidad;
+  final int? bodegaId;
+  final String? costoUnitario;
+}
+
+class _HojaRepuesto extends StatefulWidget {
+  const _HojaRepuesto({required this.catalogos});
+  final Catalogos catalogos;
+
+  @override
+  State<_HojaRepuesto> createState() => _HojaRepuestoState();
+}
+
+class _HojaRepuestoState extends State<_HojaRepuesto> {
+  String? _tipo;
+  String? _bodega;
+  final _cantidad = TextEditingController(text: '1');
+  final _costo = TextEditingController();
+
+  @override
+  void dispose() {
+    _cantidad.dispose();
+    _costo.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cantidad = int.tryParse(_cantidad.text.trim()) ?? 0;
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 16, right: 16, top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+      ),
+      child: ListView(
+        shrinkWrap: true,
+        children: [
+          const Text('Repuesto utilizado',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 16),
+          DropdownButtonFormField<String>(
+            initialValue: _tipo,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Repuesto *'),
+            items: [
+              for (final o in widget.catalogos.tiposConsumible)
+                DropdownMenuItem(value: o.valor, child: Text(o.etiqueta)),
+            ],
+            onChanged: (v) => setState(() => _tipo = v),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _cantidad,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Cantidad *'),
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: _bodega,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: 'Bodega (opcional)',
+              helperText: 'Si la eleges, se descuenta del stock real.',
+              helperMaxLines: 2,
+            ),
+            items: [
+              for (final o in widget.catalogos.bodegas)
+                DropdownMenuItem(value: o.valor, child: Text(o.etiqueta)),
+            ],
+            onChanged: (v) => setState(() => _bodega = v),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _costo,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Costo unitario (opcional)'),
+          ),
+          const SizedBox(height: 20),
+          FilledButton(
+            onPressed: (_tipo == null || cantidad < 1)
+                ? null
+                : () => Navigator.of(context).pop(_DatosRepuesto(
+                      int.parse(_tipo!),
+                      cantidad,
+                      _bodega == null ? null : int.tryParse(_bodega!),
+                      _costo.text.trim().isEmpty ? null : _costo.text.trim(),
+                    )),
+            child: const Text('Registrar repuesto'),
           ),
         ],
       ),

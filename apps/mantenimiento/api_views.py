@@ -11,7 +11,8 @@ from .models import (
     VisitaTecnica,
 )
 from .serializers import (
-    CerrarMantenimientoSerializer, ChecklistActualizarSerializer, ChecklistItemSerializer,
+    CancelarMantenimientoSerializer, CerrarMantenimientoSerializer, ChecklistActualizarSerializer,
+    ChecklistItemSerializer, RepuestoUtilizadoSerializer,
     ConsentimientoMonitoreoSerializer, FirmaMantenimientoSerializer, FirmarMantenimientoSerializer,
     ImagenAdjuntarSerializer, ImagenMantenimientoSerializer, MantenimientoCrearSerializer,
     MantenimientoDetalleSerializer, MantenimientoListSerializer, UbicacionTecnicoSerializer,
@@ -100,6 +101,50 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
                 estado_general=serializer.validated_data.get('estado_general', ''),
             )
         except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(MantenimientoDetalleSerializer(mantenimiento).data)
+
+    @action(detail=True, methods=['post'])
+    def cancelar(self, request, pk=None):
+        """Cancelar desde el campo: el equipo no estaba, era falsa alarma, se duplicó.
+
+        Faltaba, y no era menor: un mantenimiento abierto impide abrir otro sobre el
+        mismo equipo, así que sin esto un error de carga dejaba el equipo trabado hasta
+        que alguien entrara al panel.
+        """
+        mantenimiento = self.get_object()
+        serializer = CancelarMantenimientoSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            services.cancelar_mantenimiento(
+                mantenimiento=mantenimiento, motivo=serializer.validated_data['motivo'],
+                usuario=request.user,
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(MantenimientoDetalleSerializer(mantenimiento).data)
+
+    @action(detail=True, methods=['post'])
+    def repuestos(self, request, pk=None):
+        """Registrar un repuesto/consumible gastado en la intervención.
+
+        Lo gasta el técnico en campo, así que tenía que poder cargarlo él: hasta ahora
+        solo existía en el panel, y el stock quedaba mintiendo hasta que alguien de
+        oficina lo transcribiera.
+        """
+        mantenimiento = self.get_object()
+        serializer = RepuestoUtilizadoSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        d = serializer.validated_data
+        try:
+            services.registrar_repuesto_utilizado(
+                mantenimiento=mantenimiento, tipo_consumible=d['tipo_consumible'],
+                cantidad=d['cantidad'], bodega=d.get('bodega'),
+                costo_unitario=d.get('costo_unitario'), usuario=request.user,
+            )
+        except ValueError as exc:
+            # Stock insuficiente entra por acá: es un dato que el técnico puede
+            # corregir, no un error del sistema.
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(MantenimientoDetalleSerializer(mantenimiento).data)
 
