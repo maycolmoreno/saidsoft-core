@@ -31,107 +31,147 @@
             </div>
         </div>
 
-        <div class="nav-label">Operación</div>
+        {% if perms.catalogo.view_estacion or perms.despliegues.view_despliegue or perms.monitoreo.view_muestrametrica or perms.monitoreo.view_alerta %}<div class="nav-label">Operación</div>{% endif %}
         <a href="{% url 'panel:dashboard' %}" class="nav-item {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
             <span class="lbl">Dashboard</span>
         </a>
+        {% if perms.catalogo.view_estacion %}
         <a href="{% url 'panel:estaciones_lista' %}" class="nav-item {% if 'estacion' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><circle cx="7" cy="7" r=".6" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r=".6" fill="currentColor" stroke="none"/></svg>
             <span class="lbl">Estaciones</span>
         </a>
+        {% endif %}
+        {% if perms.despliegues.view_despliegue %}
         <a href="{% url 'panel:despliegues_lista' %}" class="nav-item {% if 'despliegue' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
             <span class="lbl">Despliegues</span>
         </a>
+        {% endif %}
+        {% if perms.monitoreo.view_muestrametrica %}
         <a href="{% url 'panel:monitoreo_lista' %}" class="nav-item {% if 'monitoreo' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2 7 4-14 2 7h8"/></svg>
             <span class="lbl">Monitoreo</span>
         </a>
+        {% endif %}
+        {% if perms.monitoreo.view_alerta %}
         <a href="{% url 'panel:alertas_lista' %}" class="nav-item {% if 'alerta' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
             <span class="lbl">Alertas</span>
         </a>
+        {% endif %}
 
-        <div class="nav-label">Scripts (RMM)</div>
+        {% if perms.scripts.view_script or perms.scripts.view_ejecucionscript or perms.scripts.view_scriptprogramado %}<div class="nav-label">Scripts (RMM)</div>{% endif %}
+        {% if perms.scripts.view_script %}
         <a href="{% url 'panel:scripts_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'scripts_lista' or request.resolver_match.url_name == 'script_detalle' or request.resolver_match.url_name == 'script_crear' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg>
             <span class="lbl">Biblioteca</span>
         </a>
+        {% endif %}
+        {% if perms.scripts.view_ejecucionscript %}
         <a href="{% url 'panel:ejecuciones_lista' %}" class="nav-item {% if 'ejecucion' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6 L18 12 L9 18 Z"/><path d="M4 6v12"/></svg>
             <span class="lbl">Ejecuciones</span>
         </a>
+        {% endif %}
+        {% if perms.scripts.view_scriptprogramado %}
         <a href="{% url 'panel:scripts_programados_lista' %}" class="nav-item {% if 'script_programado' in request.resolver_match.url_name or request.resolver_match.url_name == 'scripts_programados_lista' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/></svg>
             <span class="lbl">Programados</span>
         </a>
+        {% endif %}
 
-        <div class="nav-label">Software</div>
+        {% if perms.software.view_aplicacioncatalogo or perms.software.view_solicitudinstalacion %}<div class="nav-label">Software</div>{% endif %}
+        {% if perms.software.view_aplicacioncatalogo %}
         <a href="{% url 'panel:aplicaciones_lista' %}" class="nav-item {% if 'aplicacion' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8"/><path d="M8 11h8"/><path d="M8 15h5"/></svg>
             <span class="lbl">Catálogo</span>
         </a>
+        {% endif %}
+        {% if perms.software.view_solicitudinstalacion %}
         <a href="{% url 'panel:solicitudes_instalacion_lista' %}" class="nav-item {% if 'solicitud_instalacion' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
             <span class="lbl">Solicitudes</span>
         </a>
+        {% endif %}
 
-        <div class="nav-label">Activos</div>
+        {% if perms.activos.view_activo or perms.activos.view_ordencompra or perms.activos.view_bodega or perms.activos.view_movimientoinventario or perms.activos.view_colaborador or perms.mantenimiento.view_visitatecnica %}<div class="nav-label">Activos</div>{% endif %}
+        {% if perms.activos.view_activo %}
         <a href="{% url 'panel:activos_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'activos_lista' or request.resolver_match.url_name == 'activo_detalle' or request.resolver_match.url_name == 'activo_crear' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></svg>
             <span class="lbl">Inventario</span>
         </a>
+        {% endif %}
+        {% if perms.activos.view_ordencompra %}
         <a href="{% url 'panel:ordenes_compra_lista' %}" class="nav-item {% if 'orden_compra' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l1 5H5Z"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M9 12h6"/></svg>
             <span class="lbl">Órdenes de compra</span>
         </a>
+        {% endif %}
+        {% if perms.activos.view_bodega %}
         <a href="{% url 'panel:bodegas_lista' %}" class="nav-item {% if 'bodega' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10 12 4l9 6"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>
             <span class="lbl">Bodegas y stock</span>
         </a>
+        {% endif %}
+        {% if perms.activos.view_movimientoinventario %}
         <a href="{% url 'panel:movimientos_inventario_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'movimientos_inventario_lista' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3l4 4-4 4"/><path d="M21 7H8"/><path d="M7 21l-4-4 4-4"/><path d="M3 17h13"/></svg>
             <span class="lbl">Kardex</span>
         </a>
+        {% endif %}
+        {% if perms.activos.view_colaborador %}
         <a href="{% url 'panel:colaboradores_lista' %}" class="nav-item {% if 'colaborador' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c1.2-3.4 3.6-5 6.5-5s5.3 1.6 6.5 5"/><circle cx="18" cy="8" r="2.6"/><path d="M16.3 10.7c2 .5 3.2 1.9 4.2 4.6"/></svg>
             <span class="lbl">Colaboradores</span>
         </a>
+        {% endif %}
+        {% if perms.mantenimiento.view_visitatecnica %}
         <a href="{% url 'panel:visita_tecnica_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'visita_tecnica_lista' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 1 5.4-5.4L21 6l-3-3Z"/></svg>
             <span class="lbl">Visita técnica</span>
         </a>
+        {% endif %}
 
-        <div class="nav-label">Mantenimiento</div>
+        {% if perms.mantenimiento.view_mantenimiento or perms.mantenimiento.view_mantenimientoprogramado or perms.mantenimiento.view_actividadplanificada %}<div class="nav-label">Mantenimiento</div>{% endif %}
+        {% if perms.mantenimiento.view_mantenimiento %}
         <a href="{% url 'panel:mantenimientos_lista' %}" class="nav-item {% if request.resolver_match.url_name == 'mantenimientos_lista' or request.resolver_match.url_name == 'mantenimiento_detalle' or request.resolver_match.url_name == 'mantenimiento_crear' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.13.36.36.68.66.94"/></svg>
             <span class="lbl">Mantenimientos</span>
         </a>
+        {% endif %}
+        {% if perms.mantenimiento.view_mantenimientoprogramado %}
         <a href="{% url 'panel:mantenimientos_programados_lista' %}" class="nav-item {% if 'programado' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/></svg>
             <span class="lbl">Programados</span>
         </a>
+        {% endif %}
+        {% if perms.mantenimiento.view_actividadplanificada %}
         <a href="{% url 'panel:actividades_planificadas_lista' %}" class="nav-item {% if 'actividad_planificada' in request.resolver_match.url_name or request.resolver_match.url_name == 'actividades_planificadas_lista' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l2 2 4-4"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>
             <span class="lbl">Actividades técnicas</span>
         </a>
+        {% endif %}
         <a href="{% url 'panel:notificaciones_lista' %}" class="nav-item {% if 'notificacion' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
             <span class="lbl">Notificaciones</span>
         </a>
 
-        <div class="nav-label">Planificación y Cumplimiento</div>
+        {% if perms.cumplimiento.view_actividadcumplimiento %}<div class="nav-label">Planificación y Cumplimiento</div>{% endif %}
+        {% if perms.cumplimiento.view_actividadcumplimiento %}
         <a href="{% url 'panel:cumplimiento_lista' %}" class="nav-item {% if 'cumplimiento' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
             <span class="lbl">Cumplimiento</span>
         </a>
+        {% endif %}
 
-        <div class="nav-label">Sistema</div>
+        {% if perms.auditoria.view_eventoauditoria %}<div class="nav-label">Sistema</div>{% endif %}
+        {% if perms.auditoria.view_eventoauditoria %}
         <a href="{% url 'panel:auditoria_lista' %}" class="nav-item {% if 'auditoria' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V5a1 1 0 0 1 1-1h13a1 1 0 0 1 1 1v13H6a2 2 0 0 0-2 2Z"/><path d="M4 19.5A2 2 0 0 0 6 21h13"/><path d="M8 7h8"/><path d="M8 11h5"/></svg>
             <span class="lbl">Auditoría</span>
         </a>
+        {% endif %}
         <a href="{% url 'panel:reportes_index' %}" class="nav-item {% if 'reporte' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
             <span class="lbl">Reportes</span>

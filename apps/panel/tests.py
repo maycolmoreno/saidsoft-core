@@ -2768,3 +2768,53 @@ class BuscarEquiposParaMantenimientoTests(TestCase):
         m = Mantenimiento.objects.get()
         self.assertIsNone(m.cliente)
         self.assertEqual(m.prioridad, PrioridadMantenimiento.ALTA)
+
+
+class MenuLateralSegunPermisosTests(TestCase):
+    """El menú listaba las 20 secciones a cualquiera con sesión iniciada: al entrar
+    daban 403 y parecía una falla del sistema, no una restricción. Ahora cada ítem
+    (y el encabezado de su sección) va detrás del mismo permiso que exige la vista."""
+
+    def _usuario(self, nombre, *permisos):
+        usuario = User.objects.create_user(username=nombre, password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        for etiqueta, codename in permisos:
+            usuario.user_permissions.add(
+                Permission.objects.get(content_type__app_label=etiqueta, codename=codename),
+            )
+        return usuario
+
+    def test_solo_aparece_la_seccion_que_el_usuario_puede_abrir(self):
+        self.client.force_login(
+            self._usuario('u_menu_mant', ('mantenimiento', 'view_mantenimiento')),
+        )
+        html = self.client.get(reverse('panel:mantenimientos_lista')).content.decode()
+
+        self.assertIn('<span class="lbl">Mantenimientos</span>', html)
+        # Sin el permiso correspondiente no se dibuja ni el ítem ni el encabezado de
+        # la sección, que quedaría suelto sobre nada.
+        self.assertNotIn('<span class="lbl">Estaciones</span>', html)
+        self.assertNotIn('<span class="lbl">Inventario</span>', html)
+        self.assertNotIn('>Activos<', html)
+        self.assertNotIn('>Operación<', html)
+
+    def test_lo_comun_a_todos_no_se_oculta(self):
+        """Dashboard y Notificaciones son de cualquier usuario con sesión: no dependen
+        de permiso sobre ningún modelo, así que filtrarlos dejaría el menú vacío."""
+        self.client.force_login(
+            self._usuario('u_menu_basico', ('mantenimiento', 'view_mantenimiento')),
+        )
+        html = self.client.get(reverse('panel:mantenimientos_lista')).content.decode()
+
+        self.assertIn('<span class="lbl">Dashboard</span>', html)
+        self.assertIn('<span class="lbl">Notificaciones</span>', html)
+
+    def test_con_todos_los_permisos_se_ve_todo(self):
+        usuario = self._usuario('u_menu_super')
+        usuario.is_superuser = True
+        usuario.save(update_fields=['is_superuser'])
+        self.client.force_login(usuario)
+        html = self.client.get(reverse('panel:mantenimientos_lista')).content.decode()
+
+        for etiqueta in ('Estaciones', 'Inventario', 'Mantenimientos', 'Bodegas y stock'):
+            self.assertIn(f'<span class="lbl">{etiqueta}</span>', html)

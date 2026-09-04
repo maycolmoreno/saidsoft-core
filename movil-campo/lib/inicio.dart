@@ -80,20 +80,56 @@ class _InicioState extends State<Inicio> {
   Widget build(BuildContext context) {
     final estado = context.watch<EstadoSesion>();
     final sesion = estado.sesion;
-    final destinos = <Widget>[
-      const PantallaMantenimientos(),
-      const PantallaVisitas(),
-      const PantallaAvisos(),
-      const PantallaGps(),
+    // La barra se arma SOLO con lo que el técnico puede usar: mostrar una pestaña
+    // que al tocarla responde 403 es peor que no mostrarla, porque parece una falla
+    // del sistema y no una restricción de permisos.
+    //
+    // Avisos no se filtra: la bandeja es del propio usuario, no de un modelo que
+    // haya que tener permiso para ver.
+    final destinos = <_Destino>[
+      if (estado.puede(Permiso.verMantenimientos))
+        const _Destino(
+          titulo: 'Mis mantenimientos',
+          etiqueta: 'Trabajo',
+          icono: Icons.build_outlined,
+          iconoActivo: Icons.build,
+          pantalla: PantallaMantenimientos(),
+        ),
+      if (estado.puede(Permiso.verVisitas))
+        const _Destino(
+          titulo: 'Mis visitas',
+          etiqueta: 'Visitas',
+          icono: Icons.storefront_outlined,
+          iconoActivo: Icons.storefront,
+          pantalla: PantallaVisitas(),
+        ),
+      const _Destino(
+        titulo: 'Avisos',
+        etiqueta: 'Avisos',
+        icono: Icons.notifications_none,
+        iconoActivo: Icons.notifications,
+        pantalla: PantallaAvisos(),
+        conBadge: true,
+      ),
+      if (estado.puede(Permiso.enviarUbicacion))
+        const _Destino(
+          titulo: 'Mi ubicacion',
+          etiqueta: 'Ubicacion',
+          icono: Icons.my_location_outlined,
+          iconoActivo: Icons.my_location,
+          pantalla: PantallaGps(),
+        ),
     ];
 
+    // El indice guardado puede quedar fuera de rango si cambian los permisos entre
+    // sesiones; sin esto la app reventaria al abrir.
+    final indice = _indice < destinos.length ? _indice : 0;
     final gpsActivo = context.watch<EstadoGps>().enviando;
-    const titulos = ['Mis mantenimientos', 'Mis visitas', 'Avisos', 'Mi ubicacion'];
     return Scaffold(
       // La barra la arma ACA y no cada pantalla: si cada una trae su propio
       // Scaffold, el cajon del menu queda tapado y sin boton para abrirlo --
       // dejaba la app sin forma de cerrar sesion.
-      appBar: AppBar(title: Text(titulos[_indice])),
+      appBar: AppBar(title: Text(destinos[indice].titulo)),
       body: Column(
         children: [
           // Que el envio este activo tiene que verse SIEMPRE, no solo en su pantalla:
@@ -142,11 +178,13 @@ class _InicioState extends State<Inicio> {
                 ),
               ),
             ),
-          Expanded(child: destinos[_indice]),
+          Expanded(child: destinos[indice].pantalla),
         ],
       ),
-      // Solo en la pestana de trabajo: el boton crea lo que esa pestana lista.
-      floatingActionButton: _indice == 0 && estado.puede(Permiso.crearMantenimiento)
+      // Solo sobre la lista de mantenimientos, y solo si puede crearlos: el boton
+      // crea lo que esa pantalla lista.
+      floatingActionButton: destinos[indice].pantalla is PantallaMantenimientos &&
+              estado.puede(Permiso.crearMantenimiento)
           ? FloatingActionButton.extended(
               onPressed: () => _abrirAlta(const PantallaNuevoMantenimiento()),
               icon: const Icon(Icons.add),
@@ -155,51 +193,72 @@ class _InicioState extends State<Inicio> {
           : null,
       drawer: _Menu(
         sesion: sesion,
-        onRegistrarEquipo: () => _abrirAlta(const PantallaNuevoEquipo()),
+        // Sin permiso para dar de alta activos, la opcion no aparece.
+        onRegistrarEquipo: estado.puede(Permiso.registrarEquipo)
+            ? () => _abrirAlta(const PantallaNuevoEquipo())
+            : null,
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _indice,
-        onDestinationSelected: (i) {
-          setState(() => _indice = i);
-          // Al entrar a la bandeja se refresca el contador: si el técnico marca
-          // avisos como leídos, el badge tiene que bajar.
-          if (i == 2) _contarAvisos();
-        },
-        destinations: [
-          const NavigationDestination(
-            icon: Icon(Icons.build_outlined),
-            selectedIcon: Icon(Icons.build),
-            label: 'Trabajo',
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.storefront_outlined),
-            selectedIcon: Icon(Icons.storefront),
-            label: 'Visitas',
-          ),
-          NavigationDestination(
-            icon: Badge(
-              isLabelVisible: _avisos > 0,
-              label: Text('$_avisos'),
-              child: const Icon(Icons.notifications_none),
+      // Una sola pestana no es una barra: ocupa lugar sin ofrecer nada que elegir.
+      bottomNavigationBar: destinos.length < 2
+          ? null
+          : NavigationBar(
+              selectedIndex: indice,
+              onDestinationSelected: (i) {
+                setState(() => _indice = i);
+                // Al entrar a la bandeja se refresca el contador: si el tecnico
+                // marca avisos como leidos, el badge tiene que bajar.
+                if (destinos[i].conBadge) _contarAvisos();
+              },
+              destinations: [
+                for (final d in destinos)
+                  NavigationDestination(
+                    icon: d.conBadge
+                        ? Badge(
+                            isLabelVisible: _avisos > 0,
+                            label: Text('$_avisos'),
+                            child: Icon(d.icono),
+                          )
+                        : Icon(d.icono),
+                    selectedIcon: Icon(d.iconoActivo),
+                    label: d.etiqueta,
+                  ),
+              ],
             ),
-            selectedIcon: const Icon(Icons.notifications),
-            label: 'Avisos',
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.my_location_outlined),
-            selectedIcon: Icon(Icons.my_location),
-            label: 'Ubicacion',
-          ),
-        ],
-      ),
     );
   }
+}
+
+/// Una pestaña de la barra inferior. Se declara junto con el permiso que la habilita
+/// (ver build) para que agregar una sección obligue a decidir quién la ve.
+class _Destino {
+  const _Destino({
+    required this.titulo,
+    required this.etiqueta,
+    required this.icono,
+    required this.iconoActivo,
+    required this.pantalla,
+    this.conBadge = false,
+  });
+
+  /// Encabezado de la barra superior.
+  final String titulo;
+
+  /// Texto corto bajo el icono.
+  final String etiqueta;
+  final IconData icono;
+  final IconData iconoActivo;
+  final Widget pantalla;
+
+  /// Si lleva el contador de avisos sin leer.
+  final bool conBadge;
 }
 
 class _Menu extends StatelessWidget {
   const _Menu({required this.sesion, required this.onRegistrarEquipo});
   final Sesion? sesion;
-  final VoidCallback onRegistrarEquipo;
+
+  /// null cuando el usuario no puede dar de alta activos: la opcion no se dibuja.
+  final VoidCallback? onRegistrarEquipo;
 
   @override
   Widget build(BuildContext context) {
@@ -243,15 +302,16 @@ class _Menu extends StatelessWidget {
               ),
             ),
             const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.add_box_outlined, color: Tema.primario),
-              title: const Text('Registrar equipo'),
-              subtitle: const Text('Inventariar uno que no esta cargado'),
-              onTap: () {
-                Navigator.of(context).pop();
-                onRegistrarEquipo();
-              },
-            ),
+            if (onRegistrarEquipo != null)
+              ListTile(
+                leading: const Icon(Icons.add_box_outlined, color: Tema.primario),
+                title: const Text('Registrar equipo'),
+                subtitle: const Text('Inventariar uno que no esta cargado'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  onRegistrarEquipo!();
+                },
+              ),
             const Spacer(),
             ListTile(
               leading: const Icon(Icons.logout, color: Tema.critico),

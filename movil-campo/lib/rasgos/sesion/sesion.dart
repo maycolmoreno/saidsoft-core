@@ -9,7 +9,8 @@ enum Permiso {
   cerrarMantenimiento('mantenimiento.change_mantenimiento'),
   verVisitas('mantenimiento.view_visitatecnica'),
   gestionarVisitas('mantenimiento.change_visitatecnica'),
-  enviarUbicacion('mantenimiento.add_ubicaciontecnico');
+  enviarUbicacion('mantenimiento.add_ubicaciontecnico'),
+  registrarEquipo('activos.add_activo');
 
   const Permiso(this.codename);
 
