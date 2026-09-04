@@ -1734,6 +1734,57 @@ directo. Compose v2 ya está instalado en el servidor (v5.5.0) y lo resolvería,
 cambia el esquema de nombres de contenedor (`deploy_web_1` → `deploy-web-1`) y hay que
 bajar el stack entero una vez.
 
+**AB. Migración a Compose v2, y la causa real de que EMQX perdiera usuarios en cada
+recreación (4-sep-2026) — 🟢 cerrado y verificado forzando el fallo:** el stack pasó de
+`docker-compose` v1 (1.29.2) a `docker compose` v2, para no depender más del
+`stop`+`rm`+`up` obligado por el `KeyError: 'ContainerConfig'` de v1 con imágenes de
+BuildKit. Los seis volúmenes resuelven al mismo nombre en v2 (`deploy_db_data`, etc.),
+confirmado con `docker compose config` ANTES de bajar nada; los contenedores pasan a
+llamarse con guiones (`deploy-web-1`).
+
+**La migración destapó un problema viejo y serio.** Al recrearse, EMQX arrancó con la
+base de `built_in_database` VACÍA: worker y los cinco agentes quedaron en loop de "Not
+authorized", con la flota entera desconectada. El volumen `emqx_data` estaba intacto.
+
+La causa: el nodo Erlang de EMQX guarda su Mnesia —usuarios y ACLs— en un directorio
+llamado como el nodo, y **sin `EMQX_NODE__NAME` la imagen oficial arma el nombre como
+`emqx@<IP del contenedor>`**. Cada IP nueva = base nueva y vacía.
+
+Lo peor es que ya se había intentado arreglar. El 20-ago-2026 se agregó `hostname: emqx`
+con un comentario explicando justamente este síntoma, y **nunca funcionó**: el nombre
+sale de la IP, no del hostname. La evidencia estuvo dentro del volumen todo el tiempo —
+`mnesia/` acumula un directorio por IP (`emqx@172.18.0.2`, `.3`, `.4`, `.5`, `.6`, `.7`,
+`.9`), varios con fecha POSTERIOR a ese arreglo. Cada uno fue una re-siembra manual del
+broker que se atribuyó a otra cosa.
+
+**Muy probablemente sea también la causa de §10-T** (`ML006-A` con "Bad user name or
+password" intermitente desde el 14-ago, nunca cerrado): coincide el mecanismo y las
+fechas de los directorios.
+
+Recuperación y cierre, en ese orden:
+
+- **Recuperar la flota primero**: se le devolvió al contenedor su IP anterior
+  (`172.18.0.2`) ocupando las libres con contenedores descartables, para que volviera a
+  abrir la Mnesia buena. Los 8 usuarios reaparecieron —incluidas las 5 credenciales por
+  estación de §10-Z, cuyas contraseñas no existen en ningún otro lado— y los agentes
+  reconectaron solos.
+- **Exportar** con `emqx ctl data export` (el `.tar.gz` queda dentro del volumen).
+- **Fijar el nombre**: `EMQX_NODE__NAME: emqx@127.0.0.1` en el servicio `emqx`. Nodo
+  único, siempre resoluble, independiente de la IP.
+- **Recrear e importar** con `emqx ctl data import`. Volvieron los 8 usuarios y la ACL
+  endurecida de §10-Z.
+- **Verificado forzando el escenario**, no asumiendo: se recreó EMQX ocupando las IPs
+  libres para que tomara una distinta (`.2` → `.12`). Conservó los 8 usuarios. Antes de
+  este cambio, ese mismo movimiento vaciaba la base.
+
+**Cuidado al tocar `EMQX_NODE__NAME`**: cambiar su valor equivale a empezar con una base
+vacía. Si alguna vez hay que cambiarlo, exportar antes e importar después.
+
+**Nota sobre la ventana de caída**: la migración tuvo unos minutos de indisponibilidad
+del panel y ~10 de la flota MQTT, con respaldo cifrado fresco tomado justo antes
+(`db_20260904_141756.sql.gz.gpg`). Ningún dato se perdió: los volúmenes nunca se
+tocaron (`down` sin `-v`).
+
 ## Directorio real de sucursales y técnicos de soporte (22-ago-2026)
 
 Con la auditoría de gobernanza cerrada, el usuario pasó dos archivos reales de RRHH/

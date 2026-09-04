@@ -409,3 +409,27 @@ confirmar el flujo completo (grabar → listar en "Recordings" → reproducir).
   vuelve a pasar** (ej. tras un `docker-compose down -v`, que sí borra el
   volumen), el remedio sigue siendo el mismo: volver a correr
   `sh bootstrap-emqx.sh` — es reentrante, seguro de repetir.
+
+## Desplegar un cambio (Compose v2)
+
+Desde el 4-sep-2026 el stack corre con `docker compose` (v2), no `docker-compose` (v1).
+
+```sh
+cd ~/Documentos/Said/saidsoft-core
+git pull --ff-only
+cd deploy
+docker compose --env-file .env build web     # solo si cambio codigo Python
+docker compose --env-file .env up -d
+```
+
+Dos cosas que NO son obvias y ya costaron caidas:
+
+- **Un cambio en `nginx.conf` exige RECREAR el contenedor, no recargarlo.** El archivo
+  entra por un bind mount de archivo suelto, que ata el inode: `git pull` escribe un
+  archivo nuevo y lo renombra encima, asi que el contenedor sigue viendo el viejo.
+  `nginx -t` y `nginx -s reload` validan y recargan el contenido equivocado sin quejarse.
+  Confirmar con `docker exec deploy-nginx-1 grep resolver /etc/nginx/conf.d/default.conf`.
+- **No borrar `EMQX_NODE__NAME` del compose.** Sin esa variable, el nombre del nodo se
+  deriva de la IP del contenedor y EMQX arranca con la base de usuarios/ACLs vacia en
+  cada recreacion. Cambiar su valor tiene el mismo efecto: exportar antes
+  (`emqx ctl data export`) e importar despues (`emqx ctl data import`).
