@@ -133,6 +133,12 @@ class Farmacia(models.Model):
         max_length=30, blank=True,
         help_text='Proveedor/tecnología del enlace principal (ej. TELCONET, PUNTO NET).',
     )
+    circuito_proveedor = models.CharField(
+        max_length=80, blank=True,
+        help_text='Nombre del circuito en el proveedor (ej. "sangregorio2-santana"). Es el '
+                  'identificador que pide TELCONET/PUNTO NET al abrir un ticket: sin él hay '
+                  'que buscarlo en una planilla aparte mientras la farmacia está sin vender.',
+    )
     tiene_backup = models.BooleanField(
         default=False,
         help_text='Si el sitio tiene enlace de respaldo — sin uno, una caída del enlace '

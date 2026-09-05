@@ -2,6 +2,8 @@ import datetime
 import io
 import json
 import tempfile
+from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
@@ -9,6 +11,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 
 from apps.activos.models import Cargo, Colaborador, Departamento
@@ -929,3 +932,79 @@ class BddPosTests(TestCase):
         self.assertFalse(estacion.nodo_discrepante)
         estacion.pos_bdd = 'trx004'   # todavía en el viejo
         self.assertTrue(estacion.nodo_discrepante)
+
+
+class ImportarCircuitosProveedorTests(TestCase):
+    """El circuito del proveedor es lo que piden al abrir un ticket; hasta ahora vivía
+    en un Excel aparte. El comando acepta los dos formatos de planilla que existen."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.gsa01 = Farmacia.objects.create(codigo='GSA01', grupo=grupo, unidad_negocio=self.sg)
+        self.ma001 = Farmacia.objects.create(codigo='MA001', grupo=grupo, unidad_negocio=self.sg)
+
+    def _csv(self, contenido):
+        ruta = Path(tempfile.gettempdir()) / f'circuitos_{id(self)}.csv'
+        # utf-8-sig: las planillas salen de Excel con BOM, y el comando tiene que
+        # soportarlo o la primera columna nunca calza.
+        ruta.write_text(contenido, encoding='utf-8-sig')
+        self.addCleanup(lambda: ruta.unlink(missing_ok=True))
+        return str(ruta)
+
+    FORMATO_SG = (
+        'provincia;canton;cod_sucursal;caracteristica;proveedor;ip_proveedor\n'
+        'Manabí;Santa Ana;GSA01;sangregorio2-santana;TELCONET;192.168.102.1\n'
+    )
+    FORMATO_MIA = (
+        'Provincia;Ciudad;Codigo de farmacia;Ip Provedor;Provedor;Caracteristica\n'
+        'El Oro;Arenillas;MA001;10.101.18.224/27;TELCONET;cazul-arenillas\n'
+    )
+
+    def test_formato_san_gregorio(self):
+        call_command('importar_circuitos_proveedor', self._csv(self.FORMATO_SG), '--aplicar')
+        self.gsa01.refresh_from_db()
+        self.assertEqual(self.gsa01.circuito_proveedor, 'sangregorio2-santana')
+
+    def test_formato_mia(self):
+        call_command('importar_circuitos_proveedor', self._csv(self.FORMATO_MIA), '--aplicar')
+        self.ma001.refresh_from_db()
+        self.assertEqual(self.ma001.circuito_proveedor, 'cazul-arenillas')
+
+    def test_sin_aplicar_no_escribe_nada(self):
+        """Las planillas traen sucursales cerradas: conviene ver qué haría antes."""
+        call_command('importar_circuitos_proveedor', self._csv(self.FORMATO_SG))
+        self.gsa01.refresh_from_db()
+        self.assertEqual(self.gsa01.circuito_proveedor, '')
+
+    def test_no_toca_segmento_red_ni_ip_router(self):
+        """Esos ya están cargados; una reimportación no puede pisarlos con dato viejo."""
+        self.gsa01.segmento_red = '10.0.0.0/24'
+        self.gsa01.ip_router = '10.0.0.1'
+        self.gsa01.save(update_fields=['segmento_red', 'ip_router'])
+
+        call_command('importar_circuitos_proveedor', self._csv(self.FORMATO_SG), '--aplicar')
+        self.gsa01.refresh_from_db()
+        self.assertEqual(self.gsa01.segmento_red, '10.0.0.0/24')
+        self.assertEqual(self.gsa01.ip_router, '10.0.0.1')
+
+    def test_una_sucursal_que_no_existe_se_informa_y_no_se_crea(self):
+        """Inventarla desde una planilla de enlaces seria adivinar su grupo y su
+        unidad de negocio."""
+        csv_txt = self.FORMATO_SG + 'Manabí;X;GZZ99;circuito-fantasma;TELCONET;1.2.3.4\n'
+        salida = StringIO()
+        call_command('importar_circuitos_proveedor', self._csv(csv_txt), '--aplicar', stdout=salida)
+        self.assertFalse(Farmacia.objects.filter(codigo='GZZ99').exists())
+        self.assertIn('GZZ99', salida.getvalue())
+
+    def test_es_idempotente(self):
+        ruta = self._csv(self.FORMATO_SG)
+        call_command('importar_circuitos_proveedor', ruta, '--aplicar')
+        salida = StringIO()
+        call_command('importar_circuitos_proveedor', ruta, '--aplicar', stdout=salida)
+        self.assertIn('Ya tenían el mismo circuito: 1', salida.getvalue())
+
+    def test_columnas_desconocidas_fallan_con_un_mensaje_util(self):
+        with self.assertRaises(CommandError) as ctx:
+            call_command('importar_circuitos_proveedor', self._csv('a;b\n1;2\n'), '--aplicar')
+        self.assertIn('No reconozco las columnas', str(ctx.exception))

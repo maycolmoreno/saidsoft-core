@@ -20,6 +20,9 @@
             <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Farmacia</th>
                 <th class="text-left px-4 py-3">IP del router</th>
+                {# El identificador que pide el proveedor al abrir un ticket: va acá
+                   porque es justo esta pantalla la que se mira cuando un enlace cae. #}
+                <th class="text-left px-4 py-3">Circuito del proveedor</th>
                 <th class="text-left px-4 py-3">Bajada</th>
                 <th class="text-left px-4 py-3">Subida</th>
                 <th class="text-left px-4 py-3">Total</th>
@@ -31,6 +34,14 @@
             <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
                 <td class="px-4 py-3 font-medium">{{ fila.farmacia.codigo }} · {{ fila.farmacia.grupo.codigo }}</td>
                 <td class="px-4 py-3 text-[var(--text-faint)] mono num">{{ fila.farmacia.ip_router }}</td>
+                <td class="px-4 py-3 text-xs">
+                    {% if fila.farmacia.circuito_proveedor %}
+                        <span class="mono">{{ fila.farmacia.circuito_proveedor }}</span>
+                        <span class="text-[var(--text-faint)]"> · {{ fila.farmacia.tipo_enlace }}</span>
+                    {% else %}
+                        <span class="text-[var(--text-faint)]">sin circuito cargado</span>
+                    {% endif %}
+                </td>
                 <td class="px-4 py-3 num">{{ fila.ultima.red_recibido_kbps|default:"—" }}{% if fila.ultima.red_recibido_kbps is not None %}kb/s{% endif %}</td>
                 <td class="px-4 py-3 num">{{ fila.ultima.red_enviado_kbps|default:"—" }}{% if fila.ultima.red_enviado_kbps is not None %}kb/s{% endif %}</td>
                 <td class="px-4 py-3">
@@ -43,7 +54,7 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">
+            <tr><td colspan="7" class="px-4 py-8 text-center text-[var(--text-faint)]">
                 Ninguna farmacia tiene la IP del router cargada todavía (campo "IP del router" en su ficha).
             </td></tr>
         {% endfor %}
