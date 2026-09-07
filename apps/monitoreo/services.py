@@ -12,9 +12,10 @@ import urllib.request
 from datetime import timedelta
 
 from django.core.mail import send_mail
-from django.db import close_old_connections
 from django.db.models import Q
 from django.utils import timezone
+
+from apps.catalogo.db import cerrar_conexiones_viejas
 
 from .models import (
     Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, PosErrorDetectado,
@@ -166,11 +167,11 @@ def registrar_estado_dispositivo(estacion, *, fuente: str, en_linea: bool, detal
     evaluar el cruce en cada señal sería redundante (la comparación no cambia entre una
     señal MQTT y la siguiente si MeshCentral no se movió).
 
-    `close_old_connections()` porque, a diferencia de resto de este módulo, esto lo
+    `cerrar_conexiones_viejas()` porque, a diferencia de resto de este módulo, esto lo
     llaman también workers de larga duración fuera del ciclo request/response de Django
     (run_meshcentral_worker) — mismo motivo que ya usan los handlers de mqtt_worker.
     """
-    close_old_connections()
+    cerrar_conexiones_viejas()
     anterior = EstadoDispositivo.objects.filter(estacion=estacion, fuente=fuente).first()
     cambio = anterior is None or anterior.en_linea != en_linea
 

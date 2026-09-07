@@ -7,9 +7,9 @@ conexión MQTT viva.
 import logging
 from datetime import timedelta
 
-from django.db import close_old_connections
 from django.utils import timezone
 
+from apps.catalogo.db import cerrar_conexiones_viejas
 from apps.catalogo import crypto
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia
 from apps.despliegues.models import EventoDespliegue, ResultadoDespliegue
@@ -89,7 +89,7 @@ def _respuesta_aceptado(estacion) -> dict:
 
 def manejar_enrolamiento(payload: dict) -> dict:
     """Un agente nuevo se presenta. Lo crea en estado pendiente si su farmacia existe."""
-    close_old_connections()
+    cerrar_conexiones_viejas()
     codigo = payload.get('codigo', '')
     hardware_id = payload.get('hardware_id', '')
 
@@ -137,7 +137,7 @@ def manejar_enrolamiento(payload: dict) -> dict:
 
 
 def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
@@ -190,7 +190,7 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
 
 
 def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
@@ -251,7 +251,7 @@ def manejar_estado_instalacion(codigo_estacion: str, payload: dict) -> None:
     (instalar software es de menor radio que actualizar el POS de toda la cadena — ver
     docstring de apps.software.models).
     """
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
@@ -306,7 +306,7 @@ def manejar_estado_instalacion(codigo_estacion: str, payload: dict) -> None:
 
 def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:
     """Guarda la respuesta a una consulta puntual de hardware (comando "consultar_info")."""
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
@@ -369,7 +369,7 @@ def manejar_windows_update(codigo_estacion: str, payload: dict) -> None:
     se deja el último resultado conocido (pendientes/requiere_reinicio/detalle) como
     estaba, en vez de borrarlo con datos vacíos que se verían como "sin pendientes" sin serlo.
     """
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
@@ -403,7 +403,7 @@ def manejar_software_instalado(codigo_estacion: str, payload: dict) -> None:
     que había antes para esta estación — ver docstring de
     apps.software.models.SoftwareInstaladoDetectado sobre por qué (evita lógica de
     diff; instalar/desinstalar algo entre escaneos se refleja solo en el próximo)."""
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
@@ -450,7 +450,7 @@ def manejar_perifericos(codigo_estacion: str, payload: dict) -> None:
     "consultar_perifericos"). Semántica de snapshot, mismo criterio que
     manejar_software_instalado: reemplaza por completo lo que había antes para esta
     estación — ver docstring de apps.catalogo.models.PerifericoDetectado."""
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
@@ -501,7 +501,7 @@ def manejar_red_farmacia(codigo_estacion: str, payload: dict) -> None:
     MuestraRedFarmacia: no hay nada real que guardar, y una fila con contadores en
     cero rompería el cálculo de tasa de la siguiente muestra (se leería como una
     caída real de tráfico, no como "no se pudo medir")."""
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.select_related('farmacia').get(
             codigo=codigo_estacion, token_enrolamiento=payload.get('token'),
@@ -539,7 +539,7 @@ def manejar_pos_errores(codigo_estacion: str, payload: dict) -> None:
     esta ventana — los de categoría "negocio" (ej. "VENTA SIN LOTE", una validación del
     POS funcionando bien, no una falla) se guardan igual pero no cuentan para la
     alerta, ver apps.monitoreo.services.clasificar_error_pos."""
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
@@ -579,7 +579,7 @@ def manejar_pos_errores(codigo_estacion: str, payload: dict) -> None:
 
 def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:
     """Guarda el progreso/resultado de una ejecución de script (comando "ejecutar_script")."""
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
@@ -621,7 +621,7 @@ def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:
 
 def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
     """Guarda una muestra de recursos reportada por el agente de un servidor."""
-    close_old_connections()
+    cerrar_conexiones_viejas()
     try:
         estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
     except Estacion.DoesNotExist:
@@ -659,7 +659,7 @@ def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
 
 def registrar_latido_worker(nombre: str) -> None:
     """Marca que el worker `nombre` sigue vivo y procesando. Ver WorkerHeartbeat."""
-    close_old_connections()
+    cerrar_conexiones_viejas()
     WorkerHeartbeat.objects.update_or_create(nombre=nombre, defaults={'ultimo_latido': timezone.now()})
 
 
@@ -669,5 +669,5 @@ def registrar_mensaje_fallido(*, topico: str, payload_crudo: str, error: str) ->
     Antes esto solo quedaba en el log del proceso (fácil de perder de vista); ahora
     queda en una tabla que el panel/admin puede revisar y marcar como resuelta.
     """
-    close_old_connections()
+    cerrar_conexiones_viejas()
     MensajeMqttFallido.objects.create(topico=topico, payload_crudo=payload_crudo, error=error)

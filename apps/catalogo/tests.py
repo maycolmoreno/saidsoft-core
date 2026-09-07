@@ -1008,3 +1008,45 @@ class ImportarCircuitosProveedorTests(TestCase):
         with self.assertRaises(CommandError) as ctx:
             call_command('importar_circuitos_proveedor', self._csv('a;b\n1;2\n'), '--aplicar')
         self.assertIn('No reconozco las columnas', str(ctx.exception))
+
+
+class CerrarConexionesViejasTests(TestCase):
+    """`close_old_connections()` dentro de un bloque atómico cierra la conexión y deja
+    inservible todo lo que siga en ese proceso.
+
+    Contra SQLite no se nota; contra el PostgreSQL real —el mismo motor que producción—
+    tumbaba 125 pruebas de una sola vez, porque un TestCase envuelve cada prueba en una
+    transacción y los handlers de los workers llaman a esto.
+    """
+
+    def test_dentro_de_una_transaccion_no_cierra_nada(self):
+        from django.db import connection
+        from apps.catalogo.db import cerrar_conexiones_viejas
+
+        # Un TestCase ya corre dentro de un bloque atómico.
+        self.assertTrue(connection.in_atomic_block)
+        with patch('apps.catalogo.db.close_old_connections') as cerrar:
+            cerrar_conexiones_viejas()
+        cerrar.assert_not_called()
+
+        # Y la conexión sigue viva: sin esto, la consulta de abajo reventaría.
+        self.assertGreaterEqual(UnidadNegocio.objects.count(), 0)
+
+    def test_fuera_de_una_transaccion_si_cierra(self):
+        """El resguardo no puede desactivar el comportamiento que los workers necesitan:
+        una conexión que el servidor cerró por timeout tiene que descartarse."""
+        from apps.catalogo.db import cerrar_conexiones_viejas
+
+        with patch('apps.catalogo.db.connection') as conexion, \
+                patch('apps.catalogo.db.close_old_connections') as cerrar:
+            conexion.in_atomic_block = False
+            cerrar_conexiones_viejas()
+        cerrar.assert_called_once()
+
+    def test_un_handler_del_worker_no_rompe_la_transaccion_de_la_prueba(self):
+        """Prueba de extremo: llamar a un handler real y seguir consultando después."""
+        from apps.mqtt_worker.services import manejar_enrolamiento
+
+        manejar_enrolamiento({'codigo': 'ZZZ99-A', 'hardware_id': 'x'})
+        # Si el handler hubiera cerrado la conexión, esto lanzaría OperationalError.
+        self.assertGreaterEqual(UnidadNegocio.objects.count(), 0)

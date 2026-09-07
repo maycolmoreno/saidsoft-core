@@ -13,9 +13,9 @@ import signal
 import threading
 
 from django.core.management.base import BaseCommand
-from django.db import close_old_connections
 from django.utils import timezone
 
+from apps.catalogo.db import cerrar_conexiones_viejas
 from apps.monitoreo.adapters.meshcentral import AdaptadorMeshCentral
 from apps.mqtt_worker.models import WorkerHeartbeat
 
@@ -61,7 +61,7 @@ class Command(BaseCommand):
         self._registrar_latido()
 
     def _registrar_latido(self):
-        close_old_connections()
+        cerrar_conexiones_viejas()
         WorkerHeartbeat.objects.update_or_create(
             nombre=NOMBRE_WORKER_MESHCENTRAL, defaults={'ultimo_latido': timezone.now()},
         )

@@ -20,8 +20,30 @@ jobs:
   django:
     name: Django
     runs-on: ubuntu-latest
+
+    # La MISMA imagen que producción. Correr las pruebas en SQLite y desplegar sobre
+    # Postgres esconde una familia entera de bugs: sumar y contar en el mismo annotate
+    # (el JOIN duplica filas e infla los totales), resultados sin ORDER BY, y la
+    # semántica real de las transacciones. Ya pasó una vez, en el consolidado de
+    # viáticos -- ver deploy/README-local.md.
+    services:
+      db:
+        image: timescale/timescaledb:2.17.2-pg16
+        env:
+          POSTGRES_DB: saidsoft_ci
+          POSTGRES_USER: saidsoft_ci
+          POSTGRES_PASSWORD: saidsoft_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U saidsoft_ci -d saidsoft_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     env:
       DJANGO_SETTINGS_MODULE: config.settings.desarrollo
+      DATABASE_URL: postgres://saidsoft_ci:saidsoft_ci@127.0.0.1:5432/saidsoft_ci
       # Valores descartables SOLO para las pruebas. No son secretos reales: se generan
       # acá a la vista justamente para que nadie los confunda con los de producción, que
       # viven en deploy/.env del servidor y nunca se versionan.
@@ -58,7 +80,9 @@ jobs:
         run: python manage.py makemigrations --check --dry-run
 
       - name: Suite completa
-        run: python manage.py test --verbosity 2
+        # --noinput: si una corrida anterior dejó una base de pruebas colgada,
+        # Django pregunta si borrarla y sin TTY eso muere con EOFError.
+        run: python manage.py test --noinput --verbosity 2
 
   movil:
     name: App móvil (Flutter)
