@@ -803,6 +803,63 @@ alertas y tendencia de 3 meses) con exportable en `/viaticos/consolidado.csv`, y
 Todo escopado por unidad de negocio vía `colaborador__unidad_negocio` con el criterio
 "compartido o del tenant" (`Colaborador.unidad_negocio` es opcional).
 
+## Entrar a la app con huella
+
+La app **ya recordaba la sesión** —el token vive en el almacén cifrado del sistema y se
+reusa al abrir—, así que usuario y clave solo se escriben la primera vez tras instalar.
+Lo que faltaba no era conveniencia sino una **cerradura**: el token de DRF no vence
+nunca, y cualquiera que agarre el celular desbloqueado abría la app y actuaba como ese
+técnico.
+
+La huella **no autentica contra el servidor**: Android/iOS nunca la entregan a la app.
+Solo desbloquea el token ya guardado, y por eso el primer ingreso sigue siendo con
+usuario y clave, que es lo único que prueba la identidad. Se activa desde el cajón del
+menú, y aparece solo si el teléfono ya tiene una huella registrada.
+
+Decisiones que valen más que el código (`movil-campo/lib/rasgos/sesion/`):
+
+- Si el teléfono pierde la biometría (huella borrada, lector roto) **no deja al técnico
+  afuera**: entra igual. Quedarse sin poder trabajar dentro de una farmacia es peor que
+  la protección que se pierde.
+- Un fallo de huella no cierra la sesión ni borra el token: deja la pantalla para
+  reintentar, con salida a usuario y clave.
+- Activarla exige pasar la huella una vez ahí mismo, para comprobar que funciona ANTES
+  de depender de ella para volver a entrar.
+- Cerrar sesión borra también la preferencia: es de la persona, no del teléfono. Si
+  quedara, el próximo técnico en ese celular heredaría una cerradura que se abre con la
+  huella del anterior.
+
+Del lado Android, `MainActivity` extiende `FlutterFragmentActivity` — el prompt de
+`androidx.biometric` lo necesita para montarse, y con `FlutterActivity` falla en
+ejecución, no al compilar.
+
+## Del RMM al inventario, sin cargar nada a mano
+
+El agente ya reporta número de serie, procesador, RAM, disco y en qué farmacia está.
+Aun así el activo había que cargarlo a mano, uno por uno — por eso llegó a haber 8
+estaciones enroladas reportando hardware completo y 3 activos en ITAM. A ~1.800 equipos
+eso no es lento, es imposible: el inventario nunca se pondría al día.
+
+`apps.activos.services.crear_activos_desde_estaciones` da de alta el activo con lo que
+el agente ya reportó y lo vincula a su estación. **Cada agente instalado se vuelve un
+activo inventariado**, así que el rollout deja de ser un trabajo aparte del inventario
+y pasa a ser el que lo llena.
+
+    python manage.py crear_activos_desde_rmm                # simula
+    python manage.py crear_activos_desde_rmm --aplicar
+    python manage.py crear_activos_desde_rmm --tipo SRV --aplicar
+
+Reglas, todas conservadoras: solo estaciones **aprobadas** (una pendiente todavía podría
+rechazarse); solo con **número de serie** (sin él no hay cómo reconocer el equipo ni
+evitar duplicarlo); si la serie ya existe en ITAM **vincula el activo existente en vez
+de crear otro**; y el tipo no se adivina — el agente reporta hardware, no formato, así
+que es un parámetro con Desktop de default.
+
+Desde esta función, `registrar_ingreso` hereda la **unidad de negocio de la farmacia**:
+un equipo instalado pertenece al cliente dueño de ese local. Antes todos los activos
+nacían con la unidad vacía, o sea "compartido con todos los clientes" — lo contrario del
+aislamiento que el resto del sistema sostiene.
+
 ## Roles y permisos (RBAC)
 
 No hay un modelo `Rol`/`Modulo` propio: se usa el sistema de permisos estándar de

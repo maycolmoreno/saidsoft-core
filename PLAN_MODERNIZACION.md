@@ -1785,6 +1785,35 @@ del panel y ~10 de la flota MQTT, con respaldo cifrado fresco tomado justo antes
 (`db_20260904_141756.sql.gz.gpg`). Ningún dato se perdió: los volúmenes nunca se
 tocaron (`down` sin `-v`).
 
+**AC. El rollout y el inventario eran dos trabajos manuales separados (7-sep-2026) —
+🟢 cerrado y aplicado en producción:** había servicio para *vincular* un Activo
+existente con su Estación (`vincular_activos_por_numero_serie`) y para *autocompletar
+un formulario* con el hardware reportado (`datos_hardware_desde_estacion`), pero
+**ninguno creaba el Activo desde la Estación**. Resultado: 8 estaciones enroladas
+reportando serie, procesador, RAM, disco y farmacia, contra 3 activos en ITAM. A ~1.800
+equipos, cargarlos a mano no es lento, es imposible — el inventario nunca se pondría al
+día, y el rollout del agente competiría con el inventario en vez de alimentarlo.
+
+`apps.activos.services.crear_activos_desde_estaciones` + el comando
+`crear_activos_desde_rmm` cierran ese hueco. Aplicado en producción: **el inventario
+pasó de 3 a 9 activos, 8 de ellos vinculados a su estación**, con el hardware real.
+
+Reglas conservadoras, todas con prueba: solo estaciones APROBADAS (una pendiente
+todavía podría rechazarse); solo con número de serie (sin él no hay cómo reconocer el
+equipo ni evitar duplicarlo); si la serie ya existe en ITAM se VINCULA el activo
+existente en vez de crear otro — se verificó en vivo con `MAM06-A`, que ya tenía
+`CR-DSK-0002` cargado a mano; y el tipo no se adivina, porque el agente reporta hardware
+y no formato (un desktop y un servidor se ven igual desde adentro). Simula por defecto.
+
+**Arreglo de fondo incluido:** `registrar_ingreso` nunca asignaba `unidad_negocio`, así
+que TODOS los activos nacían con la unidad vacía — es decir, compartidos con todos los
+clientes, lo contrario del aislamiento que el resto del sistema sostiene. Ahora la
+heredan de su farmacia. Los 3 activos creados antes de este cambio siguen sin unidad;
+falta un backfill.
+
+Pendiente relacionado: el rollout sigue frenado por la falta de ruta de red a las
+farmacias (VPN), que es lo que haría valer este mecanismo a escala.
+
 ## Directorio real de sucursales y técnicos de soporte (22-ago-2026)
 
 Con la auditoría de gobernanza cerrada, el usuario pasó dos archivos reales de RRHH/
