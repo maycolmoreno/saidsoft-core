@@ -12,7 +12,7 @@ from .models import (
     OrdenCompraDetalle, RecepcionLote, StockBodega, TipoConsumible,
 )
 from .services import (
-    activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, activos_por_vencer_garantia, anular_recepcion_lote, datos_hardware_desde_estacion, registrar_ajuste_inventario, registrar_asignacion, registrar_ingreso, registrar_recepcion_lote, registrar_salida_stock, registrar_traslado_bodega, registrar_ubicacion_farmacia, scope_movimientos_visibles, stock_bajo_minimo, vincular_activos_por_numero_serie,
+    activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, crear_activos_desde_estaciones, activos_por_vencer_garantia, anular_recepcion_lote, datos_hardware_desde_estacion, registrar_ajuste_inventario, registrar_asignacion, registrar_ingreso, registrar_recepcion_lote, registrar_salida_stock, registrar_traslado_bodega, registrar_ubicacion_farmacia, scope_movimientos_visibles, stock_bajo_minimo, vincular_activos_por_numero_serie,
 )
 
 
@@ -888,3 +888,94 @@ class RegistrarIngresoSinBodegaTests(TestCase):
             farmacia=self.farmacia, estado_fisico=Activo.EstadoFisico.REGULAR,
         )
         self.assertEqual(activo.estado_fisico_actual, Activo.EstadoFisico.REGULAR)
+
+
+class CrearActivosDesdeRmmTests(TestCase):
+    """El agente ya sabe serie, hardware y farmacia; el activo se cargaba igual a mano.
+    A 1.800 equipos el inventario nunca se pondría al día."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML006', grupo=grupo, unidad_negocio=self.sg)
+        self.usuario = User.objects.create_user(username='u_rmm_itam', password='x')
+        self.estacion = Estacion.objects.create(
+            codigo='ML006-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            numero_serie='MXL8192898', procesador='Intel Core i5-14500',
+            ram_total_mb=16384, almacenamiento_total_gb=474,
+        )
+
+    def _crear(self, **kwargs):
+        kwargs.setdefault('usuario', self.usuario)
+        kwargs.setdefault('aplicar', True)
+        return crear_activos_desde_estaciones(**kwargs)
+
+    def test_crea_el_activo_con_el_hardware_que_reporto_el_agente(self):
+        resumen = self._crear()
+        self.assertEqual(resumen['creados'], 1)
+        activo = Activo.objects.get(numero_serie='MXL8192898')
+        self.assertEqual(activo.procesador, 'Intel Core i5-14500')
+        self.assertEqual(activo.ram_gb, 16, 'los MB del agente se guardan como GB')
+        self.assertEqual(activo.almacenamiento_gb, 474)
+        self.assertEqual(activo.farmacia, self.farmacia)
+        self.assertEqual(activo.estado, Activo.Estado.ASIGNADO)
+
+    def test_queda_vinculado_a_su_estacion(self):
+        """Sin el vínculo, inventario y monitoreo seguirían hablando de dos cosas."""
+        self._crear()
+        activo = Activo.objects.get(numero_serie='MXL8192898')
+        self.assertEqual(activo.estacion, self.estacion)
+
+    def test_hereda_la_unidad_de_negocio_de_su_farmacia(self):
+        """Un equipo instalado pertenece al cliente dueño de esa farmacia. Antes TODOS
+        nacían sin unidad, o sea 'compartido con todos los clientes'."""
+        self._crear()
+        self.assertEqual(Activo.objects.get(numero_serie='MXL8192898').unidad_negocio, self.sg)
+
+    def test_no_duplica_si_la_serie_ya_esta_en_itam(self):
+        """El caso real: alguien ya lo cargó a mano. Se vincula, no se crea otro."""
+        previo = Activo.objects.create(
+            codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, numero_serie='MXL8192898',
+        )
+        resumen = self._crear()
+        self.assertEqual(resumen['creados'], 0)
+        self.assertEqual(resumen['vinculados'], 1)
+        self.assertEqual(Activo.objects.filter(numero_serie='MXL8192898').count(), 1)
+        previo.refresh_from_db()
+        self.assertEqual(previo.estacion, self.estacion)
+
+    def test_es_idempotente(self):
+        self._crear()
+        resumen = self._crear()
+        self.assertEqual(resumen['creados'], 0)
+        self.assertEqual(resumen['ya_vinculadas'], 1)
+        self.assertEqual(Activo.objects.count(), 1)
+
+    def test_ignora_las_estaciones_no_aprobadas(self):
+        """Una pendiente todavía no es un equipo de la flota: podría rechazarse."""
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.PENDIENTE
+        self.estacion.save(update_fields=['estado_aprobacion'])
+        self.assertEqual(self._crear()['creados'], 0)
+        self.assertEqual(Activo.objects.count(), 0)
+
+    def test_omite_las_que_no_reportaron_serie(self):
+        """Sin serie no hay forma de reconocer el equipo después ni de no duplicarlo."""
+        self.estacion.numero_serie = ''
+        self.estacion.save(update_fields=['numero_serie'])
+        resumen = self._crear()
+        self.assertEqual(resumen['creados'], 0)
+        self.assertEqual(resumen['sin_serie'], 1)
+        self.assertEqual(Activo.objects.count(), 0)
+
+    def test_sin_aplicar_no_escribe_nada(self):
+        resumen = self._crear(aplicar=False)
+        self.assertEqual(resumen['creados'], 1, 'informa lo que haría')
+        self.assertEqual(Activo.objects.count(), 0, 'pero no lo hace')
+
+    def test_el_tipo_no_se_adivina(self):
+        """El agente reporta hardware, no formato: un desktop y un servidor se ven
+        igual desde adentro."""
+        self._crear(tipo=Activo.Tipo.SERVIDOR)
+        self.assertEqual(Activo.objects.get(numero_serie='MXL8192898').tipo, Activo.Tipo.SERVIDOR)

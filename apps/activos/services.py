@@ -81,6 +81,11 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
         orden_compra=orden_compra, bodega_actual=bodega,
         estado=Activo.Estado.ASIGNADO if farmacia is not None else Activo.Estado.EN_BODEGA,
         estado_fisico_actual=estado_fisico,
+        # Un equipo instalado en una farmacia pertenece al cliente dueño de esa
+        # farmacia: heredarlo acá es lo que hace que el aislamiento por tenant
+        # signifique algo para los activos. Hasta ahora TODOS nacían con
+        # unidad_negocio vacía, o sea "compartido con todos los clientes".
+        unidad_negocio=farmacia.unidad_negocio if farmacia is not None else None,
     )
     activo.codigo = generar_codigo_activo(tipo)
     activo.save()
@@ -565,6 +570,85 @@ def stock_bajo_minimo():
     return StockBodega.objects.filter(
         tipo_consumible__stock_minimo__gt=0, cantidad__lt=F('tipo_consumible__stock_minimo'),
     ).select_related('bodega', 'tipo_consumible')
+
+
+def crear_activos_desde_estaciones(*, usuario, tipo=Activo.Tipo.DESKTOP, aplicar=False) -> dict:
+    """Da de alta en ITAM los equipos que el RMM ya conoce, con el hardware que el
+    agente reporta.
+
+    Por qué existe: el agente ya sabe el número de serie, el procesador, la RAM, el
+    disco y en qué farmacia está. Aun así el activo había que cargarlo a mano, uno por
+    uno — por eso hay 8 estaciones enroladas y 3 activos. A 1.800 equipos eso no es
+    lento, es imposible: el inventario nunca se pondría al día.
+
+    Con esto, cada agente que se instala se convierte en un activo inventariado y
+    vinculado. El rollout deja de ser un trabajo aparte del inventario y pasa a ser el
+    que lo llena.
+
+    Reglas, todas conservadoras:
+
+    - Solo estaciones APROBADAS. Una pendiente de aprobación todavía no es un equipo
+      de la flota, y crearle un activo sería inventariar algo que quizá se rechaza.
+    - Solo con número de serie. Sin él no hay forma de reconocer el equipo después ni
+      de evitar duplicarlo.
+    - Nunca duplica: se saltea la estación que ya tiene activo vinculado, y si el
+      número de serie ya existe en ITAM, VINCULA el activo existente en vez de crear
+      otro. Esa es la diferencia entre poblar el inventario y ensuciarlo.
+    - `tipo` no se adivina: el agente reporta hardware, no el formato del equipo
+      (un desktop y un servidor se ven igual desde adentro). Por eso es un parámetro,
+      con Desktop de default por ser el caso masivo en farmacia.
+
+    Devuelve un resumen con qué haría/hizo. Con `aplicar=False` no escribe nada.
+    """
+    from apps.catalogo.models import Estacion
+
+    resumen = {'creados': 0, 'vinculados': 0, 'sin_serie': 0, 'ya_vinculadas': 0, 'detalle': []}
+
+    candidatas = Estacion.objects.filter(
+        estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+    ).select_related('farmacia__unidad_negocio').order_by('codigo')
+
+    for estacion in candidatas:
+        if getattr(estacion, 'activo_vinculado', None) is not None:
+            resumen['ya_vinculadas'] += 1
+            continue
+        serie = (estacion.numero_serie or '').strip()
+        if not serie:
+            resumen['sin_serie'] += 1
+            resumen['detalle'].append(f'{estacion.codigo}: sin número de serie, se omite')
+            continue
+
+        existente = Activo.objects.filter(numero_serie__iexact=serie).first()
+        if existente is not None:
+            # Ya estaba en ITAM cargado a mano: se vincula, no se duplica.
+            resumen['vinculados'] += 1
+            resumen['detalle'].append(f'{estacion.codigo}: vincula con {existente.codigo} (serie ya en ITAM)')
+            if aplicar:
+                existente.estacion = estacion
+                existente.save(update_fields=['estacion'])
+            continue
+
+        resumen['creados'] += 1
+        resumen['detalle'].append(
+            f'{estacion.codigo}: crea activo en {estacion.farmacia.codigo} (serie {serie})',
+        )
+        if aplicar:
+            activo = registrar_ingreso(
+                tipo=tipo, marca=None, categoria=None, modelo='',
+                numero_serie=serie,
+                procesador=estacion.procesador or '',
+                # El agente reporta MB; ITAM guarda GB.
+                ram_gb=round(estacion.ram_total_mb / 1024) if estacion.ram_total_mb else None,
+                almacenamiento_gb=estacion.almacenamiento_total_gb,
+                fecha_compra=None, vencimiento_garantia=None, orden_compra=None,
+                farmacia=estacion.farmacia, usuario=usuario,
+                # Está funcionando en una farmacia: no es un equipo nuevo de caja.
+                estado_fisico=Activo.EstadoFisico.BUENO,
+            )
+            activo.estacion = estacion
+            activo.save(update_fields=['estacion'])
+
+    return resumen
 
 
 def datos_hardware_desde_estacion(numero_serie: str) -> dict | None:
