@@ -318,3 +318,51 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
 .htmx-request.htmx-indicator {
     opacity: 1;
 }
+
+/* ---------- Ventana emergente de alta ----------
+   Comparte todo con el formulario de página completa: el <form> conserva la
+   clase .form-card, así que los campos, el foco y los errores se ven idénticos
+   dentro y fuera del modal. Acá solo va el marco. */
+.modal{
+  width:min(680px, calc(100vw - 32px));
+  max-height:calc(100vh - 64px);
+  padding:0; border:0; background:transparent; overflow:visible;
+  color:var(--text); font-family:var(--font-ui);
+}
+.modal::backdrop{ background:rgba(4,8,16,.62); }
+.modal-card{
+  background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg);
+  box-shadow:var(--shadow-pop); display:flex; flex-direction:column;
+  max-height:calc(100vh - 64px); overflow:hidden;
+}
+.modal-head{
+  display:flex; align-items:flex-start; justify-content:space-between; gap:16px;
+  padding:18px 20px 14px; border-bottom:1px solid var(--border-soft); flex:none;
+}
+.modal-head-txt{ min-width:0; }
+.modal-title{ font-size:16px; font-weight:600; margin:0; letter-spacing:-.01em; }
+.modal-sub{ font-size:12px; color:var(--text-faint); margin:4px 0 0; line-height:1.45; }
+/* El cuerpo es lo único que scrollea: el encabezado y el aviso quedan fijos para
+   que "3 registros guardados" siga a la vista con el formulario largo abajo. */
+.modal-body{ padding:18px 20px 20px; overflow-y:auto; }
+.modal-aviso{
+  margin:0; padding:9px 20px; font-size:12px; flex:none;
+  background:var(--good-dim); color:var(--good); border-bottom:1px solid var(--border-soft);
+}
+.form-acciones{ display:flex; align-items:center; gap:14px; padding-top:24px; flex-wrap:wrap; }
+.modal-seguir{
+  display:flex; align-items:center; gap:7px; font-size:12.5px;
+  color:var(--text-dim); cursor:pointer; user-select:none;
+}
+.modal-seguir input{ width:15px; height:15px; accent-color:var(--accent); flex:none; cursor:pointer; }
+.modal-cancelar{
+  margin-left:auto; background:none; border:0; cursor:pointer;
+  font:inherit; font-size:13px; color:var(--text-faint); padding:6px 2px;
+}
+.modal-cancelar:hover{ color:var(--text); }
+
+@media (max-width:640px){
+  .modal{ width:calc(100vw - 16px); max-height:calc(100vh - 24px); }
+  .modal-card{ max-height:calc(100vh - 24px); }
+  .modal-cancelar{ margin-left:0; }
+}

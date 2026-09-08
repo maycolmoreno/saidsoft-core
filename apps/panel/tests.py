@@ -1,4 +1,5 @@
 import csv
+import json
 from decimal import Decimal
 import io
 
@@ -3005,3 +3006,111 @@ class ViaticosPanelTests(TestCase):
             reverse('panel:viaticos_farmacias_partial'), {'buscar_farmacia': 'ML006'},
         ).content.decode()
         self.assertIn('ML006', con_termino)
+
+
+class VentanaEmergenteAltaTests(TestCase):
+    """Un mismo formulario servido como página completa o como ventana emergente.
+
+    Las 31 vistas que usan `panel/accion_form.html` no saben que el modal existe:
+    lo deciden el context processor (de qué hereda la plantilla) y el middleware
+    (qué hacer con el redirect al guardar). Estas pruebas fijan ese contrato,
+    incluida la parte que MÁS fácil se rompe: que las otras pantallas que ya
+    usaban htmx sigan recibiendo su redirect de siempre.
+    """
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_modal', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='add_colaborador'),
+            Permission.objects.get(content_type__app_label='activos', codename='view_colaborador'),
+        )
+        self.client.force_login(self.usuario)
+        self.url = reverse('panel:colaborador_crear')
+
+    def test_get_sin_htmx_devuelve_la_pagina_completa(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        cuerpo = resp.content.decode()
+        self.assertIn('<!DOCTYPE html>', cuerpo)
+        self.assertIn('Centro de Operaciones', cuerpo)   # la barra lateral sigue ahí
+        self.assertNotIn('modal-card', cuerpo)
+
+    def test_get_con_htmx_devuelve_solo_el_fragmento_del_modal(self):
+        resp = self.client.get(self.url, headers={'hx-request': 'true'})
+        self.assertEqual(resp.status_code, 200)
+        cuerpo = resp.content.decode()
+        self.assertIn('modal-card', cuerpo)
+        self.assertIn('Guardar y cargar otro', cuerpo)
+        # Sin esto se estaría metiendo una página entera (barra lateral incluida)
+        # dentro del <dialog> de la página que ya está abierta.
+        self.assertNotIn('<!DOCTYPE html>', cuerpo)
+        self.assertNotIn('Centro de Operaciones', cuerpo)
+
+    def test_restaurar_historial_no_cuenta_como_modal(self):
+        """Tocar "atrás" repinta desde la caché de htmx: es navegación, no modal."""
+        resp = self.client.get(self.url, headers={
+            'hx-request': 'true', 'hx-history-restore-request': 'true',
+        })
+        self.assertIn('<!DOCTYPE html>', resp.content.decode())
+
+    def test_guardar_en_el_modal_responde_204_con_el_evento(self):
+        resp = self.client.post(
+            self.url, {'nombre': 'Ana Pérez', 'cedula': '0102030405'},
+            headers={'hx-request': 'true', 'hx-target': 'modal-form-content'},
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertTrue(Colaborador.objects.filter(nombre='Ana Pérez').exists())
+        evento = json.loads(resp.headers['HX-Trigger'])
+        self.assertEqual(
+            evento['saidsoft:guardado']['url'], reverse('panel:colaboradores_lista'),
+        )
+
+    def test_htmx_fuera_del_modal_conserva_su_redirect(self):
+        """Regresión: el panel ya usaba htmx antes de que existiera el modal.
+
+        El modal de información de estación y la bandeja de viáticos disparan sus
+        propias peticiones htmx. Si el middleware convirtiera CUALQUIER redirect
+        de CUALQUIER petición htmx, esas pantallas dejarían de funcionar sin que
+        nadie tocara su código.
+        """
+        resp = self.client.post(
+            self.url, {'nombre': 'Beto Ruiz', 'cedula': '0102030406'},
+            headers={'hx-request': 'true', 'hx-target': 'otro-destino'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp['Location'], reverse('panel:colaboradores_lista'))
+        self.assertNotIn('HX-Trigger', resp.headers)
+
+    def test_sin_htmx_el_alta_sigue_redirigiendo(self):
+        resp = self.client.post(self.url, {'nombre': 'Caro Díaz', 'cedula': '0102030407'})
+        self.assertRedirects(resp, reverse('panel:colaboradores_lista'))
+
+    def test_formulario_invalido_vuelve_a_pintar_el_modal_con_el_error(self):
+        resp = self.client.post(
+            self.url, {'nombre': ''},
+            headers={'hx-request': 'true', 'hx-target': 'modal-form-content'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        cuerpo = resp.content.decode()
+        self.assertIn('modal-card', cuerpo)
+        self.assertIn('field-error', cuerpo)
+        self.assertNotIn('<!DOCTYPE html>', cuerpo)
+        self.assertFalse(Colaborador.objects.exists())
+
+    def test_marcar_cargar_otro_sobrevive_a_un_error_de_validacion(self):
+        """Desmarcarla sola obligaría a re-tildarla en cada error, cargando en tanda."""
+        resp = self.client.post(
+            self.url, {'nombre': '', 'seguir_cargando': '1'},
+            headers={'hx-request': 'true', 'hx-target': 'modal-form-content'},
+        )
+        plano = ' '.join(resp.content.decode().split())
+        self.assertIn('name="seguir_cargando" value="1" checked', plano)
+
+    def test_la_lista_ofrece_el_alta_como_ventana_emergente(self):
+        resp = self.client.get(reverse('panel:colaboradores_lista'))
+        cuerpo = resp.content.decode()
+        self.assertIn('data-modal', cuerpo)
+        # El href real se conserva: Ctrl+clic y un navegador sin JS siguen
+        # llevando al formulario de página completa.
+        self.assertIn(f'href="{self.url}" data-modal', cuerpo)

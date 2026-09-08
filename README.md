@@ -94,6 +94,48 @@ Y recompilar tras tocar templates o `static_src/input.css`:
 `static/css/app.css` sí se versiona (es el artefacto final), así que producción
 no necesita Node.js ni el binario de Tailwind — solo sirve el CSS ya compilado.
 
+## Ventanas emergentes para cargar datos
+
+Las 31 vistas de alta que comparten `templates/panel/accion_form.html` se sirven como
+página completa **o** como ventana emergente sobre la lista, sin que ninguna de esas
+vistas sepa que el modal existe. Se hizo porque los módulos estaban construidos y
+vacíos: cargar un registro costaba salir de la lista, llenar una página entera, guardar
+y volver — y cargar veinte, veinte veces ese viaje.
+
+**Para volver emergente un formulario nuevo** basta agregarle `data-modal` al enlace que
+lo abre:
+
+```html
+<a href="{% url 'panel:colaborador_crear' %}" class="btn primary" data-modal>+ Nuevo colaborador</a>
+```
+
+No hace falta escribir JavaScript por pantalla ni tocar la vista. El `href` real se
+conserva a propósito: Ctrl+clic, la rueda del ratón y un navegador sin JavaScript siguen
+llevando al formulario de página completa, que nunca dejó de existir. El único requisito
+es que la vista renderice una plantilla que herede de `plantilla_base` (como
+`accion_form.html`) y termine en `redirect(...)` cuando el formulario es válido.
+
+**Dónde vive la lógica** (tres piezas, ninguna dentro de las vistas):
+
+| Pieza | Archivo | Qué hace |
+|---|---|---|
+| Contexto | `apps/panel/context_processors.py` | Publica `plantilla_base`: `panel/base.html` o `panel/_base_modal.html` según la cabecera `HX-Request` |
+| Middleware | `apps/panel/middleware.py` | Convierte el `redirect(...)` de un alta guardada en `204` + `HX-Trigger: saidsoft:guardado` |
+| Controlador | `templates/panel/base.html` | El `<dialog id="modal-form">`, la delegación de `data-modal` y qué hacer al guardar |
+
+La casilla **"Guardar y cargar otro"** es el punto de todo esto: guardar deja el
+formulario en blanco y enfocado en el primer campo, con un contador de cuántos se
+cargaron en la tanda, sin volver a la lista. Al cerrar, si se guardó algo, la lista se
+recarga para mostrar los registros nuevos y los mensajes de Django que quedaron en cola.
+
+Dos detalles que parecen accidentales y no lo son. El middleware **solo** actúa sobre
+respuestas dirigidas a `modal-form-content`: el panel ya usaba htmx antes (el modal de
+información de estación, la bandeja de viáticos), y convertir cualquier redirect de
+cualquier petición htmx habría roto esos flujos sin que nadie tocara su código. Y el
+modal de alta está separado de `#modal-info` porque aquel es de solo lectura y se
+refresca solo cada 2 s — un refresco automático sobre un formulario a medio llenar
+borraría lo que el usuario está escribiendo.
+
 ## Probar el flujo completo sin el agente C#
 
 El agente real ya existe (`C:\Proyectos\saidsoft-agente`, Fase 3-4), pero para

@@ -16,10 +16,10 @@
                 {% if b.custodio %}<span class="text-[var(--text-faint)] text-xs ml-2">custodio: {{ b.custodio.username }}</span>{% endif %}
             </div>
             <div class="flex items-center gap-2">
-                <a href="{% url 'panel:bodega_ajuste_stock' b.pk %}" class="btn secondary" style="font-size:12px; padding:6px 12px;">
+                <a href="{% url 'panel:bodega_ajuste_stock' b.pk %}" data-modal class="btn secondary" style="font-size:12px; padding:6px 12px;">
                     Ajustar stock
                 </a>
-                <a href="{% url 'panel:bodega_stock_ingresar' b.pk %}" class="btn primary" style="font-size:12px; padding:6px 12px;">
+                <a href="{% url 'panel:bodega_stock_ingresar' b.pk %}" data-modal class="btn primary" style="font-size:12px; padding:6px 12px;">
                     + Ingresar consumibles
                 </a>
             </div>

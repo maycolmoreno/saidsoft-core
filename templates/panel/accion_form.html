@@ -1,11 +1,17 @@
-{% extends "panel/base.html" %}
+{% extends plantilla_base|default:"panel/base.html" %}
 {% load form_extras %}
 {% block title %}{{ titulo }} · SAIDSOFT{% endblock %}
 {% block content %}
+{% if not en_modal %}
 <h1 class="text-xl font-semibold mb-1">{{ titulo }}</h1>
 {% if subtitulo %}<p class="text-sm text-[var(--text-faint)] mb-6">{{ subtitulo }}</p>{% endif %}
+{% endif %}
 
-<form method="post" enctype="multipart/form-data" class="form-card card p-6 max-w-2xl">
+<form method="post" enctype="multipart/form-data"
+      class="form-card{% if not en_modal %} card p-6 max-w-2xl{% endif %}"
+      {% if en_modal %}hx-post="{{ request.get_full_path }}"
+      hx-target="#modal-form-content" hx-swap="innerHTML"
+      hx-encoding="multipart/form-data"{% endif %}>
     {% csrf_token %}
 
     {% if resumen_titulo %}
@@ -64,9 +70,22 @@
         {% endfor %}
     </div>
 
-    <div class="flex items-center gap-3 pt-6">
+    <div class="form-acciones">
         <button type="submit" class="btn {{ tono|default:'primary' }}" style="padding:10px 20px;">{{ boton|default:"Confirmar" }}</button>
+        {% if en_modal %}
+        {# Cargar varios registros seguidos es el caso real: los módulos se
+           alimentan de a tandas, no de a uno. Con esto marcado, guardar deja el
+           formulario en blanco y listo para el siguiente sin volver a la lista.
+           Se relee del POST para que un error de validación no la desmarque. #}
+        <label class="modal-seguir">
+            <input type="checkbox" name="seguir_cargando" value="1"
+                   {% if request.POST.seguir_cargando %}checked{% endif %}>
+            <span>Guardar y cargar otro</span>
+        </label>
+        <button type="button" class="modal-cancelar" data-modal-cerrar>Cancelar</button>
+        {% else %}
         <a href="{{ volver_url }}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
+        {% endif %}
     </div>
 </form>
 {% endblock %}

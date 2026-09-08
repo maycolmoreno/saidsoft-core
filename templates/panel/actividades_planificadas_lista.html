@@ -3,7 +3,7 @@
 {% block content %}
 <div class="flex items-center justify-between mb-6">
     <h1 class="text-xl font-semibold">Actividades planificadas</h1>
-    <a href="{% url 'panel:actividad_planificada_crear' %}" class="btn primary">+ Nueva actividad</a>
+    <a href="{% url 'panel:actividad_planificada_crear' %}" data-modal class="btn primary">+ Nueva actividad</a>
 </div>
 
 <form method="get" class="flex items-center gap-3 mb-4">
@@ -41,7 +41,7 @@
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.get_estado_display }}</td>
                 <td class="px-4 py-3 text-right">
                     {% if a.estado != 'completada' and a.estado != 'cancelada' %}
-                    <a href="{% url 'panel:actividad_planificada_completar' a.pk %}" class="text-xs font-medium hover:underline text-[var(--text-dim)]">Completar</a>
+                    <a href="{% url 'panel:actividad_planificada_completar' a.pk %}" data-modal class="text-xs font-medium hover:underline text-[var(--text-dim)]">Completar</a>
                     {% endif %}
                 </td>
             </tr>

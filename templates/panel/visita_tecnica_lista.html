@@ -3,7 +3,7 @@
 <div class="flex items-center justify-between mb-4">
     <h1 class="text-xl font-semibold">Visitas técnicas</h1>
     {% if perms.mantenimiento.add_visitatecnica %}
-    <a href="{% url 'panel:visita_tecnica_crear' %}" class="btn primary">Planificar visita</a>
+    <a href="{% url 'panel:visita_tecnica_crear' %}" data-modal class="btn primary">Planificar visita</a>
     {% endif %}
 </div>
 

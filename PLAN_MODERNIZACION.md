@@ -1901,3 +1901,44 @@ del usuario antes de cada uno (22-ago-2026):**
 `/home/glpi/DATOS_DE_FARMACIAS_3.xlsx` siguen en el host del servidor con datos reales
 de RRHH/red — mismo criterio que el `.gitignore` del repo (nunca dejar PII real
 tirada), conviene borrarlos del servidor una vez confirmado que el import quedó bien.
+
+---
+
+**AD. Ventanas emergentes para el alta de registros — ✅ Hecho (7-sep-2026)**
+
+El problema no era técnico: los módulos están construidos y vacíos (9 activos, 9
+colaboradores, **0 zonas de viáticos** — y sin zonas la alerta "fuera de zona" no se
+dispara nunca). Cargar un registro costaba salir de la lista, llenar una página
+completa, guardar y volver; cargar veinte, veinte veces ese viaje.
+
+Las 31 vistas de alta que comparten `panel/accion_form.html` ahora se sirven **también**
+como ventana emergente, sin que ninguna de ellas cambie una línea. Tres piezas:
+
+- `apps/panel/context_processors.py` — `htmx_contexto` publica `plantilla_base`, de lo
+  que hereda `accion_form.html`: `panel/base.html` (página completa) o
+  `panel/_base_modal.html` (fragmento para el `<dialog>`), según la cabecera
+  `HX-Request`. `HX-History-Restore-Request` se excluye a propósito: es htmx
+  repintando desde su caché de historial al tocar "atrás", y tratarlo como modal
+  dejaba al usuario mirando un formulario suelto sin barra lateral.
+- `apps/panel/middleware.py` — `RedirectHtmxMiddleware` convierte el `redirect(...)`
+  de una vista que guardó en `204` + `HX-Trigger: saidsoft:guardado`. Sin esto htmx
+  sigue el redirect solo y termina insertando la página entera de la lista (barra
+  lateral incluida) dentro del modal. **Solo actúa sobre respuestas dirigidas a
+  `modal-form-content`**: el panel ya usaba htmx para el modal de información de
+  estación y la bandeja de viáticos, y convertir cualquier redirect de cualquier
+  petición htmx habría roto esos flujos sin tocar su código.
+- `templates/panel/base.html` — el `<dialog id="modal-form">` y su controlador. Un
+  enlace se vuelve emergente agregándole `data-modal`, nada más; el `href` real se
+  conserva, así que Ctrl+clic, la rueda del ratón y un navegador sin JavaScript
+  siguen llevando al formulario de página completa.
+
+La casilla **"Guardar y cargar otro"** es la que ataca el motivo original: guardar deja
+el formulario en blanco, enfocado en el primer campo, con un contador de cuántos se
+cargaron en la tanda. Se relee del POST para que un error de validación no la desmarque.
+
+15 disparadores convertidos en 12 listas (colaboradores, zonas de viáticos, actividades
+planificadas, aplicaciones, bodegas, cumplimiento, mantenimientos, programados, órdenes
+de compra, reglas de alerta, scripts, visita técnica).
+
+Cubierto por `apps.panel.tests.VentanaEmergenteAltaTests` (9 pruebas), incluida la
+regresión de que htmx fuera del modal conserve su redirect de siempre.

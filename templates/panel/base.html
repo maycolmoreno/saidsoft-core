@@ -268,6 +268,13 @@
 <dialog id="modal-info" class="rounded-lg shadow-xl w-full max-w-lg p-0">
     <div id="modal-info-content"></div>
 </dialog>
+
+{# Ventana emergente de alta. Separada de #modal-info a propósito: aquella es de
+   solo lectura y se refresca sola cada 2s; ésta contiene un formulario a medio
+   llenar y un refresco automático borraría lo que el usuario está escribiendo. #}
+<dialog id="modal-form" class="modal" aria-modal="true">
+    <div id="modal-form-content"></div>
+</dialog>
 <script>
     // Reloj en vivo del topbar
     function tick(){
@@ -291,6 +298,98 @@
         var current = document.documentElement.getAttribute('data-theme');
         setTheme(current === 'dark' ? 'light' : 'dark');
     });
+</script>
+
+<script>
+/* Controlador de las ventanas emergentes de alta.
+
+   Vive acá y no en cada lista a propósito: para que un botón abra un formulario
+   en modal solo tiene que apuntar su hx-get a #modal-form-content. No hay que
+   escribir JavaScript por pantalla. */
+(function(){
+    var dlg = document.getElementById('modal-form');
+    var cont = document.getElementById('modal-form-content');
+    if (!dlg || !cont) { return; }
+
+    var guardados = 0;
+    var destinoAlCerrar = null;
+
+    function urlDelFormulario(){
+        var form = cont.querySelector('form[hx-post]');
+        return form ? form.getAttribute('hx-post') : null;
+    }
+
+    function avisarGuardados(){
+        var slot = cont.querySelector('[data-modal-avisos]');
+        if (!slot || !guardados) { return; }
+        var p = document.createElement('p');
+        p.className = 'modal-aviso';
+        p.textContent = guardados === 1
+            ? '1 registro guardado. El formulario quedó en blanco para el siguiente.'
+            : guardados + ' registros guardados. El formulario quedó en blanco para el siguiente.';
+        slot.replaceChildren(p);
+    }
+
+    function enfocarPrimerCampo(){
+        var campo = cont.querySelector(
+            '.modal-body input:not([type=hidden]):not([type=checkbox]), .modal-body select, .modal-body textarea'
+        );
+        if (campo) { campo.focus(); }
+    }
+
+    /* Un enlace con data-modal abre su destino acá dentro. Se conserva el href
+       real y se respetan las teclas modificadoras: Ctrl+clic, la rueda del ratón
+       y un navegador sin JavaScript siguen llevando al formulario de página
+       completa, que nunca dejó de existir. */
+    document.body.addEventListener('click', function(e){
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) { return; }
+        var disparador = e.target.closest('a[data-modal]');
+        if (!disparador) { return; }
+        e.preventDefault();
+        htmx.ajax('GET', disparador.getAttribute('href'), {target: cont, swap: 'innerHTML'});
+    });
+
+    /* Se abre cuando htmx terminó de insertar el formulario, no al hacer clic:
+       así el modal nunca aparece vacío ni parpadea mientras carga. */
+    document.body.addEventListener('htmx:afterSwap', function(e){
+        if (e.target !== cont) { return; }
+        if (!dlg.open) { guardados = 0; destinoAlCerrar = null; dlg.showModal(); }
+        enfocarPrimerCampo();
+    });
+
+    dlg.addEventListener('click', function(e){
+        /* El botón de cerrar viaja dentro del fragmento y todavía no existe
+           cuando corre este script, así que hay que delegar. */
+        if (e.target.closest('[data-modal-cerrar]')) { dlg.close(); return; }
+        /* Un <dialog> reporta el clic sobre sí mismo solo cuando cae en el fondo,
+           fuera de su contenido. */
+        if (e.target === dlg) { dlg.close(); }
+    });
+
+    dlg.addEventListener('close', function(){
+        cont.replaceChildren();
+        var destino = destinoAlCerrar;
+        destinoAlCerrar = null;
+        guardados = 0;
+        /* Si se guardó algo, la lista de atrás quedó vieja: recargarla es lo que
+           muestra los registros nuevos y los mensajes de Django que quedaron en
+           cola. Si no se guardó nada, cerrar no debe costar una recarga. */
+        if (destino) { window.location = destino; }
+    });
+
+    /* Lo dispara RedirectHtmxMiddleware cuando la vista guardó y redirigió. */
+    document.body.addEventListener('saidsoft:guardado', function(e){
+        destinoAlCerrar = (e.detail && e.detail.url) || window.location.href;
+        var seguir = cont.querySelector('[name="seguir_cargando"]');
+        var origen = urlDelFormulario();
+        if (seguir && seguir.checked && origen) {
+            guardados += 1;
+            htmx.ajax('GET', origen, {target: cont, swap: 'innerHTML'}).then(avisarGuardados);
+            return;
+        }
+        dlg.close();
+    });
+})();
 </script>
 {% else %}
     {% block content_anon %}{% endblock %}

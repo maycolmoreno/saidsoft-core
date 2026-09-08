@@ -61,6 +61,10 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Traduce el redirect de un alta guardada dentro de una ventana emergente
+    # a 204 + evento htmx (ver apps/panel/middleware.py). Sin esto, htmx sigue
+    # el redirect y anida la lista entera dentro del modal.
+    'apps.panel.middleware.RedirectHtmxMiddleware',
     # SEC-3 de la auditoría de gobernanza (22-ago-2026): sin esto, /login/ y /admin/
     # aceptaban fuerza bruta ilimitada, sin bloqueo ni alerta. Debe ir último (doc.
     # oficial de django-axes): necesita ver la respuesta ya armada por el resto del
@@ -83,6 +87,7 @@ TEMPLATES = [
                 'django.contrib.messages.context_processors.messages',
                 'apps.cuentas.context_processors.unidad_negocio_contexto',
                 'apps.mantenimiento.context_processors.notificaciones_contexto',
+                'apps.panel.context_processors.htmx_contexto',
             ],
         },
     },
