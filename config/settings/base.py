@@ -209,6 +209,11 @@ BITLOCKER_ENCRYPTION_KEY = env('BITLOCKER_ENCRYPTION_KEY')
 # (equivalente a GET_DOMAIN_FILE del sistema anterior)
 ARCHIVOS_BASE_URL = env('ARCHIVOS_BASE_URL', default='http://localhost:8000')
 
+# Si los archivos protegidos (fotos e informes de mantenimiento) los entrega nginx
+# via X-Accel-Redirect en vez de Django. False acá para que runserver y las pruebas
+# funcionen sin proxy delante; produccion.py lo pone en True.
+SERVIR_MEDIA_CON_NGINX = env.bool('SERVIR_MEDIA_CON_NGINX', default=False)
+
 # Umbral de error por defecto que detiene automáticamente un despliegue en curso
 DESPLIEGUE_UMBRAL_ERROR_PCT_DEFAULT = env.float('DESPLIEGUE_UMBRAL_ERROR_PCT_DEFAULT', default=10.0)
 

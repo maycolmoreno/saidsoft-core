@@ -202,6 +202,39 @@ está hecho y es válido.
 muestra una franja crítica arriba de los KPI. Antes esto no se veía en ninguna parte: el
 panel vigilaba 8 estaciones y no la máquina que lo hospeda.
 
+## Qué de `/media/` es público y qué no
+
+`/media/` lo sirve nginx directo del volumen, sin pasar por Django. **Tres carpetas son
+públicas a propósito** porque los agentes bajan de ahí sin credenciales (`ARCHIVOS_BASE_URL`):
+
+| Carpeta | Quién la baja | Auth |
+|---|---|---|
+| `despliegues/` | agentes: paquetes del POS | no (SHA-256 en el comando) |
+| `agente/` | agentes: su propio ejecutable | no |
+| `software/` | agentes: instaladores | no |
+| `mantenimiento/` | el panel: fotos, firmas, informes | **sí, sesión + cliente** |
+
+`mantenimiento/` es la excepción y no es un detalle: son fotos tomadas dentro de las
+farmacias e informes firmados. Hasta el 7-sep-2026 se servían igual que el resto — sin
+autenticación, bajables por cualquiera con acceso a la red o a la VPN que conociera la
+ruta (y las rutas viajan en los mensajes MQTT a los agentes).
+
+Cómo está cerrado: la `location /media/mantenimiento/` de nginx es `internal`, o sea
+inalcanzable desde afuera (404). Los archivos se piden a
+`panel:mantenimiento_imagen` / `panel:mantenimiento_informe`, que validan permiso y
+unidad de negocio y responden con `X-Accel-Redirect` — Django decide el permiso, nginx
+manda los bytes, sin ocupar un worker de gunicorn durante la descarga. En desarrollo
+`SERVIR_MEDIA_CON_NGINX=False` hace que Django sirva el archivo directo, así el flujo se
+prueba con `runserver`.
+
+> **Al cambiar `nginx.conf`, recrear el contenedor, no recargarlo.** Es un bind mount de
+> archivo suelto: ata el inode, así que un `git pull` reescribe el archivo del host y el
+> contenedor sigue viendo el viejo.
+
+> Si algún día se agrega una pantalla móvil que muestre fotos de mantenimiento, va a
+> necesitar mandar el token en la petición: hoy la app solo **sube** imágenes y no
+> renderiza ninguna remota, que es por lo que cerrar esto no la rompió.
+
 ## Probar el flujo completo sin el agente C#
 
 El agente real ya existe (`C:\Proyectos\saidsoft-agente`, Fase 3-4), pero para

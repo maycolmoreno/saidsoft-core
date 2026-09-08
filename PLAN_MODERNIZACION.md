@@ -2034,3 +2034,47 @@ que haya otro apagón — o apagando el NUC a propósito una noche.
 (`Restore on AC Power Loss = Power On`).** El timer hace que el respaldo se recupere solo
 tras un apagón; no evita que el RMM quede ciego mientras el servidor está muerto — 46
 horas de fin de semana, con las farmacias abiertas.
+
+---
+
+**AG. Las fotos e informes de mantenimiento salen de `/media/` público — ✅ Hecho (7-sep-2026)**
+
+Verificado en vivo antes del arreglo: `curl http://10.111.6.20:8080/media/despliegues/3.2.1.4/Cliente.zip`
+devolvió **HTTP 200 y 32,7 MB** sin ninguna sesión. El listado de directorios sí estaba
+apagado (403 sobre `/media/`), así que hacía falta conocer la ruta — pero las rutas viajan
+en los mensajes MQTT hacia los agentes.
+
+El alcance del arreglo lo decidió quién consume cada carpeta. Los agentes bajan **sin
+credenciales** de tres lugares (`ARCHIVOS_BASE_URL` + el `.url` del FileField):
+`catalogo/services.py:200` (su propio ejecutable), `despliegues/services.py:62` (paquetes)
+y `software/services.py:55` (instaladores). Esas tres siguen públicas a propósito; la
+integridad la cubre el SHA-256 que viaja en el comando. **La única que nadie sin sesión
+necesita es `mantenimiento/`** — y es la más sensible: fotos tomadas dentro de las
+farmacias, firmas e informes.
+
+- `deploy/nginx/nginx.conf` — `location /media/mantenimiento/` con `internal`, en los dos
+  bloques `server` (8080 y 8084). Gana sobre `location /media/` por ser el prefijo más
+  largo, que es el que nginx elige; `internal` hace que una petición externa reciba 404.
+- `apps/panel/views/mantenimiento.py` — `mantenimiento_imagen` y `mantenimiento_informe`,
+  con el patrón ya establecido en el módulo (`permission_required` + `verificar_acceso`
+  por unidad de negocio, porque el listado filtra pero alguien podría forzar el id).
+  Entregan con `X-Accel-Redirect`: Django decide el permiso, nginx manda los bytes. Sin
+  eso, un informe con fotos de varios MB ocuparía un worker de gunicorn toda la descarga
+  — el problema que `config/urls.py` ya documentaba. `SERVIR_MEDIA_CON_NGINX=False` en
+  desarrollo hace que Django responda el archivo directo, así el flujo se prueba sin proxy.
+- Plantillas: `mantenimiento_detalle.html` (foto, miniatura e informe) y
+  `mantenimiento_orden_trabajo.html` pasan por las vistas nuevas.
+  **`mantenimiento_informe_pdf.html` NO se tocó**: xhtml2pdf lo renderiza en el servidor y
+  su `link_callback` (`_resolver_ruta_local`) traduce `/media/…` a una ruta de disco.
+  Cambiarla habría dejado los informes sin fotos en silencio, porque pisa no falla por una
+  imagen que no encuentra. Hay una prueba que fija eso.
+
+**La app móvil no se rompe**: sube imágenes (`repo_mantenimientos.dart:101`) pero no
+muestra ninguna remota — no hay `Image.network`, `NetworkImage` ni `CachedNetworkImage` en
+todo `movil-campo/lib/`.
+
+Cubierto por `apps.panel.tests.ArchivosMantenimientoProtegidosTests` (8 pruebas). Sintaxis
+de nginx validada con `nginx -t` en un contenedor descartable antes de desplegar.
+
+**Al desplegar, RECREAR el contenedor nginx, no recargarlo** — `nginx.conf` es un bind
+mount de archivo suelto y ata el inode, así que `git pull` no lo alcanza (§10-AA).

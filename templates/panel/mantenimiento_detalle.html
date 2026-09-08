@@ -119,7 +119,7 @@
         </button>
     </form>
     {% if mantenimiento.informe_pdf %}
-    <a href="{{ mantenimiento.informe_pdf.url }}" class="btn secondary" target="_blank">
+    <a href="{% url 'panel:mantenimiento_informe' mantenimiento.pk %}" class="btn secondary" target="_blank">
         Descargar informe PDF ({{ mantenimiento.informe_pdf_generado_en|date:"d/m/Y H:i" }})
     </a>
     {% endif %}
@@ -165,8 +165,8 @@
 </div>
 <div class="flex flex-wrap gap-3 mb-8">
     {% for img in mantenimiento.imagenes.all %}
-    <a href="{{ img.imagen.url }}" target="_blank">
-        <img src="{{ img.imagen.url }}" alt="{{ img.nombre_archivo }}" class="h-24 rounded" style="border:1px solid var(--border);">
+    <a href="{% url 'panel:mantenimiento_imagen' img.pk %}" target="_blank">
+        <img src="{% url 'panel:mantenimiento_imagen' img.pk %}" alt="{{ img.nombre_archivo }}" class="h-24 rounded" style="border:1px solid var(--border);">
     </a>
     {% empty %}
     <p class="text-[var(--text-faint)] text-sm">Sin imágenes adjuntas.</p>

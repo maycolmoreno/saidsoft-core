@@ -25,6 +25,10 @@ SECURE_HSTS_PRELOAD = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])  # noqa: F405
 
+# El stack siempre tiene nginx delante (servicio `nginx` del compose), que es quien
+# puede resolver la `location /media/mantenimiento/ internal`.
+SERVIR_MEDIA_CON_NGINX = env.bool('SERVIR_MEDIA_CON_NGINX', default=True)  # noqa: F405
+
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = env('EMAIL_HOST', default='smtp.gmail.com')  # noqa: F405
 EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')  # noqa: F405

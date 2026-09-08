@@ -33,7 +33,7 @@ from apps.cumplimiento.models import (
 )
 from apps.despliegues.models import Despliegue
 from apps.mantenimiento.models import (
-    EstadoGeneralEquipo, Mantenimiento, PrioridadMantenimiento, TipoMantenimiento, VisitaTecnica,
+    EstadoGeneralEquipo, ImagenMantenimiento, Mantenimiento, PrioridadMantenimiento, TipoMantenimiento, VisitaTecnica,
 )
 from apps.monitoreo.models import (
     Alerta, Metrica, MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
@@ -3184,3 +3184,106 @@ class RegistrarLatidoCommandTests(TestCase):
         )
         call_command('registrar_latido', 'respaldo')
         self.assertEqual(WorkerHeartbeat.objects.count(), 2)
+
+
+class ArchivosMantenimientoProtegidosTests(TestCase):
+    """Las fotos e informes de mantenimiento ya no se sirven sin sesión.
+
+    Hasta el 7-sep-2026, `/media/mantenimiento/` lo servía nginx con `alias` y sin
+    autenticación: cualquiera con acceso a la red o a la VPN podía bajarse las fotos
+    tomadas dentro de las farmacias y los informes firmados conociendo la ruta.
+    A diferencia de `/media/despliegues|agente|software/`, que SÍ son públicos a
+    propósito porque los agentes bajan de ahí sin credenciales.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        colaborador_sg = Colaborador.objects.create(
+            nombre='Cliente SG', cedula='0900000001', unidad_negocio=self.sg,
+        )
+        self.mantenimiento = Mantenimiento.objects.create(
+            cliente=colaborador_sg, fecha_programada=timezone.now(),
+        )
+        self.imagen = ImagenMantenimiento.objects.create(
+            mantenimiento=self.mantenimiento,
+            imagen=SimpleUploadedFile('evidencia.jpg', b'\xff\xd8\xff\xe0fake-jpeg', content_type='image/jpeg'),
+            nombre_archivo='evidencia.jpg',
+        )
+        self.url_imagen = reverse('panel:mantenimiento_imagen', args=[self.imagen.pk])
+
+        self.permiso = Permission.objects.get(
+            content_type__app_label='mantenimiento', codename='view_mantenimiento',
+        )
+
+    def _usuario(self, username, unidad=None, con_permiso=True):
+        user = User.objects.create_user(username=username, password='x')
+        perfil = PerfilUsuario.objects.create(usuario=user, acceso_todas_unidades=unidad is None)
+        if unidad is not None:
+            perfil.unidades_negocio.add(unidad)
+        if con_permiso:
+            user.user_permissions.add(self.permiso)
+        return user
+
+    def test_sin_sesion_no_entrega_el_archivo(self):
+        resp = self.client.get(self.url_imagen)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_con_sesion_pero_sin_permiso_da_403(self):
+        self.client.force_login(self._usuario('u_sin_perm_img', con_permiso=False))
+        self.assertEqual(self.client.get(self.url_imagen).status_code, 403)
+
+    def test_de_otro_cliente_da_403(self):
+        """El listado ya filtra por cliente, pero alguien podría forzar el id por URL."""
+        self.client.force_login(self._usuario('u_mia_img', unidad=self.mia))
+        self.assertEqual(self.client.get(self.url_imagen).status_code, 403)
+
+    def test_con_permiso_entrega_el_archivo(self):
+        self.client.force_login(self._usuario('u_ok_img'))
+        resp = self.client.get(self.url_imagen)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(b''.join(resp.streaming_content), b'\xff\xd8\xff\xe0fake-jpeg')
+
+    @override_settings(SERVIR_MEDIA_CON_NGINX=True)
+    def test_detras_de_nginx_delega_los_bytes_al_proxy(self):
+        """Django decide el permiso; nginx manda los bytes.
+
+        Sin esto, un informe con fotos de varios MB ocuparía un worker de gunicorn
+        todo lo que durase la descarga — el problema que config/urls.py ya
+        documentaba para /media/ y por el que existe el proxy.
+        """
+        self.client.force_login(self._usuario('u_nginx_img'))
+        resp = self.client.get(self.url_imagen)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['X-Accel-Redirect'], f'/media/{self.imagen.imagen.name}')
+        self.assertEqual(resp.content, b'')
+        # Sin Content-Type propio: lo resuelve nginx por la extensión real. Si Django
+        # mandara text/html, el navegador intentaría renderizar el JPEG como página.
+        self.assertNotIn('Content-Type', resp.headers)
+
+    def test_informe_inexistente_da_404_y_no_un_500(self):
+        self.client.force_login(self._usuario('u_informe_vacio'))
+        resp = self.client.get(reverse('panel:mantenimiento_informe', args=[self.mantenimiento.pk]))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_la_ficha_ya_no_expone_la_ruta_cruda_de_media(self):
+        self.client.force_login(self._usuario('u_ficha_img'))
+        cuerpo = self.client.get(
+            reverse('panel:mantenimiento_detalle', args=[self.mantenimiento.pk]),
+        ).content.decode()
+        self.assertIn(self.url_imagen, cuerpo)
+        self.assertNotIn('/media/mantenimiento/', cuerpo)
+
+    def test_la_plantilla_del_pdf_sigue_usando_la_ruta_de_disco(self):
+        """xhtml2pdf resuelve /media/ al sistema de archivos con su link_callback.
+
+        Si esa plantilla se cambiara a la URL protegida, el renderizador recibiría una
+        ruta que su callback no traduce y el informe saldría sin las fotos —
+        silenciosamente, porque pisa no falla por una imagen que no encuentra.
+        """
+        plantilla = (settings.BASE_DIR / 'templates' / 'panel' / 'mantenimiento_informe_pdf.html').read_text(
+            encoding='utf-8',
+        )
+        self.assertIn('img.imagen.url', plantilla)
+        self.assertNotIn("panel:mantenimiento_imagen", plantilla)

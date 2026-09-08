@@ -164,6 +164,11 @@ urlpatterns = [
         'mantenimientos/<int:pk>/orden-trabajo/', views.mantenimiento_orden_trabajo,
         name='mantenimiento_orden_trabajo',
     ),
+    # Archivos de mantenimiento detrás de sesión. nginx ya NO los sirve directo: la
+    # `location /media/mantenimiento/` es `internal`, solo alcanzable por el
+    # X-Accel-Redirect que emiten estas dos vistas.
+    path('mantenimientos/imagen/<int:pk>/', views.mantenimiento_imagen, name='mantenimiento_imagen'),
+    path('mantenimientos/<int:pk>/informe/', views.mantenimiento_informe, name='mantenimiento_informe'),
     path(
         'mantenimientos/<int:pk>/informe-pdf/', views.mantenimiento_generar_informe_pdf,
         name='mantenimiento_generar_informe_pdf',

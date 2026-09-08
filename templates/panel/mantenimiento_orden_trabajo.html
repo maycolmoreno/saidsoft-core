@@ -65,7 +65,7 @@ de la app (mismo criterio que la firma) — es un artefacto que se imprime/archi
     <h3 class="text-sm font-medium uppercase tracking-wide mb-2" style="color:#64748b;">Evidencia fotográfica</h3>
     <div class="flex flex-wrap gap-3 mb-6">
         {% for img in imagenes %}
-        <img src="{{ img.imagen.url }}" alt="{{ img.nombre_archivo }}" class="h-24 rounded" style="border:1px solid #e2e8f0;">
+        <img src="{% url 'panel:mantenimiento_imagen' img.pk %}" alt="{{ img.nombre_archivo }}" class="h-24 rounded" style="border:1px solid #e2e8f0;">
         {% empty %}
         <p class="text-sm" style="color:#94a3b8;">Sin imágenes adjuntas.</p>
         {% endfor %}
