@@ -109,6 +109,11 @@ PERMISOS_LITERALES = {
         ('catalogo', 'reiniciar_estacion'),
         ('catalogo', 'escanear_actualizaciones_estacion'),
         ('catalogo', 'actualizar_agente_estacion'),
+        # Segunda línea planifica visitas y actividades de otros, así que conserva el
+        # desplegable de técnico completo (ya preseleccionado en sí mismo). El rol
+        # 'Técnico' NO lo tiene a propósito: registra su propio trabajo y el campo le
+        # queda fijo a su nombre -- ver Mantenimiento.Meta.permissions.
+        ('mantenimiento', 'asignar_tecnico'),
         # ver_clave_bitlocker y supervision_auditoria_estacion quedan fuera a propósito,
         # mismo criterio que el resto del proyecto (ver comentarios en catalogo/models.py):
         # son más sensibles que el resto y se otorgan persona por persona, no por grupo.

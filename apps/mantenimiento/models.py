@@ -183,6 +183,16 @@ class Mantenimiento(models.Model):
     class Meta:
         db_table = 'mantenimiento'
         ordering = ['-fecha_programada']
+        permissions = [
+            # Separa "registrar mi propio trabajo" de "repartir trabajo ajeno".
+            # Sin este permiso, el campo `tecnico` de los formularios de
+            # mantenimiento, actividad planificada y visita técnica queda fijo en
+            # el usuario en sesión: un técnico no tiene por qué buscarse en una
+            # lista de todos los usuarios activos, ni poder cargarle una visita a
+            # un compañero. Vive en Mantenimiento y no en cada modelo porque es
+            # una sola decisión de negocio, no tres.
+            ('asignar_tecnico', 'Puede asignar trabajo a un técnico distinto de sí mismo'),
+        ]
 
     def __str__(self):
         return f'Mantenimiento #{self.pk} ({self.get_estado_interno_display()})'

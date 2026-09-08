@@ -1942,3 +1942,37 @@ de compra, reglas de alerta, scripts, visita técnica).
 
 Cubierto por `apps.panel.tests.VentanaEmergenteAltaTests` (9 pruebas), incluida la
 regresión de que htmx fuera del modal conserve su redirect de siempre.
+
+---
+
+**AE. El campo `tecnico` se preselecciona en quien está en sesión — ✅ Hecho (7-sep-2026)**
+
+Cargar un mantenimiento, una actividad planificada o una visita técnica obligaba a
+buscarse a uno mismo en un desplegable con **todos** los usuarios activos. Dos problemas
+en el mismo campo: fricción para quien registra su propio trabajo, y un permiso implícito
+que nadie decidió — ese desplegable dejaba que cualquier técnico le cargara una visita a
+un compañero.
+
+`creado_por`, `registrado_por` y `usuario` ya se llenaban desde `request.user` en las
+vistas; el que faltaba era `tecnico`.
+
+- `apps/mantenimiento/forms.py` — `TecnicoAutoAsignadoMixin`, aplicado a los cuatro
+  formularios que exponen el campo (`MantenimientoManualForm`,
+  `MantenimientoProgramadoForm`, `ActividadPlanificadaForm`, `VisitaTecnicaForm`).
+  Preselecciona al usuario en sesión siempre. Sin el permiso nuevo, además acota el
+  queryset a esa única persona y marca el campo `disabled`, lo que **no es redundante**:
+  `disabled` hace que Django ignore lo que venga en el POST y use el initial, así que un
+  POST armado a mano tampoco puede asignarle el trabajo a otro. El widget sigue siendo un
+  Select para que el técnico vea su propio nombre, no un campo ausente.
+- `Mantenimiento.Meta.permissions` — `asignar_tecnico` ("Puede asignar trabajo a un
+  técnico distinto de sí mismo"), migración `0018_asignar_tecnico`. Vive en
+  `Mantenimiento` y no en cada modelo porque es una sola decisión de negocio, no tres.
+- `seed_permisos` — el permiso va a **Soporte Técnico** (segunda línea: planifica visitas
+  y actividades de otros, así que conserva el desplegable completo, ya preseleccionado en
+  sí mismo) y a Administrador por herencia. El rol **Técnico** queda sin él a propósito.
+- `apps/panel/views/mantenimiento.py` — `MantenimientoProgramadoForm` y
+  `ActividadPlanificadaForm` ahora reciben `user=request.user`; los otros dos ya lo
+  recibían para el alcance por unidad de negocio.
+
+Cubierto por `apps.mantenimiento.tests.TecnicoAutoAsignadoTests` (5 pruebas), incluida la
+que comprueba que un POST a nombre de otro se guarda a nombre propio.

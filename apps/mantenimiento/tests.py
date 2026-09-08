@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Permission, User
 from django.test import TestCase
 from django.utils import timezone
 
@@ -8,6 +8,9 @@ from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoCo
 from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
 
+from .forms import (
+    ActividadPlanificadaForm, MantenimientoManualForm, MantenimientoProgramadoForm, VisitaTecnicaForm,
+)
 from .models import (
     AcuerdoNivelServicio, EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado,
     Notificacion, PrioridadMantenimiento, RADIO_VERIFICACION_METROS, RepuestoUtilizado, ResultadoTecnico,
@@ -1522,3 +1525,115 @@ class MantenimientoApiCancelarYRepuestosTests(TestCase):
         datos = self.client.get('/api/v1/catalogos/', **self._auth()).json()
         self.assertIn('tipos_consumible', datos)
         self.assertEqual([t['nombre'] for t in datos['tipos_consumible']], ['Toner'])
+
+
+class TecnicoAutoAsignadoTests(TestCase):
+    """El campo `tecnico` se preselecciona en quien está en sesión.
+
+    Un técnico que registra su propio trabajo no tenía por qué buscarse en un
+    desplegable con todos los usuarios activos, ni podía evitar que ese mismo
+    desplegable le dejara cargarle trabajo a un compañero.
+    """
+
+    def setUp(self):
+        self.tecnico = User.objects.create_user(username='tecnico_campo', password='x')
+        self.otro = User.objects.create_user(username='otro_tecnico', password='x')
+        self.coordinador = User.objects.create_user(username='coordinador', password='x')
+        self.coordinador.user_permissions.add(
+            Permission.objects.get(content_type__app_label='mantenimiento', codename='asignar_tecnico'),
+        )
+        # has_perm cachea los permisos en la instancia; sin recargarla, el usuario
+        # recién permisado sigue viéndose sin permiso.
+        self.coordinador = User.objects.get(pk=self.coordinador.pk)
+
+    def _formularios(self, user):
+        return [
+            MantenimientoManualForm(user=user),
+            MantenimientoProgramadoForm(user=user),
+            ActividadPlanificadaForm(user=user),
+            VisitaTecnicaForm(user=user),
+        ]
+
+    def test_sin_permiso_el_campo_queda_fijo_en_el_propio_usuario(self):
+        for form in self._formularios(self.tecnico):
+            with self.subTest(form=type(form).__name__):
+                campo = form.fields['tecnico']
+                self.assertEqual(list(campo.queryset), [self.tecnico])
+                self.assertTrue(campo.disabled)
+                self.assertEqual(form['tecnico'].value(), self.tecnico.pk)
+
+    def test_con_permiso_conserva_el_desplegable_completo_preseleccionado(self):
+        for form in self._formularios(self.coordinador):
+            with self.subTest(form=type(form).__name__):
+                campo = form.fields['tecnico']
+                self.assertIn(self.otro, campo.queryset)
+                self.assertFalse(campo.disabled)
+                # Preseleccionado en sí mismo: es el caso más frecuente incluso
+                # para quien puede repartir trabajo.
+                self.assertEqual(form['tecnico'].value(), self.coordinador.pk)
+
+    def test_sin_permiso_un_post_a_nombre_de_otro_se_guarda_a_nombre_propio(self):
+        """La defensa real: `disabled` hace que Django ignore lo que venga en el POST.
+
+        Acotar solo el widget dejaría pasar un POST armado a mano con el id de un
+        compañero.
+        """
+        farmacia = Farmacia.objects.create(
+            codigo='ML900', grupo=Grupo.objects.create(codigo='TRX900'),
+            unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
+        form = VisitaTecnicaForm(
+            {
+                'farmacia': farmacia.pk,
+                'tecnico': self.otro.pk,          # intento de asignárselo a un compañero
+                'fecha_planificada': date.today().isoformat(),
+            },
+            user=self.tecnico,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['tecnico'], self.tecnico)
+
+    def test_con_permiso_si_puede_asignar_a_otro(self):
+        farmacia = Farmacia.objects.create(
+            codigo='ML901', grupo=Grupo.objects.create(codigo='TRX901'),
+            unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        PerfilUsuario.objects.create(usuario=self.coordinador, acceso_todas_unidades=True)
+        form = VisitaTecnicaForm(
+            {
+                'farmacia': farmacia.pk,
+                'tecnico': self.otro.pk,
+                'fecha_planificada': date.today().isoformat(),
+            },
+            user=self.coordinador,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['tecnico'], self.otro)
+
+    def test_sin_usuario_el_formulario_sigue_armandose(self):
+        """Los comandos de management y el shell instancian formularios sin sesión."""
+        form = VisitaTecnicaForm()
+        self.assertFalse(form.fields['tecnico'].disabled)
+
+    def test_editar_un_registro_ajeno_no_lo_reasigna(self):
+        """Preseleccionar es para un alta, no para pisar a quien ya tenía el trabajo.
+
+        Hoy no hay vista de edición para estos modelos; esta prueba fija el
+        comportamiento para la primera que se agregue.
+        """
+        equipo = Activo.objects.create(
+            codigo='ACT-900', numero_serie='SN900', estado=Activo.Estado.ASIGNADO,
+        )
+        programado = MantenimientoProgramado.objects.create(
+            equipo=equipo, tecnico=self.otro, frecuencia_dias=30,
+            fecha_proximo=date.today() + timedelta(days=30),
+        )
+        form = MantenimientoProgramadoForm(instance=programado, user=self.tecnico)
+        campo = form.fields['tecnico']
+        # El dueño original sigue en el queryset aunque el editor no tenga permiso:
+        # si no, la validación fallaría con "elección no válida" sobre un campo que
+        # el usuario ni puede tocar.
+        self.assertIn(self.otro, campo.queryset)
+        self.assertTrue(campo.disabled)
+        self.assertEqual(form['tecnico'].value(), self.otro.pk)

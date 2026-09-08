@@ -136,6 +136,35 @@ modal de alta está separado de `#modal-info` porque aquel es de solo lectura y 
 refresca solo cada 2 s — un refresco automático sobre un formulario a medio llenar
 borraría lo que el usuario está escribiendo.
 
+## El técnico no se elige: se toma de la sesión
+
+Los campos que registran *quién* hizo algo se llenan desde `request.user`, no desde un
+desplegable. `creado_por`, `registrado_por` y `usuario` ya lo hacían en las vistas; el
+campo `tecnico` se sumó el 7-sep-2026.
+
+En los cuatro formularios que lo exponen —mantenimiento manual, mantenimiento
+programado, actividad planificada y visita técnica— `tecnico` viene **preseleccionado en
+quien está en sesión**. Lo que pasa después depende de un permiso:
+
+| Quién | Qué ve en el campo `tecnico` |
+|---|---|
+| Sin `mantenimiento.asignar_tecnico` (rol **Técnico**) | Su propio nombre, fijo. Registra su trabajo, no reparte el de otros |
+| Con `mantenimiento.asignar_tecnico` (**Soporte Técnico**, **Administrador**) | El desplegable completo, ya preseleccionado en sí mismo |
+
+Antes ese campo listaba **todos** los usuarios activos para cualquiera, lo que además de
+molesto concedía un permiso que nadie había decidido: cualquier técnico podía cargarle
+una visita a un compañero.
+
+**Para sumar el comportamiento a un formulario nuevo** que tenga un campo `tecnico`:
+heredar de `TecnicoAutoAsignadoMixin` (`apps/mantenimiento/forms.py`), aceptar `user=` en
+el `__init__` y llamar a `self._autoasignar_tecnico(user)` al final. La vista pasa
+`user=request.user`.
+
+Un detalle que parece redundante y no lo es: cuando el usuario no tiene el permiso, el
+mixin acota el queryset **y** marca el campo `disabled`. Es `disabled` lo que hace que
+Django ignore lo que venga en el POST y use el initial — sin eso, un POST armado a mano
+con el id de un compañero seguiría pasando. Hay una prueba dedicada a ese caso.
+
 ## Probar el flujo completo sin el agente C#
 
 El agente real ya existe (`C:\Proyectos\saidsoft-agente`, Fase 3-4), pero para

@@ -270,7 +270,7 @@ def mantenimientos_programados_lista(request):
 @permission_required('mantenimiento.add_mantenimientoprogramado', raise_exception=True)
 def mantenimiento_programado_crear(request):
     if request.method == 'POST':
-        form = MantenimientoProgramadoForm(request.POST)
+        form = MantenimientoProgramadoForm(request.POST, user=request.user)
         if form.is_valid():
             programado = form.save()
             registrar_evento(
@@ -279,7 +279,7 @@ def mantenimiento_programado_crear(request):
             messages.success(request, 'Mantenimiento programado creado.')
             return redirect('panel:mantenimientos_programados_lista')
     else:
-        form = MantenimientoProgramadoForm()
+        form = MantenimientoProgramadoForm(user=request.user)
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': 'Nuevo mantenimiento programado', 'boton': 'Crear plan',
         'volver_url': reverse('panel:mantenimientos_programados_lista'),
@@ -435,7 +435,7 @@ def actividades_planificadas_lista(request):
 @permission_required('mantenimiento.add_actividadplanificada', raise_exception=True)
 def actividad_planificada_crear(request):
     if request.method == 'POST':
-        form = ActividadPlanificadaForm(request.POST)
+        form = ActividadPlanificadaForm(request.POST, user=request.user)
         if form.is_valid():
             d = form.cleaned_data
             actividad = mantenimiento_services.crear_actividad_planificada(
@@ -450,7 +450,7 @@ def actividad_planificada_crear(request):
             messages.success(request, f'Actividad "{actividad.titulo}" creada.')
             return redirect('panel:actividades_planificadas_lista')
     else:
-        form = ActividadPlanificadaForm()
+        form = ActividadPlanificadaForm(user=request.user)
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': 'Nueva actividad planificada', 'boton': 'Crear actividad',
         'volver_url': reverse('panel:actividades_planificadas_lista'),

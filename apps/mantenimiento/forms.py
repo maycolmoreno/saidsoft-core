@@ -16,8 +16,65 @@ INPUT_CLASS = 'w-full rounded-md border border-[var(--border)] bg-[var(--bg)] te
 
 User = get_user_model()
 
+# El permiso que separa "registro mi propio trabajo" de "reparto trabajo ajeno"
+# (ver Mantenimiento.Meta.permissions).
+PERMISO_ASIGNAR_TECNICO = 'mantenimiento.asignar_tecnico'
 
-class MantenimientoManualForm(forms.Form):
+
+class TecnicoAutoAsignadoMixin:
+    """Preselecciona al usuario en sesión en el campo `tecnico`.
+
+    Un técnico que registra su propio trabajo no tenía por qué buscarse en un
+    desplegable con todos los usuarios activos: es él. Y tampoco debería poder
+    cargarle una visita o un mantenimiento a un compañero, que es lo que esa
+    lista permitía sin proponérselo.
+
+    Quien sí reparte trabajo (`mantenimiento.asignar_tecnico`) conserva el
+    desplegable completo, ya preseleccionado en sí mismo — que es el caso más
+    frecuente también para un coordinador.
+
+    Los formularios que lo usan deben aceptar `user=` y llamar a
+    `self._autoasignar_tecnico(user)` al final de su `__init__`.
+    """
+
+    def _autoasignar_tecnico(self, user):
+        campo = self.fields.get('tecnico')
+        if campo is None or user is None or not user.is_authenticated:
+            return
+
+        # Un formulario de edición hereda el técnico de la instancia. Se respeta:
+        # preseleccionar es para un alta, no para pisar a quien ya tenía el trabajo
+        # asignado. (Hoy no hay vista de edición para estos modelos; sin esto, la
+        # primera que se agregue reasignaría el registro a quien lo abre.)
+        ya_asignado = self.initial.get('tecnico') or getattr(
+            getattr(self, 'instance', None), 'tecnico_id', None,
+        )
+        if not ya_asignado:
+            self.initial['tecnico'] = user.pk
+
+        if user.has_perm(PERMISO_ASIGNAR_TECNICO):
+            return
+
+        # Se acota el queryset y además se marca `disabled`, que no es redundante:
+        # `disabled` hace que Django IGNORE lo que venga en el POST y use el
+        # initial, así que un POST armado a mano tampoco puede asignarle el
+        # trabajo a otro. El widget sigue siendo un Select para que el técnico vea
+        # su propio nombre en el formulario en vez de un campo ausente.
+        #
+        # El técnico ya asignado entra al queryset aunque no sea el usuario: sin
+        # eso, editar un registro ajeno fallaría con "elección no válida" sobre un
+        # campo que el usuario ni puede tocar.
+        permitidos = {user.pk}
+        if ya_asignado:
+            permitidos.add(getattr(ya_asignado, 'pk', ya_asignado))
+        campo.queryset = User.objects.filter(pk__in=permitidos)
+        campo.disabled = True
+        if not ya_asignado:
+            campo.initial = user.pk
+        campo.help_text = 'Queda a tu nombre: no tenés permiso para asignar trabajo a otro técnico.'
+
+
+class MantenimientoManualForm(TecnicoAutoAsignadoMixin, forms.Form):
     """`equipos` se puebla BUSCANDO, no eligiendo primero un custodio.
 
     El diseño anterior exigía elegir el colaborador para que aparecieran sus equipos.
@@ -114,6 +171,8 @@ class MantenimientoManualForm(forms.Form):
                 equipos = scope_opcional_por_unidad_negocio(equipos, user, 'unidad_negocio')
             self.fields['equipos'].queryset = equipos
 
+        self._autoasignar_tecnico(user)
+
 
 class CerrarMantenimientoForm(forms.Form):
     resultado_tecnico = forms.ChoiceField(
@@ -153,7 +212,7 @@ class RepuestoUtilizadoForm(forms.Form):
     )
 
 
-class MantenimientoProgramadoForm(forms.ModelForm):
+class MantenimientoProgramadoForm(TecnicoAutoAsignadoMixin, forms.ModelForm):
     class Meta:
         model = MantenimientoProgramado
         fields = ['equipo', 'tecnico', 'frecuencia_dias', 'fecha_proximo', 'observaciones']
@@ -164,6 +223,10 @@ class MantenimientoProgramadoForm(forms.ModelForm):
             'fecha_proximo': forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
             'observaciones': forms.Textarea(attrs={'class': INPUT_CLASS, 'rows': 2}),
         }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._autoasignar_tecnico(user)
 
 
 class FirmaMantenimientoForm(forms.Form):
@@ -181,7 +244,7 @@ class ImagenMantenimientoForm(forms.Form):
     archivo = forms.FileField(widget=forms.ClearableFileInput(attrs={'class': INPUT_CLASS}))
 
 
-class ActividadPlanificadaForm(forms.Form):
+class ActividadPlanificadaForm(TecnicoAutoAsignadoMixin, forms.Form):
     tecnico = forms.ModelChoiceField(
         queryset=User.objects.filter(is_active=True).order_by('username'),
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
@@ -206,6 +269,10 @@ class ActividadPlanificadaForm(forms.Form):
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
 
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._autoasignar_tecnico(user)
+
 
 class CompletarActividadForm(forms.Form):
     tiempo_real_minutos = forms.IntegerField(
@@ -213,7 +280,7 @@ class CompletarActividadForm(forms.Form):
     )
 
 
-class VisitaTecnicaForm(forms.Form):
+class VisitaTecnicaForm(TecnicoAutoAsignadoMixin, forms.Form):
     """Planificar una visita. `farmacia` se acota a las unidades que el usuario puede
     ver, mismo criterio que el resto de los formularios con alcance por tenant."""
     farmacia = forms.ModelChoiceField(
@@ -238,3 +305,4 @@ class VisitaTecnicaForm(forms.Form):
         if user is not None:
             queryset = scope_opcional_por_unidad_negocio(queryset, user, 'unidad_negocio')
         self.fields['farmacia'].queryset = queryset
+        self._autoasignar_tecnico(user)
