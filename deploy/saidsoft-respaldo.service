@@ -1,0 +1,45 @@
+# Respaldo diario de la base y de media. Lo dispara saidsoft-respaldo.timer.
+#
+# Instalación (ver deploy/README-produccion.md):
+#   sudo cp deploy/saidsoft-respaldo.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now saidsoft-respaldo.timer
+#
+# Corre como `glpi` y no como root a propósito: es el mismo usuario que tenía el cron,
+# el que está en el grupo `docker` y el dueño de ~/backups. Con root, los archivos
+# nuevos quedarían de root y el siguiente `find -delete` de la retención fallaría.
+
+[Unit]
+Description=Respaldo de la base y media de SAIDSOFT
+Documentation=file:/home/glpi/Documentos/Said/saidsoft-core/deploy/README-produccion.md
+# El respaldo habla con los contenedores por `docker-compose exec`: sin Docker arriba no
+# hay nada que respaldar. En un arranque tras un corte de energía, esto es lo que evita
+# que la ejecución atrasada de Persistent=true se dispare antes que el stack.
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User=glpi
+Group=glpi
+WorkingDirectory=/home/glpi/Documentos/Said/saidsoft-core
+# `After=docker.service` garantiza que el demonio esté activo, no que los
+# contenedores ya hayan levantado. En el primer arranque tras un corte de energía esa
+# diferencia es la que decide si el respaldo atrasado funciona o falla con "connection
+# refused" contra una base que iba a estar lista medio minuto después.
+ExecStartPre=/bin/sh deploy/esperar-stack.sh
+ExecStart=/bin/sh deploy/backup.sh /home/glpi/backups/saidsoft
+
+# Un respaldo de ~1,2 GB de media sobre un disco NVMe no debería pasar de unos minutos,
+# pero la copia externa por rsync puede tardar bastante más si el enlace es lento. 2h
+# corta un cuelgue real (un `docker exec` esperando a un contenedor que no responde) sin
+# matar una transferencia legítima.
+TimeoutStartSec=2h
+
+# Salida a journald: `journalctl -u saidsoft-respaldo` reemplaza al archivo de log que
+# el cron redirigía a mano, con rotación y fechas incluidas.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

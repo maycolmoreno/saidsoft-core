@@ -14,6 +14,23 @@
 </div>
 {% endif %}
 
+{# El panel vigila la flota; esta franja lo hace vigilarse a sí mismo. El 6 y el
+   7-sep-2026 no hubo respaldo (el NUC estuvo apagado el fin de semana) y nadie se
+   enteró en dos días. Va arriba de los KPI a propósito: si el respaldo falta, es la
+   primera cosa que hay que leer. #}
+{% if not respaldo_al_dia %}
+<div class="block mb-2 rounded-md alert sev-critical">
+    <strong>Sin respaldo al día.</strong>
+    {% if respaldo_ultimo %}
+        El último se completó el {{ respaldo_ultimo|date:"d/m/Y H:i" }}
+        (hace {{ respaldo_horas|floatformat:0 }} h).
+    {% else %}
+        No hay ningún respaldo registrado todavía.
+    {% endif %}
+    Revisar <code>systemctl status saidsoft-respaldo.timer</code> en el servidor.
+</div>
+{% endif %}
+
 {% if total_pendientes %}
 <a href="{% url 'panel:estaciones_lista' %}" class="block mb-6 rounded-md alert sev-warning">
     <strong>{{ total_pendientes }}</strong> estación(es) esperando aprobación de enrolamiento.

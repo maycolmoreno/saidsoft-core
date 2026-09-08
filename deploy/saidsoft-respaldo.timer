@@ -1,0 +1,30 @@
+# Dispara saidsoft-respaldo.service todos los días a las 02:00.
+#
+# Reemplaza a `0 2 * * *` en el crontab de glpi. La diferencia es Persistent=true, y no
+# es cosmética: el 6 y el 7-sep-2026 no hubo respaldo porque el NUC estuvo apagado todo
+# el fin de semana (se cortó la energía el sábado a las 03:39 y a las 10:19, y volvió el
+# lunes 08:45 cuando alguien lo prendió). Cron no tiene memoria de las ejecuciones que
+# se perdió: a las 02:00 la máquina no existía, y a las 02:00 del día siguiente tampoco.
+# Nadie se enteró en dos días.
+
+[Unit]
+Description=Respaldo diario de SAIDSOFT
+Documentation=file:/home/glpi/Documentos/Said/saidsoft-core/deploy/README-produccion.md
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+
+# El arreglo de fondo: systemd guarda en disco cuándo corrió por última vez. Si al
+# arrancar descubre que la ejecución de las 02:00 se perdió porque la máquina estaba
+# apagada, la corre enseguida en vez de esperar 24 horas.
+Persistent=true
+
+# A propósito NO se agrega OnBootSec: junto a OnCalendar no acota la ejecución
+# atrasada, la SUMA — dispararía un respaldo en cada arranque aunque el de las 02:00 ya
+# hubiera corrido. Que el stack esté listo lo resuelve el ExecStartPre del .service, que
+# es donde vive esa dependencia.
+
+Unit=saidsoft-respaldo.service
+
+[Install]
+WantedBy=timers.target

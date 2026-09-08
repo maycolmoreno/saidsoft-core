@@ -1976,3 +1976,48 @@ vistas; el que faltaba era `tecnico`.
 
 Cubierto por `apps.mantenimiento.tests.TecnicoAutoAsignadoTests` (5 pruebas), incluida la
 que comprueba que un POST a nombre de otro se guarda a nombre propio.
+
+---
+
+**AF. El respaldo sobrevive a que el servidor esté apagado — ✅ Hecho (7-sep-2026)**
+
+Hallazgo que originó esto: **no hubo respaldo el 6 ni el 7-sep-2026**. El NUC se apagó
+por corte de energía el sábado 5 a las 03:39, volvió a las 04:58, se apagó de nuevo a las
+10:19 y quedó muerto hasta el lunes 08:45, cuando alguien lo prendió. El journal del
+arranque anterior corta en seco sin secuencia de apagado — fue pérdida de energía, y no
+hay UPS conectado. El `0 2 * * *` del crontab de `glpi` no existió a esa hora ninguno de
+los dos días, y **nadie se enteró en 48 horas**.
+
+- `deploy/saidsoft-respaldo.timer` + `.service` — reemplazan al cron. La pieza que
+  arregla el problema es `Persistent=true`: systemd guarda en disco cuándo corrió por
+  última vez y dispara la ejecución atrasada en el próximo arranque. Cron no tiene esa
+  memoria. **No** se agregó `OnBootSec`: junto a `OnCalendar` no acota la ejecución
+  atrasada, la suma — habría disparado un respaldo en cada arranque.
+- `deploy/esperar-stack.sh` — `ExecStartPre` del service. `After=docker.service`
+  garantiza que el demonio esté activo, no que los contenedores ya levantaron; en el
+  primer arranque tras un corte esa diferencia decide si el respaldo atrasado funciona o
+  falla con "connection refused" contra una base que iba a estar lista medio minuto
+  después.
+- `deploy/backup.sh` — al terminar bien registra un latido (`registrar_latido respaldo`)
+  y, si `BACKUP_OFFSITE_DESTINO` está definido en `.env`, copia con rsync sobre SSH. El
+  respaldo local **nunca** depende de que el destino remoto exista o responda: un fallo
+  de rsync se loguea y no propaga error.
+- `apps/mqtt_worker/management/commands/registrar_latido.py` — puerta al ORM para una
+  tarea que corre en el HOST, fuera del stack. Reusa `WorkerHeartbeat`, que ya era
+  genérico (lo comparten `run_mqtt_worker` y `run_meshcentral_worker`): sin modelo nuevo
+  ni migración.
+- `apps/panel/views/dashboard.py` + `dashboard.html` — franja crítica arriba de los KPI
+  si el último respaldo tiene más de 26 h (un día más dos horas de gracia, para no
+  gritar mientras el timer corre su ejecución atrasada tras un arranque tardío).
+
+**La segunda alerta que se había planteado ("ninguna estación reportó en X min") ya
+existía**: `worker_mqtt_activo` en el dashboard cubre exactamente ese caso — si el worker
+MQTT deja de latir, ninguna estación puede reportar. No se agregó nada redundante.
+
+Cubierto por `apps.panel.tests.SaludRespaldoDashboardTests` (4) y
+`RegistrarLatidoCommandTests` (2).
+
+**Sigue pendiente y no se resuelve con código: el UPS y el auto-encendido en BIOS
+(`Restore on AC Power Loss = Power On`).** El timer hace que el respaldo se recupere solo
+tras un apagón; no evita que el RMM quede ciego mientras el servidor está muerto — 46
+horas de fin de semana, con las farmacias abiertas.

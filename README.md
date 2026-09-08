@@ -165,6 +165,43 @@ mixin acota el queryset **y** marca el campo `disabled`. Es `disabled` lo que ha
 Django ignore lo que venga en el POST y use el initial — sin eso, un POST armado a mano
 con el id de un compañero seguiría pasando. Hay una prueba dedicada a ese caso.
 
+## Respaldos (por qué systemd y no cron)
+
+Los dispara `deploy/saidsoft-respaldo.timer`, no el crontab. Instalación:
+
+```bash
+sudo cp deploy/saidsoft-respaldo.service deploy/saidsoft-respaldo.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now saidsoft-respaldo.timer
+crontab -l | grep -v 'deploy/backup.sh' | crontab -   # sacar el cron viejo, o corre dos veces
+```
+
+Verificar: `systemctl list-timers saidsoft-respaldo`, `journalctl -u saidsoft-respaldo -n 50`.
+Forzar uno ahora: `sudo systemctl start saidsoft-respaldo.service`.
+
+**El cambio no es cosmético.** El 6 y el 7-sep-2026 no hubo respaldo: el NUC estuvo
+apagado todo el fin de semana por cortes de energía y el `0 2 * * *` de cron no existió a
+esa hora ninguno de los dos días. Cron no tiene memoria de las ejecuciones que se perdió.
+`Persistent=true` sí: systemd guarda en disco cuándo corrió por última vez y dispara la
+atrasada en el próximo arranque.
+
+**Copia fuera del servidor.** Definir `BACKUP_OFFSITE_DESTINO` en `deploy/.env` con un
+destino rsync/SSH (`usuario@host:/ruta/`), con clave SSH sin passphrase para `glpi`. Sin
+esa variable el script avisa por log y sigue — el respaldo local nunca depende del
+destino remoto. Un fallo de rsync se registra y **no** propaga error: el respaldo local ya
+está hecho y es válido.
+
+> La passphrase de GPG no viaja al destino. Si se pierde el servidor se pierden la base y
+> la llave a la vez, así que `BACKUP_ENCRYPTION_PASSPHRASE` tiene que estar guardada
+> aparte (gestor de contraseñas), no solo en el `.env` de la máquina que se respalda. Con
+> las claves de recuperación BitLocker de la flota adentro de esa base, es el punto más
+> caro de toda la instalación.
+
+**Cómo se ve un respaldo faltante.** `backup.sh` registra un latido en `WorkerHeartbeat`
+(fila `respaldo`) recién cuando terminó bien. Si ese latido pasa de 26 h, el dashboard
+muestra una franja crítica arriba de los KPI. Antes esto no se veía en ninguna parte: el
+panel vigilaba 8 estaciones y no la máquina que lo hospeda.
+
 ## Probar el flujo completo sin el agente C#
 
 El agente real ya existe (`C:\Proyectos\saidsoft-agente`, Fase 3-4), pero para

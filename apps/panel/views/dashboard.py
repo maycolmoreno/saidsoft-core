@@ -8,6 +8,7 @@ from apps.cuentas.services import unidades_negocio_en_foco
 from apps.despliegues.models import Despliegue
 from apps.monitoreo.models import Alerta
 from apps.mqtt_worker.models import WorkerHeartbeat
+from apps.mqtt_worker.management.commands.registrar_latido import NOMBRE_RESPALDO
 from apps.mqtt_worker.services import NOMBRE_WORKER_MQTT
 
 ONLINE_UMBRAL_MINUTOS = 5
@@ -15,6 +16,11 @@ ONLINE_UMBRAL_MINUTOS = 5
 # 3x el intervalo de latido del worker (30s) con margen para jitter/latencia de red,
 # antes de considerar que dejó de reportarse.
 WORKER_MQTT_UMBRAL_SEGUNDOS = 90
+
+# El respaldo corre a las 02:00 (deploy/saidsoft-respaldo.timer). 26h = un día más dos
+# horas de gracia: alcanza para que un arranque tardío tras un corte de energía corra su
+# ejecución atrasada sin que el panel grite, y no tanto como para tapar un día perdido.
+RESPALDO_UMBRAL_HORAS = 26
 
 
 @login_required
@@ -54,6 +60,15 @@ def dashboard(request):
         and (timezone.now() - latido_worker.ultimo_latido).total_seconds() < WORKER_MQTT_UMBRAL_SEGUNDOS
     )
 
+    # Salud del respaldo. El panel vigilaba 8 estaciones y no la máquina que lo
+    # hospeda: el 6 y el 7-sep-2026 no hubo respaldo (el NUC estuvo apagado el fin de
+    # semana) y nadie se enteró en dos días. La fila la escribe deploy/backup.sh al
+    # terminar bien, vía `manage.py registrar_latido respaldo`.
+    latido_respaldo = WorkerHeartbeat.objects.filter(nombre=NOMBRE_RESPALDO).first()
+    horas_sin_respaldo = None
+    if latido_respaldo:
+        horas_sin_respaldo = (timezone.now() - latido_respaldo.ultimo_latido).total_seconds() / 3600
+
     return render(request, 'panel/dashboard.html', {
         'grupos': grupos,
         'despliegues_activos': despliegues_activos,
@@ -63,4 +78,9 @@ def dashboard(request):
         'total_alertas_abiertas': total_alertas_abiertas,
         'worker_mqtt_activo': worker_mqtt_activo,
         'worker_mqtt_ultimo_latido': latido_worker.ultimo_latido if latido_worker else None,
+        'respaldo_ultimo': latido_respaldo.ultimo_latido if latido_respaldo else None,
+        # None (nunca respaldó) cuenta como NO al día: es el estado de un servidor
+        # recién montado y también el de uno donde el timer nunca se instaló.
+        'respaldo_al_dia': horas_sin_respaldo is not None and horas_sin_respaldo < RESPALDO_UMBRAL_HORAS,
+        'respaldo_horas': horas_sin_respaldo,
     })

@@ -10,6 +10,7 @@ from unittest.mock import patch
 from cryptography.fernet import Fernet
 from django.contrib.auth.models import Permission, User
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -26,6 +27,7 @@ from apps.catalogo.models import (
     ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, PerifericoDetectado, UnidadNegocio, VersionAgente,
 )
 from apps.cuentas.models import PerfilUsuario
+from apps.mqtt_worker.models import WorkerHeartbeat
 from apps.cumplimiento.models import (
     ActividadCumplimiento, ResultadoCumplimientoEstacion, TipoObjetivoCumplimiento,
 )
@@ -3114,3 +3116,71 @@ class VentanaEmergenteAltaTests(TestCase):
         # El href real se conserva: Ctrl+clic y un navegador sin JS siguen
         # llevando al formulario de página completa.
         self.assertIn(f'href="{self.url}" data-modal', cuerpo)
+
+
+class SaludRespaldoDashboardTests(TestCase):
+    """El panel vigila la flota; esto lo hace vigilarse a sí mismo.
+
+    El 6 y el 7-sep-2026 no hubo respaldo — el servidor estuvo apagado el fin de
+    semana y el cron de las 02:00 nunca existió a esa hora — y nadie se enteró en
+    dos días. La franja del dashboard convierte eso en algo que se lee al entrar.
+    """
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_respaldo', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def test_sin_ningun_respaldo_avisa(self):
+        """Es el estado de un servidor donde el timer nunca se instaló."""
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertFalse(resp.context['respaldo_al_dia'])
+        self.assertIsNone(resp.context['respaldo_ultimo'])
+        self.assertContains(resp, 'No hay ningún respaldo registrado todavía')
+
+    def test_respaldo_reciente_no_avisa(self):
+        WorkerHeartbeat.objects.create(nombre='respaldo', ultimo_latido=timezone.now())
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertTrue(resp.context['respaldo_al_dia'])
+        self.assertNotContains(resp, 'Sin respaldo al día')
+
+    def test_respaldo_de_ayer_todavia_no_avisa(self):
+        """El respaldo corre a las 02:00: a las 25h aún entra en la gracia de 26h.
+
+        Sin esa gracia, un arranque tardío tras un corte de energía haría gritar al
+        panel justo cuando el timer ya corrió su ejecución atrasada.
+        """
+        WorkerHeartbeat.objects.create(
+            nombre='respaldo', ultimo_latido=timezone.now() - timedelta(hours=25),
+        )
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertTrue(resp.context['respaldo_al_dia'])
+
+    def test_respaldo_de_hace_dos_dias_avisa(self):
+        """El caso real del 7-sep-2026."""
+        WorkerHeartbeat.objects.create(
+            nombre='respaldo', ultimo_latido=timezone.now() - timedelta(hours=48),
+        )
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertFalse(resp.context['respaldo_al_dia'])
+        self.assertContains(resp, 'Sin respaldo al día')
+        self.assertContains(resp, 'hace 48 h')
+
+
+class RegistrarLatidoCommandTests(TestCase):
+    """`backup.sh` corre en el HOST, fuera del stack: este comando es su puerta al ORM."""
+
+    def test_crea_y_luego_actualiza_la_fila(self):
+        call_command('registrar_latido', 'respaldo')
+        primero = WorkerHeartbeat.objects.get(nombre='respaldo').ultimo_latido
+
+        call_command('registrar_latido', 'respaldo')
+        self.assertEqual(WorkerHeartbeat.objects.filter(nombre='respaldo').count(), 1)
+        self.assertGreaterEqual(WorkerHeartbeat.objects.get(nombre='respaldo').ultimo_latido, primero)
+
+    def test_no_pisa_el_latido_de_otro_worker(self):
+        WorkerHeartbeat.objects.create(
+            nombre='mqtt_worker', ultimo_latido=timezone.now() - timedelta(hours=5),
+        )
+        call_command('registrar_latido', 'respaldo')
+        self.assertEqual(WorkerHeartbeat.objects.count(), 2)
