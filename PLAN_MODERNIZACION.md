@@ -2017,6 +2017,19 @@ MQTT deja de latir, ninguna estación puede reportar. No se agregó nada redunda
 Cubierto por `apps.panel.tests.SaludRespaldoDashboardTests` (4) y
 `RegistrarLatidoCommandTests` (2).
 
+**Verificado en producción (7-sep-2026, 22:48).** `systemctl start saidsoft-respaldo.service`
+corrió de punta a punta: `esperar-stack.sh` pasó, se generaron
+`db_20260907_224854.sql.gz.gpg` y `media_20260907_224854.tar.gz.gpg`, se registró el
+latido `respaldo`, y el aviso de `BACKUP_OFFSITE_DESTINO` sin definir salió como
+corresponde. `Result=success`, 3,99 s de CPU. El timer quedó `enabled` con próxima
+corrida a las 02:00 y el `0 2 * * *` del crontab de `glpi` fue eliminado (si no, corría
+dos veces). La migración `0018` está aplicada y `seed_permisos` dejó `asignar_tecnico` en
+`Administrador` y `Soporte Técnico`.
+
+**Lo único que no se puede dar por probado todavía es `Persistent=true`**: exige que la
+máquina se pierda una corrida de las 02:00 y arranque después. Se confirma solo el día
+que haya otro apagón — o apagando el NUC a propósito una noche.
+
 **Sigue pendiente y no se resuelve con código: el UPS y el auto-encendido en BIOS
 (`Restore on AC Power Loss = Power On`).** El timer hace que el respaldo se recupere solo
 tras un apagón; no evita que el RMM quede ciego mientras el servidor está muerto — 46
