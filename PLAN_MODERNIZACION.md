@@ -2078,3 +2078,50 @@ de nginx validada con `nginx -t` en un contenedor descartable antes de desplegar
 
 **Al desplegar, RECREAR el contenedor nginx, no recargarlo** — `nginx.conf` es un bind
 mount de archivo suelto y ata el inode, así que `git pull` no lo alcanza (§10-AA).
+
+---
+
+**AH. El APK de release se firmaba con las llaves de depuración — ✅ Hecho (9-sep-2026)**
+
+`movil-campo/android/app/build.gradle.kts` seguía con el `TODO` que deja la plantilla de
+Flutter: el build `release` usaba `signingConfigs.getByName("debug")`. No es un detalle
+de empaquetado — Android identifica una app por `applicationId` **+ firma**, así que un
+APK firmado con las llaves de depuración es, para el teléfono, **otra app distinta**: se
+instala, se ve igual, y el día que llegue el APK firmado de verdad no puede actualizarlo.
+Con la app ya circulando a mano en `/media/movil/`, cada instalación hecha así es una
+desinstalación futura, teléfono por teléfono.
+
+Se generó el keystore de producción (`android/cresio-campo-release.jks`, alias
+`cresio-campo`, RSA 2048, validez 10.000 días → ene-2054, contraseña aleatoria de 48
+caracteres hex). **Fuera de git** — la plantilla de Flutter ya ignoraba `key.properties`
+y `**/*.jks` en `android/.gitignore`, así que no hubo que tocar el `.gitignore` del repo.
+Huella del certificado, para verificar un APK en circulación:
+`SHA256:73:9A:43:B7:70:BE:7C:86:87:77:EA:5D:2A:7F:C1:C7:29:1F:7E:C0:7D:60:60:5B:33:09:E1:F3:E0:7F:0A:9C`.
+
+- **Sin `key.properties`, un release falla con un mensaje explícito** en vez de caer en
+  las llaves de depuración: el chequeo va en `gradle.taskGraph.whenReady` y solo mira si
+  la tarea que corre es de release, para que los builds de depuración sigan funcionando
+  en una máquina sin el keystore (el CI corre `flutter analyze` y `flutter test`, no
+  compila APK, así que no lo afecta).
+- `storeFile` se resuelve con `rootProject.file(...)` — relativo a `android/`, no a
+  `android/app/` donde vive el `build.gradle.kts`.
+- `android/key.properties.example` (versionado) documenta el formato y dice
+  explícitamente **no generar un keystore nuevo**: firmar con otra identidad rompe la
+  actualización de los teléfonos que ya tengan la app.
+- Se compila con `--split-per-abi`. El APK universal lleva el runtime de Flutter para las
+  tres arquitecturas; el de depuración publicado a mano pesaba ~154 MB.
+
+**Lo que este cambio NO resuelve** (sigue pendiente del lado del front):
+
+- **Copia de respaldo del keystore fuera de esta máquina.** Hoy existe en un solo disco.
+  Si se pierde, no hay actualización posible para las apps ya instaladas: hay que
+  desinstalar y reinstalar en cada equipo, perdiendo la cola offline pendiente. Es el
+  mismo agujero que los respaldos del servidor (§AF: cifrados, con retención, y en la
+  misma máquina que respaldan).
+- **Canal de distribución y aviso de versión nueva.** Se sigue copiando el APK a mano;
+  la app no consulta si hay una versión posterior a la instalada, así que un release
+  nuevo no llega a un teléfono que nadie actualice a mano.
+- **`applicationId = "com.cresio.cresio_campo"`**, que no es el `com.cresio.campo` que
+  este documento venía dando por hecho para el registro en Firebase. Se dejó como está a
+  propósito: cambiarlo después de distribuir el APK obliga a desinstalar y reinstalar en
+  cada teléfono. Decisión abierta, pero hay que cerrarla **antes** de registrar el push.

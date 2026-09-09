@@ -1,0 +1,12 @@
+# Plantilla de android/key.properties (ese archivo NO se versiona: son las credenciales
+# con las que se firma el APK que instalan los tecnicos).
+#
+# El keystore real y su contrasena los tiene el responsable del proyecto. Si vas a
+# compilar un release, pedilos -- NO generes un keystore nuevo: firmaria con otra
+# identidad y los telefonos con la app ya instalada rechazarian la actualizacion.
+#
+# storeFile se resuelve relativo a movil-campo/android/.
+storePassword=<contrasena del keystore>
+keyPassword=<contrasena de la clave; la misma que storePassword>
+keyAlias=cresio-campo
+storeFile=cresio-campo-release.jks

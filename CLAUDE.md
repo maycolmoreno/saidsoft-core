@@ -59,9 +59,13 @@ corre sobre `timescale/timescaledb`.
   en SAIDSOFT (`MCMB-2`, `MMIL10`, `MPREV1`).
 - **Respaldos sin copia fuera del servidor** (diarios, cifrados con GPG, retención 14
   días — pero en la misma máquina que respaldan).
-- **Push FCM real**: falta registrar `com.cresio.campo` en Firebase.
-- **APK**: solo build de depuración de ~154 MB, publicado a mano en `/media/movil/`.
-  No hay release firmado ni canal de distribución.
+- **Push FCM real**: falta registrar la app en Firebase. El nombre de paquete es
+  `com.cresio.cresio_campo`, **no** `com.cresio.campo` como decía este archivo hasta el
+  9-sep — y cambiarlo ya no es gratis (ver §10-AH del plan).
+- **APK**: el release ya se firma con el keystore de CRESIO (§10-AH). Queda el **respaldo
+  del keystore fuera de esta máquina** — si se pierde, ninguna app instalada se puede
+  actualizar nunca más — y el **canal de distribución**: se sigue copiando a mano a
+  `/media/movil/` y la app no avisa que hay versión nueva.
 - Decisiones abiertas del usuario: **crear visitas desde la app** (hoy el ViewSet es de
   solo lectura) y **abrir el mapa hacia la farmacia** (el backend ya manda coordenadas
   y nada las usa).
