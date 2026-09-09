@@ -43,7 +43,10 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin ventanas de mantenimiento todavía.</td></tr>
+            <tr><td colspan="6">
+                {% url 'panel:ventana_mantenimiento_crear' as alta %}
+                {% include "panel/_estado_vacio.html" with titulo="Sin ventanas de mantenimiento" pista="Una ventana define el horario en que se permite intervenir sin que cuente como interrupción." accion_url=alta accion_etiqueta="+ Nueva ventana" accion_puede=True %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

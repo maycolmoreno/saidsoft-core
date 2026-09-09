@@ -46,7 +46,10 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin actividades para este filtro.</td></tr>
+            <tr><td colspan="6">
+                {% url 'panel:actividad_planificada_crear' as alta %}
+                {% include "panel/_estado_vacio.html" with titulo="Todavía no hay actividades planificadas" pista="Son las tareas preventivas con fecha que después se marcan como cumplidas." accion_url=alta accion_etiqueta="+ Nueva actividad" accion_puede=True accion_modal=1 %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

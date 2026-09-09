@@ -31,7 +31,10 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="5" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin órdenes de compra todavía.</td></tr>
+            <tr><td colspan="5">
+                {% url 'panel:orden_compra_crear' as alta %}
+                {% include "panel/_estado_vacio.html" with titulo="Todavía no hay órdenes de compra" accion_url=alta accion_etiqueta="+ Nueva OC" accion_puede=True accion_modal=1 %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

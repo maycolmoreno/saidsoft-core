@@ -63,7 +63,10 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="5" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin activos para este filtro.</td></tr>
+            <tr><td colspan="5">
+                {% url 'panel:activo_crear' as alta %}
+                {% include "panel/_estado_vacio.html" with titulo="El inventario de activos está vacío" pista="Cada ingreso registra un equipo con su categoría y su responsable. También se pueden crear desde el RMM con el comando crear_activos_desde_rmm." accion_url=alta accion_etiqueta="+ Registrar ingreso" accion_puede=True %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

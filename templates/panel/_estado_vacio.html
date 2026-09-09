@@ -1,0 +1,51 @@
+{% load panel_extras %}
+{% comment %}
+Estado vacío de una lista. Reemplaza la línea gris centrada que había en cada
+`{% empty %}` — que se leía como "esto está roto" y no decía qué hacer.
+
+Se incluye SIN `only` a propósito: necesita `request` (para distinguir el vacío real
+del vacío por filtro) y `perms` del contexto de la página.
+
+Parámetros:
+  titulo            — qué falta, en una frase. Obligatorio.
+  pista             — por qué importa o qué hay que hacer. Opcional.
+  accion_url        — destino del botón de alta. Resolvelo antes con
+                      `{% url 'panel:x' as alta %}`: Django no permite anidar
+                      `{% url %}` dentro de los argumentos del include.
+  accion_etiqueta   — texto del botón. Usá el mismo que el del encabezado de la
+                      lista, para que sea evidente que es el mismo camino.
+  accion_puede      — obligatorio junto con `accion_url`: el botón se muestra solo
+                      si es verdadero. Pasá la misma condición que guarda al botón
+                      del encabezado, o `True` si ese no tiene ninguna. Explícito
+                      porque un template no distingue "no pasado" de "False".
+  accion_modal      — 1 si esa alta abre como ventana emergente (las que usan
+                      `panel/accion_form.html`; ver README).
+  pista_filtro      — reemplaza el texto de la variante "no coincide nada".
+  ignorar_filtros   — 1 en las listas donde los parámetros de la URL no acotan
+                      nada (en Alertas, `?todas=1` AMPLÍA lo que se muestra), así
+                      no se les ofrece "quitar filtros" para volver a ver menos.
+{% endcomment %}
+{% hay_filtros as acotada %}
+<div class="empty-state">
+    {% if acotada and not ignorar_filtros %}
+    <div class="es-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    </div>
+    <div class="es-title">Nada coincide con este filtro</div>
+    <p class="es-hint">{{ pista_filtro|default:"Hay registros cargados, pero ninguno cumple lo que pediste." }}</p>
+    <div class="es-actions">
+        <a href="{{ request.path }}" class="btn secondary">Quitar filtros</a>
+    </div>
+    {% else %}
+    <div class="es-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14h4l1.5 3h7L17 14h4"/><path d="M3 14V7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v7"/><path d="M3 14v3a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"/></svg>
+    </div>
+    <div class="es-title">{{ titulo }}</div>
+    {% if pista %}<p class="es-hint">{{ pista }}</p>{% endif %}
+    {% if accion_url and accion_puede %}
+    <div class="es-actions">
+        <a href="{{ accion_url }}" {% if accion_modal %}data-modal{% endif %} class="btn primary">{{ accion_etiqueta|default:"Cargar el primero" }}</a>
+    </div>
+    {% endif %}
+    {% endif %}
+</div>

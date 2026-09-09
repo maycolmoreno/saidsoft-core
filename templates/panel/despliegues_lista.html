@@ -33,7 +33,10 @@
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ d.fecha_creacion|date:"d/m/Y H:i" }}</td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Todavía no hay despliegues. <a href="{% url 'panel:despliegue_crear' %}" class="underline text-[var(--info)]">Crear el primero</a>.</td></tr>
+            <tr><td colspan="6">
+                {% url 'panel:despliegue_crear' as alta %}
+                {% include "panel/_estado_vacio.html" with titulo="Todavía no hay despliegues" accion_url=alta accion_etiqueta="+ Nuevo despliegue" accion_puede=True %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

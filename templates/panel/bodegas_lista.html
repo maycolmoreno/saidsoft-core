@@ -38,8 +38,8 @@
         </table>
     </div>
 {% empty %}
-    <div class="card px-4 py-8 text-center text-[var(--text-faint)] text-sm">
-        Sin bodegas registradas. Créalas desde el admin (/admin/activos/bodega/).
+    <div class="card">
+        {% include "panel/_estado_vacio.html" with titulo="Todavía no hay bodegas" pista="Una bodega es de donde salen los repuestos que se descuentan al cerrar un mantenimiento. Se crean desde el admin de Django (/admin/activos/bodega/)." %}
     </div>
 {% endfor %}
 </div>

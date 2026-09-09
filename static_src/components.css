@@ -106,6 +106,10 @@
 
 /* ---------- Main / cards ---------- */
 .main{ grid-column:2; grid-row:2; overflow-y:auto; padding:var(--page-pad); display:flex; flex-direction:column; gap:22px; }
+/* El contenido se topa en --page-max y se centra. El <main> sigue ocupando todo el
+   ancho (el scroll y el fondo son suyos); lo que se acota es cada bloque de la pagina.
+   Los <dialog> viven fuera de .main, asi que el tope no los alcanza. */
+.main > *{ width:100%; max-width:var(--page-max); margin-inline:auto; }
 
 .card{
   background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg);
@@ -114,7 +118,11 @@
 .card.hoverable:hover{ border-color:var(--border-hover); transform:translateY(-1px); box-shadow:var(--shadow-pop); }
 
 /* ---------- KPI ---------- */
-.kpi-strip{ display:grid; grid-template-columns:repeat(4, 1fr); gap:var(--gap); }
+/* auto-fit, no repeat(4): ninguna pantalla tiene exactamente 4 KPI (el dashboard
+   tiene 5, "errores del POS" 3, "software desactualizado" y "tendencia" 2), y con la
+   grilla fija de 4 columnas el resto de la fila quedaba en blanco. Con auto-fit las
+   pistas vacias se colapsan y las tarjetas reparten el ancho entre las que hay. */
+.kpi-strip{ display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:var(--gap); }
 .kpi{ padding:16px; display:flex; flex-direction:column; gap:10px; }
 .kpi-top{ display:flex; align-items:flex-start; justify-content:space-between; }
 .kpi-icon{ width:30px; height:30px; border-radius:8px; display:flex; align-items:center; justify-content:center; flex:none; }
@@ -204,7 +212,10 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
    lenguaje que el KPI (icono en caja + etiqueta tenue + valor), pero en fila
    compacta en vez de tarjeta — son datos informativos, no indicadores con umbral,
    así que el icono queda neutro (--text-faint), no coloreado por tono. */
-.field-grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px 20px; }
+/* auto-fit por el mismo motivo que .kpi-strip, agravado acá: casi todos los campos
+   de la ficha son condicionales, así que el número visible cambia por estación y con
+   dos columnas fijas cualquier cantidad impar dejaba un hueco al lado del último. */
+.field-grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:16px 20px; }
 .field{ display:flex; align-items:flex-start; gap:10px; min-width:0; }
 .field-icon{
   width:26px; height:26px; border-radius:7px; flex:none;
@@ -263,8 +274,14 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
 .form-context-title{ font-size:13.5px; font-weight:600; }
 .form-context-sub{ font-size:11.5px; color:var(--text-faint); }
 
+/* Acá NO se usa auto-fit: un formulario con 4 columnas de inputs se vuelve ilegible.
+   Se queda en dos y solo se estira el último campo cuando quedaría solo en su fila.
+   Limitación conocida: CSS no puede contar los .span-2 previos, así que con un campo
+   ancho en medio la paridad se corre y el último puede estirarse sin necesidad — se ve
+   como un campo largo, que es mucho menos molesto que el hueco que había antes. */
 .form-grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px 20px; }
 .form-field.span-2{ grid-column:1 / -1; }
+.form-grid > .form-field:last-child:nth-child(odd){ grid-column:1 / -1; }
 .form-field label{ display:block; font-size:12.5px; font-weight:500; color:var(--text-dim); margin-bottom:5px; }
 .form-field .help{ font-size:11.5px; color:var(--text-faint); margin-top:5px; }
 .form-field .field-error{ font-size:11.5px; color:var(--critical); margin-top:5px; }
@@ -303,10 +320,30 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
   .search{ width:200px; }
 }
 @media (max-width:860px){
-  .kpi-strip{ grid-template-columns:repeat(2,1fr); }
   .search{ display:none; }
   .clockbox .date{ display:none; }
 }
+
+/* ---------- Estado vacío de una lista ----------
+   Antes cada lista vacía era una línea gris centrada ("Sin colaboradores registrados
+   todavía.") dentro de una tabla de 40px de alto: el módulo se veía roto más que vacío,
+   y no decía qué hacer. Este bloque le da altura, un icono y — cuando el usuario tiene
+   el permiso de alta — el mismo botón que el encabezado de la lista, así cargar el
+   primer registro no obliga a buscar el botón arriba. Importa porque el cuello de
+   botella del proyecto es justamente eso: 9 activos y 0 zonas cargadas. */
+.empty-state{
+  display:flex; flex-direction:column; align-items:center; gap:11px;
+  padding:52px 24px; text-align:center;
+}
+.empty-state .es-icon{
+  width:46px; height:46px; border-radius:13px; flex:none;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--overlay-hover); color:var(--text-faint);
+}
+.empty-state .es-icon svg{ width:21px; height:21px; }
+.empty-state .es-title{ font-size:14.5px; font-weight:600; color:var(--text); }
+.empty-state .es-hint{ font-size:12.5px; color:var(--text-dim); line-height:1.55; max-width:58ch; margin:0; }
+.empty-state .es-actions{ display:flex; flex-wrap:wrap; justify-content:center; gap:10px; margin-top:5px; }
 
 /* Indicador de carga de HTMX. Sin estas reglas el elemento marcado queda SIEMPRE
    visible, porque htmx solo alterna la clase .htmx-request en el disparador. */

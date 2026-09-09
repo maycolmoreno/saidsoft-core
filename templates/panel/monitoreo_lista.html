@@ -61,8 +61,8 @@
         {% endif %}
     </a>
 {% empty %}
-    <div class="card px-4 py-8 text-center text-[var(--text-faint)] text-sm md:col-span-2 xl:col-span-3">
-        No hay estaciones marcadas para monitoreo. Actívalo con el flag <code style="background:var(--overlay-hover);" class="px-1 rounded">monitorear_recursos</code> en una estación (desde el admin).
+    <div class="card md:col-span-2 xl:col-span-3">
+        {% include "panel/_estado_vacio.html" with titulo="Ninguna estación marcada para monitoreo" pista="El monitoreo de recursos se activa por estación con el flag monitorear_recursos, desde el admin de Django." %}
     </div>
 {% endfor %}
 </div>

@@ -29,7 +29,10 @@
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ c.activos_asignados.count }}</td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin colaboradores registrados todavía.</td></tr>
+            <tr><td colspan="6">
+                {% url 'panel:colaborador_crear' as alta %}
+                {% include "panel/_estado_vacio.html" with titulo="Todavía no hay colaboradores" pista="Son las personas a las que se les asigna un activo, un mantenimiento o una zona de cobertura." accion_url=alta accion_etiqueta="+ Nuevo colaborador" accion_puede=True accion_modal=1 %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

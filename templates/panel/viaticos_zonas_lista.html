@@ -46,8 +46,9 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="4" class="px-4 py-8 text-center text-[var(--text-faint)]">
-                Sin zonas asignadas. Mientras no haya ninguna, la alerta "fuera de zona" no se dispara.
+            <tr><td colspan="4">
+                {% url 'panel:viaticos_zona_crear' as alta %}
+                {% include "panel/_estado_vacio.html" with titulo="Todavía no hay zonas asignadas" pista="Mientras no haya ninguna, la alerta 'fuera de zona' no se dispara nunca." accion_url=alta accion_etiqueta="+ Asignar zona" accion_puede=perms.viaticos.add_colaboradorzona accion_modal=1 %}
             </td></tr>
         {% endfor %}
         </tbody>

@@ -42,7 +42,10 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin programaciones todavía.</td></tr>
+            <tr><td colspan="6">
+                {% url 'panel:script_programado_crear' as alta %}
+                {% include "panel/_estado_vacio.html" with titulo="Sin scripts programados" pista="Son las políticas que corren un script cada N días, como el parcheo de terceros con winget." accion_url=alta accion_etiqueta="+ Nueva programación" accion_puede=True %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

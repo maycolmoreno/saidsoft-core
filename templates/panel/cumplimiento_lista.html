@@ -31,8 +31,9 @@
         {% endif %}
     </a>
 {% empty %}
-    <div class="card px-4 py-8 text-center text-[var(--text-faint)] text-sm md:col-span-2 xl:col-span-3">
-        Sin actividades de cumplimiento registradas todavía.
+    <div class="card md:col-span-2 xl:col-span-3">
+        {% url 'panel:cumplimiento_crear' as alta %}
+        {% include "panel/_estado_vacio.html" with titulo="Sin actividades de cumplimiento todavía" pista="Cada actividad fija un objetivo con fecha; el porcentaje de cumplimiento se calcula sobre las que estén cargadas." accion_url=alta accion_etiqueta="+ Nueva actividad" accion_puede=True accion_modal=1 %}
     </div>
 {% endfor %}
 </div>

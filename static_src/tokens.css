@@ -10,6 +10,10 @@
   --radius-lg: 14px;
   --gap: 16px;
   --page-pad: 24px;
+  /* Ancho maximo del contenido. Sin tope, en un monitor de 27" las tablas se
+     estiran hasta 2400px y la vista salta del codigo de la estacion a su ultimo
+     latido cruzando media pantalla vacia. */
+  --page-max: 1600px;
 
   --font-ui: "Segoe UI", Inter, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
   --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;

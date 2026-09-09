@@ -32,7 +32,10 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="4" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin scripts en la biblioteca todavía.</td></tr>
+            <tr><td colspan="4">
+                {% url 'panel:script_crear' as alta %}
+                {% include "panel/_estado_vacio.html" with titulo="La biblioteca de scripts está vacía" pista="Un script guardado se puede ejecutar sobre una estación o programar para que corra cada N días." accion_url=alta accion_etiqueta="+ Nuevo script" accion_puede=True accion_modal=1 %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

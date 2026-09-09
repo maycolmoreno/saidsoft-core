@@ -22,7 +22,7 @@
         {% endif %}
     </div>
     {% empty %}
-    <div class="px-4 py-8 text-center text-[var(--text-faint)] text-sm">Sin notificaciones.</div>
+    {% include "panel/_estado_vacio.html" with titulo="Sin notificaciones" pista="Acá llegan los avisos del sistema dirigidos a tu usuario." %}
     {% endfor %}
 </div>
 {% endblock %}

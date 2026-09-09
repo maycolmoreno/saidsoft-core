@@ -87,7 +87,9 @@ seleccionadas" termina enviando una lista vacía.
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="8" class="px-4 py-6 text-center text-[var(--text-faint)]">Sin estaciones para este filtro.</td></tr>
+            <tr><td colspan="8">
+                {% include "panel/_estado_vacio.html" with titulo="Ninguna estación enrolada todavía" pista="Una estación aparece acá cuando su agente se enrola y alguien aprueba el enrolamiento." %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

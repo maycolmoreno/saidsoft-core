@@ -49,7 +49,9 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="3" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin alertas activas.</td></tr>
+            <tr><td colspan="3">
+                {% include "panel/_estado_vacio.html" with titulo="Sin alertas abiertas" pista="Ninguna regla se está sosteniendo ahora mismo." ignorar_filtros=1 %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>
@@ -100,7 +102,9 @@
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin alertas{% if solo_activas %} activas{% endif %}.</td></tr>
+            <tr><td colspan="6">
+                {% include "panel/_estado_vacio.html" with titulo="Sin alertas abiertas" pista="Ninguna regla se está sosteniendo ahora mismo." ignorar_filtros=1 %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

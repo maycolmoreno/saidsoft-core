@@ -45,7 +45,9 @@
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ m.realizado_por.username|default:"sistema" }}</td>
             </tr>
         {% empty %}
-            <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">Sin movimientos para este filtro.</td></tr>
+            <tr><td colspan="6">
+                {% include "panel/_estado_vacio.html" with titulo="El kardex está vacío" pista="Cada entrada o salida de un consumible de bodega queda registrada acá." %}
+            </td></tr>
         {% endfor %}
         </tbody>
     </table>

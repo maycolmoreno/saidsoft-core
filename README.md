@@ -136,6 +136,49 @@ modal de alta está separado de `#modal-info` porque aquel es de solo lectura y 
 refresca solo cada 2 s — un refresco automático sobre un formulario a medio llenar
 borraría lo que el usuario está escribiendo.
 
+## Los huecos de la grilla y las listas vacías
+
+Dos cosas distintas dejaban la pantalla con aire, y se arreglan en lugares distintos.
+
+**Los huecos eran grillas de tamaño fijo.** `.kpi-strip` estaba en `repeat(4, 1fr)` y
+ninguna pantalla tiene cuatro KPI: el dashboard tiene cinco (la quinta caía sola en una
+fila, con tres celdas en blanco al lado), "Errores del POS" tres, "Software
+desactualizado" y "Tendencia de flota" dos. `.field-grid` tenía el mismo problema
+agravado: casi todos los campos de la ficha de una estación son condicionales, así que
+cualquier cantidad impar visible dejaba un hueco. Las dos pasaron a
+`repeat(auto-fit, minmax(...))`, que colapsa las pistas vacías y reparte el ancho entre
+las tarjetas que de verdad hay.
+
+`.form-grid` **no** usa auto-fit a propósito: un formulario de cuatro columnas de inputs
+se vuelve ilegible. Se queda en dos y solo estira el último campo si quedaría solo en su
+fila (`:last-child:nth-child(odd)`).
+
+El contenido además se topa en `--page-max` (1600px) y se centra: sin tope, en un
+monitor de 27" una tabla se estira hasta 2400px y la vista salta del código de la
+estación a su último latido cruzando media pantalla vacía.
+
+**Las listas vacías ahora dicen cuál de los dos vacíos son.** `panel/_estado_vacio.html`
+distingue "todavía no hay nada cargado" (icono, frase de qué es eso, y el mismo botón de
+alta que el encabezado) de "tu filtro no devolvió nada" (lupa y "Quitar filtros"). Lo
+decide el tag `hay_filtros` (`apps/panel/templatetags/panel_extras.py`), que ignora la
+paginación y los parámetros vacíos que manda un `<select>` en su opción "todos".
+
+Importa porque confundirlos manda al usuario a duplicar datos: ofrecer "cargar el
+primero" cuando en realidad hay 300 registros tapados por un filtro es una invitación a
+cargar el 301. En Alertas se pasa `ignorar_filtros=1` porque ahí `?todas=1` **amplía** lo
+que se muestra — ofrecer "quitar filtros" sería ofrecer ver menos.
+
+Para agregar el estado vacío a una lista nueva, en su `{% empty %}`:
+
+```django
+{% url 'panel:mi_alta' as alta %}
+{% include "panel/_estado_vacio.html" with titulo="Todavía no hay X" pista="Para qué sirve X." accion_url=alta accion_etiqueta="+ Nuevo X" accion_puede=True accion_modal=1 %}
+```
+
+`accion_puede` es obligatorio junto con `accion_url` (un template no distingue "no
+pasado" de `False`) y `accion_modal=1` solo si esa alta usa `panel/accion_form.html`.
+Cubierto por `apps.panel.tests.EstadoVacioTests`.
+
 ## El técnico no se elige: se toma de la sesión
 
 Los campos que registran *quién* hizo algo se llenan desde `request.user`, no desde un

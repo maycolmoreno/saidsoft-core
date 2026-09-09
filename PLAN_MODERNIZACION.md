@@ -2125,3 +2125,56 @@ Huella del certificado, para verificar un APK en circulación:
   este documento venía dando por hecho para el registro en Firebase. Se dejó como está a
   propósito: cambiarlo después de distribuir el APK obliga a desinstalar y reinstalar en
   cada teléfono. Decisión abierta, pero hay que cerrarla **antes** de registrar el push.
+
+---
+
+**AI. Espacios vacíos del panel: grillas fijas y listas mudas — ✅ Parte 1 (9-sep-2026)**
+
+Reporte del usuario: "hay espacios que quedan vacíos". Resultaron ser dos causas
+distintas, y una es medible sin abrir el navegador.
+
+**Grillas de tamaño fijo.** `.kpi-strip` estaba declarada `repeat(4, 1fr)` y **ninguna
+pantalla tiene cuatro KPI**: dashboard 5 (la quinta sola en una fila, 3 celdas en
+blanco), `pos_errores_flota` 3, `software_desactualizado` y `tendencia_flota` 2 (media
+franja vacía). `.field-grid` igual, agravado porque casi todos los campos de
+`estacion_info_modal.html` son condicionales: cualquier cantidad impar visible dejaba un
+hueco. Ambas pasaron a `repeat(auto-fit, minmax(...))`. `.form-grid` se dejó en dos
+columnas a propósito (un formulario de 4 columnas de inputs es ilegible) y solo estira el
+último campo cuando quedaría solo, con `:last-child:nth-child(odd)` — limitación
+conocida: CSS no puede contar los `.span-2` previos, así que con un campo ancho en medio
+la paridad se corre y el último puede estirarse sin necesidad.
+
+Se agregó `--page-max: 1600px` y `.main > *` se topa ahí y se centra. Los `<dialog>` viven
+fuera de `.main`, así que el tope no los alcanza.
+
+**Listas vacías que no distinguían el vacío del filtro.** Los 66 bloques `{% empty %}`
+eran una línea gris centrada dentro de una tabla de 40px: el módulo se leía roto más que
+vacío y no decía qué hacer. Ahora hay `panel/_estado_vacio.html` (componente
+`.empty-state`) con dos variantes y el tag `hay_filtros`
+(`apps/panel/templatetags/panel_extras.py`, ignora paginación y valores vacíos):
+
+- **Vacío real**: icono, título, una pista de para qué sirve ese registro, y el mismo
+  botón de alta que el encabezado de la lista — cargar el primero deja de obligar a
+  buscar el botón arriba.
+- **Vacío por filtro**: lupa y "Quitar filtros", sin botón de alta. Confundirlos manda a
+  duplicar datos: ofrecer "cargar el primero" con 300 registros tapados por un filtro es
+  una invitación a cargar el 301.
+- En Alertas se pasa `ignorar_filtros=1`: ahí `?todas=1` **amplía** lo que se muestra, y
+  ofrecer "quitar filtros" sería ofrecer ver menos.
+
+Aplicado a 26 bloques en 26 plantillas (las 22 listas con tabla, más `cumplimiento`,
+`monitoreo`, `notificaciones` y `bodegas`, que usan tarjetas). La copia original se
+conservó como `pista` donde decía algo que no está en ninguna otra parte (que sin zonas la
+alerta "fuera de zona" no se dispara; que el monitoreo se activa con el flag
+`monitorear_recursos`). **No se tocó** el `{% empty %}` interno de `bodegas_lista.html`
+(el de "sin consumibles en esta bodega", que va dentro de cada tarjeta y debe seguir
+siendo una línea) ni nada de `mantenimiento_informe_pdf.html` / `_orden_trabajo.html`,
+que los renderiza xhtml2pdf.
+
+Cubierto por `apps.panel.tests.EstadoVacioTests` (7 pruebas). Una prueba existente
+(`AlertasAgrupadasTests.test_alertas_resueltas_no_aparecen_en_el_rollup`) fijaba el texto
+viejo "Sin alertas activas." y se actualizó al nuevo.
+
+**Pendiente de esta pasada** (los otros dos síntomas que reportó el usuario): el espacio
+muerto **abajo** del dashboard y de las fichas de detalle cuando el contenido termina a
+media pantalla, que no se arregla con grillas sino reorganizando esas dos pantallas.

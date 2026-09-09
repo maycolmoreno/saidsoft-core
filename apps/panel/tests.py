@@ -1195,7 +1195,7 @@ class AlertasAgrupadasTests(TestCase):
         )
         resp = self.client.get(reverse('panel:alertas_lista'), {'vista': 'agrupada'})
         self.assertEqual(list(resp.context['agrupadas']), [])
-        self.assertContains(resp, 'Sin alertas activas.')
+        self.assertContains(resp, 'Sin alertas abiertas')
 
     def test_no_mezcla_estaciones_de_otro_tenant_en_el_conteo(self):
         mia = UnidadNegocio.objects.get(codigo='MIA')
@@ -3287,3 +3287,74 @@ class ArchivosMantenimientoProtegidosTests(TestCase):
         )
         self.assertIn('img.imagen.url', plantilla)
         self.assertNotIn("panel:mantenimiento_imagen", plantilla)
+
+
+class EstadoVacioTests(TestCase):
+    """Una lista vacía tiene que decir cuál de los dos vacíos es.
+
+    "Sin colaboradores" y "tu filtro no devolvió nada" se veían idénticos (una línea
+    gris centrada) y piden lo contrario: cargar el primer registro en un caso, quitar
+    el filtro en el otro. Ofrecer "cargar el primero" cuando en realidad hay 300
+    registros tapados por un filtro manda al usuario a duplicar datos.
+
+    Lo decide `panel/_estado_vacio.html` con el tag `hay_filtros`; estas pruebas fijan
+    ese contrato y los dos casos que más fácil se rompen: la paginación (que no es un
+    filtro) y Alertas (donde `?todas=1` AMPLÍA lo que se ve, no lo acota).
+    """
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_vacio', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='view_colaborador'),
+            Permission.objects.get(content_type__app_label='activos', codename='add_colaborador'),
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+            Permission.objects.get(content_type__app_label='activos', codename='view_activo'),
+        )
+        self.client.force_login(self.usuario)
+        self.url = reverse('panel:colaboradores_lista')
+
+    def test_lista_vacia_sin_filtros_invita_a_cargar_el_primero(self):
+        cuerpo = self.client.get(self.url).content.decode()
+        self.assertIn('Todavía no hay colaboradores', cuerpo)
+        # El mismo destino que el botón del encabezado, para que sea un solo camino.
+        self.assertIn(reverse('panel:colaborador_crear'), cuerpo)
+        self.assertNotIn('Nada coincide con este filtro', cuerpo)
+
+    def test_lista_vacia_por_un_filtro_ofrece_quitarlo_y_no_dar_de_alta(self):
+        """Se prueba sobre Activos porque es una lista que de verdad filtra por GET."""
+        cuerpo = self.client.get(
+            reverse('panel:activos_lista'), {'estado': 'de_baja'},
+        ).content.decode()
+        self.assertIn('Nada coincide con este filtro', cuerpo)
+        self.assertIn('Quitar filtros', cuerpo)
+        self.assertNotIn('El inventario de activos está vacío', cuerpo)
+
+    def test_un_filtro_vacio_no_cuenta_como_filtro(self):
+        """Un <select> en su opción "todos" manda `?estado=`: la lista es la completa."""
+        cuerpo = self.client.get(reverse('panel:activos_lista'), {'estado': ''}).content.decode()
+        self.assertIn('El inventario de activos está vacío', cuerpo)
+        self.assertNotIn('Nada coincide con este filtro', cuerpo)
+
+    def test_la_paginacion_no_cuenta_como_filtro(self):
+        cuerpo = self.client.get(self.url, {'pagina': '2'}).content.decode()
+        self.assertIn('Todavía no hay colaboradores', cuerpo)
+        self.assertNotIn('Nada coincide con este filtro', cuerpo)
+
+    def test_en_alertas_ver_todas_no_se_lee_como_un_filtro(self):
+        """`?todas=1` amplía: ofrecer "quitar filtros" ahí sería ofrecer ver menos."""
+        cuerpo = self.client.get(reverse('panel:alertas_lista'), {'todas': '1'}).content.decode()
+        self.assertIn('Sin alertas abiertas', cuerpo)
+        self.assertNotIn('Nada coincide con este filtro', cuerpo)
+
+    def test_sin_permiso_de_alta_no_se_ofrece_el_boton(self):
+        """Las listas que condicionan su botón de alta lo condicionan también acá."""
+        sin_permiso = User.objects.create_user(username='u_vacio_ro', password='x')
+        PerfilUsuario.objects.create(usuario=sin_permiso, acceso_todas_unidades=True)
+        sin_permiso.user_permissions.add(
+            Permission.objects.get(content_type__app_label='viaticos', codename='view_colaboradorzona'),
+        )
+        self.client.force_login(sin_permiso)
+        cuerpo = self.client.get(reverse('panel:viaticos_zonas_lista')).content.decode()
+        self.assertIn('Todavía no hay zonas asignadas', cuerpo)
+        self.assertNotIn(reverse('panel:viaticos_zona_crear'), cuerpo)
