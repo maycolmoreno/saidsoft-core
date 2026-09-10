@@ -126,6 +126,68 @@
     </table>
 </div>
 
+<div class="grid gap-4 lg:grid-cols-2 mb-8">
+    <div>
+        <div class="flex items-baseline justify-between mb-3">
+            <h2 class="text-sm font-medium uppercase tracking-wide text-[var(--text-faint)]">Alertas abiertas más recientes</h2>
+            {% if total_alertas_abiertas > 6 %}
+            <a href="{% url 'panel:alertas_lista' %}" class="text-xs text-[var(--info)] hover:underline">ver las {{ total_alertas_abiertas }}</a>
+            {% endif %}
+        </div>
+        <div class="card" style="overflow:hidden;">
+            {% for a in alertas_recientes %}
+            <a href="{% url 'panel:alertas_lista' %}" class="flex items-center justify-between gap-3 px-4 py-3 hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                        <span class="pill {% if a.regla.severidad == 'critical' %}critical{% else %}warning{% endif %}">{{ a.regla.get_severidad_display }}</span>
+                        <span class="font-medium truncate">{{ a.regla.nombre }}</span>
+                    </div>
+                    <div class="text-xs text-[var(--text-faint)] mt-1">{{ a.estacion.codigo }} · {{ a.estacion.farmacia.codigo }}</div>
+                </div>
+                <div class="text-xs text-[var(--text-faint)] text-right flex-none">
+                    hace {{ a.abierta_en|timesince }}
+                    {% if a.estado == 'reconocida' %}<div class="mt-1"><span class="pill warning">Reconocida</span></div>{% endif %}
+                </div>
+            </a>
+            {% empty %}
+            {% include "panel/_estado_vacio.html" with titulo="Sin alertas abiertas" pista="Ninguna regla se está sosteniendo ahora mismo." ignorar_filtros=1 %}
+            {% endfor %}
+        </div>
+    </div>
+
+    <div>
+        <div class="flex items-baseline justify-between mb-3">
+            <h2 class="text-sm font-medium uppercase tracking-wide text-[var(--text-faint)]">Estaciones que dejaron de reportar</h2>
+            {% if total_sin_reportar > 6 %}
+            <a href="{% url 'panel:estaciones_lista' %}" class="text-xs text-[var(--info)] hover:underline">ver las {{ total_sin_reportar }}</a>
+            {% endif %}
+        </div>
+        <div class="card" style="overflow:hidden;">
+            {% for e in sin_reportar %}
+            <button type="button" class="w-full text-left flex items-center justify-between gap-3 px-4 py-3 hover:bg-[var(--overlay-hover)]"
+                    hx-get="{% url 'panel:estacion_info_modal' e.pk %}" hx-target="#modal-info-content" hx-swap="innerHTML"
+                    onclick="document.getElementById('modal-info').showModal()"
+                    style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <div class="min-w-0">
+                    <div class="font-medium truncate">{{ e.codigo }}</div>
+                    <div class="text-xs text-[var(--text-faint)] mt-1">{{ e.farmacia.codigo }} · {{ e.farmacia.nombre }}</div>
+                </div>
+                <div class="text-xs text-right flex-none">
+                    {% if e.ultimo_heartbeat %}
+                        <span class="text-[var(--text-dim)]">hace {{ e.ultimo_heartbeat|timesince }}</span>
+                    {% else %}
+                        {# Aprobada y sin un solo latido: no es una caída, es una instalación que nunca funcionó. #}
+                        <span class="pill critical">nunca reportó</span>
+                    {% endif %}
+                </div>
+            </button>
+            {% empty %}
+            {% include "panel/_estado_vacio.html" with titulo="Todas las estaciones aprobadas están reportando" pista="Ninguna estación aprobada pasó el umbral de latido sin dar señal." ignorar_filtros=1 %}
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
 <h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Despliegues en curso</h2>
 <div class="card" style="overflow:hidden;">
     {% for d in despliegues_activos %}

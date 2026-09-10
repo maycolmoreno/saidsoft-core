@@ -1,4 +1,7 @@
+from datetime import timedelta
+
 from django.contrib.auth.decorators import login_required
+from django.db.models import F, Q
 from django.shortcuts import render
 from django.utils import timezone
 
@@ -64,6 +67,37 @@ def dashboard(request):
     # hospeda: el 6 y el 7-sep-2026 no hubo respaldo (el NUC estuvo apagado el fin de
     # semana) y nadie se enteró en dos días. La fila la escribe deploy/backup.sh al
     # terminar bien, vía `manage.py registrar_latido respaldo`.
+    # Las dos listas de abajo existen porque el dashboard terminaba a media pantalla y
+    # dejaba el trabajo a medias: decía "8 alertas abiertas" y "8/8 en línea" sin decir
+    # cuáles ni desde cuándo, así que había que salir a Alertas y a Estaciones para
+    # empezar a entender. Van acotadas a 6 filas: es un tablero, no un listado.
+    alertas_recientes = (
+        Alerta.objects
+        .filter(
+            estado__in=[Alerta.Estado.ABIERTA, Alerta.Estado.RECONOCIDA],
+            estacion__farmacia__unidad_negocio__in=visibles,
+        )
+        .select_related('regla', 'estacion', 'estacion__farmacia')
+        .order_by('-abierta_en')[:6]
+    )
+
+    # Solo aprobadas: una pendiente de aprobación no reporta porque todavía no le toca,
+    # y ya tiene su propio aviso arriba. `nulls_first` pone adelante a las que nunca
+    # reportaron — una estación aprobada que jamás dio señal es una instalación fallida,
+    # no una caída.
+    limite_online = timezone.now() - timedelta(minutes=ONLINE_UMBRAL_MINUTOS)
+    sin_reportar = (
+        Estacion.objects
+        .filter(
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            farmacia__unidad_negocio__in=visibles,
+        )
+        .filter(Q(ultimo_heartbeat__isnull=True) | Q(ultimo_heartbeat__lt=limite_online))
+        .select_related('farmacia')
+        .order_by(F('ultimo_heartbeat').asc(nulls_first=True))
+    )
+    total_sin_reportar = sin_reportar.count()
+
     latido_respaldo = WorkerHeartbeat.objects.filter(nombre=NOMBRE_RESPALDO).first()
     horas_sin_respaldo = None
     if latido_respaldo:
@@ -76,6 +110,9 @@ def dashboard(request):
         'total_estaciones': total_estaciones,
         'total_online': total_online,
         'total_alertas_abiertas': total_alertas_abiertas,
+        'alertas_recientes': alertas_recientes,
+        'sin_reportar': sin_reportar[:6],
+        'total_sin_reportar': total_sin_reportar,
         'worker_mqtt_activo': worker_mqtt_activo,
         'worker_mqtt_ultimo_latido': latido_worker.ultimo_latido if latido_worker else None,
         'respaldo_ultimo': latido_respaldo.ultimo_latido if latido_respaldo else None,

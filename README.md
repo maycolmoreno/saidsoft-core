@@ -168,6 +168,14 @@ primero" cuando en realidad hay 300 registros tapados por un filtro es una invit
 cargar el 301. En Alertas se pasa `ignorar_filtros=1` porque ahí `?todas=1` **amplía** lo
 que se muestra — ofrecer "quitar filtros" sería ofrecer ver menos.
 
+El dashboard además dejó de terminar a media pantalla. No era un problema de CSS:
+decía "8 alertas abiertas" y "8/8 en línea" sin decir cuáles, así que había que salir a
+otras dos pantallas para empezar a entender. Ahora lleva abajo dos listas de 6 filas —
+**alertas abiertas más recientes** y **estaciones que dejaron de reportar** (solo
+aprobadas; la que nunca dio un latido va primero y se marca "nunca reportó", porque no es
+una caída sino una instalación que nunca funcionó). Las estaciones abren el modal de
+ficha que ya usaba la lista de estaciones: no existe una vista de detalle de estación.
+
 Para agregar el estado vacío a una lista nueva, en su `{% empty %}`:
 
 ```django

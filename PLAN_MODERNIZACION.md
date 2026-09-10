@@ -2128,7 +2128,7 @@ Huella del certificado, para verificar un APK en circulación:
 
 ---
 
-**AI. Espacios vacíos del panel: grillas fijas y listas mudas — ✅ Parte 1 (9-sep-2026)**
+**AI. Espacios vacíos del panel: grillas fijas, listas mudas y un dashboard a medias — ✅ Hecho (9/10-sep-2026)**
 
 Reporte del usuario: "hay espacios que quedan vacíos". Resultaron ser dos causas
 distintas, y una es medible sin abrir el navegador.
@@ -2175,6 +2175,29 @@ Cubierto por `apps.panel.tests.EstadoVacioTests` (7 pruebas). Una prueba existen
 (`AlertasAgrupadasTests.test_alertas_resueltas_no_aparecen_en_el_rollup`) fijaba el texto
 viejo "Sin alertas activas." y se actualizó al nuevo.
 
-**Pendiente de esta pasada** (los otros dos síntomas que reportó el usuario): el espacio
-muerto **abajo** del dashboard y de las fichas de detalle cuando el contenido termina a
-media pantalla, que no se arregla con grillas sino reorganizando esas dos pantallas.
+**El espacio muerto abajo del dashboard (10-sep-2026).** No se arreglaba con CSS: la
+página terminaba a media pantalla porque el tablero decía "8 alertas abiertas" y "8/8 en
+línea" y ahí se quedaba — para saber *cuáles* había que salir a otras dos pantallas. Se
+agregaron dos listas de 6 filas en una grilla de dos columnas (`apps/panel/views/dashboard.py`
++ `templates/panel/dashboard.html`):
+
+- **Alertas abiertas más recientes**, con severidad, estación y hace cuánto se abrió.
+- **Estaciones que dejaron de reportar** (solo APROBADAS, con `nulls_first`): una
+  aprobada sin un solo latido va primero y se marca "nunca reportó", porque no es una
+  caída — es una instalación que nunca funcionó, que es exactamente el problema de este
+  piloto (8 estaciones instaladas a mano, cada una con un bug distinto).
+
+Las estaciones enlazan al modal de ficha que ya usaba la lista de estaciones (`hx-get` a
+`#modal-info-content`) — **no hay** una vista de detalle de estación, y se resistió la
+tentación de inventar una URL nueva para el enlace. Dos consultas nuevas y un `count()`,
+ambas acotadas a 6 filas y escopadas por unidad de negocio con el filtro que ya usaba el
+resto de la vista.
+
+Cubierto por `apps.panel.tests.DashboardTableroTests` (6 pruebas), que fijan lo
+riesgoso: que no se filtre una estación de otro cliente, que una pendiente de aprobación
+no cuente como caída (todavía no le toca reportar, y ya tiene su aviso arriba), que la
+que nunca reportó vaya primero, y que el total cuente todas aunque se muestren seis.
+
+**Sigue pendiente**: el mismo espacio muerto en las **fichas de detalle** (activo,
+mantenimiento, despliegue), que necesita decidir qué va en una columna lateral antes de
+mover markup.

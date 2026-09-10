@@ -2099,6 +2099,105 @@ class DashboardTests(TestCase):
         self.assertTrue(resp.context['worker_mqtt_activo'])
 
 
+class DashboardTableroTests(TestCase):
+    """Las dos listas del tablero: alertas abiertas y estaciones que no reportan.
+
+    El dashboard decía "8 alertas abiertas" y "8/8 en línea" sin decir cuáles, así que
+    terminaba a media pantalla y obligaba a salir a otras dos pantallas para empezar a
+    entender. Lo que estas pruebas fijan es el recorte, que es donde está el riesgo:
+    que no se filtre una estación de otro cliente y que una pendiente de aprobación no
+    cuente como caída.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX900')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML900', grupo=grupo, unidad_negocio=self.sg)
+        self.farmacia_mia = Farmacia.objects.create(codigo='MM900', grupo=grupo, unidad_negocio=self.mia)
+
+        self.viva = Estacion.objects.create(
+            codigo='ML900-A', farmacia=self.farmacia_sg,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            ultimo_heartbeat=timezone.now(),
+        )
+        self.callada = Estacion.objects.create(
+            codigo='ML900-B', farmacia=self.farmacia_sg,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            ultimo_heartbeat=timezone.now() - timedelta(hours=3),
+        )
+        self.nunca_reporto = Estacion.objects.create(
+            codigo='ML900-C', farmacia=self.farmacia_sg,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.pendiente = Estacion.objects.create(
+            codigo='ML900-D', farmacia=self.farmacia_sg,
+            estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
+        )
+        self.de_otro_cliente = Estacion.objects.create(
+            codigo='MM900-A', farmacia=self.farmacia_mia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+        self.usuario = User.objects.create_user(username='u_tablero', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario).unidades_negocio.add(self.sg)
+        self.client.force_login(self.usuario)
+
+    def _codigos_sin_reportar(self):
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.status_code, 200)
+        return [e.codigo for e in resp.context['sin_reportar']], resp
+
+    def test_lista_las_calladas_y_no_la_que_reporta(self):
+        codigos, _ = self._codigos_sin_reportar()
+        self.assertIn('ML900-B', codigos)
+        self.assertIn('ML900-C', codigos)
+        self.assertNotIn('ML900-A', codigos)
+
+    def test_una_pendiente_de_aprobacion_no_cuenta_como_caida(self):
+        """Todavía no le toca reportar, y ya tiene su propio aviso arriba."""
+        codigos, _ = self._codigos_sin_reportar()
+        self.assertNotIn('ML900-D', codigos)
+
+    def test_no_se_filtra_una_estacion_de_otro_cliente(self):
+        codigos, resp = self._codigos_sin_reportar()
+        self.assertNotIn('MM900-A', codigos)
+        self.assertNotContains(resp, 'MM900-A')
+
+    def test_la_que_nunca_reporto_va_primero(self):
+        """Una aprobada sin un solo latido es una instalación fallida, no una caída."""
+        codigos, _ = self._codigos_sin_reportar()
+        self.assertEqual(codigos[0], 'ML900-C')
+
+    def test_el_total_cuenta_todas_aunque_se_muestren_seis(self):
+        for n in range(8):
+            Estacion.objects.create(
+                codigo='ML900-X%d' % n, farmacia=self.farmacia_sg,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            )
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.context['total_sin_reportar'], 10)
+        self.assertEqual(len(resp.context['sin_reportar']), 6)
+
+    def test_alertas_recientes_no_muestran_las_resueltas_ni_las_de_otro_cliente(self):
+        regla = ReglaAlerta.objects.create(
+            nombre='CPU sostenida', metrica=Metrica.CPU_CARGA_PCT,
+            operador=ReglaAlerta.Operador.GTE, umbral=90, duracion_minutos=5,
+            severidad=ReglaAlerta.Severidad.CRITICAL, creado_por=self.usuario,
+        )
+        Alerta.objects.create(regla=regla, estacion=self.callada, valor_disparador=95)
+        Alerta.objects.create(
+            regla=regla, estacion=self.callada, valor_disparador=99, estado=Alerta.Estado.RESUELTA,
+        )
+        Alerta.objects.create(regla=regla, estacion=self.de_otro_cliente, valor_disparador=97)
+
+        resp = self.client.get(reverse('panel:dashboard'))
+        alertas = list(resp.context['alertas_recientes'])
+        self.assertEqual(len(alertas), 1)
+        self.assertEqual(alertas[0].estacion.codigo, 'ML900-B')
+        self.assertContains(resp, 'CPU sostenida')
+
+
 class SoftwarePanelMultiTenantTests(TestCase):
     """Catálogo de software (Fase 2, panel HTMX): mismo criterio "compartida o del
     tenant" que ya usa Script, y misma verificación de acceso puntual que el resto
