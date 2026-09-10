@@ -1,13 +1,15 @@
 {% extends "panel/base.html" %}
 {% block title %}Verificación en dos pasos · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold mb-1">Verificación en dos pasos</h1>
-<p class="text-sm text-[var(--text-faint)] mb-6">
-    Además de tu contraseña, un código de 6 dígitos de una app autenticadora (Google
-    Authenticator, Authy, etc.) al iniciar sesión.
-</p>
+<div class="w-full max-w-lg mx-auto">
+    <h1 class="text-xl font-semibold mb-1">Verificación en dos pasos</h1>
+    <p class="text-sm text-[var(--text-faint)] mb-6">
+        Además de tu contraseña, un código de 6 dígitos de una app autenticadora (Google
+        Authenticator, Authy, etc.) al iniciar sesión.
+    </p>
+</div>
 
-<div class="card p-6 max-w-lg space-y-4">
+<div class="card p-6 max-w-lg space-y-4 w-full mx-auto">
     {% if activado %}
     <p class="text-sm">
         <span class="pill good">Activada</span>

@@ -106,10 +106,12 @@
 
 /* ---------- Main / cards ---------- */
 .main{ grid-column:2; grid-row:2; overflow-y:auto; padding:var(--page-pad); display:flex; flex-direction:column; gap:22px; }
-/* El contenido se topa en --page-max y se centra. El <main> sigue ocupando todo el
-   ancho (el scroll y el fondo son suyos); lo que se acota es cada bloque de la pagina.
-   Los <dialog> viven fuera de .main, asi que el tope no los alcanza. */
-.main > *{ width:100%; max-width:var(--page-max); margin-inline:auto; }
+/* El tope de ancho se hace con padding, NO con max-width en los hijos: `.main > *`
+   tiene especificidad (0,1,1) y le gana a las utilidades max-w-* de Tailwind (0,1,0),
+   asi que la version anterior de esta regla estiraba a 1600px los 11 formularios que
+   piden max-w-2xl. Con padding-inline el hijo conserva su propio ancho y solo se le
+   corre el borde de la pagina. Los <dialog> viven fuera de .main y no se ven afectados. */
+.main{ padding-inline: max(var(--page-pad), (100% - var(--page-max)) / 2); }
 
 .card{
   background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg);
@@ -365,6 +367,12 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
   max-height:calc(100vh - 64px);
   padding:0; border:0; background:transparent; overflow:visible;
   color:var(--text); font-family:var(--font-ui);
+  /* Mismo motivo que dialog#modal-info (ver mas arriba): el preflight de Tailwind pone
+     margin:0 en todo, incluido <dialog>, y eso anula el margin:auto con el que el
+     navegador centra un dialogo abierto con showModal(). Sin estas tres declaraciones
+     queda pegado arriba a la izquierda. El arreglo se le habia aplicado solo a
+     #modal-info, asi que TODO formulario de alta se abria descentrado. */
+  position:fixed; inset:0; margin:auto;
 }
 .modal::backdrop{ background:rgba(4,8,16,.62); }
 .modal-card{

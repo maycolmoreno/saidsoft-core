@@ -2242,3 +2242,37 @@ suelto no impide `dialog.showModal()`, y sin un navegador no se puede verificar 
 del camino (`htmx.ajax` → `htmx:afterSwap` → `showModal`). Lo que sí quedó descartado del
 lado servidor: la vista, la plantilla, el fragmento, htmx y los estáticos. Falta la
 consola del navegador, y saber si falla en todos los modales o solo en ese.
+
+---
+
+**AK. El modal de alta se abría descentrado, y el tope de ancho de §AI pisaba a Tailwind
+— ✅ Corregido (10-sep-2026)**
+
+El usuario mandó una captura: la ventana de "Nueva aplicación de catálogo" pegada arriba
+a la izquierda, tapando media pantalla. Dos bugs distintos, uno viejo y uno mío.
+
+**1. El centrado del `<dialog>` (viejo, desde el 7-sep).** El preflight de Tailwind pone
+`margin:0` en todos los elementos, `<dialog>` incluido, y eso anula el `margin:auto` con
+el que el navegador centra un diálogo abierto con `showModal()`. Este proyecto **ya lo
+sabía**: `components.css` lo documenta arriba de `dialog#modal-info`, que reafirma
+`position:fixed; inset:0; margin:auto`. Pero cuando se agregó `.modal` para la ventana
+emergente de alta (§AD) el arreglo no se replicó, así que **todos** los formularios de
+alta se abrieron descentrados desde entonces. Tres declaraciones y quedó.
+
+**2. `.main > *` con `max-width` (mío, de §AI).** Ese selector tiene especificidad
+(0,1,1) y le gana a las utilidades `max-w-*` de Tailwind (0,1,0), así que estiraba a
+1600px los **11 formularios** que piden `max-w-2xl` / `max-w-lg`: `accion_form`,
+`activo_form`, `despliegue_form`, `despliegue_promover_form`, `mantenimiento_firmar`,
+`mfa_configurar`, `mfa_estado` y los tres de scripts. El tope de ancho ahora se hace con
+`padding-inline: max(var(--page-pad), (100% - var(--page-max)) / 2)` sobre `.main`: el
+hijo conserva su propio ancho y solo se le corre el borde de la página.
+
+**Y lo que el usuario pidió además**: esos formularios estaban pegados a la izquierda con
+media pantalla vacía al lado. Ahora la tarjeta va centrada (`w-full mx-auto` — `w-full`
+es imprescindible: un ítem de flex con márgenes automáticos deja de estirarse y sin ancho
+explícito se encogería al de su contenido), y el encabezado va en un contenedor del mismo
+ancho, porque centrar la tarjeta y dejar el `<h1>` suelto se lee torcido.
+
+Cubierto por `apps.panel.tests.DialogosCentradosTests`, que verifica el **CSS fuente**:
+no hay manera de que una prueba de vista note un diálogo descentrado. Es la segunda vez
+que este bug aparece y la primera vez costó una captura del usuario para encontrarlo.

@@ -153,9 +153,24 @@ las tarjetas que de verdad hay.
 se vuelve ilegible. Se queda en dos y solo estira el último campo si quedaría solo en su
 fila (`:last-child:nth-child(odd)`).
 
-El contenido además se topa en `--page-max` (1600px) y se centra: sin tope, en un
-monitor de 27" una tabla se estira hasta 2400px y la vista salta del código de la
-estación a su último latido cruzando media pantalla vacía.
+El contenido además se topa en `--page-max` (1600px): sin tope, en un monitor de 27" una
+tabla se estira hasta 2400px y la vista salta del código de la estación a su último
+latido cruzando media pantalla vacía. **El tope se hace con `padding-inline` sobre
+`.main`, no con `max-width` en los hijos**: un `.main > *` tiene especificidad (0,1,1) y
+le gana a las utilidades `max-w-*` de Tailwind (0,1,0), así que la primera versión de
+esta regla estiró a 1600px los 11 formularios que piden `max-w-2xl`.
+
+Los formularios de página completa van centrados con `w-full mx-auto`, y su encabezado
+dentro de un contenedor del mismo ancho. `w-full` no es decorativo: un ítem de flex con
+márgenes automáticos deja de estirarse, y sin ancho explícito se encogería al de su
+contenido.
+
+Y todo `<dialog>` tiene que reafirmar `position:fixed; inset:0; margin:auto`. El
+preflight de Tailwind pone `margin:0` en todo, `<dialog>` incluido, y eso anula el
+`margin:auto` con el que el navegador centra un `showModal()` — sin esas tres
+declaraciones se abre pegado arriba a la izquierda. Lo cubre
+`apps.panel.tests.DialogosCentradosTests`, que mira el CSS fuente: ninguna prueba de
+vista puede notar un diálogo descentrado.
 
 **Las listas vacías ahora dicen cuál de los dos vacíos son.** `panel/_estado_vacio.html`
 distingue "todavía no hay nada cargado" (icono, frase de qué es eso, y el mismo botón de

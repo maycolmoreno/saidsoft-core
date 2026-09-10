@@ -3492,3 +3492,35 @@ class ComentariosDePlantillaTests(TestCase):
             'Comentarios multilínea que se van a renderizar como texto visible: %s. '
             'Usá {%% comment %%}...{%% endcomment %%}.' % ', '.join(culpables),
         )
+
+
+class DialogosCentradosTests(TestCase):
+    """Todo `<dialog>` del panel tiene que reafirmar su centrado.
+
+    El preflight de Tailwind pone `margin:0` en todos los elementos, `<dialog>`
+    incluido, y eso anula el `margin:auto` con el que el navegador centra un diálogo
+    abierto con `showModal()`: queda pegado arriba a la izquierda. Ya pasó dos veces —
+    se arregló para `#modal-info` (ficha de estación) y el arreglo nunca se le aplicó a
+    `.modal`, así que **todo formulario de alta** se abrió descentrado desde que existe
+    la ventana emergente (7-sep) hasta que el usuario lo reportó (10-sep).
+
+    No hay forma de que la suite lo vea renderizando: es CSS. Así que se verifica el
+    CSS fuente, que es donde vive la decisión.
+    """
+
+    def test_los_dialogos_reafirman_position_inset_y_margin(self):
+        css = (settings.BASE_DIR / 'static_src' / 'components.css').read_text(encoding='utf-8')
+        import re
+
+        for selector in ['dialog#modal-info', '.modal']:
+            bloque = re.search(
+                r'(?:^|\n)' + re.escape(selector) + r'\s*\{(.*?)\}', css, re.S,
+            )
+            self.assertIsNotNone(bloque, 'No se encontró la regla de %s' % selector)
+            cuerpo = bloque.group(1)
+            for declaracion in ['position:fixed', 'inset:0', 'margin:auto']:
+                self.assertIn(
+                    declaracion, cuerpo.replace(' ', ''),
+                    '%s no declara %s: se va a abrir pegado arriba a la izquierda '
+                    'por el margin:0 del preflight de Tailwind.' % (selector, declaracion),
+                )

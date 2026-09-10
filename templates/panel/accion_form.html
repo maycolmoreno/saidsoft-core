@@ -3,12 +3,19 @@
 {% block title %}{{ titulo }} · SAIDSOFT{% endblock %}
 {% block content %}
 {% if not en_modal %}
-<h1 class="text-xl font-semibold mb-1">{{ titulo }}</h1>
-{% if subtitulo %}<p class="text-sm text-[var(--text-faint)] mb-6">{{ subtitulo }}</p>{% endif %}
+{% comment %}
+El encabezado va en un contenedor del mismo ancho que la tarjeta y con los mismos
+margenes automaticos: si se centra la tarjeta y el titulo se deja suelto, el titulo
+queda contra el borde izquierdo y el conjunto se lee torcido.
+{% endcomment %}
+<div class="w-full max-w-2xl mx-auto">
+    <h1 class="text-xl font-semibold mb-1">{{ titulo }}</h1>
+    {% if subtitulo %}<p class="text-sm text-[var(--text-faint)]">{{ subtitulo }}</p>{% endif %}
+</div>
 {% endif %}
 
 <form method="post" enctype="multipart/form-data"
-      class="form-card{% if not en_modal %} card p-6 max-w-2xl{% endif %}"
+      class="form-card{% if not en_modal %} card p-6 max-w-2xl w-full mx-auto{% endif %}"
       {% if en_modal %}hx-post="{{ request.get_full_path }}"
       hx-target="#modal-form-content" hx-swap="innerHTML"
       hx-encoding="multipart/form-data"{% endif %}>

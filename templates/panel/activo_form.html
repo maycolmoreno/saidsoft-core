@@ -2,10 +2,12 @@
 {% load form_extras %}
 {% block title %}{{ titulo }} · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold mb-1">{{ titulo }}</h1>
-{% if subtitulo %}<p class="text-sm text-[var(--text-faint)] mb-6">{{ subtitulo }}</p>{% endif %}
+<div class="w-full max-w-2xl mx-auto">
+    <h1 class="text-xl font-semibold mb-1">{{ titulo }}</h1>
+    {% if subtitulo %}<p class="text-sm text-[var(--text-faint)] mb-6">{{ subtitulo }}</p>{% endif %}
+</div>
 
-<form method="post" class="form-card card p-6 max-w-2xl">
+<form method="post" class="form-card card p-6 max-w-2xl w-full mx-auto">
     {% csrf_token %}
 
     {% for error in form.non_field_errors %}

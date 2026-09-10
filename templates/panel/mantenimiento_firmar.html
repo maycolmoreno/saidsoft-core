@@ -1,10 +1,12 @@
 {% extends "panel/base.html" %}
 {% block title %}Firmar mantenimiento #{{ mantenimiento.pk }} · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold mb-1">Firmar mantenimiento #{{ mantenimiento.pk }}</h1>
-<p class="text-sm text-[var(--text-faint)] mb-6">Firma con el mouse o el dedo (pantalla táctil) dentro del recuadro.</p>
+<div class="w-full max-w-lg mx-auto">
+    <h1 class="text-xl font-semibold mb-1">Firmar mantenimiento #{{ mantenimiento.pk }}</h1>
+    <p class="text-sm text-[var(--text-faint)] mb-6">Firma con el mouse o el dedo (pantalla táctil) dentro del recuadro.</p>
+</div>
 
-<form method="post" id="firma-form" class="form-card card p-6 max-w-lg">
+<form method="post" id="firma-form" class="form-card card p-6 max-w-lg w-full mx-auto">
     {% csrf_token %}
 
     <div class="form-context">

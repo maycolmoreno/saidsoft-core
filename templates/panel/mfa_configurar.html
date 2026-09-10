@@ -1,12 +1,14 @@
 {% extends "panel/base.html" %}
 {% block title %}Activar verificación en dos pasos · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold mb-1">Activar verificación en dos pasos</h1>
-<p class="text-sm text-[var(--text-faint)] mb-6">
-    Escaneá este código con Google Authenticator, Authy o cualquier app compatible con TOTP.
-</p>
+<div class="w-full max-w-lg mx-auto">
+    <h1 class="text-xl font-semibold mb-1">Activar verificación en dos pasos</h1>
+    <p class="text-sm text-[var(--text-faint)] mb-6">
+        Escaneá este código con Google Authenticator, Authy o cualquier app compatible con TOTP.
+    </p>
+</div>
 
-<div class="card p-6 max-w-lg space-y-5">
+<div class="card p-6 max-w-lg space-y-5 w-full mx-auto">
     {% if error %}
     <p class="text-sm alert sev-critical px-3 py-2">{{ error }}</p>
     {% endif %}

@@ -1,9 +1,11 @@
 {% extends "panel/base.html" %}
 {% block title %}Nuevo despliegue · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold mb-6">Nuevo despliegue</h1>
+<div class="w-full max-w-2xl mx-auto">
+    <h1 class="text-xl font-semibold mb-6">Nuevo despliegue</h1>
+</div>
 
-<form method="post" enctype="multipart/form-data" class="card p-6 max-w-2xl space-y-5">
+<form method="post" enctype="multipart/form-data" class="card p-6 max-w-2xl space-y-5 w-full mx-auto">
     {% csrf_token %}
 
     {% for error in form.non_field_errors %}
