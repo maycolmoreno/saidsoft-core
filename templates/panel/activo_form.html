@@ -22,10 +22,10 @@
             <label for="{{ field.id_for_label }}">{{ field.label }}</label>
             {{ field }}
             {% if name == "numero_serie" %}
-            {# Busqueda EXPLICITA contra el RMM: si una estacion reporta esta misma
+            {% comment %} Busqueda EXPLICITA contra el RMM: si una estacion reporta esta misma
                serie, se completan las especificaciones de computo con lo que el
                agente ya sabe. hx-include manda los valores actuales para que el
-               servidor no pise lo que se haya escrito a mano. #}
+               servidor no pise lo que se haya escrito a mano. {% endcomment %}
             <button type="button" class="btn secondary mt-2"
                     hx-get="{% url 'panel:especificaciones_por_serie_partial' %}"
                     hx-target="#especificaciones-computo"

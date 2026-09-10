@@ -3457,3 +3457,38 @@ class EstadoVacioTests(TestCase):
         cuerpo = self.client.get(reverse('panel:viaticos_zonas_lista')).content.decode()
         self.assertIn('Todavía no hay zonas asignadas', cuerpo)
         self.assertNotIn(reverse('panel:viaticos_zona_crear'), cuerpo)
+
+
+class ComentariosDePlantillaTests(TestCase):
+    """Ningún `{# ... #}` puede abarcar más de una línea.
+
+    El `tag_re` de Django no usa `re.DOTALL`, así que un `{# ... #}` multilínea no es
+    un comentario: es **texto** y sale renderizado en la página. Ya pasó una vez
+    (§10-O del plan, 6-ago-2026) y volvió a colarse en el trabajo del 7-sep: para el
+    10-sep había 9, entre ellos uno en `base.html` (o sea en toda página autenticada),
+    uno en el dashboard y dos en `_base_modal.html`, que metían ~950 bytes de texto
+    suelto dentro del `<dialog>` de cada formulario de alta.
+
+    Esta prueba existe porque es una regresión invisible para el resto de la suite:
+    la página sigue devolviendo 200 y nada falla — solo se ve mal.
+    """
+
+    def test_ningun_comentario_de_plantilla_abarca_varias_lineas(self):
+        import re
+
+        culpables = []
+        for ruta in sorted((settings.BASE_DIR / 'templates').rglob('*.html')):
+            contenido = ruta.read_text(encoding='utf-8')
+            for apertura in re.finditer(r'\{#', contenido):
+                resto = contenido[apertura.start():]
+                fin_de_linea = resto.find('\n')
+                cierre = resto.find('#}')
+                if cierre == -1 or (fin_de_linea != -1 and cierre > fin_de_linea):
+                    linea = contenido[:apertura.start()].count('\n') + 1
+                    culpables.append('%s:%d' % (ruta.name, linea))
+
+        self.assertEqual(
+            culpables, [],
+            'Comentarios multilínea que se van a renderizar como texto visible: %s. '
+            'Usá {%% comment %%}...{%% endcomment %%}.' % ', '.join(culpables),
+        )

@@ -269,9 +269,9 @@
     <div id="modal-info-content"></div>
 </dialog>
 
-{# Ventana emergente de alta. Separada de #modal-info a propósito: aquella es de
+{% comment %} Ventana emergente de alta. Separada de #modal-info a propósito: aquella es de
    solo lectura y se refresca sola cada 2s; ésta contiene un formulario a medio
-   llenar y un refresco automático borraría lo que el usuario está escribiendo. #}
+   llenar y un refresco automático borraría lo que el usuario está escribiendo. {% endcomment %}
 <dialog id="modal-form" class="modal" aria-modal="true">
     <div id="modal-form-content"></div>
 </dialog>

@@ -1,4 +1,4 @@
-{# Cascarón de la ventana emergente.
+{% comment %} Cascarón de la ventana emergente.
 
    Deliberadamente NO extiende base.html. Lo que se devuelve acá viaja por htmx
    y se inserta DENTRO del <dialog> que ya vive en base.html, así que repetir
@@ -6,7 +6,7 @@
 
    Cualquier plantilla que herede de `plantilla_base` (ver
    apps/panel/context_processors.py) funciona como página completa y como modal
-   sin escribirse dos veces. #}
+   sin escribirse dos veces. {% endcomment %}
 <div class="modal-card">
     <header class="modal-head">
         <div class="modal-head-txt">
@@ -19,9 +19,9 @@
         </button>
     </header>
 
-    {# Lo llena el controlador del modal tras cada guardado con "cargar otro"
+    {% comment %} Lo llena el controlador del modal tras cada guardado con "cargar otro"
        activado: sin este aviso, guardar y ver el formulario en blanco es
-       indistinguible de que no haya pasado nada. #}
+       indistinguible de que no haya pasado nada. {% endcomment %}
     <div data-modal-avisos></div>
 
     <div class="modal-body">

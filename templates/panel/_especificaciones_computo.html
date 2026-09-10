@@ -10,8 +10,8 @@ cuando se aprieta "Buscar" junto al número de serie
     reporta este mismo número de serie. Podés corregirlos antes de guardar.
 </div>
 {% elif serie_buscada %}
-{# Se buscó y no hubo resultado. Es distinto de la carga inicial: sin este aviso el
-   botón parecería no hacer nada. #}
+{% comment %} Se buscó y no hubo resultado. Es distinto de la carga inicial: sin este aviso el
+   botón parecería no hacer nada. {% endcomment %}
 <div class="mb-3 text-xs px-3 py-2 rounded-md alert sev-warning">
     No se encontró ninguna estación con la serie <span class="mono">{{ serie_buscada }}</span>.
     Puede que el equipo todavía no tenga el agente instalado, o que la serie no coincida

@@ -73,10 +73,10 @@
     <div class="form-acciones">
         <button type="submit" class="btn {{ tono|default:'primary' }}" style="padding:10px 20px;">{{ boton|default:"Confirmar" }}</button>
         {% if en_modal %}
-        {# Cargar varios registros seguidos es el caso real: los módulos se
+        {% comment %} Cargar varios registros seguidos es el caso real: los módulos se
            alimentan de a tandas, no de a uno. Con esto marcado, guardar deja el
            formulario en blanco y listo para el siguiente sin volver a la lista.
-           Se relee del POST para que un error de validación no la desmarque. #}
+           Se relee del POST para que un error de validación no la desmarque. {% endcomment %}
         <label class="modal-seguir">
             <input type="checkbox" name="seguir_cargando" value="1"
                    {% if request.POST.seguir_cargando %}checked{% endif %}>

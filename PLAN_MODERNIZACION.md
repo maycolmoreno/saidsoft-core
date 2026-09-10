@@ -2201,3 +2201,44 @@ que nunca reportó vaya primero, y que el total cuente todas aunque se muestren 
 **Sigue pendiente**: el mismo espacio muerto en las **fichas de detalle** (activo,
 mantenimiento, despliegue), que necesita decidir qué va en una columna lateral antes de
 mover markup.
+
+---
+
+**AJ. Los comentarios `{# ... #}` multilínea volvieron, y esta vez estaban en `base.html`
+— ✅ Corregido (10-sep-2026)**
+
+Salió a la luz diagnosticando otra cosa: el usuario reportó que
+`/aplicaciones/nueva/` "no se está cargando". El servidor estaba impecable —
+`docker compose logs web` mostraba **200 con 6 532 bytes** en cada clic (el fragmento del
+modal) y 25 614 al escribir la URL a mano (la página completa), htmx 2.0.10 servido con
+200 y el hash correcto, y `base.html` sin tocar por los commits del día. Pero al volcar
+el fragmento real apareció que **empieza con el texto literal
+`{# Cascarón de la ventana emergente...`**.
+
+`Lexer.tag_re` de Django **no** usa `re.DOTALL`, así que un `{# ... #}` que abarca más de
+una línea no es un comentario: es texto, y sale renderizado. Es el mismo bug de §10-O
+(6-ago-2026), que volvió a colarse en el trabajo del 7-sep. Para el 10-sep había **9**, y
+los peores no eran cosméticos de una pantalla:
+
+- `base.html:272` → en **toda página autenticada**, como nodo de texto suelto del `<body>`.
+- `dashboard.html:17` → en el dashboard.
+- `accion_form.html:76` → en **todo formulario de alta**.
+- `_base_modal.html:1` y `:22` → dentro del `<dialog>` de **todo modal**: ~950 bytes de
+  texto inyectados antes de `<div class="modal-card">` (el fragmento pasó de 6 475 a
+  5 518 bytes al arreglarlo).
+- `activo_form.html`, `red_farmacias_lista.html`, `_especificaciones_computo.html`,
+  `_equipos_por_cliente_options.html` → los cuatro restantes.
+
+Los 9 pasaron a `{% comment %}...{% endcomment %}`.
+
+**Lo importante es por qué la suite no lo veía**: la página sigue devolviendo 200 y nada
+falla — solo se ve mal. Ninguna prueba de vista lo detecta. Así que ahora hay una que
+escanea las plantillas en vez de renderizarlas:
+`apps.panel.tests.ComentariosDePlantillaTests`. Es la tercera aparición de este bug; sin
+un guardián no hay motivo para pensar que no habrá una cuarta.
+
+**No está confirmado que esto sea la causa del modal que no abre.** Un nodo de texto
+suelto no impide `dialog.showModal()`, y sin un navegador no se puede verificar el resto
+del camino (`htmx.ajax` → `htmx:afterSwap` → `showModal`). Lo que sí quedó descartado del
+lado servidor: la vista, la plantilla, el fragmento, htmx y los estáticos. Falta la
+consola del navegador, y saber si falla en todos los modales o solo en ese.
