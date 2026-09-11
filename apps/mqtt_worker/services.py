@@ -117,6 +117,21 @@ def manejar_enrolamiento(payload: dict) -> dict:
             estacion.save(update_fields=campos)
         return _respuesta_aceptado(estacion)
 
+    # Estación nueva. Si el agente trae un token de apertura válido, entra ya aprobada y
+    # con la configuración de su perfil, y arranca sola los pasos de la plantilla — es el
+    # camino "cero-touch" (ver apps.aperturas). Un token inválido/vencido no rechaza el
+    # enrolamiento: cae al camino de siempre (pendiente de aprobación manual), para que un
+    # token mal copiado en el config.txt no deje al técnico sin poder enrolar nada.
+    token_apertura = payload.get('token_apertura', '')
+    if token_apertura:
+        from apps.aperturas.services import consumir_token, enrolar_estacion_de_apertura
+        token = consumir_token(
+            token_plano=token_apertura, codigo_estacion=codigo, hardware_id=hardware_id,
+        )
+        if token is not None:
+            estacion = enrolar_estacion_de_apertura(token=token, codigo=codigo, payload=payload)
+            return _respuesta_aceptado(estacion)
+
     farmacia = _farmacia_desde_codigo_estacion(codigo)
     if farmacia is None:
         logger.warning('Enrolamiento rechazado: farmacia no encontrada para %s', codigo)

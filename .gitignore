@@ -57,3 +57,7 @@ db.sqlite3
 /deploy/docs/prueba-agente/paquete-instalacion/Saidsoft.Agente.exe
 /deploy/docs/prueba-agente/paquete-instalacion/agente/
 /deploy/docs/prueba-agente/Instalar.bat
+
+# Bases SQLite descartables de pruebas locales (demo-local.sqlite3, test-smoke.sqlite3...).
+# db.sqlite3 ya estaba arriba; esto cubre las que se crean al probar con otro nombre.
+*.sqlite3

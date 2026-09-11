@@ -1,0 +1,49 @@
+{% extends "panel/base.html" %}
+{% block title %}Nueva apertura · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="w-full max-w-2xl mx-auto">
+    <h1 class="text-xl font-semibold mb-1">Nueva apertura</h1>
+    <p class="text-sm text-[var(--text-faint)] mb-6">
+        Queda pendiente de aprobación. Recién una vez aprobada por otro usuario se pueden
+        emitir los tokens que llevan los equipos al local.
+    </p>
+</div>
+
+<form method="post" class="card p-6 max-w-2xl space-y-5 w-full mx-auto">
+    {% csrf_token %}
+
+    {% for error in form.non_field_errors %}
+    <p class="text-sm px-3 py-2 rounded-md" style="background:var(--critical-dim, rgba(220,38,38,.12)); color:var(--critical);">{{ error }}</p>
+    {% endfor %}
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Farmacia</label>
+        {{ form.farmacia }}
+        <p class="text-xs text-[var(--text-faint)] mt-1">{{ form.farmacia.help_text }}</p>
+        {% for error in form.farmacia.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    </div>
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Plantilla de apertura</label>
+        {{ form.plantilla }}
+        <p class="text-xs text-[var(--text-faint)] mt-1">{{ form.plantilla.help_text }}</p>
+        {% for error in form.plantilla.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    </div>
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Fecha prevista de apertura</label>
+        {{ form.fecha_prevista }}
+        {% for error in form.fecha_prevista.errors %}<p class="text-xs mt-1" style="color:var(--critical);">{{ error }}</p>{% endfor %}
+    </div>
+
+    <div>
+        <label class="block text-sm font-medium text-[var(--text-dim)] mb-1">Observación</label>
+        {{ form.observacion }}
+    </div>
+
+    <div class="flex items-center gap-3 pt-2">
+        <button type="submit" class="btn primary" style="padding:10px 20px;">Crear apertura</button>
+        <a href="{% url 'panel:aperturas_lista' %}" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Cancelar</a>
+    </div>
+</form>
+{% endblock %}

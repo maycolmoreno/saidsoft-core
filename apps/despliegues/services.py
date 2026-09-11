@@ -201,6 +201,56 @@ def reintentar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     return ResultadoPublicacion(total_estaciones=len(pendientes), exitoso=True)
 
 
+def publicar_despliegue_a_estacion(despliegue: Despliegue, estacion) -> bool:
+    """Envía un despliegue ya existente a UNA estación, por su tópico individual.
+
+    Lo usa `apps.aperturas`: una estación que se enrola en una farmacia que está abriendo
+    tiene que recibir el POS, pero el despliegue que lo contiene se publicó antes de que
+    esa estación existiera. Publicar de nuevo al tópico de la farmacia reenviaría el
+    paquete a las cajas que ya lo aplicaron, disparando ahí un cierre y reinstalación del
+    POS innecesarios — el mismo motivo por el que `reintentar_despliegue` publica por
+    estación y no por destino agregado.
+
+    No aprueba nada ni cambia el estado del despliegue: solo suma un destinatario a uno
+    que ya pasó por su propio control de cuatro ojos.
+    """
+    resultado, _ = ResultadoDespliegue.objects.get_or_create(
+        despliegue=despliegue, estacion=estacion,
+        defaults={'estado': ResultadoDespliegue.Estado.PENDIENTE},
+    )
+
+    mqtt_conf = settings.MQTT_CONFIG
+    auth = None
+    if mqtt_conf['USERNAME']:
+        auth = {'username': mqtt_conf['USERNAME'], 'password': mqtt_conf['PASSWORD']}
+    tls = None
+    if mqtt_conf['USE_TLS']:
+        tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
+
+    try:
+        mqtt_publish.single(
+            f'/saidsof/agente/{estacion.codigo}/despliegue/',
+            payload=json.dumps(_payload(despliegue)),
+            retain=True,
+            hostname=mqtt_conf['HOST'],
+            port=mqtt_conf['PORT'],
+            auth=auth,
+            tls=tls,
+            client_id=mqtt_conf['CLIENT_ID_PANEL'],
+        )
+    except Exception:
+        logger.exception(
+            'No se pudo publicar el despliegue %s a la estación %s', despliegue.id, estacion.codigo,
+        )
+        return False
+
+    EventoDespliegue.objects.create(
+        resultado=resultado, paso=EventoDespliegue.Paso.PUBLICADO,
+        detalle='Publicado por una apertura (estación recién enrolada)',
+    )
+    return True
+
+
 def evaluar_freno_automatico(despliegue: Despliegue) -> bool:
     """Si el % de estaciones en error supera el umbral configurado, pausa el despliegue.
 

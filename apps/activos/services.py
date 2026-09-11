@@ -572,7 +572,7 @@ def stock_bajo_minimo():
     ).select_related('bodega', 'tipo_consumible')
 
 
-def crear_activos_desde_estaciones(*, usuario, tipo=Activo.Tipo.DESKTOP, aplicar=False) -> dict:
+def crear_activos_desde_estaciones(*, usuario, tipo=Activo.Tipo.DESKTOP, aplicar=False, estaciones=None) -> dict:
     """Da de alta en ITAM los equipos que el RMM ya conoce, con el hardware que el
     agente reporta.
 
@@ -598,6 +598,10 @@ def crear_activos_desde_estaciones(*, usuario, tipo=Activo.Tipo.DESKTOP, aplicar
       (un desktop y un servidor se ven igual desde adentro). Por eso es un parámetro,
       con Desktop de default por ser el caso masivo en farmacia.
 
+    `estaciones` acota el alta a un subconjunto (lo usa `apps.aperturas`, que da de alta
+    la estación que acaba de enrolarse en una farmacia que abre, no la flota entera).
+    Vacío = todas las aprobadas, que es el caso del comando de management.
+
     Devuelve un resumen con qué haría/hizo. Con `aplicar=False` no escribe nada.
     """
     from apps.catalogo.models import Estacion
@@ -607,6 +611,8 @@ def crear_activos_desde_estaciones(*, usuario, tipo=Activo.Tipo.DESKTOP, aplicar
     candidatas = Estacion.objects.filter(
         estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
     ).select_related('farmacia__unidad_negocio').order_by('codigo')
+    if estaciones is not None:
+        candidatas = candidatas.filter(pk__in=[e.pk for e in estaciones])
 
     for estacion in candidatas:
         if getattr(estacion, 'activo_vinculado', None) is not None:

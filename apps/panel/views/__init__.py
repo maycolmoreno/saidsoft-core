@@ -19,6 +19,11 @@ from .activos import (
 from .alertas import (
     alerta_reconocer, alerta_resolver, alertas_lista, pos_errores_flota, regla_alerta_crear, reglas_alerta_lista,
 )
+from .aperturas import (
+    apertura_aprobar, apertura_cancelar, apertura_crear, apertura_detalle, apertura_emitir_tokens,
+    apertura_paso_completar, apertura_paso_reintentar, apertura_pasos_partial, apertura_token_revocar,
+    aperturas_lista,
+)
 from .auditoria import auditoria_lista
 from .cumplimiento import (
     cumplimiento_crear, cumplimiento_detalle, cumplimiento_lista, cumplimiento_resultado_completar,
@@ -78,6 +83,9 @@ __all__ = [
     'activos_avisos', 'activos_lista', 'especificaciones_por_serie_partial',
     'alerta_reconocer', 'alerta_resolver', 'alertas_lista', 'pos_errores_flota', 'regla_alerta_crear',
     'reglas_alerta_lista',
+    'apertura_aprobar', 'apertura_cancelar', 'apertura_crear', 'apertura_detalle', 'apertura_emitir_tokens',
+    'apertura_paso_completar', 'apertura_paso_reintentar', 'apertura_pasos_partial', 'apertura_token_revocar',
+    'aperturas_lista',
     'auditoria_lista',
     'bodega_ajuste_stock', 'bodega_stock_ingresar', 'bodegas_lista',
     'colaborador_crear', 'colaboradores_lista',

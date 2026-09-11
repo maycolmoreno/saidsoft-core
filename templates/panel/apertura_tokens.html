@@ -1,0 +1,70 @@
+{% extends "panel/base.html" %}
+{% block title %}Tokens de {{ apertura.farmacia.codigo }} · SAIDSOFT{% endblock %}
+{% block content %}
+{% comment %}
+Esta pantalla es el único momento en que el token existe en claro: de TokenApertura solo
+se guarda el hash (ver §10-Z del plan, donde el paquete de instalación con los secretos
+compartidos de toda la flota quedó publicado sin autenticación). Si el operador cierra
+sin copiar, el camino es revocar y emitir de nuevo, no "volver a ver".
+{% endcomment %}
+<div class="w-full max-w-3xl mx-auto">
+    <h1 class="text-xl font-semibold mb-1">Tokens emitidos para {{ apertura.farmacia.codigo }}</h1>
+
+    <div class="card p-4 mb-6" style="border-left:3px solid var(--critical);">
+        <p class="text-sm font-medium mb-1">Copialos ahora: no se pueden volver a ver.</p>
+        <p class="text-xs text-[var(--text-faint)]">
+            De cada token se guarda solo su hash, nunca el valor. Si perdés uno, revocalo desde
+            la apertura y emití otro — es de un solo uso y vence
+            {{ apertura.tokens.first.expira_en|date:"d/m/Y" }}.
+        </p>
+    </div>
+
+    {% for perfil, token in emitidos %}
+    <div class="card p-5 mb-4">
+        <div class="flex items-center justify-between mb-3">
+            <div>
+                <div class="font-medium">{{ apertura.farmacia.codigo }}-{{ perfil.sufijo }}</div>
+                <div class="text-xs text-[var(--text-faint)]">
+                    {{ perfil.get_rol_display }}{% if perfil.monitorear_recursos %} · reporta métricas{% endif %}{% if perfil.es_cache_farmacia %} · caché de farmacia{% endif %}
+                </div>
+            </div>
+            <button type="button" class="btn secondary text-xs" data-copiar="token-{{ perfil.pk }}">Copiar línea</button>
+        </div>
+        <pre id="token-{{ perfil.pk }}" class="text-xs font-mono p-3 rounded-md overflow-x-auto" style="background:var(--bg); border:1px solid var(--border);">TokenApertura={{ token }}</pre>
+        <p class="text-xs text-[var(--text-faint)] mt-2">
+            Va en el <span class="font-mono">config.txt</span> del paquete de instalación de esa estación,
+            junto a <span class="font-mono">Instalar.bat</span>.
+        </p>
+    </div>
+    {% endfor %}
+
+    <div class="flex items-center gap-3 pt-2">
+        <a href="{% url 'panel:apertura_detalle' apertura.pk %}" class="btn primary">Ya los copié, volver a la apertura</a>
+    </div>
+</div>
+
+<script>
+(function () {
+    document.querySelectorAll('[data-copiar]').forEach(function (boton) {
+        boton.addEventListener('click', function () {
+            var pre = document.getElementById(boton.dataset.copiar);
+            // navigator.clipboard no existe fuera de un contexto seguro (el panel corre
+            // sobre HTTPS con certificado propio, pero un acceso por IP plana no lo es):
+            // sin este fallback el botón no hace nada y no avisa.
+            var texto = pre.textContent;
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(texto).then(function () { boton.textContent = 'Copiado'; });
+                return;
+            }
+            var sel = window.getSelection();
+            var rango = document.createRange();
+            rango.selectNodeContents(pre);
+            sel.removeAllRanges();
+            sel.addRange(rango);
+            boton.textContent = document.execCommand('copy') ? 'Copiado' : 'Copialo a mano';
+            sel.removeAllRanges();
+        });
+    });
+})();
+</script>
+{% endblock %}

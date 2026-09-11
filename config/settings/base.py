@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'apps.mantenimiento',
     'apps.scripts',
     'apps.cumplimiento',
+    'apps.aperturas',
     'apps.software',
     'apps.integraciones',
     'apps.facturacion',

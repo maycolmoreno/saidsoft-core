@@ -65,6 +65,26 @@ urlpatterns = [
     path('despliegues/<int:pk>/reanudar/', views.despliegue_reanudar, name='despliegue_reanudar'),
     path('despliegues/<int:pk>/promover/', views.despliegue_promover, name='despliegue_promover'),
 
+    path('aperturas/', views.aperturas_lista, name='aperturas_lista'),
+    path('aperturas/nueva/', views.apertura_crear, name='apertura_crear'),
+    path('aperturas/<int:pk>/', views.apertura_detalle, name='apertura_detalle'),
+    path('aperturas/<int:pk>/pasos/', views.apertura_pasos_partial, name='apertura_pasos_partial'),
+    path('aperturas/<int:pk>/aprobar/', views.apertura_aprobar, name='apertura_aprobar'),
+    path('aperturas/<int:pk>/tokens/emitir/', views.apertura_emitir_tokens, name='apertura_emitir_tokens'),
+    path(
+        'aperturas/<int:pk>/tokens/<int:token_pk>/revocar/', views.apertura_token_revocar,
+        name='apertura_token_revocar',
+    ),
+    path(
+        'aperturas/<int:pk>/pasos/<int:paso_pk>/completar/', views.apertura_paso_completar,
+        name='apertura_paso_completar',
+    ),
+    path(
+        'aperturas/<int:pk>/pasos/<int:paso_pk>/reintentar/', views.apertura_paso_reintentar,
+        name='apertura_paso_reintentar',
+    ),
+    path('aperturas/<int:pk>/cancelar/', views.apertura_cancelar, name='apertura_cancelar'),
+
     path('auditoria/', views.auditoria_lista, name='auditoria_lista'),
 
     path('monitoreo/', views.monitoreo_lista, name='monitoreo_lista'),

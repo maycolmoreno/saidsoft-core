@@ -3524,3 +3524,172 @@ class DialogosCentradosTests(TestCase):
                     '%s no declara %s: se va a abrir pegado arriba a la izquierda '
                     'por el margin:0 del preflight de Tailwind.' % (selector, declaracion),
                 )
+
+
+class AperturaPanelTests(TestCase):
+    """Vistas del panel de aperturas (`apps/panel/views/aperturas.py`)."""
+
+    def setUp(self):
+        from apps.aperturas.models import PasoPlantilla, PerfilEstacionPlantilla, PlantillaApertura, TipoPaso
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001', version_objetivo='4.2.1')
+        self.farmacia = Farmacia.objects.create(codigo='ML099', grupo=grupo, unidad_negocio=self.sg)
+
+        self.creador = self._usuario('ap_creador', ['view_apertura', 'add_apertura', 'change_apertura'])
+        self.aprobador = self._usuario(
+            'ap_aprobador',
+            ['view_apertura', 'change_apertura', 'aprobar_apertura', 'emitir_token_apertura'],
+        )
+        self.miron = self._usuario('ap_miron', ['view_apertura'])
+
+        self.plantilla = PlantillaApertura.objects.create(
+            nombre='Mostrador', unidad_negocio=self.sg, creado_por=self.creador,
+        )
+        self.perfil = PerfilEstacionPlantilla.objects.create(
+            plantilla=self.plantilla, sufijo='A', rol=PerfilEstacionPlantilla.Rol.CAJA,
+        )
+        self.paso_manual = PasoPlantilla.objects.create(
+            plantilla=self.plantilla, orden=10, nombre='Alta en AD', tipo=TipoPaso.MANUAL,
+        )
+
+    def _usuario(self, username, codenames, acceso_total=True, unidades=None):
+        usuario = User.objects.create_user(username=username, password='x')
+        perfil = PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=acceso_total)
+        if unidades:
+            perfil.unidades_negocio.set(unidades)
+        for codename in codenames:
+            usuario.user_permissions.add(
+                Permission.objects.get(content_type__app_label='aperturas', codename=codename),
+            )
+        return usuario
+
+    def _apertura(self, aprobada=True):
+        from apps.aperturas.services import aprobar_apertura, crear_apertura
+
+        apertura = crear_apertura(
+            farmacia=self.farmacia, plantilla=self.plantilla,
+            fecha_prevista=timezone.localdate(), usuario=self.creador,
+        )
+        if aprobada:
+            aprobar_apertura(apertura=apertura, usuario=self.aprobador)
+        return apertura
+
+    def test_lista_y_detalle_cargan(self):
+        apertura = self._apertura()
+        self.client.force_login(self.miron)
+        self.assertEqual(self.client.get(reverse('panel:aperturas_lista')).status_code, 200)
+        resp = self.client.get(reverse('panel:apertura_detalle', args=[apertura.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'ML099')
+
+    def test_crear_rechaza_farmacia_con_apertura_vigente(self):
+        self._apertura(aprobada=False)
+        self.client.force_login(self.creador)
+        resp = self.client.post(reverse('panel:apertura_crear'), {
+            'farmacia': self.farmacia.pk, 'plantilla': self.plantilla.pk,
+            'fecha_prevista': timezone.localdate().isoformat(),
+        })
+        self.assertEqual(resp.status_code, 200)
+        # El form ni la ofrece: la excluye del queryset, así que falla la validación del
+        # campo antes de llegar al servicio.
+        self.assertTrue(resp.context['form'].errors)
+
+    def test_aprobar_respeta_los_cuatro_ojos(self):
+        from apps.aperturas.models import Apertura
+
+        apertura = self._apertura(aprobada=False)
+        creador_que_aprueba = self._usuario('ap_ambos', ['view_apertura', 'aprobar_apertura'])
+        apertura.creado_por = creador_que_aprueba
+        apertura.save(update_fields=['creado_por'])
+
+        self.client.force_login(creador_que_aprueba)
+        self.client.post(reverse('panel:apertura_aprobar', args=[apertura.pk]))
+        apertura.refresh_from_db()
+        self.assertEqual(apertura.estado, Apertura.Estado.PENDIENTE_APROBACION)
+
+    def test_emitir_tokens_exige_permiso_propio(self):
+        """`emitir_token_apertura` está separado de `aprobar_apertura`: ver el secreto en
+        claro es una capacidad distinta de autorizar la apertura."""
+        apertura = self._apertura()
+        self.client.force_login(self.creador)
+        resp = self.client.post(reverse('panel:apertura_emitir_tokens', args=[apertura.pk]))
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(apertura.tokens.exists())
+
+    def test_el_token_en_claro_se_muestra_una_sola_vez(self):
+        """Regresión de §10-Z. El valor en claro sale en la respuesta de emisión y en
+        NINGÚN otro lado: el detalle solo puede mostrar el prefijo."""
+        apertura = self._apertura()
+        self.client.force_login(self.aprobador)
+
+        resp = self.client.post(reverse('panel:apertura_emitir_tokens', args=[apertura.pk]))
+        self.assertEqual(resp.status_code, 200)
+        token = apertura.tokens.get()
+        plano = resp.context['emitidos'][0][1]
+        self.assertContains(resp, plano)
+
+        detalle = self.client.get(reverse('panel:apertura_detalle', args=[apertura.pk]))
+        self.assertNotContains(detalle, plano)
+        self.assertContains(detalle, token.prefijo)
+
+        # Reenviar el POST no emite otro para el mismo perfil (ni filtra el anterior).
+        otra = self.client.post(reverse('panel:apertura_emitir_tokens', args=[apertura.pk]))
+        self.assertEqual(apertura.tokens.count(), 1)
+        self.assertEqual(otra.status_code, 302)
+
+    def test_completar_paso_manual(self):
+        from apps.aperturas.models import PasoApertura
+
+        apertura = self._apertura()
+        paso = apertura.pasos.get()
+        self.client.force_login(self.creador)
+        self.client.post(
+            reverse('panel:apertura_paso_completar', args=[apertura.pk, paso.pk]),
+            {'detalle': 'cuenta creada en el dominio'},
+        )
+        paso.refresh_from_db()
+        self.assertEqual(paso.estado, PasoApertura.Estado.COMPLETADO)
+        self.assertIn('cuenta creada', paso.detalle)
+
+    def test_cancelar_revoca_los_tokens_sin_usar(self):
+        """Cancelar sin revocar sería cosmético: cada token sin usar todavía sirve para
+        enrolar una estación ya aprobada."""
+        from apps.aperturas.models import Apertura
+
+        apertura = self._apertura()
+        self.client.force_login(self.aprobador)
+        self.client.post(reverse('panel:apertura_emitir_tokens', args=[apertura.pk]))
+        self.client.post(reverse('panel:apertura_cancelar', args=[apertura.pk]))
+
+        apertura.refresh_from_db()
+        self.assertEqual(apertura.estado, Apertura.Estado.CANCELADA)
+        self.assertTrue(apertura.tokens.get().revocado)
+
+    def test_aislamiento_por_unidad_de_negocio(self):
+        apertura = self._apertura()
+        ajeno = self._usuario('ap_ajeno', ['view_apertura'], acceso_total=False, unidades=[self.mia])
+        self.client.force_login(ajeno)
+        self.assertNotContains(self.client.get(reverse('panel:aperturas_lista')), 'ML099')
+        self.assertEqual(
+            self.client.get(reverse('panel:apertura_detalle', args=[apertura.pk])).status_code, 403,
+        )
+
+    def test_el_fragmento_de_pasos_sincroniza_y_lista_faltantes(self):
+        apertura = self._apertura()
+        self.client.force_login(self.miron)
+        resp = self.client.get(reverse('panel:apertura_pasos_partial', args=[apertura.pk]))
+        self.assertEqual(resp.status_code, 200)
+        # La caja -A todavía no se enroló: la apertura no puede cerrarse y hay que decirlo.
+        self.assertEqual([p.sufijo for p in resp.context['faltantes']], ['A'])
+
+    def test_aprobar_registra_un_solo_evento_de_auditoria(self):
+        """La vista y el servicio registraban la misma aprobación cada uno por su lado, y
+        la auditoría terminaba con dos filas idénticas por aprobación."""
+        apertura = self._apertura(aprobada=False)
+        self.client.force_login(self.aprobador)
+        self.client.post(reverse('panel:apertura_aprobar', args=[apertura.pk]))
+
+        eventos = EventoAuditoria.objects.filter(accion='apertura.aprobar', objeto_id=str(apertura.pk))
+        self.assertEqual(eventos.count(), 1)

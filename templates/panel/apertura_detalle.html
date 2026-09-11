@@ -1,0 +1,116 @@
+{% extends "panel/base.html" %}
+{% block title %}Apertura {{ apertura.farmacia.codigo }} · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-2">
+    <h1 class="text-xl font-semibold">Apertura de {{ apertura.farmacia.codigo }}</h1>
+    <span class="pill {% if apertura.estado == 'completada' %}good{% elif apertura.estado == 'cancelada' %}critical{% elif apertura.estado == 'en_curso' %}info{% else %}neutral{% endif %}">
+        {{ apertura.get_estado_display }}
+    </span>
+</div>
+<p class="text-sm text-[var(--text-faint)] mb-6">
+    {{ apertura.farmacia.nombre|default:apertura.farmacia.codigo }} · {{ apertura.farmacia.grupo.codigo }} ·
+    {{ apertura.farmacia.unidad_negocio.codigo }}{% if apertura.observacion %} — {{ apertura.observacion }}{% endif %}
+</p>
+
+<div class="grid grid-cols-4 gap-4 mb-6 text-sm">
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Plantilla</div>
+        <div class="font-medium">{{ apertura.plantilla.nombre }}</div>
+        <div class="text-[var(--text-faint)] text-xs mt-1">versión {{ apertura.plantilla_version }} al crear</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Fecha prevista</div>
+        <div class="font-medium">{{ apertura.fecha_prevista|date:"d/m/Y" }}</div>
+        {% if apertura.fecha_completada %}<div class="text-[var(--text-faint)] text-xs mt-1">completada {{ apertura.fecha_completada|date:"d/m/Y H:i" }}</div>{% endif %}
+    </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Estaciones esperadas</div>
+        <div class="font-medium">{{ perfiles|length }}</div>
+        <div class="text-[var(--text-faint)] text-xs mt-1">{% for p in perfiles %}-{{ p.sufijo }}{% if not forloop.last %}, {% endif %}{% endfor %}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Creada / aprobada por</div>
+        <div>{{ apertura.creado_por.username }}</div>
+        <div class="text-[var(--text-faint)] text-xs">{{ apertura.aprobado_por.username|default:"pendiente de aprobación" }}</div>
+    </div>
+</div>
+
+<div class="flex items-center gap-3 mb-8">
+    {% if puede_aprobar %}
+    <form method="post" action="{% url 'panel:apertura_aprobar' apertura.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="btn primary" style="background:var(--good);">Aprobar</button>
+    </form>
+    {% elif apertura.estado == 'pendiente_aprobacion' %}
+    <span class="text-sm text-[var(--text-faint)] italic">Esperando aprobación de otro usuario (regla de cuatro ojos).</span>
+    {% endif %}
+
+    {% if puede_emitir %}
+    <form method="post" action="{% url 'panel:apertura_emitir_tokens' apertura.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="btn primary">Emitir tokens de enrolamiento</button>
+    </form>
+    {% endif %}
+
+    {% if apertura.estado != 'completada' and apertura.estado != 'cancelada' and perms.aperturas.change_apertura %}
+    <form method="post" action="{% url 'panel:apertura_cancelar' apertura.pk %}" onsubmit="return confirm('Cancelar la apertura revoca todos los tokens sin usar. ¿Seguro?');">
+        {% csrf_token %}
+        <button type="submit" class="btn danger">Cancelar apertura</button>
+    </form>
+    {% endif %}
+</div>
+
+{% if tokens %}
+<div class="card mb-8" style="overflow:hidden;">
+    <div class="px-4 py-3 text-sm font-medium" style="border-bottom:1px solid var(--border-soft);">
+        Tokens de enrolamiento
+        <span class="text-xs text-[var(--text-faint)] font-normal">— del token solo se guarda el hash: el valor en claro se muestra una sola vez, al emitirlo</span>
+    </div>
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Perfil</th>
+                <th class="text-left px-4 py-3">Token</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Vence</th>
+                <th class="text-left px-4 py-3">Consumido por</th>
+                <th class="text-right px-4 py-3"></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for t in tokens %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">{{ apertura.farmacia.codigo }}-{{ t.perfil.sufijo }}</td>
+                <td class="px-4 py-3 font-mono text-xs text-[var(--text-faint)]">{{ t.prefijo }}…</td>
+                <td class="px-4 py-3">
+                    {% if t.usado_en %}
+                    <span class="pill good">Usado</span>
+                    {% elif t.vigente %}
+                    <span class="pill info">Vigente</span>
+                    {% else %}
+                    <span class="pill critical">{{ t.motivo_no_vigente|capfirst }}</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ t.expira_en|date:"d/m/Y H:i" }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ t.estacion.codigo|default:"—" }}</td>
+                <td class="px-4 py-3 text-right">
+                    {% if not t.usado_en and t.vigente and perms.aperturas.emitir_token_apertura %}
+                    <form method="post" action="{% url 'panel:apertura_token_revocar' apertura.pk t.pk %}" onsubmit="return confirm('Revocar este token. ¿Seguro?');">
+                        {% csrf_token %}
+                        <button type="submit" class="text-xs underline text-[var(--text-faint)] hover:text-[var(--critical)]">revocar</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<div id="pasos-wrap"
+     hx-get="{% url 'panel:apertura_pasos_partial' apertura.pk %}"
+     hx-trigger="load{% if apertura.estado == 'aprobada' or apertura.estado == 'en_curso' %}, every 5s{% endif %}"
+     hx-swap="innerHTML">
+</div>
+{% endblock %}

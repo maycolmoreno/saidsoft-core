@@ -1,0 +1,50 @@
+{% extends "panel/base.html" %}
+{% block title %}Aperturas · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-2">
+    <h1 class="text-xl font-semibold">Aperturas de farmacia</h1>
+    {% if perms.aperturas.add_apertura %}
+    <a href="{% url 'panel:apertura_crear' %}" class="btn primary">+ Nueva apertura</a>
+    {% endif %}
+</div>
+<p class="text-sm text-[var(--text-faint)] mb-6">
+    Cada apertura aplica una plantilla a una farmacia: emite un token por estación esperada, y
+    el equipo que se enchufa en el local se enrola ya aprobado y configurado.
+</p>
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Farmacia</th>
+                <th class="text-left px-4 py-3">Plantilla</th>
+                <th class="text-left px-4 py-3">Prevista</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Creada por</th>
+                <th class="text-left px-4 py-3">Aprobada por</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for a in aperturas %}
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:apertura_detalle' a.pk %}'">
+                <td class="px-4 py-3 font-medium">{{ a.farmacia.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.plantilla.nombre }} <span class="text-[var(--text-faint)] text-xs">v{{ a.plantilla_version }}</span></td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.fecha_prevista|date:"d/m/Y" }}</td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if a.estado == 'completada' %}good{% elif a.estado == 'cancelada' %}critical{% elif a.estado == 'en_curso' %}info{% else %}neutral{% endif %}">
+                        {{ a.get_estado_display }}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.creado_por.username }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.aprobado_por.username|default:"—" }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6">
+                {% url 'panel:apertura_crear' as alta %}
+                {% include "panel/_estado_vacio.html" with titulo="Todavía no hay aperturas" pista="Una apertura convierte el alta de una farmacia en un despliegue: los equipos se configuran solos al conectarse. Necesitás una plantilla cargada en el admin primero." accion_url=alta accion_etiqueta="+ Nueva apertura" accion_puede=perms.aperturas.add_apertura %}
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

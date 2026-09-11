@@ -95,3 +95,72 @@ class PromoverDespliegueForm(forms.ModelForm):
                 self._unidad_negocio, farmacias=cleaned.get('farmacias'), estaciones=cleaned.get('estaciones'),
             )
         return cleaned
+
+
+class AperturaForm(forms.Form):
+    """Alta de una apertura. No es un ModelForm a propósito: la creación tiene reglas
+    (tenant cruzado, una sola apertura vigente por farmacia, materializar los pasos
+    manuales) que viven en `apps.aperturas.services.crear_apertura`, que es el mismo
+    camino que usa cualquier otro origen. Un ModelForm con `save()` las saltearía.
+    """
+
+    farmacia = forms.ModelChoiceField(
+        queryset=Farmacia.objects.none(),
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        help_text='La farmacia que abre. Solo aparecen las de tu alcance sin una apertura vigente.',
+    )
+    plantilla = forms.ModelChoiceField(
+        queryset=None,
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        help_text='Define qué estaciones se esperan y qué pasos corren. Se editan en el admin.',
+    )
+    fecha_prevista = forms.DateField(
+        widget=forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
+        help_text='Fecha prevista de apertura del local.',
+    )
+    observacion = forms.CharField(
+        required=False, widget=forms.Textarea(attrs={'class': INPUT_CLASS, 'rows': 3}),
+    )
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        from apps.aperturas.models import Apertura, PlantillaApertura
+        from apps.cuentas.services import unidades_negocio_visibles
+
+        visibles = unidades_negocio_visibles(user) if user is not None else UnidadNegocio.objects.none()
+        # Excluir las que ya tienen una apertura vigente evita ofrecer una opción que el
+        # servicio va a rechazar igual (y que además tiene una constraint en la base).
+        con_apertura = Apertura.objects.filter(estado__in=Apertura.ESTADOS_VIGENTES).values('farmacia_id')
+        self.fields['farmacia'].queryset = (
+            Farmacia.objects.filter(unidad_negocio__in=visibles, activa=True)
+            .exclude(pk__in=con_apertura).select_related('grupo').order_by('codigo')
+        )
+        self.fields['plantilla'].queryset = (
+            PlantillaApertura.objects.filter(unidad_negocio__in=visibles, activa=True)
+            .select_related('unidad_negocio').order_by('nombre', '-version')
+        )
+
+    def clean(self):
+        cleaned = super().clean()
+        farmacia, plantilla = cleaned.get('farmacia'), cleaned.get('plantilla')
+        if farmacia and plantilla and plantilla.unidad_negocio_id != farmacia.unidad_negocio_id:
+            raise forms.ValidationError(
+                f'La plantilla es de {plantilla.unidad_negocio.codigo} y la farmacia de '
+                f'{farmacia.unidad_negocio.codigo}: una apertura no cruza unidades de negocio.',
+            )
+        if plantilla and not plantilla.perfiles_estacion.exists():
+            raise forms.ValidationError(
+                f'La plantilla "{plantilla.nombre}" no tiene perfiles de estación: no habría '
+                'a qué emitirle tokens ni qué esperar en el local. Cargalos en el admin primero.',
+            )
+        return cleaned
+
+    def crear(self, *, usuario):
+        from apps.aperturas.services import crear_apertura
+        return crear_apertura(
+            farmacia=self.cleaned_data['farmacia'],
+            plantilla=self.cleaned_data['plantilla'],
+            fecha_prevista=self.cleaned_data['fecha_prevista'],
+            observacion=self.cleaned_data.get('observacion', ''),
+            usuario=usuario,
+        )

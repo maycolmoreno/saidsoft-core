@@ -29,10 +29,13 @@ apps/activos/            inventario de activos CRESIO: Bodega, Colaborador, Orde
                           Activo (código CR-TIPO-NNNN), EventoActivo (historial inmutable)
 apps/mantenimiento/      mantenimientos correctivos/programados, checklist, firmas, visita técnica
 apps/cumplimiento/       actividades de cumplimiento (AD, ESET, checklists) por unidad de negocio
+apps/aperturas/          apertura autoprovisionada: PlantillaApertura, Apertura, TokenApertura
+                          (enrolamiento cero-touch) — orquesta scripts/software/POS/ITAM
 apps/cuentas/            PerfilUsuario (RBAC por unidad de negocio) — apps/cuentas/services.py
                           centraliza el scoping de tenant, lo usan todas las apps de arriba
-apps/panel/              panel HTMX: dashboard, estaciones, despliegues, scripts, monitoreo,
-                          alertas, activos, mantenimiento, cumplimiento, auditoría, reportes
+apps/panel/              panel HTMX: dashboard, estaciones, despliegues, aperturas, scripts,
+                          monitoreo, alertas, activos, mantenimiento, cumplimiento, auditoría,
+                          reportes
 templates/panel/          plantillas del panel (Tailwind + HTMX)
 static_src/input.css      fuente de Tailwind (@source apunta a templates/ y apps/)
 static/css/app.css        CSS compilado (versionado, no requiere Node en el servidor)
@@ -784,6 +787,64 @@ En `/reportes/`, en `apps/panel/reportes.py` (todos salvo auditoría aceptan
   deliberadamente **sin escopar por cliente** (el modelo es polimórfico, sin FK real al
   objeto auditado; es una herramienta de cumplimiento interno, no algo que se le
   entregue a un cliente).
+
+## Apertura autoprovisionada de farmacias ("cero-touch")
+
+Abrir una farmacia significaba ir al sitio y configurar cada estación a mano: instalar el
+agente, tildar `monitorear_recursos` y `es_cache_farmacia`, aprobar el enrolamiento en el
+panel, pedir el POS, instalar el antivirus y recién después dar de alta los activos en
+ITAM. Las 8 estaciones del piloto se hicieron así y cada una destapó un bug distinto.
+`apps/aperturas` convierte eso en un despliegue: el equipo se enchufa y se configura solo.
+
+**No ejecuta trabajo nuevo, orquesta el que ya existe.** Cada paso delega en su módulo:
+`apps.scripts` (ejecución remota), `apps.software` (instalación silenciosa),
+`apps.despliegues` (POS) y `apps.activos` (alta en ITAM). Lo que aporta es el *qué, en qué
+orden y a qué estación*.
+
+- **`PlantillaApertura`** (versionada) describe una farmacia de un formato: sus
+  `PerfilEstacionPlantilla` (qué estaciones se esperan, por sufijo del código — `ADM`, `A`,
+  `B` — y con qué flags quedan) y sus `PasoPlantilla` ordenados.
+- **`Apertura`** aplica la plantilla a una farmacia y fecha. Pasa por la misma regla de
+  cuatro ojos que un despliegue (permiso `aprobar_apertura`): quien la crea no la aprueba.
+- **`TokenApertura`** es el gancho cero-touch: un secreto **de un solo uso por estación
+  esperada**, con vencimiento, del que solo se guarda el hash. Va en el `config.txt` del
+  equipo; el agente lo manda al enrolarse y `manejar_enrolamiento` crea la estación **ya
+  aprobada**, con la configuración de su perfil, y lanza sus pasos.
+
+Por qué un token por estación y no el paquete de un clic de antes: ese paquete llevaba
+adentro la contraseña MQTT y el `COMANDO_HMAC_SECRET` **compartidos de toda la flota**, y
+quedó publicado sin autenticación — hubo que borrarlo y rotar ambos secretos
+(PLAN_MODERNIZACION.md §10-Z). Un token filtrado ahora compromete una estación de una
+apertura, no la flota, y se revoca sin tocar a nadie más.
+
+**La aprobación automática no es invisible.** El token se valida contra tres cosas —que
+esté vigente, que la farmacia del código sea la de la apertura, y que el sufijo coincida
+con el perfil al que se emitió— y queda el evento de auditoría
+`apertura.estacion_enrolada` con el prefijo del token que la autorizó. Un token inválido no
+rechaza el enrolamiento: cae al camino de siempre (pendiente de aprobación manual), para
+que un token mal copiado no deje al técnico sin poder enrolar nada.
+
+**En el panel** (`/aperturas/`): la lista, el alta, y el detalle con los tokens y la
+tabla de pasos que se repinta sola cada 5 s (mismo polling HTMX que el progreso de un
+despliegue). Desde ahí se aprueba, se emiten y revocan tokens, se cierran los pasos
+manuales con su evidencia y se reintenta un paso que falló. Los tokens en claro se
+muestran **una sola vez**, en la pantalla que los emite: no hay ninguna vista que los
+pueda volver a mostrar, porque no están guardados. La **plantilla** (qué estaciones se
+esperan y qué pasos corren) se edita en el admin: se define una vez por formato de
+farmacia y casi no cambia, a diferencia de la apertura, que es la operación diaria.
+
+Los pasos no se enteran solos de su resultado: el agente le responde por MQTT a
+`apps.mqtt_worker`, que actualiza `ResultadoEjecucionScript`/`ResultadoInstalacion` sin
+saber que pertenecen a una apertura. En vez de acoplar el worker a este módulo, la apertura
+va y lee — `sincronizar_apertura`, que dispara la vista de detalle del panel y el comando
+`python manage.py sincronizar_aperturas`. Al completarse, escribe `Farmacia.fecha_apertura`,
+que hasta ahora se cargaba a mano y estaba vacía en casi todas.
+
+**Qué no automatiza, a propósito**: el enlace de datos lo provisiona el proveedor y el
+Mikrotik no lo toca el agente; el alta en Active Directory necesita una credencial de
+dominio en la estación (mismo problema del secreto compartido, sin resolver); el 2FA es de
+persona, no de máquina. Los tres son pasos de tipo `manual` — quedan en el checklist con su
+evidencia, no fingidos como automáticos.
 
 ## Credenciales MQTT por estación (aislamiento a nivel de broker)
 

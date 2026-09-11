@@ -1,0 +1,83 @@
+{% comment %}
+Fragmento que repinta el polling HTMX del detalle de apertura. Ver
+apps/panel/views/aperturas.py::apertura_pasos_partial sobre por qué sincroniza antes
+de renderizar.
+{% endcomment %}
+<div class="card p-5 mb-6">
+    <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-medium">Pasos: {{ completados }} / {{ total }} completados</span>
+        <span class="text-sm text-[var(--text-faint)]">{{ pct_completado }}%</span>
+    </div>
+    <div class="rank-row mb-3"><span class="track"><span class="fill" style="width:{{ pct_completado }}%; background:var(--good);"></span></span></div>
+    <div class="flex gap-4 text-xs text-[var(--text-faint)]">
+        <span style="color:var(--good);">Completados: {{ completados }}</span>
+        {% if errores %}<span style="color:var(--critical);" class="font-medium">En error: {{ errores }}</span>{% endif %}
+    </div>
+</div>
+
+{% if faltantes %}
+<div class="card p-4 mb-6" style="border-left:3px solid var(--info);">
+    <div class="text-sm font-medium mb-1">Faltan equipos por llegar</div>
+    <p class="text-xs text-[var(--text-faint)]">
+        La apertura no se cierra hasta que se enrolen:
+        {% for p in faltantes %}<span class="font-mono">{{ apertura.farmacia.codigo }}-{{ p.sufijo }}</span> ({{ p.get_rol_display }}){% if not forloop.last %}, {% endif %}{% endfor %}.
+    </p>
+</div>
+{% endif %}
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Dónde</th>
+                <th class="text-left px-4 py-3">Paso</th>
+                <th class="text-left px-4 py-3">Tipo</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Detalle</th>
+                <th class="text-right px-4 py-3"></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for p in pasos %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">{% if p.estacion_id %}{{ p.estacion.codigo }}{% else %}<span class="text-[var(--text-faint)]">{{ apertura.farmacia.codigo }} (sitio)</span>{% endif %}</td>
+                <td class="px-4 py-3">{{ p.nombre }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ p.get_tipo_display }}</td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if p.estado == 'completado' %}good{% elif p.estado == 'error' %}critical{% elif p.estado == 'en_curso' %}info{% else %}neutral{% endif %}">
+                        {{ p.get_estado_display }}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-xs {% if p.estado == 'error' %}text-[var(--critical)]{% else %}text-[var(--text-faint)]{% endif %}">{{ p.detalle|truncatechars:120|default:"—" }}</td>
+                <td class="px-4 py-3 text-right whitespace-nowrap">
+                    {% if p.tipo == 'manual' and p.estado != 'completado' and perms.aperturas.change_apertura %}
+                    <form method="post" action="{% url 'panel:apertura_paso_completar' apertura.pk p.pk %}" class="inline-flex items-center gap-2">
+                        {% csrf_token %}
+                        {% comment %}
+                        hx-preserve: este fragmento se reemplaza entero cada 5s, y sin esto el
+                        poll le borra al operador la evidencia a medio escribir. Mismo problema
+                        y misma solución que el input del Node ID en estacion_info_modal.html.
+                        {% endcomment %}
+                        <input type="text" name="detalle" placeholder="evidencia / nota"
+                               id="evidencia-paso-{{ p.pk }}" hx-preserve="true"
+                               class="rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-2 py-1 text-xs w-40">
+                        <button type="submit" class="text-xs underline text-[var(--text-faint)] hover:text-[var(--good)]">marcar hecho</button>
+                    </form>
+                    {% elif p.estado == 'error' and perms.aperturas.change_apertura %}
+                    <form method="post" action="{% url 'panel:apertura_paso_reintentar' apertura.pk p.pk %}">
+                        {% csrf_token %}
+                        <button type="submit" class="text-xs underline text-[var(--text-faint)] hover:text-[var(--text)]">reintentar</button>
+                    </form>
+                    {% elif p.ejecucion_script_id %}
+                    <a href="{% url 'panel:ejecucion_detalle' p.ejecucion_script_id %}" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)] underline">ver ejecución</a>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="6" class="px-4 py-6 text-center text-[var(--text-faint)]">
+                Todavía no hay pasos de estación: se crean cuando cada equipo se enrola con su token.
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
