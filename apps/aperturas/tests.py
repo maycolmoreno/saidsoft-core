@@ -1,8 +1,13 @@
+import tempfile
 from datetime import timedelta
+from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
@@ -421,3 +426,140 @@ class EventoAperturaTests(_BaseAperturaTests):
         self.assertIsNotNone(evento)
         with self.assertRaises(NotImplementedError):
             evento.delete()
+
+
+class SeedPlantillaAperturaTests(TestCase):
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        User.objects.create_superuser('root_seed', 'r@x.test', 'ClaveLargaDemo123')
+
+    def _correr(self, *args, **kwargs):
+        salida = StringIO()
+        call_command('seed_plantilla_apertura', *args, stdout=salida, stderr=StringIO(), **kwargs)
+        return salida.getvalue()
+
+    def test_simula_por_defecto(self):
+        """Mismo contrato que crear_activos_desde_rmm: escribir exige --aplicar."""
+        salida = self._correr('--unidad', 'SG')
+        self.assertIn('no se escribió nada', salida)
+        self.assertFalse(PlantillaApertura.objects.exists())
+
+    def test_aplicar_crea_perfiles_y_pasos(self):
+        self._correr('--unidad', 'SG', '--cajas', '3', '--aplicar')
+        plantilla = PlantillaApertura.objects.get()
+        self.assertEqual(plantilla.unidad_negocio, self.sg)
+        # Un servidor + 3 cajas.
+        self.assertEqual(
+            sorted(plantilla.perfiles_estacion.values_list('sufijo', flat=True)), ['A', 'ADM', 'B', 'C'],
+        )
+        adm = plantilla.perfiles_estacion.get(sufijo='ADM')
+        self.assertTrue(adm.monitorear_recursos)
+        self.assertTrue(adm.es_cache_farmacia)
+        self.assertFalse(plantilla.perfiles_estacion.get(sufijo='A').monitorear_recursos)
+
+        tipos = list(plantilla.pasos.values_list('tipo', flat=True))
+        self.assertIn('verificacion', tipos)
+        self.assertIn('activo_itam', tipos)
+        self.assertIn('manual', tipos)
+        # Sin --script-energia ni --app-antivirus no se inventa un script para correr en
+        # una caja real: esos pasos simplemente no existen.
+        self.assertNotIn('script', tipos)
+        self.assertNotIn('software', tipos)
+
+    def test_bitlocker_y_windows_update_no_son_obligatorios(self):
+        """Muchas cajas del parque son Windows Home (sin BitLocker) o no tienen salida a
+        internet (Windows Update falla). Ninguno de los dos puede trabar la apertura."""
+        self._correr('--unidad', 'SG', '--aplicar')
+        plantilla = PlantillaApertura.objects.get()
+        for verificacion in ('bitlocker', 'windows_update_escaneado'):
+            self.assertFalse(plantilla.pasos.get(verificacion=verificacion).obligatorio)
+        self.assertTrue(plantilla.pasos.get(verificacion='nodo_pos_coherente').obligatorio)
+
+    def test_no_pisa_una_plantilla_existente(self):
+        self._correr('--unidad', 'SG', '--aplicar')
+        with self.assertRaisesMessage(CommandError, 'ya existe'):
+            self._correr('--unidad', 'SG', '--aplicar')
+        self.assertEqual(PlantillaApertura.objects.count(), 1)
+
+    def test_unidad_inexistente(self):
+        with self.assertRaisesMessage(CommandError, 'No existe la unidad de negocio'):
+            self._correr('--unidad', 'NOEXISTE')
+
+
+class GenerarPaqueteAperturaTests(TestCase):
+    def setUp(self):
+        from apps.aperturas.models import PerfilEstacionPlantilla
+        from apps.aperturas.services import aprobar_apertura, crear_apertura
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML099', grupo=grupo, unidad_negocio=self.sg)
+        self.root = User.objects.create_superuser('root_paq', 'r@x.test', 'ClaveLargaDemo123')
+        self.otro = User.objects.create_user('otro_paq', password='ClaveLargaDemo123')
+
+        self.plantilla = PlantillaApertura.objects.create(
+            nombre='Mostrador', unidad_negocio=self.sg, creado_por=self.root,
+        )
+        PerfilEstacionPlantilla.objects.create(plantilla=self.plantilla, sufijo='ADM')
+        self.apertura = crear_apertura(
+            farmacia=self.farmacia, plantilla=self.plantilla,
+            fecha_prevista=timezone.localdate(), usuario=self.otro,
+        )
+        aprobar_apertura(apertura=self.apertura, usuario=self.root)
+
+    def _correr(self, *args):
+        salida, error = StringIO(), StringIO()
+        call_command('generar_paquete_apertura', *args, stdout=salida, stderr=error)
+        return salida.getvalue() + error.getvalue()
+
+    def test_simula_sin_emitir_tokens(self):
+        salida = self._correr('--farmacia', 'ML099')
+        self.assertIn('no se emitió ni se escribió nada', salida)
+        self.assertFalse(self.apertura.tokens.exists())
+
+    def test_escribe_un_config_por_estacion(self):
+        with tempfile.TemporaryDirectory() as destino:
+            self._correr('--farmacia', 'ML099', '--destino', destino, '--aplicar')
+            config = Path(destino) / 'ML099-ADM' / 'config.txt'
+            self.assertTrue(config.exists())
+            contenido = config.read_text(encoding='utf-8')
+            self.assertIn('TokenApertura=', contenido)
+            self.assertIn('CentralHost=', contenido)
+            # El token escrito es el que se emitió, y en la base solo quedó su hash.
+            token_escrito = [
+                l.split('=', 1)[1] for l in contenido.splitlines() if l.startswith('TokenApertura=')
+            ][0]
+            self.assertEqual(
+                self.apertura.tokens.get().token_hash, hashear_token(token_escrito),
+            )
+
+    def test_se_niega_a_escribir_dentro_de_media_root(self):
+        """§10-Z: el paquete anterior quedó publicado bajo /media/, servido sin auth y con
+        las credenciales de la flota adentro. Este comando no lo puede repetir."""
+        with tempfile.TemporaryDirectory() as media:
+            destino = Path(media) / 'paquetes'
+            with override_settings(MEDIA_ROOT=media):
+                with self.assertRaisesMessage(CommandError, 'MEDIA_ROOT'):
+                    self._correr('--farmacia', 'ML099', '--destino', str(destino), '--aplicar')
+        self.assertFalse(self.apertura.tokens.exists())
+
+    def test_no_reemite_un_token_ya_entregado(self):
+        """El valor en claro no se puede releer: reemitir en silencio dejaría al operador
+        con un config.txt cuyo token ya no sirve, sin saberlo."""
+        with tempfile.TemporaryDirectory() as destino:
+            self._correr('--farmacia', 'ML099', '--destino', destino, '--aplicar')
+            salida = self._correr('--farmacia', 'ML099', '--destino', destino, '--aplicar')
+        self.assertIn('ya tiene un token', salida)
+        self.assertEqual(self.apertura.tokens.count(), 1)
+
+    def test_exige_apertura_aprobada(self):
+        from apps.aperturas.models import Apertura
+
+        self.apertura.estado = Apertura.Estado.PENDIENTE_APROBACION
+        self.apertura.save(update_fields=['estado'])
+        with self.assertRaisesMessage(CommandError, 'aprobada por un segundo usuario'):
+            self._correr('--farmacia', 'ML099')
+
+    def test_aplicar_exige_destino(self):
+        with self.assertRaisesMessage(CommandError, '--destino es obligatorio'):
+            self._correr('--farmacia', 'ML099', '--aplicar')

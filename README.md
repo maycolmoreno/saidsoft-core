@@ -840,6 +840,32 @@ va y lee — `sincronizar_apertura`, que dispara la vista de detalle del panel y
 `python manage.py sincronizar_aperturas`. Al completarse, escribe `Farmacia.fecha_apertura`,
 que hasta ahora se cargaba a mano y estaba vacía en casi todas.
 
+**Dos comandos para arrancar**, ambos simulan por defecto y exigen `--aplicar`:
+
+```sh
+python manage.py seed_plantilla_apertura --unidad SG --cajas 3 --aplicar
+python manage.py generar_paquete_apertura --farmacia ML099 --destino C:\paquetes --aplicar
+```
+
+El primero siembra una plantilla usable para el formato mostrador (un `-ADM` que reporta
+métricas y sirve de caché por LAN, más N cajas; verificaciones, alta en ITAM y los pasos
+manuales). No inventa scripts: los pasos de script/software solo se crean si le pasás el
+nombre de un `Script` o una `AplicacionCatalogo` que ya existan — no se genera PowerShell
+adivinado para correr en una caja real.
+
+El segundo arma el `config.txt` de cada estación esperada, con su token ya adentro, que es
+donde uno se equivoca copiando a mano con tres cajas y un servidor esperando en el local.
+**Se niega a escribir dentro de `MEDIA_ROOT`**: ahí es exactamente donde quedó publicado el
+paquete del §10-Z, servido sin autenticación. Y no reemite un token ya entregado — el valor
+en claro no se puede releer, así que reemitir en silencio dejaría al operador con un
+`config.txt` cuyo token ya no sirve, sin saberlo.
+
+Lo que ese comando **no** arregla, y conviene tener presente: el `config.txt` sigue llevando
+`MqttPassword` y `ComandoHmacSecret`, que son compartidos por toda la flota. El token de
+apertura es de una sola estación; esos dos no. Mientras el agente necesite la credencial
+compartida para el primer enrolamiento, un paquete filtrado sigue exponiéndolos —
+resolverlo de verdad pide HMAC por estación, que es un cambio aparte.
+
 **Qué no automatiza, a propósito**: el enlace de datos lo provisiona el proveedor y el
 Mikrotik no lo toca el agente; el alta en Active Directory necesita una credencial de
 dominio en la estación (mismo problema del secreto compartido, sin resolver); el 2FA es de
