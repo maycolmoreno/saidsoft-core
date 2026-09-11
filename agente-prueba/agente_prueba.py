@@ -266,8 +266,19 @@ class AgentePrueba:
         }
         self.identidad['hardware_id'] = payload['hardware_id']
         self._guardar_identidad()
+        # El token de apertura (apps.aperturas) solo viaja en el primer enrolamiento: es de
+        # un solo uso, así que reenviarlo en un re-enrolamiento no sirve de nada. No se
+        # guarda en identidad.json — el servidor ya lo marcó como usado y la estación quedó
+        # aprobada, no hay nada que reusar.
+        if self.args.token_apertura:
+            payload['token_apertura'] = self.args.token_apertura
         self.client.publish('/saidsof/enrolamiento/solicitar/', json.dumps(payload))
-        logging.info('Enrolamiento solicitado: %s', payload)
+        # El log local NUNCA lleva el token en claro: este archivo queda en la estación, y
+        # el token es lo único que se interpone entre la red y una estación auto-aprobada.
+        logging.info(
+            'Enrolamiento solicitado: %s',
+            {**payload, 'token_apertura': '<oculto>'} if 'token_apertura' in payload else payload,
+        )
 
     def _on_message(self, client, userdata, msg):
         try:
@@ -1698,6 +1709,7 @@ CAMPOS_CONFIG = [
     ('tls', False),
     ('ca_cert', ''),
     ('hmac_secret', ''),
+    ('token_apertura', ''),
     ('intervalo_heartbeat', 60),
     ('intervalo_metricas', 300),
     ('intervalo_log_pos', 300),
@@ -1728,6 +1740,12 @@ def main():
     parser.add_argument(
         '--hmac-secret', default='',
         help='COMANDO_HMAC_SECRET del servidor — obligatorio para validar comandos de scripts (ejecutar_script).',
+    )
+    parser.add_argument(
+        '--token-apertura', default='',
+        help='Token de apertura (apps.aperturas) para que esta estación se enrole ya aprobada y con '
+             'la configuración de su perfil, sin que nadie la apruebe en el panel. De un solo uso y '
+             'con vencimiento. Vacío = enrolamiento normal, pendiente de aprobación manual.',
     )
     parser.add_argument('--intervalo-heartbeat', type=int, default=60, help='Segundos entre heartbeats (default 60)')
     parser.add_argument(

@@ -31,6 +31,19 @@ completo de esa decisión.
   `monitorear_recursos` (bool), que controla si el agente reporta métricas periódicas
   (ver abajo) — no se vuelve a aplicar hasta el próximo enrolamiento si cambia desde
   el panel.
+- **Enrolamiento cero-touch** (opcional, `--token-apertura` / `TokenApertura` en
+  `config.txt`) — **escrito pero todavía no redistribuido**: el `.exe` que corre hoy en
+  las estaciones del piloto NO tiene esto (sigue siendo `agente-prueba-0.17`, y esta
+  versión no se bumpeó porque no se reconstruyó). Antes de redistribuir hay que subir
+  `VERSION_AGENTE_PRUEBA` a 0.18, o la flota reporta la misma versión para dos binarios
+  distintos. Qué hace: si el equipo trae un token de apertura emitido por el panel
+  (`apps.aperturas`), lo suma al payload del primer enrolamiento y el servidor crea la
+  estación **ya aprobada**, con la configuración de su perfil (monitoreo, caché de
+  farmacia), lanzándole los pasos de la plantilla de apertura. El token es de un solo
+  uso y vence, así que solo viaja en el primer enrolamiento — no se guarda en
+  `identidad.json` ni se escribe en el log local (ahí sale como `<oculto>`: ese archivo
+  queda en la estación). Un token inválido no rompe nada: el servidor cae al camino de
+  siempre y la estación queda pendiente de aprobación manual.
 - **Heartbeat** periódico.
 - **Métricas periódicas (CPU/RAM/disco)** — solo si `monitorear_recursos=True`: hilo
   propio `bucle_metricas` (calco de heartbeat, `--intervalo-metricas`, default 300s)

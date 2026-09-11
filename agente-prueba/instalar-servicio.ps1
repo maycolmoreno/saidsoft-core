@@ -43,6 +43,15 @@
     el agente arranca y hace heartbeat con normalidad, pero descarta en silencio los
     comandos ejecutar_script por firma HMAC inválida.
 
+.PARAMETER TokenApertura
+    Opcional. Token de apertura emitido desde el panel (apps.aperturas) para esta estación
+    concreta. Con él, la estación se enrola YA APROBADA y con la configuración de su perfil
+    (monitoreo, caché de farmacia), y arranca sola los pasos de la plantilla de apertura —
+    nadie tiene que aprobarla ni configurarla a mano.
+
+    Es de un solo uso y vence: sirve para la instalación de esta estación y nada más.
+    Sin él, el enrolamiento es el de siempre (queda pendiente de aprobación en el panel).
+
 .PARAMETER PosCarpetaInstalacion
     Carpeta donde vive el POS real (Farmamia/Elipsys) en la estación.
 
@@ -64,6 +73,10 @@ param(
     [Parameter(Mandatory)] [string]$MqttPassword,
     [Parameter(Mandatory)] [string]$CaCertPath,
     [Parameter(Mandatory)] [string]$ComandoHmacSecret,
+
+    # Opcional: sin esto la estación se enrola como siempre (pendiente de aprobación
+    # manual en el panel). Ver .PARAMETER TokenApertura.
+    [string]$TokenApertura = "",
 
     [string]$Codigo = $env:COMPUTERNAME,
     [string]$MqttUsuario = "saidsof_agente",
@@ -167,6 +180,7 @@ $config = [ordered]@{
     tls                      = $true
     ca_cert                  = (Join-Path $InstallPath "cert.pem")
     hmac_secret               = $ComandoHmacSecret
+    token_apertura           = $TokenApertura
     intervalo_heartbeat      = $IntervaloHeartbeat
     pos_carpeta_instalacion  = $PosCarpetaInstalacion
     pos_nombre_proceso       = $PosNombreProceso

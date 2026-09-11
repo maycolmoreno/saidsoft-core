@@ -50,12 +50,14 @@ set "MQTT_PUERTO="
 set "MQTT_PASSWORD="
 set "HMAC_SECRET="
 set "SERVIDOR_HORA="
+set "TOKEN_APERTURA="
 for /f "usebackq tokens=1,* delims==" %%A in ("config.txt") do (
     if /i "%%A"=="CentralHost" set "CENTRAL_HOST=%%B"
     if /i "%%A"=="MqttPuerto" set "MQTT_PUERTO=%%B"
     if /i "%%A"=="MqttPassword" set "MQTT_PASSWORD=%%B"
     if /i "%%A"=="ComandoHmacSecret" set "HMAC_SECRET=%%B"
     if /i "%%A"=="ServidorHora" set "SERVIDOR_HORA=%%B"
+    if /i "%%A"=="TokenApertura" set "TOKEN_APERTURA=%%B"
 )
 if "%CENTRAL_HOST%"=="" (
     echo config.txt no tiene una linea "CentralHost=...". Revisa el formato contra config.ejemplo.txt.
@@ -74,9 +76,16 @@ echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\instalar-servicio.ps1" ^
     -PublishFolder "." -CentralHost "%CENTRAL_HOST%" -MqttPuerto %MQTT_PUERTO% ^
     -MqttPassword "%MQTT_PASSWORD%" -CaCertPath ".\cert.pem" ^
-    -ComandoHmacSecret "%HMAC_SECRET%" -ServidorHora "%SERVIDOR_HORA%"
+    -ComandoHmacSecret "%HMAC_SECRET%" -ServidorHora "%SERVIDOR_HORA%" ^
+    -TokenApertura "%TOKEN_APERTURA%"
 
 echo.
-echo Listo. Revisa arriba si dijo "Running" el servicio, y confirma en el panel
-echo (/estaciones/) que %COMPUTERNAME% aparece como pendiente de aprobacion.
+if not "%TOKEN_APERTURA%"=="" (
+    echo Listo. Revisa arriba si dijo "Running" el servicio. Con token de apertura,
+    echo %COMPUTERNAME% debe aparecer en el panel ya APROBADA, dentro de la apertura
+    echo de su farmacia, con sus pasos en marcha.
+) else (
+    echo Listo. Revisa arriba si dijo "Running" el servicio, y confirma en el panel
+    echo (/estaciones/) que %COMPUTERNAME% aparece como pendiente de aprobacion.
+)
 pause

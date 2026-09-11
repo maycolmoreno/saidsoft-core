@@ -2,6 +2,13 @@ CentralHost=10.111.6.20
 MqttPuerto=8081
 MqttPassword=
 ComandoHmacSecret=
+# Token de apertura (opcional). Lo emite el panel para UNA estacion de UNA apertura:
+# con el, el equipo se enrola ya aprobado y con la configuracion de su perfil, sin que
+# nadie lo apruebe ni lo configure a mano. Es de un solo uso y vence. Vacio = el
+# enrolamiento de siempre (queda pendiente de aprobacion en el panel).
+# NUNCA pegar un valor real en este archivo: este es la plantilla versionada, los
+# valores reales van solo en config.txt (gitignoreado). Ver PLAN_MODERNIZACION.md 10-N.
+TokenApertura=
 # Servidor de hora contra el que sincronizar la estacion al instalar (y al que Windows
 # queda apuntando para mantenerla sincronizada solo de ahi en adelante). Dejarlo vacio
 # desactiva la sincronizacion. Importa: el agente descarta todo comando/script del panel
