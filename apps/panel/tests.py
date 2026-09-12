@@ -4390,3 +4390,105 @@ class ResumenDeProgresoTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.context['progreso'].pct_completado, 100)
         self.assertContains(resp, '1 / 1 aplicados')
+
+
+class ActivoTopologiaEnElPanelTests(TestCase):
+    """La columna "Puesto / IP" del listado y la tarjeta "Red y puesto" de la ficha.
+
+    Hasta ahora los campos de topología existían en el modelo pero solo se veían desde el
+    admin de Django, o sea que el trabajo era invisible para cualquiera que no fuera
+    administrador.
+    """
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX016')
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.farmacia = Farmacia.objects.create(codigo='ML016', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML016-A', farmacia=self.farmacia, ip_lan='10.201.7.229',
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.mikrotik = Activo.objects.create(
+            codigo='CR-NET-0001', tipo=Activo.Tipo.RED, unidad_negocio=self.sg,
+            farmacia=self.farmacia, slot='mikrotik', ip='10.201.7.225',
+            mac='AA:BB:CC:DD:EE:01', ubicacion_interna='rack', estado=Activo.Estado.ASIGNADO,
+        )
+        self.caja = Activo.objects.create(
+            codigo='CR-DSK-0006', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg,
+            farmacia=self.farmacia, slot='estacion_A', estacion=self.estacion,
+            estado=Activo.Estado.ASIGNADO,
+        )
+
+        self.usuario = User.objects.create_user(username='u_topo_panel', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='view_activo'),
+        )
+        self.client.force_login(self.usuario)
+
+    def test_el_listado_muestra_el_puesto_y_la_ip(self):
+        resp = self.client.get(reverse('panel:activos_lista'))
+        self.assertContains(resp, 'mikrotik')
+        self.assertContains(resp, '10.201.7.225')
+
+    def test_la_ip_de_un_activo_con_estacion_sale_del_agente(self):
+        """Regla de Fase A: con estación vinculada manda `Estacion.ip_lan`, que es la
+        única que se actualiza sola."""
+        resp = self.client.get(reverse('panel:activos_lista'))
+        self.assertContains(resp, '10.201.7.229')
+
+    def test_el_listado_no_hace_una_consulta_por_activo(self):
+        """`ip_efectiva` lee `estacion.ip_lan`: sin select_related sería una consulta por
+        fila — el mismo N+1 que la auditoría sacó de monitoreo_lista. Lo que se fija no es
+        el número de consultas sino que no crezca al agregar activos."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get(reverse('panel:activos_lista'))
+        con_dos_activos = len(ctx.captured_queries)
+
+        for i in range(4):
+            estacion = Estacion.objects.create(
+                codigo='ML016-%s' % 'BCDE'[i], farmacia=self.farmacia,
+                ip_lan='10.201.7.%d' % (240 + i),
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            )
+            Activo.objects.create(
+                codigo='CR-DSK-01%02d' % i, tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg,
+                farmacia=self.farmacia, estacion=estacion, estado=Activo.Estado.ASIGNADO,
+            )
+
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get(reverse('panel:activos_lista'))
+        self.assertEqual(len(ctx.captured_queries), con_dos_activos)
+
+    def test_la_ficha_muestra_de_donde_salio_la_ip(self):
+        """Un dato que reporta el agente y uno tipeado a mano no se tratan igual, así que
+        la ficha dice cuál es cuál."""
+        resp = self.client.get(reverse('panel:activo_detalle', args=[self.caja.pk]))
+        self.assertContains(resp, 'Red y puesto')
+        self.assertContains(resp, 'estacion_A')
+        self.assertContains(resp, 'agente')
+
+        resp = self.client.get(reverse('panel:activo_detalle', args=[self.mikrotik.pk]))
+        self.assertContains(resp, 'manual')
+        self.assertContains(resp, 'AA:BB:CC:DD:EE:01')
+        self.assertContains(resp, 'Rack')
+
+    def test_la_ficha_avisa_cuando_falta_cargar_la_ip(self):
+        sin_datos = Activo.objects.create(
+            codigo='CR-BIO-0001', tipo=Activo.Tipo.BIOMETRICO, unidad_negocio=self.sg,
+            farmacia=self.farmacia, slot='biometrico', estado=Activo.Estado.ASIGNADO,
+        )
+        resp = self.client.get(reverse('panel:activo_detalle', args=[sin_datos.pk]))
+        self.assertContains(resp, 'falta cargar')
+
+    def test_un_activo_de_oficina_no_muestra_la_tarjeta_de_red(self):
+        """Una laptop en bodega no pertenece a ningún esquema de farmacia: mostrarle
+        "puesto: sin asignar" sería ruido en todas las fichas del inventario."""
+        laptop = Activo.objects.create(
+            codigo='CR-LAP-0099', tipo=Activo.Tipo.LAPTOP, unidad_negocio=self.sg,
+        )
+        resp = self.client.get(reverse('panel:activo_detalle', args=[laptop.pk]))
+        self.assertNotContains(resp, 'Red y puesto')

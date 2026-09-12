@@ -32,6 +32,46 @@
     </div>
 </div>
 
+{% if activo.farmacia or activo.slot or activo.mac %}
+{% comment %}
+`ip_efectiva` devuelve (ip, origen): con estación vinculada manda la que reporta el
+agente, que es la única que se actualiza sola. Se muestra de dónde salió para que nadie
+trate igual un dato automático que uno tipeado a mano.
+{% endcomment %}
+<div class="card p-4 mb-6 text-sm">
+    <div class="text-[var(--text-faint)] text-xs uppercase mb-3">Red y puesto</div>
+    <div class="grid grid-cols-4 gap-4">
+        <div>
+            <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Puesto</div>
+            <div class="mono">{{ activo.slot|default:"sin asignar" }}</div>
+        </div>
+        <div>
+            <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Ubicación interna</div>
+            <div>{{ activo.get_ubicacion_interna_display|default:"—" }}</div>
+        </div>
+        <div>
+            <div class="text-[var(--text-faint)] text-xs uppercase mb-1">IP</div>
+            <div class="mono">
+                {% if activo.ip_efectiva.0 %}
+                    {{ activo.ip_efectiva.0 }}
+                    {% if activo.ip_efectiva.1 == 'agente' %}<span class="pill good">agente</span>
+                    {% else %}<span class="pill neutral">manual</span>{% endif %}
+                {% else %}<span class="text-[var(--text-faint)]">falta cargar</span>{% endif %}
+            </div>
+        </div>
+        <div>
+            <div class="text-[var(--text-faint)] text-xs uppercase mb-1">MAC</div>
+            <div class="mono">{{ activo.mac|default:"—" }}</div>
+        </div>
+    </div>
+    {% if activo.estacion %}
+    <div class="text-[var(--text-faint)] text-xs mt-3">
+        La IP y la MAC las reporta el agente de {{ activo.estacion.codigo }}; no se cargan a mano.
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
 {% if activo.estacion %}
 <div class="card p-4 mb-6 text-sm flex items-center justify-between">
     <div>

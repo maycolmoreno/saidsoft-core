@@ -44,6 +44,7 @@
                 <th class="text-left px-4 py-3">Marca / Modelo</th>
                 <th class="text-left px-4 py-3">Estado</th>
                 <th class="text-left px-4 py-3">Ubicación / responsable</th>
+                <th class="text-left px-4 py-3">Puesto / IP</th>
             </tr>
         </thead>
         <tbody>
@@ -61,9 +62,22 @@
                     {% if a.farmacia %}<span class="pill info">{{ a.farmacia.codigo }}</span>{% endif %}
                     {% if a.colaborador_actual %}{{ a.colaborador_actual.nombre }}{% elif a.bodega_actual %}{{ a.bodega_actual.codigo }}{% elif not a.farmacia %}—{% endif %}
                 </td>
+                {% comment %}
+                `ip_efectiva` devuelve (ip, origen): con estación vinculada manda la que
+                reporta el agente, que es la única que se actualiza sola.
+                {% endcomment %}
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
+                    {% if a.slot %}<span class="mono">{{ a.slot }}</span>{% endif %}
+                    {% if a.ip_efectiva.0 %}
+                        <div class="mono">{{ a.ip_efectiva.0 }}
+                            {% if a.ip_efectiva.1 == 'agente' %}<span class="pill good">agente</span>{% endif %}
+                        </div>
+                    {% elif a.slot %}<div>sin IP cargada</div>{% endif %}
+                    {% if not a.slot and not a.ip_efectiva.0 %}—{% endif %}
+                </td>
             </tr>
         {% empty %}
-            <tr><td colspan="5">
+            <tr><td colspan="6">
                 {% url 'panel:activo_crear' as alta %}
                 {% include "panel/_estado_vacio.html" with titulo="El inventario de activos está vacío" pista="Cada ingreso registra un equipo con su categoría y su responsable. También se pueden crear desde el RMM con el comando crear_activos_desde_rmm." accion_url=alta accion_etiqueta="+ Registrar ingreso" accion_puede=True %}
             </td></tr>

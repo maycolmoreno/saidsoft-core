@@ -814,6 +814,12 @@ TOPOLOGIA_POR_ESTACION = (
 
 SLOT_ESTACION = 'estacion_%s'
 
+# Estaciones que NO llevan impresora ni medianet. BASE es el servidor de la farmacia:
+# tiene su dirección en el esquema (el bloque de estaciones la incluye) pero no atiende
+# público, así que no tiene ni impresora térmica ni pinpad. Confirmado contra la planilla
+# real de GMI04, donde hay 5 estaciones y solo 4 impresoras y 4 medianet.
+SUFIJOS_SIN_PERIFERICOS = frozenset({'BASE'})
+
 
 def sufijo_de_estacion(codigo: str) -> str:
     """`ML016-A` -> `A`. El código de estación es siempre FARMACIA-SUFIJO
@@ -839,12 +845,15 @@ def estaciones_de_topologia(farmacia):
 def slots_de_farmacia(farmacia) -> list:
     """Expande el catálogo estándar para ESTA farmacia, según sus estaciones reales.
 
-    Una farmacia con 2 cajas lleva 2 impresoras y 2 medianet; una con 5, cinco de cada
-    uno. El número no está fijo en ningún lado: sale de contar las estaciones aprobadas.
+    Una farmacia con 2 cajas lleva 2 impresoras y 2 medianet; una con 4, cuatro de cada
+    uno. El número no está fijo en ningún lado: sale de contar las estaciones aprobadas,
+    salteando las de `SUFIJOS_SIN_PERIFERICOS`.
     """
     slots = list(TOPOLOGIA_ROL_UNICO)
     for estacion in estaciones_de_topologia(farmacia):
         sufijo = sufijo_de_estacion(estacion.codigo)
+        if sufijo in SUFIJOS_SIN_PERIFERICOS:
+            continue
         for plantilla in TOPOLOGIA_POR_ESTACION:
             slots.append(replace(plantilla, slot=plantilla.slot % sufijo))
     return slots
@@ -1164,3 +1173,108 @@ def completar_datos_topologia(*, filas, usuario, aplicar=False) -> dict:
                 '%s (%s): sigue sin %s' % (activo.codigo, activo.slot, ', '.join(faltantes)),
             )
     return resumen
+
+
+# --- Traducción de la planilla de IPs por farmacia ---
+#
+# La planilla que se mantiene aparte tiene una hoja por farmacia, con una etiqueta y una
+# dirección por fila:
+#
+#     GMI04
+#     LOGIN            sangregorio-gmi04
+#     RED              10.201.7.224/27
+#     MASCARA          255.255.255.224
+#     GATEWAY          10.201.7.225
+#     BASE             10.201.7.226
+#     GMI04-ADM        10.201.7.227
+#     ...
+#     IMPRESORA-ADM    10.201.7.232
+#     ...
+#     SIPAO ALARMAS    10.201.7.245
+#
+# Traducirla acá y no pedirle a nadie que la transcriba a mano evita el error de tipeo en
+# la transcripción, que es el más difícil de detectar: una IP mal copiada tiene forma de
+# IP válida y nadie la vuelve a mirar.
+
+# Etiquetas que describen la RED, no un equipo. No se ignoran en silencio: se saltean a
+# propósito porque el direccionamiento (subred, máscara, login del proveedor) todavía no
+# vive en ningún campo del modelo. Cuando exista, salen de acá.
+ETIQUETAS_DE_RED = frozenset({'LOGIN', 'RED', 'MASCARA', 'MÁSCARA', 'GATEWAY DHCP', 'DHCP'})
+
+# Etiquetas de rol único de la planilla -> slot del catálogo.
+ETIQUETAS_ROL_UNICO = {
+    'GATEWAY': 'mikrotik',
+    'VOIP': 'voip',
+    'BIOMETRICO': 'biometrico',
+    'BIOMÉTRICO': 'biometrico',
+    'SIPAO CAMARAS': 'camaras_sipao',
+    'SIPAO CÁMARAS': 'camaras_sipao',
+    'SIPAO ALARMAS': 'alarmas_sipao',
+}
+
+# Prefijos con sufijo de estación: "IMPRESORA-A" -> "impresora_A".
+PREFIJOS_POR_ESTACION = {
+    'IMPRESORA': 'impresora_%s',
+    'MEDIANET': 'medianet_%s',
+}
+
+
+def traducir_planilla_ips(*, codigo_farmacia, filas):
+    """Convierte las filas de la hoja de una farmacia en filas para `completar_datos_topologia`.
+
+    `filas` son pares `(etiqueta, valor)` tal como salen de la hoja. Devuelve
+    `(filas_utiles, omitidas, errores)`:
+
+    - **filas_utiles**: lo que se puede cargar, ya con el slot del catálogo.
+    - **omitidas**: lo que se saltea con su motivo — los datos de red que todavía no
+      tienen dónde guardarse, y las estaciones (ver abajo).
+    - **errores**: etiquetas que no se supo traducir. NO se ignoran: una fila que nadie
+      mira es una dirección que queda sin cargar sin que nadie se entere.
+
+    Las estaciones se omiten a propósito. La planilla dice qué IP *debería* tener cada
+    caja; el agente reporta la que *tiene*. Cargar la primera encima de la segunda haría
+    que el sistema deje de saber cuál es cuál (ver `Activo.clean`). Comparar las dos sería
+    valioso —detectaría una caja que se movió de dirección— pero eso necesita un campo
+    aparte para la IP planificada, que hoy no existe.
+    """
+    filas_utiles, omitidas, errores = [], [], []
+
+    for numero, (etiqueta_cruda, valor_crudo) in enumerate(filas, start=1):
+        etiqueta = (etiqueta_cruda or '').strip()
+        valor = (valor_crudo or '').strip()
+        if not etiqueta:
+            continue
+        clave = etiqueta.upper()
+
+        # El título de la hoja es el código de la farmacia, sin valor al lado.
+        if not valor:
+            continue
+        if clave in ETIQUETAS_DE_RED:
+            omitidas.append('%s: dato de red, todavía no hay dónde guardarlo' % etiqueta)
+            continue
+        if clave in ETIQUETAS_ROL_UNICO:
+            filas_utiles.append({
+                'farmacia': codigo_farmacia, 'slot': ETIQUETAS_ROL_UNICO[clave],
+                'ip': valor, 'mac': '', 'numero_serie': '',
+            })
+            continue
+
+        prefijo, _, sufijo = clave.partition('-')
+        if prefijo in PREFIJOS_POR_ESTACION and sufijo:
+            filas_utiles.append({
+                'farmacia': codigo_farmacia, 'slot': PREFIJOS_POR_ESTACION[prefijo] % sufijo,
+                'ip': valor, 'mac': '', 'numero_serie': '',
+            })
+            continue
+
+        # La estación propiamente dicha: "BASE" o "GMI04-ADM".
+        if clave == 'BASE' or prefijo == codigo_farmacia.upper():
+            omitidas.append('%s: es una estación, su IP la reporta el agente' % etiqueta)
+            continue
+
+        errores.append(
+            'fila %d: no sé qué equipo es "%s" (%s). Agregalo a la traducción o sacalo '
+            'de la hoja.' % (numero, etiqueta, valor),
+        )
+
+    return filas_utiles, omitidas, errores

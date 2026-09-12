@@ -378,7 +378,11 @@ def activos_lista(request):
         activos = activos.filter(farmacia__isnull=True)
 
     return render(request, 'panel/activos_lista.html', {
-        'activos': activos.select_related('farmacia'),
+        # `estacion` va en el select_related porque la columna "Puesto / IP" usa
+        # `ip_efectiva`, que para un activo vinculado lee `estacion.ip_lan`: sin esto
+        # sería una consulta por fila (el mismo N+1 que la auditoría sacó de
+        # monitoreo_lista).
+        'activos': activos.select_related('farmacia', 'estacion'),
         'tipos': Activo.Tipo.choices,
         'estados': Activo.Estado.choices,
         'bodegas': scope_opcional_por_unidad_negocio(Bodega.objects.all(), request.user, 'unidad_negocio').order_by('codigo'),

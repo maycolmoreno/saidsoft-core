@@ -1,3 +1,4 @@
+import csv
 import datetime
 import io
 
@@ -1505,3 +1506,173 @@ class CompletarTopologiaTests(TestCase):
 
         with self.assertRaises(CommandError):
             call_command('completar_topologia', '--datos', ruta, stdout=io.StringIO())
+
+
+# La hoja real de GMI04, tal como está en la planilla de direccionamiento (12-sep-2026).
+# Se usa textual en las pruebas: un ejemplo inventado no habría mostrado que BASE no
+# lleva impresora ni medianet, ni los huecos entre bloques (.231, .236, .241).
+HOJA_GMI04 = [
+    ('GMI04', ''),
+    ('LOGIN', 'sangregorio-gmi04'),
+    ('RED', '10.201.7.224/27'),
+    ('MASCARA', '255.255.255.224'),
+    ('GATEWAY', '10.201.7.225'),
+    ('BASE', '10.201.7.226'),
+    ('GMI04-ADM', '10.201.7.227'),
+    ('GMI04-A', '10.201.7.228'),
+    ('GMI04-B', '10.201.7.229'),
+    ('GMI04-C', '10.201.7.230'),
+    ('IMPRESORA-ADM', '10.201.7.232'),
+    ('IMPRESORA-A', '10.201.7.233'),
+    ('IMPRESORA-B', '10.201.7.234'),
+    ('IMPRESORA-C', '10.201.7.235'),
+    ('MEDIANET-ADM', '10.201.7.237'),
+    ('MEDIANET-A', '10.201.7.238'),
+    ('MEDIANET-B', '10.201.7.239'),
+    ('MEDIANET-C', '10.201.7.240'),
+    ('VoIP', '10.201.7.242'),
+    ('BIOMETRICO', '10.201.7.243'),
+    ('SIPAO CAMARAS', '10.201.7.244'),
+    ('SIPAO ALARMAS', '10.201.7.245'),
+]
+
+
+class PlanillaDeIpsTests(TestCase):
+    """Traducción de la hoja de direccionamiento a slots del catálogo.
+
+    Traducir la hoja en vez de pedir que alguien la transcriba evita el error de tipeo en
+    la transcripción, que es el más difícil de detectar: una IP mal copiada tiene forma de
+    IP válida y nadie la vuelve a mirar.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX004')
+        self.farmacia = Farmacia.objects.create(codigo='GMI04', grupo=grupo, unidad_negocio=self.sg)
+        for sufijo in ('BASE', 'ADM', 'A', 'B', 'C'):
+            Estacion.objects.create(
+                codigo='GMI04-%s' % sufijo, farmacia=self.farmacia,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            )
+        self.usuario = User.objects.create_superuser(username='u_planilla', password='x' * 14)
+
+    def _traducir(self, filas=None):
+        from apps.activos.services import traducir_planilla_ips
+
+        return traducir_planilla_ips(codigo_farmacia='GMI04', filas=filas or HOJA_GMI04)
+
+    # --- el catálogo tiene que coincidir con la planilla ---
+
+    def test_el_catalogo_coincide_con_la_hoja_real(self):
+        """GMI04 tiene 5 estaciones pero 4 impresoras y 4 medianet: BASE es el servidor y
+        no atiende público. Expandir los periféricos por cada estación habría creado
+        `impresora_BASE` y `medianet_BASE`, dos activos fantasma por farmacia."""
+        from apps.activos.services import slots_de_farmacia
+
+        slots = {s.slot for s in slots_de_farmacia(self.farmacia)}
+        for sufijo in ('ADM', 'A', 'B', 'C'):
+            self.assertIn('impresora_%s' % sufijo, slots)
+            self.assertIn('medianet_%s' % sufijo, slots)
+        self.assertNotIn('impresora_BASE', slots)
+        self.assertNotIn('medianet_BASE', slots)
+
+    def test_cada_equipo_de_la_hoja_tiene_su_puesto_en_el_catalogo(self):
+        """La prueba que importa: todo lo que la planilla dice que existe tiene que poder
+        cargarse. Si el catálogo y la planilla se desalinean, esto lo caza."""
+        from apps.activos.services import slots_de_farmacia
+
+        filas, _, errores = self._traducir()
+        self.assertEqual(errores, [])
+        del_catalogo = {s.slot for s in slots_de_farmacia(self.farmacia)}
+        self.assertTrue(
+            {f['slot'] for f in filas} <= del_catalogo,
+            'la hoja trae equipos que el catálogo no contempla: %s'
+            % ({f['slot'] for f in filas} - del_catalogo),
+        )
+
+    # --- traducción ---
+
+    def test_traduce_las_etiquetas_de_la_planilla(self):
+        filas, _, errores = self._traducir()
+        self.assertEqual(errores, [])
+        por_slot = {f['slot']: f['ip'] for f in filas}
+        self.assertEqual(por_slot['mikrotik'], '10.201.7.225')
+        self.assertEqual(por_slot['impresora_ADM'], '10.201.7.232')
+        self.assertEqual(por_slot['medianet_C'], '10.201.7.240')
+        self.assertEqual(por_slot['voip'], '10.201.7.242')
+        self.assertEqual(por_slot['biometrico'], '10.201.7.243')
+        self.assertEqual(por_slot['camaras_sipao'], '10.201.7.244')
+        self.assertEqual(por_slot['alarmas_sipao'], '10.201.7.245')
+        # 5 de rol único (gateway, VoIP, biométrico, cámaras, alarmas) + 4 impresoras
+        # + 4 medianet. Las 5 estaciones y los 3 datos de red no entran acá.
+        self.assertEqual(len(filas), 13)
+
+    def test_omite_los_datos_de_red_y_dice_por_que(self):
+        """Subred, máscara y login del proveedor todavía no tienen dónde guardarse. Se
+        saltean a propósito, no en silencio."""
+        _, omitidas, _ = self._traducir()
+        texto = ' '.join(omitidas)
+        for etiqueta in ('LOGIN', 'RED', 'MASCARA'):
+            self.assertIn(etiqueta, texto)
+
+    def test_omite_las_estaciones_porque_su_ip_la_reporta_el_agente(self):
+        """La planilla dice la IP que *debería* tener cada caja; el agente reporta la que
+        *tiene*. Cargar la primera encima de la segunda haría que el sistema deje de saber
+        cuál es cuál."""
+        filas, omitidas, _ = self._traducir()
+        self.assertFalse([f for f in filas if f['slot'].startswith('estacion_')])
+        estaciones = [o for o in omitidas if 'estación' in o]
+        self.assertEqual(len(estaciones), 5)  # BASE + ADM + A + B + C
+
+    def test_una_etiqueta_desconocida_es_un_error_y_no_se_ignora(self):
+        """Una fila que nadie mira es una dirección que queda sin cargar sin que nadie se
+        entere."""
+        _, _, errores = self._traducir(HOJA_GMI04 + [('CONTROL DE ACCESO', '10.201.7.246')])
+        self.assertEqual(len(errores), 1)
+        self.assertIn('CONTROL DE ACCESO', errores[0])
+
+    # --- comando ---
+
+    def _csv(self, filas):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False,
+                                         newline='', encoding='utf-8') as archivo:
+            escritor = csv.writer(archivo)
+            escritor.writerows(filas)
+            return archivo.name
+
+    def test_el_comando_carga_la_hoja_entera(self):
+        from apps.activos.services import crear_topologia_farmacia
+
+        crear_topologia_farmacia(farmacia=self.farmacia, usuario=self.usuario, aplicar=True)
+
+        salida = io.StringIO()
+        call_command('importar_planilla_ips', '--farmacia', 'GMI04',
+                     '--datos', self._csv(HOJA_GMI04), '--aplicar', stdout=salida)
+
+        self.assertEqual(str(Activo.objects.get(farmacia=self.farmacia, slot='mikrotik').ip),
+                         '10.201.7.225')
+        self.assertEqual(str(Activo.objects.get(farmacia=self.farmacia, slot='impresora_C').ip),
+                         '10.201.7.235')
+        self.assertIn('Actualizados: 13', salida.getvalue())
+
+    def test_el_comando_simula_por_defecto(self):
+        from apps.activos.services import crear_topologia_farmacia
+
+        crear_topologia_farmacia(farmacia=self.farmacia, usuario=self.usuario, aplicar=True)
+        salida = io.StringIO()
+        call_command('importar_planilla_ips', '--farmacia', 'GMI04',
+                     '--datos', self._csv(HOJA_GMI04), stdout=salida)
+        self.assertIn('Se actualizarían: 13', salida.getvalue())
+        self.assertIsNone(Activo.objects.get(farmacia=self.farmacia, slot='mikrotik').ip)
+
+    def test_el_comando_falla_si_los_equipos_no_existen_todavia(self):
+        """Cargar direcciones sobre una farmacia sin inventariar no puede terminar
+        creando equipos de la nada: primero se decide qué existe."""
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command('importar_planilla_ips', '--farmacia', 'GMI04',
+                         '--datos', self._csv(HOJA_GMI04), '--aplicar', stdout=io.StringIO())
+        self.assertEqual(Activo.objects.filter(farmacia=self.farmacia).count(), 0)
