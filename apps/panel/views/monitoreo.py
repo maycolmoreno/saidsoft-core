@@ -245,75 +245,137 @@ def red_farmacias_lista(request):
 @login_required
 @permission_required('monitoreo.view_estadoenlacefarmacia', raise_exception=True)
 def enlaces_farmacias_lista(request):
-    """Estado del enlace de cada farmacia, sondeado por ICMP (apps.monitoreo.enlaces).
+    """Estado del enlace de cada farmacia, sondeado por ICMP (apps.monitoreo.enlaces),
+    con su consumo por SNMP donde el Mikrotik lo expone.
 
-    Complementa /monitoreo/red-farmacias/ (ancho de banda por SNMP): ahí se ve *cuánto*
-    tráfico pasa, acá *si el sitio responde*. La diferencia que importa es que esto no
-    necesita agente instalado ni Mikrotik configurado — cubre las ~704 sucursales con
-    solo tener la IP cargada, mientras que el resto del monitoreo cubre 8 de ~1.800
-    estaciones.
+    Buscador, filtros y paginación son **server-side**. A 700 farmacias —y el parque
+    apunta a más— traer todo y filtrar en el navegador significa mandar la tabla entera
+    en cada carga y dejar al operador esperando para ver las 10 filas que le importan.
+    Es la primera vista paginada del panel: si aparece una segunda, vale la pena mover
+    `_pagina_actual` a un helper compartido.
 
-    El sondeo NO corre en este servidor (no hay ruta hacia las IP de las farmacias, ver
-    el docstring de apps.monitoreo.enlaces). Si todas las farmacias aparecen "sin
-    sondear", es que nadie corrió `sondear_enlaces` desde un host con ruta todavía — la
-    plantilla lo dice explícitamente en vez de mostrar una tabla vacía sin explicación.
+    Los KPI se calculan sobre el conjunto COMPLETO, no sobre la página: "154 caídos"
+    tiene que seguir diciendo 154 aunque estés mirando la página 3 con 25 filas.
     """
-    from django.db.models import OuterRef, Subquery
+    from django.core.paginator import Paginator
+    from django.db.models import Case, IntegerField, OuterRef, Q, Subquery, TextField, When
+    from django.db.models.functions import Cast
 
+    from apps.catalogo.models import Grupo
     from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia, MuestraRedFarmacia
 
-    # Última muestra de ancho de banda por farmacia, en la MISMA consulta. La pantalla
-    # que esta absorbió lo resolvía con un `farmacia.muestras_red.first()` dentro del
-    # bucle: 700 consultas por carga. Subquery y no `.distinct('farmacia')` porque
-    # DISTINCT ON es exclusivo de PostgreSQL y las pruebas corren sobre SQLite.
+    # Última muestra de ancho de banda por farmacia, en la misma consulta (ver el
+    # comentario de la versión anterior: el bucle con `.first()` eran 700 consultas).
     ultima_muestra = MuestraRedFarmacia.objects.filter(farmacia=OuterRef('pk')).order_by('-timestamp')
 
-    farmacias = scope_por_unidad_negocio_activa(
+    base = scope_por_unidad_negocio_activa(
         Farmacia.objects.exclude(ip_router__isnull=True),
         request, 'unidad_negocio',
     ).select_related('estado_enlace', 'grupo').annotate(
         bw_rx=Subquery(ultima_muestra.values('red_recibido_kbps')[:1]),
         bw_tx=Subquery(ultima_muestra.values('red_enviado_kbps')[:1]),
-        bw_ts=Subquery(ultima_muestra.values('timestamp')[:1]),
-    ).order_by('codigo')
+        # `ip_router` es `inet` en PostgreSQL y `__icontains` no aplica sobre ese tipo:
+        # buscar por IP reventaría la consulta en producción aunque en SQLite (donde es
+        # texto) funcione. El cast explícito lo hace portable — misma familia de bug que
+        # ya documentó §10 del plan con `ip_lan='localhost'`.
+        ip_router_texto=Cast('ip_router', TextField()),
+    )
 
-    filas, caidas, activas, sin_sondear, con_ancho_banda = [], 0, 0, 0, 0
-    for farmacia in farmacias:
+    con_trafico = Q(bw_rx__isnull=False) | Q(bw_tx__isnull=False)
+    sin_dato = Q(estado_enlace__isnull=True) | Q(estado_enlace__alcanzable__isnull=True)
+
+    # KPI sobre el conjunto completo. Cuentas en la base, no recorriendo 700 objetos.
+    total = base.count()
+    activas = base.filter(estado_enlace__alcanzable=True).count()
+    caidas = base.filter(estado_enlace__alcanzable=False).count()
+    sin_sondear = base.filter(sin_dato).count()
+    con_ancho_banda = base.filter(con_trafico).count()
+
+    filtros = {
+        'q': request.GET.get('q', '').strip(),
+        'estado': request.GET.get('estado', ''),
+        'grupo': request.GET.get('grupo', ''),
+        'trafico': request.GET.get('trafico', ''),
+    }
+
+    listado = base
+    if filtros['q']:
+        termino = filtros['q']
+        listado = listado.filter(
+            Q(codigo__icontains=termino)
+            | Q(nombre__icontains=termino)
+            | Q(grupo__codigo__icontains=termino)
+            | Q(circuito_proveedor__icontains=termino)
+            | Q(ip_router_texto__icontains=termino)
+        )
+    if filtros['estado'] == 'activos':
+        listado = listado.filter(estado_enlace__alcanzable=True)
+    elif filtros['estado'] == 'caidos':
+        listado = listado.filter(estado_enlace__alcanzable=False)
+    elif filtros['estado'] == 'sin_sondear':
+        listado = listado.filter(sin_dato)
+    if filtros['grupo']:
+        listado = listado.filter(grupo__codigo=filtros['grupo'])
+    if filtros['trafico'] == 'con':
+        listado = listado.filter(con_trafico)
+    elif filtros['trafico'] == 'sin':
+        listado = listado.exclude(con_trafico)
+
+    # Caídos primero: es lo que el operador vino a ver. Después activos, y al final los
+    # que nunca se sondearon. El orden se hace en la base porque ahora se pagina: un
+    # `sorted()` en Python solo ordenaría las 25 filas de la página.
+    listado = listado.annotate(
+        orden_estado=Case(
+            When(estado_enlace__alcanzable=False, then=0),
+            When(estado_enlace__alcanzable=True, then=1),
+            default=2,
+            output_field=IntegerField(),
+        ),
+    ).order_by('orden_estado', 'codigo')
+
+    paginador = Paginator(listado, 25)
+    pagina = paginador.get_page(request.GET.get('pagina'))
+
+    filas = []
+    for farmacia in pagina.object_list:
         estado = getattr(farmacia, 'estado_enlace', None)
-        alcanzable = estado.alcanzable if estado else None
-        if alcanzable is None:
-            sin_sondear += 1
-        elif alcanzable:
-            activas += 1
-        else:
-            caidas += 1
         total_kbps = None
         if farmacia.bw_rx is not None or farmacia.bw_tx is not None:
             total_kbps = round((farmacia.bw_rx or 0) + (farmacia.bw_tx or 0), 1)
-            con_ancho_banda += 1
         filas.append({
-            'farmacia': farmacia, 'estado': estado, 'alcanzable': alcanzable,
+            'farmacia': farmacia,
+            'estado': estado,
+            'alcanzable': estado.alcanzable if estado else None,
             'total_kbps': total_kbps,
             'estado_bw': _clasificar(total_kbps, RED_FARMACIA_UMBRAL_WARNING_KBPS,
                                      RED_FARMACIA_UMBRAL_CRITICAL_KBPS),
         })
 
-    # Las caídas primero: es lo que el operador vino a ver. Dentro de cada grupo, por
-    # código, para que la lista no baile entre refrescos.
-    filas.sort(key=lambda f: (f['alcanzable'] is not False, f['alcanzable'] is None, f['farmacia'].codigo))
-
+    # Las caídas en curso se listan completas pero la plantilla las trae colapsadas: 154
+    # ítems abiertos empujan la tabla fuera de la pantalla, que es el problema que tenía
+    # esta vista. El conteo va aparte para poder mostrarlo sin recorrer la lista.
     en_curso = EventoEnlaceFarmacia.objects.filter(
-        fin__isnull=True, farmacia__in=[f['farmacia'].pk for f in filas],
+        fin__isnull=True, farmacia__in=base.values('pk'),
     ).select_related('farmacia').order_by('inicio')
+
+    # Parámetros de filtro sin `pagina`, para que los enlaces del paginador no arrastren
+    # la página vieja ni pierdan el filtro activo.
+    query = request.GET.copy()
+    query.pop('pagina', None)
 
     return render(request, 'panel/enlaces_farmacias_lista.html', {
         'filas': filas,
         'activas': activas,
         'caidas': caidas,
         'sin_sondear': sin_sondear,
-        'total': len(filas),
-        'en_curso': en_curso,
+        'total': total,
         'con_ancho_banda': con_ancho_banda,
+        'en_curso': en_curso,
+        'en_curso_total': en_curso.count(),
+        'pagina': pagina,
+        'filtros': filtros,
+        'query_filtros': query.urlencode(),
+        'grupos': Grupo.objects.filter(farmacias__in=base.values('pk')).distinct().order_by('codigo'),
         'umbral_fallas': EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS,
     })
 

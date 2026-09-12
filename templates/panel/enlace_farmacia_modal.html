@@ -1,12 +1,17 @@
 {% comment %}
-Contenido de la ventana emergente de una farmacia en /monitoreo/enlaces/. Se inyecta en
-#modal-info-content (ver base.html); el POST de "Pedir lectura" devuelve este mismo
-fragmento, así el operador no pierde la ventana al disparar la consulta.
+Ficha del enlace de una farmacia. Se inyecta en #modal-info-content (ver base.html) y el
+POST de "Pedir lectura" devuelve este mismo fragmento, así el operador no pierde la
+ventana al disparar la consulta.
+
+Las pestañas son CSS puro con radios: al repintarse por HTMX no hay estado de JS que
+restaurar, y el modal vuelve siempre a "General" — que es lo que se quiere después de
+pedir una lectura.
 {% endcomment %}
 <div class="p-5">
-    <div class="flex items-start justify-between mb-1">
+    <div class="flex items-start justify-between gap-3 mb-3">
         <div>
-            <h2 class="text-lg font-semibold">{{ farmacia.codigo }}</h2>
+            <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide">Detalle del enlace</div>
+            <h2 class="text-lg font-semibold">Farmacia {{ farmacia.codigo }}</h2>
             <p class="text-xs text-[var(--text-faint)]">
                 {{ farmacia.nombre|default:"" }}{% if farmacia.ciudad %} · {{ farmacia.ciudad }}{% endif %}
                 · {{ farmacia.grupo.codigo }} · {{ farmacia.unidad_negocio.codigo }}
@@ -16,103 +21,191 @@ fragmento, así el operador no pierde la ventana al disparar la consulta.
                 onclick="document.getElementById('modal-info').close()">✕</button>
     </div>
 
+    <div class="flex items-center gap-2 mb-4 flex-wrap">
+        {% if estado.alcanzable is None %}
+        <span class="pill neutral">Sin sondear</span>
+        {% elif estado.alcanzable %}
+        <span class="pill good">Activo</span>
+        {% if estado.latencia_ms %}<span class="text-xs text-[var(--text-faint)] num">{{ estado.latencia_ms|floatformat:0 }} ms</span>{% endif %}
+        {% else %}
+        <span class="pill critical">Caído</span>
+        <span class="text-xs" style="color:var(--critical);">Desde {{ estado.ultimo_cambio_estado|date:"d/m/Y H:i" }}</span>
+        {% endif %}
+    </div>
+
     {% if messages %}
     {% for message in messages %}
-    <p class="text-xs px-3 py-2 rounded-md mt-3" style="background:var(--overlay-hover);">{{ message }}</p>
+    <p class="text-xs px-3 py-2 rounded-md mb-3" style="background:var(--overlay-hover);">{{ message }}</p>
     {% endfor %}
     {% endif %}
 
-    <div class="grid grid-cols-2 gap-3 my-4 text-sm">
-        <div class="card p-3">
-            <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Estado del enlace</div>
-            {% if estado.alcanzable is None %}
-            <span class="pill neutral">Sin sondear</span>
-            {% elif estado.alcanzable %}
-            <span class="pill good">Activo</span>
-            <div class="text-xs text-[var(--text-faint)] mt-1">
-                {% if estado.latencia_ms %}{{ estado.latencia_ms|floatformat:0 }} ms{% endif %}
+    <div class="tabs-enlace">
+        <input type="radio" name="tab-enlace" id="tab-general" checked hidden>
+        <input type="radio" name="tab-enlace" id="tab-trafico" hidden>
+        <input type="radio" name="tab-enlace" id="tab-historial" hidden>
+
+        <div class="flex gap-1 mb-3" style="border-bottom:1px solid var(--border-soft);">
+            <label for="tab-general" class="tab-enlace-btn">General</label>
+            <label for="tab-trafico" class="tab-enlace-btn">Tráfico</label>
+            <label for="tab-historial" class="tab-enlace-btn">Historial</label>
+        </div>
+
+        <div class="tab-enlace-panel" data-tab="general">
+            <div class="card p-3 mb-3">
+                <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Conectividad</div>
+                <dl class="text-xs space-y-1.5">
+                    <div class="flex justify-between gap-3">
+                        <dt class="text-[var(--text-faint)]">IP del equipo de borde</dt>
+                        <dd class="mono">{{ farmacia.ip_router }}</dd>
+                    </div>
+                    <div class="flex justify-between gap-3">
+                        <dt class="text-[var(--text-faint)]">Latencia</dt>
+                        <dd class="num">{% if estado.latencia_ms %}{{ estado.latencia_ms|floatformat:0 }} ms{% else %}—{% endif %}</dd>
+                    </div>
+                    <div class="flex justify-between gap-3">
+                        <dt class="text-[var(--text-faint)]">Último sondeo</dt>
+                        <dd>{% if estado.ultima_verificacion %}{{ estado.ultima_verificacion|date:"d/m/Y H:i" }}{% else %}nunca{% endif %}</dd>
+                    </div>
+                    {% if estado.fallas_consecutivas %}
+                    <div class="flex justify-between gap-3">
+                        <dt class="text-[var(--text-faint)]">Fallas consecutivas</dt>
+                        <dd class="num">{{ estado.fallas_consecutivas }}</dd>
+                    </div>
+                    {% endif %}
+                </dl>
             </div>
+
+            <div class="card p-3">
+                <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Circuito / proveedor</div>
+                <dl class="text-xs space-y-1.5">
+                    <div class="flex justify-between gap-3">
+                        <dt class="text-[var(--text-faint)]">Proveedor</dt>
+                        <dd>{{ farmacia.tipo_enlace|default:"—" }}</dd>
+                    </div>
+                    <div class="flex justify-between gap-3">
+                        <dt class="text-[var(--text-faint)]">Circuito</dt>
+                        <dd class="mono text-right">{{ farmacia.circuito_proveedor|default:"—" }}</dd>
+                    </div>
+                    <div class="flex justify-between gap-3">
+                        <dt class="text-[var(--text-faint)]">Enlace de respaldo</dt>
+                        <dd>{% if farmacia.tiene_backup %}sí{% else %}<span style="color:var(--warning);">no</span>{% endif %}</dd>
+                    </div>
+                </dl>
+                {% if farmacia.circuito_proveedor %}
+                <p class="text-xs text-[var(--text-faint)] mt-2">
+                    Es el identificador que pide el proveedor al abrir un ticket.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="tab-enlace-panel" data-tab="trafico">
+            <div class="card p-3 mb-3">
+                <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Consumo actual</div>
+                {% if ultima %}
+                <div class="text-xl font-semibold num" {% if estado_bw == 'critical' %}style="color:var(--critical);"{% elif estado_bw == 'warning' %}style="color:var(--warning);"{% endif %}>
+                    {{ ultima.red_total_kbps|floatformat:0 }} KB/s
+                </div>
+                <div class="text-xs text-[var(--text-faint)] mt-1">
+                    ↓ {{ ultima.red_recibido_kbps|floatformat:0 }} bajada ·
+                    ↑ {{ ultima.red_enviado_kbps|floatformat:0 }} subida ·
+                    {{ ultima.timestamp|date:"d/m H:i" }}
+                </div>
+                {% else %}
+                <div class="text-sm text-[var(--text-faint)]">Sin lecturas todavía</div>
+                {% endif %}
+            </div>
+
+            {% if total_muestras > 1 %}
+            <div class="card p-3 mb-3">
+                <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Últimas {{ total_muestras }} lecturas (KB/s)</div>
+                {% comment %} construir_grafico devuelve los puntos ya calculados, no markup: el <svg> se arma acá. {% endcomment %}
+                <svg viewBox="0 0 {{ g_red.ancho }} {{ g_red.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
+                    <polyline points="{{ g_red.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
+                    <polyline points="{{ g_red.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+                </svg>
+                <div class="text-xs text-[var(--text-faint)] mt-1">Pico {{ g_red.max_valor|floatformat:0 }} KB/s en esta ventana</div>
+            </div>
+            {% endif %}
+
+            {% if puede_solicitar %}
+            <form method="post" action="{% url 'panel:enlace_farmacia_solicitar' farmacia.pk %}"
+                  hx-post="{% url 'panel:enlace_farmacia_solicitar' farmacia.pk %}"
+                  hx-target="#modal-info-content" hx-swap="innerHTML">
+                {% csrf_token %}
+                <button type="submit" class="btn primary w-full">Pedir lectura ahora</button>
+                <p class="text-xs text-[var(--text-faint)] mt-2">
+                    Consulta el Mikrotik por SNMP desde el servidor. Si el router no responde
+                    —porque todavía no tiene SNMP habilitado— se le pide
+                    {% if estacion_sondeadora %}a {{ estacion_sondeadora.codigo }}, que lo alcanza desde la LAN del sitio{% else %}a una estación de la farmacia, pero ahora mismo no hay ninguna en línea{% endif %}.
+                </p>
+                {% if not ultima %}
+                <p class="text-xs text-[var(--text-faint)] mt-2">
+                    La primera lectura de una farmacia siempre sale sin valor: el consumo se calcula
+                    comparando dos lecturas seguidas. El número aparece en la segunda.
+                </p>
+                {% endif %}
+            </form>
+            {% endif %}
+        </div>
+
+        <div class="tab-enlace-panel" data-tab="historial">
+            {% if caidas_recientes %}
+            <div class="card" style="overflow:hidden;">
+                <table class="w-full text-xs">
+                    <thead style="background:var(--panel);">
+                        <tr class="text-[var(--text-faint)] uppercase tracking-wide">
+                            <th class="text-left px-3 py-2">Inicio</th>
+                            <th class="text-left px-3 py-2">Fin</th>
+                            <th class="text-right px-3 py-2">Duración</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for c in caidas_recientes %}
+                        <tr style="border-top:1px solid var(--border-soft);">
+                            <td class="px-3 py-2">{{ c.inicio|date:"d/m/Y H:i" }}</td>
+                            <td class="px-3 py-2 text-[var(--text-faint)]">
+                                {% if c.en_curso %}<span style="color:var(--critical);">en curso</span>{% else %}{{ c.fin|date:"d/m/Y H:i" }}{% endif %}
+                            </td>
+                            <td class="px-3 py-2 text-right num">
+                                {% if c.en_curso %}—{% else %}{{ c.duracion_minutos }} min{% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <p class="text-xs text-[var(--text-faint)] mt-2">
+                Las últimas {{ caidas_recientes|length }} caídas registradas. Es la base para
+                reclamar disponibilidad al proveedor.
+            </p>
             {% else %}
-            <span class="pill critical">Caído</span>
-            <div class="text-xs mt-1" style="color:var(--critical);">
-                desde {{ estado.ultimo_cambio_estado|date:"d/m H:i" }}
+            <div class="card p-4 text-xs text-[var(--text-faint)]">
+                Sin caídas registradas desde que se monitorea este enlace.
             </div>
             {% endif %}
         </div>
-        <div class="card p-3">
-            <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Consumo del enlace</div>
-            {% if ultima %}
-            <div class="font-medium" {% if estado_bw == 'critical' %}style="color:var(--critical);"{% elif estado_bw == 'warning' %}style="color:var(--warning);"{% endif %}>
-                {{ ultima.red_total_kbps|floatformat:0 }} KB/s
-            </div>
-            <div class="text-xs text-[var(--text-faint)] mt-1">
-                ↓ {{ ultima.red_recibido_kbps|floatformat:0 }} · ↑ {{ ultima.red_enviado_kbps|floatformat:0 }}
-                · {{ ultima.timestamp|date:"d/m H:i" }}
-            </div>
-            {% else %}
-            <div class="text-[var(--text-faint)] text-sm">Sin lecturas</div>
-            {% endif %}
-        </div>
     </div>
-
-    {% if total_muestras > 1 %}
-    <div class="card p-3 mb-4">
-        <div class="text-[var(--text-faint)] text-xs uppercase mb-2">Últimas {{ total_muestras }} lecturas (KB/s)</div>
-        {% comment %} construir_grafico devuelve un objeto con los puntos ya calculados, no
-           markup: el <svg> se arma acá, igual que en monitoreo_detalle_partial.html. {% endcomment %}
-        <svg viewBox="0 0 {{ g_red.ancho }} {{ g_red.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_red.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_red.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">
-            Pico {{ g_red.max_valor|floatformat:0 }} KB/s en esta ventana
-        </div>
-    </div>
-    {% endif %}
-
-    <div class="text-xs text-[var(--text-faint)] space-y-1 mb-4">
-        <div>IP del equipo de borde: <span class="font-mono">{{ farmacia.ip_router }}</span></div>
-        {% if farmacia.circuito_proveedor %}
-        <div>
-            Circuito: <span class="font-mono">{{ farmacia.circuito_proveedor }}</span>
-            {% if farmacia.tipo_enlace %} · {{ farmacia.tipo_enlace }}{% endif %}
-            {% if not farmacia.tiene_backup %}<span style="color:var(--warning);"> · sin enlace de respaldo</span>{% endif %}
-        </div>
-        {% endif %}
-    </div>
-
-    {% if caidas_recientes %}
-    <div class="mb-4">
-        <div class="text-[var(--text-faint)] text-xs uppercase mb-2">Últimas caídas</div>
-        <ul class="text-xs text-[var(--text-faint)] space-y-1">
-            {% for c in caidas_recientes %}
-            <li>
-                {{ c.inicio|date:"d/m H:i" }} —
-                {% if c.en_curso %}<span style="color:var(--critical);">en curso</span>
-                {% else %}{{ c.duracion_minutos }} min{% endif %}
-            </li>
-            {% endfor %}
-        </ul>
-    </div>
-    {% endif %}
-
-    {% if puede_solicitar %}
-    <form method="post" action="{% url 'panel:enlace_farmacia_solicitar' farmacia.pk %}"
-          hx-post="{% url 'panel:enlace_farmacia_solicitar' farmacia.pk %}"
-          hx-target="#modal-info-content" hx-swap="innerHTML">
-        {% csrf_token %}
-        <button type="submit" class="btn primary w-full">Pedir lectura ahora</button>
-        <p class="text-xs text-[var(--text-faint)] mt-2">
-            Consulta el Mikrotik por SNMP desde el servidor. Si el router no responde
-            —porque todavía no tiene SNMP habilitado— se le pide
-            {% if estacion_sondeadora %}a {{ estacion_sondeadora.codigo }}, que lo alcanza desde la LAN del sitio{% else %}a una estación de la farmacia, pero ahora mismo no hay ninguna en línea{% endif %}.
-        </p>
-        {% if not ultima %}
-        <p class="text-xs text-[var(--text-faint)] mt-2">
-            La primera lectura de una farmacia siempre sale sin valor: el consumo se calcula
-            comparando dos lecturas seguidas. El número aparece en la segunda.
-        </p>
-        {% endif %}
-    </form>
-    {% endif %}
 </div>
+
+<style>
+{% comment %}
+Pestañas con radios: sin JS que restaurar cuando HTMX repinta el fragmento. Los estilos
+van en el fragmento porque el modal se inyecta suelto; son pocas reglas y solo aplican
+dentro de .tabs-enlace.
+{% endcomment %}
+.tabs-enlace .tab-enlace-panel{ display:none; }
+.tabs-enlace .tab-enlace-btn{
+    font-size:12px; padding:6px 12px; cursor:pointer; color:var(--text-faint);
+    border-bottom:2px solid transparent; margin-bottom:-1px;
+}
+.tabs-enlace .tab-enlace-btn:hover{ color:var(--text); }
+.tabs-enlace #tab-general:checked ~ div [for="tab-general"],
+.tabs-enlace #tab-trafico:checked ~ div [for="tab-trafico"],
+.tabs-enlace #tab-historial:checked ~ div [for="tab-historial"]{
+    color:var(--text); border-bottom-color:var(--accent); font-weight:600;
+}
+.tabs-enlace #tab-general:checked ~ [data-tab="general"],
+.tabs-enlace #tab-trafico:checked ~ [data-tab="trafico"],
+.tabs-enlace #tab-historial:checked ~ [data-tab="historial"]{ display:block; }
+</style>

@@ -1,83 +1,192 @@
 {% extends "panel/base.html" %}
-{% block title %}Enlaces · SAIDSOFT{% endblock %}
+{% block title %}Estado de enlaces · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold mb-1">Estado de enlaces</h1>
-<p class="text-sm text-[var(--text-faint)] mb-6" style="max-width:680px;">
-    Sondeo ICMP al equipo de borde de cada farmacia, desde el servidor. No necesita agente
-    instalado: alcanza con tener la IP cargada. El consumo del enlace se lee por SNMP al
-    Mikrotik, y solo aparece donde el router ya tiene SNMP habilitado con la comunidad
-    correcta ({{ con_ancho_banda }} de {{ total }}). Para habilitar uno nuevo, entrá a la
-    farmacia y mirá las instrucciones del pedido de lectura.
-</p>
+{% comment %}
+Pantalla de operación tipo NOC: primero el estado general (KPI), después qué acotar
+(filtros), después qué farmacia mirar (tabla) y por último qué le pasa (modal HTMX, que
+no cambió). La explicación técnica va colapsada — ocupaba cinco líneas fijas arriba de
+todo y solo se lee una vez.
+{% endcomment %}
 
-<div class="grid grid-cols-3 gap-4 mb-6 text-sm">
+<div class="flex items-start justify-between gap-4 mb-5 flex-wrap">
+    <div>
+        <h1 class="text-xl font-semibold">Estado de enlaces</h1>
+        <p class="text-sm text-[var(--text-faint)]">Monitoreo de conectividad de las farmacias</p>
+    </div>
+    <details class="relative">
+        <summary class="btn secondary text-xs cursor-pointer list-none" style="padding:6px 12px;">
+            ? Información del monitoreo
+        </summary>
+        <div class="card p-4 text-xs text-[var(--text-faint)] mt-2 md:absolute md:right-0 md:w-[26rem] md:z-20"
+             style="box-shadow:0 8px 24px rgba(0,0,0,.18);">
+            <p class="mb-2">
+                <strong class="text-[var(--text)]">Estado del enlace.</strong> Ping ICMP desde el
+                servidor al equipo de borde de la farmacia. No necesita agente instalado: alcanza
+                con tener la IP cargada, así que cubre las {{ total }} farmacias. Se sondea cada
+                2 minutos y una caída se declara recién tras {{ umbral_fallas }} fallas seguidas
+                —un paquete perdido en un enlace WAN es normal—, aunque el evento se fecha en la
+                primera falla para que la duración sirva como evidencia.
+            </p>
+            <p class="mb-2">
+                <strong class="text-[var(--text)]">Tráfico.</strong> Se lee por SNMP al Mikrotik.
+                Solo aparece donde el router ya tiene SNMP habilitado con la comunidad igual al
+                código de la farmacia en minúscula. Si falta, el detalle de esa farmacia explica
+                cómo habilitarlo.
+            </p>
+            <p>
+                <strong class="text-[var(--text)]">La primera lectura sale vacía.</strong> El
+                consumo se calcula comparando dos lecturas consecutivas, así que el número
+                aparece recién en la segunda.
+            </p>
+        </div>
+    </details>
+</div>
+
+{% comment %} KPI sobre el total, no sobre la página: "154 caídos" dice 154 aunque estés en la página 3. {% endcomment %}
+<div class="grid gap-3 mb-5" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));">
     <div class="card p-4">
-        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Activos</div>
-        <div class="text-2xl font-semibold" style="color:var(--good);">{{ activas }}</div>
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Total enlaces</div>
+        <div class="text-2xl font-semibold num">{{ total }}</div>
     </div>
     <div class="card p-4">
-        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Caídos</div>
-        <div class="text-2xl font-semibold" style="{% if caidas %}color:var(--critical);{% endif %}">{{ caidas }}</div>
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Activos</div>
+        <div class="text-2xl font-semibold num" style="color:var(--good);">{{ activas }}</div>
+        <div class="text-xs text-[var(--text-faint)]">{% widthratio activas total 100 %}% del total</div>
+    </div>
+    <div class="card p-4" {% if caidas %}style="border-left:3px solid var(--critical);"{% endif %}>
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Caídos</div>
+        <div class="text-2xl font-semibold num" {% if caidas %}style="color:var(--critical);"{% endif %}>{{ caidas }}</div>
+        <div class="text-xs text-[var(--text-faint)]">{% widthratio caidas total 100 %}% del total</div>
     </div>
     <div class="card p-4">
-        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Sin sondear</div>
-        <div class="text-2xl font-semibold">{{ sin_sondear }}</div>
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Sin sondear</div>
+        <div class="text-2xl font-semibold num">{{ sin_sondear }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Con tráfico (SNMP)</div>
+        <div class="text-2xl font-semibold num" style="color:var(--info);">{{ con_ancho_banda }}</div>
+        <div class="text-xs text-[var(--text-faint)]">{% widthratio con_ancho_banda total 100 %}% del total</div>
     </div>
 </div>
 
-{% if sin_sondear == total and total %}
-<div class="card p-4 mb-6" style="border-left:3px solid var(--info);">
+{% if total and sin_sondear == total %}
+{% comment %}
+Una tabla entera en "sin sondear" se lee como una pantalla rota. Este aviso dice qué
+falta y cómo descartar que sea un problema de ruta desde este host.
+{% endcomment %}
+<div class="card p-4 mb-5" style="border-left:3px solid var(--info);">
     <div class="text-sm font-medium mb-1">Todavía nadie sondeó estos enlaces</div>
     <p class="text-xs text-[var(--text-faint)]">
-        El barrido corre solo cada 2 minutos desde el servidor. Si esto no cambia, revisá que
-        la tarea <span class="font-mono">sondear_enlaces_farmacias_task</span> esté viva en
-        Celery, o corré <span class="font-mono">python manage.py sondear_enlaces</span> a mano.
-        Con <span class="font-mono">--solo-probar</span> mide sin escribir nada, para descartar
-        que sea un problema de ruta desde este host.
+        El barrido corre solo cada 2 minutos. Si esto no cambia, revisá que la tarea
+        <span class="mono">sondear_enlaces_farmacias_task</span> esté viva en Celery, o corré
+        <span class="mono">python manage.py sondear_enlaces</span> a mano. Con
+        <span class="mono">--solo-probar</span> mide sin escribir nada, para descartar que sea
+        un problema de ruta desde este host.
     </p>
 </div>
 {% endif %}
 
-{% if en_curso %}
-<div class="card p-4 mb-6" style="border-left:3px solid var(--critical);">
-    <div class="text-sm font-medium mb-2">Caídas en curso</div>
-    <ul class="text-xs text-[var(--text-faint)] space-y-1">
+{% if en_curso_total %}
+{% comment %}
+Colapsada por defecto: con 154 caídas abiertas, la lista empujaba la tabla fuera de la
+pantalla y volvía inútil justamente la herramienta que venías a usar.
+{% endcomment %}
+<details class="card mb-5" style="border-left:3px solid var(--critical);">
+    <summary class="px-4 py-3 cursor-pointer flex items-center justify-between gap-3 list-none">
+        <span class="text-sm font-medium">
+            Caídas en curso
+            <span class="pill critical ml-1">{{ en_curso_total }}</span>
+        </span>
+        <span class="text-xs text-[var(--text-faint)]">Ver detalle ▾</span>
+    </summary>
+    <div class="px-4 pb-4 grid gap-2" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr));">
         {% for evento in en_curso %}
-        <li>
-            <span class="font-medium text-[var(--text)]">{{ evento.farmacia.codigo }}</span>
-            desde {{ evento.inicio|date:"d/m H:i" }}
-            {% if evento.circuito_proveedor %}— circuito <span class="font-mono">{{ evento.circuito_proveedor }}</span>{% endif %}
-        </li>
+        <div class="text-xs p-2 rounded-md" style="background:var(--panel);">
+            <div class="font-medium text-[var(--text)]">{{ evento.farmacia.codigo }}</div>
+            <div class="text-[var(--text-faint)]">Desde {{ evento.inicio|date:"d/m H:i" }}</div>
+            {% if evento.circuito_proveedor %}
+            <div class="text-[var(--text-faint)] mono truncate" title="{{ evento.circuito_proveedor }}">{{ evento.circuito_proveedor }}</div>
+            {% endif %}
+        </div>
         {% endfor %}
-    </ul>
-</div>
+    </div>
+</details>
 {% endif %}
 
-<div class="card" style="overflow:hidden;">
-    <table class="w-full text-sm">
+{% comment %} Filtros por GET: quedan en la URL, así un enlace a "los caídos del grupo GEC" se comparte. {% endcomment %}
+<form method="get" class="card p-4 mb-4">
+    <div class="grid gap-3 mb-3" style="grid-template-columns:minmax(220px,2fr) repeat(auto-fit,minmax(150px,1fr));">
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="q">Buscar</label>
+            <input type="search" name="q" id="q" value="{{ filtros.q }}"
+                   placeholder="Farmacia, IP o circuito…"
+                   class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]"
+                   style="border:1px solid var(--border);">
+        </div>
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="estado">Estado</label>
+            <select name="estado" id="estado" class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+                <option value="">Todos</option>
+                <option value="caidos" {% if filtros.estado == 'caidos' %}selected{% endif %}>Caídos</option>
+                <option value="activos" {% if filtros.estado == 'activos' %}selected{% endif %}>Activos</option>
+                <option value="sin_sondear" {% if filtros.estado == 'sin_sondear' %}selected{% endif %}>Sin sondear</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="grupo">Grupo</label>
+            <select name="grupo" id="grupo" class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+                <option value="">Todos</option>
+                {% for g in grupos %}
+                <option value="{{ g.codigo }}" {% if filtros.grupo == g.codigo %}selected{% endif %}>{{ g.codigo }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="trafico">Tráfico</label>
+            <select name="trafico" id="trafico" class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+                <option value="">Todos</option>
+                <option value="con" {% if filtros.trafico == 'con' %}selected{% endif %}>Con lectura SNMP</option>
+                <option value="sin" {% if filtros.trafico == 'sin' %}selected{% endif %}>Sin lectura SNMP</option>
+            </select>
+        </div>
+    </div>
+    <div class="flex items-center gap-3 flex-wrap">
+        <button type="submit" class="btn primary">Aplicar filtros</button>
+        <a href="{% url 'panel:enlaces_farmacias_lista' %}" class="btn secondary">Limpiar</a>
+        <span class="text-xs text-[var(--text-faint)] ml-auto">
+            Mostrando {{ pagina.start_index }}–{{ pagina.end_index }} de {{ pagina.paginator.count }} enlace(s)
+            {% if pagina.paginator.count != total %}<span class="text-[var(--text-faint)]">(de {{ total }} en total)</span>{% endif %}
+        </span>
+    </div>
+</form>
+
+<div class="card" style="overflow-x:auto;">
+    <table class="w-full text-sm" style="min-width:820px;">
         <thead style="background:var(--panel);">
             <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
-                <th class="text-left px-4 py-3">Farmacia</th>
-                <th class="text-left px-4 py-3">Grupo</th>
-                <th class="text-left px-4 py-3">IP</th>
-                <th class="text-left px-4 py-3">Estado</th>
-                <th class="text-left px-4 py-3">Latencia</th>
-                <th class="text-left px-4 py-3">Ancho de banda</th>
-                <th class="text-left px-4 py-3">Circuito</th>
-                <th class="text-left px-4 py-3">Último sondeo</th>
+                <th class="text-left px-4 py-2.5">Farmacia</th>
+                <th class="text-left px-3 py-2.5">Grupo</th>
+                <th class="text-left px-3 py-2.5">Estado</th>
+                <th class="text-right px-3 py-2.5">Latencia</th>
+                <th class="text-right px-3 py-2.5">Tráfico</th>
+                <th class="text-left px-3 py-2.5">Circuito</th>
+                <th class="text-left px-3 py-2.5">Último sondeo</th>
+                <th class="text-right px-4 py-2.5"></th>
             </tr>
         </thead>
         <tbody>
         {% for fila in filas %}
             <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]"
-                style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}"
+                style="border-top:1px solid var(--border-soft);"
                 hx-get="{% url 'panel:enlace_farmacia_modal' fila.farmacia.pk %}"
                 hx-target="#modal-info-content" hx-swap="innerHTML"
                 onclick="document.getElementById('modal-info').showModal()">
-                <td class="px-4 py-3 font-medium">{{ fila.farmacia.codigo }}</td>
-                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ fila.farmacia.grupo.codigo }}</td>
-                <td class="px-4 py-3 font-mono text-xs text-[var(--text-faint)]">{{ fila.farmacia.ip_router }}</td>
-                <td class="px-4 py-3">
+                <td class="px-4 py-2.5">
+                    <div class="font-medium">{{ fila.farmacia.codigo }}</div>
+                    <div class="text-[var(--text-faint)] mono" style="font-size:11px;" title="IP del equipo de borde">{{ fila.farmacia.ip_router }}</div>
+                </td>
+                <td class="px-3 py-2.5 text-[var(--text-faint)] text-xs">{{ fila.farmacia.grupo.codigo }}</td>
+                <td class="px-3 py-2.5 whitespace-nowrap">
                     {% if fila.alcanzable is None %}
                     <span class="pill neutral">Sin sondear</span>
                     {% elif fila.alcanzable %}
@@ -85,31 +194,59 @@
                     {% else %}
                     <span class="pill critical">Caído</span>
                     {% if fila.estado.ultimo_cambio_estado %}
-                    <div class="text-xs mt-1" style="color:var(--critical);">desde {{ fila.estado.ultimo_cambio_estado|date:"d/m H:i" }}</div>
+                    <div class="text-[var(--text-faint)]" style="font-size:11px;">desde {{ fila.estado.ultimo_cambio_estado|date:"d/m H:i" }}</div>
                     {% endif %}
                     {% endif %}
                 </td>
-                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
+                <td class="px-3 py-2.5 text-right num text-[var(--text-faint)] text-xs">
                     {% if fila.estado.latencia_ms %}{{ fila.estado.latencia_ms|floatformat:0 }} ms{% else %}—{% endif %}
                 </td>
-                <td class="px-4 py-3 text-xs">
+                <td class="px-3 py-2.5 text-right num text-xs">
                     {% if fila.total_kbps is not None %}
                     <span {% if fila.estado_bw == 'critical' %}style="color:var(--critical);"{% elif fila.estado_bw == 'warning' %}style="color:var(--warning);"{% endif %}>
                         {{ fila.total_kbps|floatformat:0 }} KB/s
                     </span>
                     {% else %}<span class="text-[var(--text-faint)]">sin SNMP</span>{% endif %}
                 </td>
-                <td class="px-4 py-3 font-mono text-xs text-[var(--text-faint)]">{{ fila.farmacia.circuito_proveedor|default:"—" }}</td>
-                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
+                <td class="px-3 py-2.5 mono text-[var(--text-faint)] truncate" style="font-size:11px; max-width:200px;"
+                    title="{{ fila.farmacia.circuito_proveedor }}">{{ fila.farmacia.circuito_proveedor|default:"—" }}</td>
+                <td class="px-3 py-2.5 text-[var(--text-faint)] text-xs whitespace-nowrap">
                     {% if fila.estado.ultima_verificacion %}{{ fila.estado.ultima_verificacion|date:"d/m H:i" }}{% else %}nunca{% endif %}
                 </td>
+                <td class="px-4 py-2.5 text-right text-[var(--text-faint)] text-xs">Ver ›</td>
             </tr>
         {% empty %}
             <tr><td colspan="8">
-                {% include "panel/_estado_vacio.html" with titulo="Ninguna farmacia tiene IP de enlace cargada" pista="Se cargan desde el Excel de operaciones con importar_red_farmacias_xlsx. Sin IP no hay a qué hacerle ping." accion_puede=False %}
+                {% include "panel/_estado_vacio.html" with titulo="Ninguna farmacia tiene IP de enlace cargada" pista="Se cargan desde el Excel de operaciones con importar_red_farmacias_xlsx. Sin IP no hay a qué hacerle ping." pista_filtro="Hay enlaces cargados, pero ninguno coincide con este filtro." accion_puede=False %}
             </td></tr>
         {% endfor %}
         </tbody>
     </table>
 </div>
+
+{% if pagina.paginator.num_pages > 1 %}
+<div class="flex items-center justify-between gap-3 mt-4 flex-wrap">
+    <span class="text-xs text-[var(--text-faint)]">
+        Página {{ pagina.number }} de {{ pagina.paginator.num_pages }}
+    </span>
+    <div class="flex items-center gap-1 flex-wrap">
+        {% if pagina.has_previous %}
+        <a href="?{{ query_filtros }}{% if query_filtros %}&{% endif %}pagina={{ pagina.previous_page_number }}" class="btn secondary text-xs" style="padding:5px 10px;">‹ Anterior</a>
+        {% endif %}
+        {% comment %} Ventana de páginas alrededor de la actual: con 28 páginas, listarlas todas es otra pared de números. {% endcomment %}
+        {% for n in pagina.paginator.page_range %}
+            {% if n == pagina.number %}
+            <span class="btn primary text-xs" style="padding:5px 10px;">{{ n }}</span>
+            {% elif n == 1 or n == pagina.paginator.num_pages or n > pagina.number|add:"-3" and n < pagina.number|add:"3" %}
+            <a href="?{{ query_filtros }}{% if query_filtros %}&{% endif %}pagina={{ n }}" class="btn secondary text-xs" style="padding:5px 10px;">{{ n }}</a>
+            {% elif n == pagina.number|add:"-3" or n == pagina.number|add:"3" %}
+            <span class="text-xs text-[var(--text-faint)] px-1">…</span>
+            {% endif %}
+        {% endfor %}
+        {% if pagina.has_next %}
+        <a href="?{{ query_filtros }}{% if query_filtros %}&{% endif %}pagina={{ pagina.next_page_number }}" class="btn secondary text-xs" style="padding:5px 10px;">Siguiente ›</a>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
 {% endblock %}

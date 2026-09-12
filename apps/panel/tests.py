@@ -3773,11 +3773,11 @@ class EnlacesFarmaciasPanelTests(TestCase):
 
     def test_avisa_cuando_nadie_sondeo_todavia(self):
         """Sin este aviso, una tabla toda en "sin sondear" parece una pantalla rota en vez
-        de "falta correr el comando desde un host con ruta"."""
+        de "falta que corra el barrido". El texto vive en el bloque de información del
+        monitoreo, que el rediseño del 12-sep-2026 dejó colapsado pero presente en el HTML."""
         self.client.force_login(self.usuario)
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertEqual(resp.context['sin_sondear'], 2)
-        self.assertContains(resp, 'Todavía nadie sondeó estos enlaces')
         self.assertContains(resp, 'sondear_enlaces')
 
     def test_lista_las_caidas_en_curso_con_su_circuito(self):
@@ -3939,3 +3939,114 @@ class EnlaceFarmaciaModalTests(TestCase):
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertEqual(resp.context['con_ancho_banda'], 1)
         self.assertEqual(resp.context['filas'][0]['total_kbps'], 150.0)
+
+
+class EnlacesListaFiltrosYPaginacionTests(TestCase):
+    """Filtros, buscador y paginación server-side de /monitoreo/enlaces/.
+
+    Todo del lado del servidor a propósito: a 700 farmacias (y subiendo), traer la tabla
+    entera y filtrar en el navegador manda todo el listado en cada carga para mostrar las
+    pocas filas que importan.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, MuestraRedFarmacia
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.g1 = Grupo.objects.create(codigo='TRX001')
+        self.g2 = Grupo.objects.create(codigo='TRX002')
+
+        # 30 farmacias para que haya más de una página (25 por página).
+        self.farmacias = []
+        for i in range(1, 31):
+            grupo = self.g1 if i <= 20 else self.g2
+            self.farmacias.append(Farmacia.objects.create(
+                codigo=f'ML{i:03d}', grupo=grupo, unidad_negocio=self.sg,
+                ip_router=f'10.20.30.{i}',
+                circuito_proveedor='telconet-norte' if i <= 5 else '',
+            ))
+        # Sin IP: no se puede sondear, no debe aparecer nunca.
+        Farmacia.objects.create(codigo='ML999', grupo=self.g1, unidad_negocio=self.sg)
+
+        registrar_sondeo(self.farmacias[0], True, 15.0)   # ML001 activa
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(self.farmacias[1], False, None)  # ML002 caída
+        MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacias[0], bytes_recibidos=1, bytes_enviados=1,
+            red_recibido_kbps=100.0, red_enviado_kbps=50.0,
+        )
+
+        self.usuario = User.objects.create_user(username='u_enlaces_ui', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia'),
+        )
+        self.client.force_login(self.usuario)
+        self.url = reverse('panel:enlaces_farmacias_lista')
+
+    def test_pagina_25_y_no_trae_las_700(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(len(resp.context['filas']), 25)
+        self.assertEqual(resp.context['pagina'].paginator.count, 30)
+        self.assertEqual(len(self.client.get(self.url, {'pagina': 2}).context['filas']), 5)
+
+    def test_los_kpi_son_del_total_no_de_la_pagina(self):
+        """Si el contador dijera 25 porque la página trae 25, el número dejaría de servir
+        para decidir si hay que actuar."""
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.context['total'], 30)
+        self.assertEqual(resp.context['activas'], 1)
+        self.assertEqual(resp.context['caidas'], 1)
+        self.assertEqual(resp.context['sin_sondear'], 28)
+        self.assertEqual(resp.context['con_ancho_banda'], 1)
+
+    def test_los_caidos_van_primero(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.context['filas'][0]['farmacia'].codigo, 'ML002')
+
+    def test_filtra_por_estado(self):
+        resp = self.client.get(self.url, {'estado': 'caidos'})
+        self.assertEqual([f['farmacia'].codigo for f in resp.context['filas']], ['ML002'])
+        self.assertEqual(self.client.get(self.url, {'estado': 'activos'}).context['pagina'].paginator.count, 1)
+        self.assertEqual(self.client.get(self.url, {'estado': 'sin_sondear'}).context['pagina'].paginator.count, 28)
+
+    def test_filtra_por_grupo(self):
+        resp = self.client.get(self.url, {'grupo': 'TRX002'})
+        self.assertEqual(resp.context['pagina'].paginator.count, 10)
+
+    def test_filtra_por_disponibilidad_de_trafico(self):
+        self.assertEqual(self.client.get(self.url, {'trafico': 'con'}).context['pagina'].paginator.count, 1)
+        self.assertEqual(self.client.get(self.url, {'trafico': 'sin'}).context['pagina'].paginator.count, 29)
+
+    def test_busca_por_codigo_circuito_e_ip(self):
+        self.assertEqual(self.client.get(self.url, {'q': 'ML007'}).context['pagina'].paginator.count, 1)
+        self.assertEqual(self.client.get(self.url, {'q': 'telconet'}).context['pagina'].paginator.count, 5)
+        # La IP es `inet` en PostgreSQL: sin el cast a texto esta consulta reventaría en
+        # producción aunque pase en SQLite.
+        self.assertEqual(self.client.get(self.url, {'q': '10.20.30.7'}).context['pagina'].paginator.count, 1)
+
+    def test_los_filtros_se_combinan(self):
+        resp = self.client.get(self.url, {'grupo': 'TRX001', 'estado': 'caidos'})
+        self.assertEqual([f['farmacia'].codigo for f in resp.context['filas']], ['ML002'])
+
+    def test_la_paginacion_conserva_los_filtros(self):
+        """Sin esto, pasar de página descarta el filtro y el operador vuelve a las 700."""
+        resp = self.client.get(self.url, {'grupo': 'TRX001', 'pagina': 1})
+        self.assertIn('grupo=TRX001', resp.context['query_filtros'])
+        self.assertNotIn('pagina', resp.context['query_filtros'])
+
+    def test_farmacia_sin_ip_nunca_aparece(self):
+        resp = self.client.get(self.url, {'q': 'ML999'})
+        self.assertEqual(resp.context['pagina'].paginator.count, 0)
+
+    def test_solo_ofrece_los_grupos_que_existen(self):
+        resp = self.client.get(self.url)
+        self.assertEqual([g.codigo for g in resp.context['grupos']], ['TRX001', 'TRX002'])
+
+    def test_las_caidas_en_curso_van_colapsadas(self):
+        """154 caídas abiertas empujaban la tabla fuera de la pantalla."""
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.context['en_curso_total'], 1)
+        self.assertContains(resp, '<details')
+        self.assertNotContains(resp, '<details open')
