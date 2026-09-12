@@ -18,8 +18,15 @@ instalado de ~1.800 estimados**. El cuello de botella dejó de ser el código.
   **`docker compose` v2** (contenedores `deploy-web-1`, con guiones).
 - Acceso SSH con usuario `glpi`. **Las credenciales NO están en el repo** — pedírselas
   al usuario. Lo mismo para todo secreto: viven solo en el `deploy/.env` del servidor.
-- Despliegue: `git pull` → `docker compose --env-file .env build web` →
-  `up -d`. El entrypoint corre las migraciones solo.
+- Despliegue: `git pull` → `docker compose --env-file .env build` → `up -d`.
+  El entrypoint corre las migraciones solo.
+  **`build web` NO alcanza** (decía eso acá hasta el 11-sep-2026): los servicios
+  comparten el mismo `Dockerfile` vía el ancla `x-app`, pero Compose genera **una
+  imagen por servicio** (`deploy-web`, `deploy-worker`, `deploy-celery_beat`,
+  `deploy-celery_worker`, `deploy-meshcentral_worker`). Con `build web` solo se
+  recrea `web` y el worker MQTT y Celery se quedan con el código viejo — pasó en el
+  despliegue del 11-sep: beat seguía sin la tarea nueva y sin el `ping` del
+  Dockerfile. `build` sin argumento las construye todas.
 - **Un cambio a `deploy/nginx/nginx.conf` exige RECREAR el contenedor, no recargarlo**:
   es un bind mount de archivo suelto y ata el inode, así que `git pull` no lo alcanza
   (ver §10-AA).
