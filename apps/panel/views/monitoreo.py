@@ -23,6 +23,15 @@ from .alertas import _top_mensajes_pos_errores
 RED_FARMACIA_UMBRAL_WARNING_KBPS = 8000
 RED_FARMACIA_UMBRAL_CRITICAL_KBPS = 15000
 
+# Umbrales de color de CPU/RAM/disco. Estaban escritos como literales sueltos en las DOS
+# vistas que los usan (la lista de servidores y el detalle), con los mismos seis números
+# repetidos. Ajustar uno y olvidar el otro pintaba la MISMA estación de un color en la
+# lista y de otro en su ficha, sin que nada fallara — el operador ve dos verdades y no
+# sabe cuál creer. Ahora hay un solo lugar donde cambiarlos.
+UMBRAL_CPU_WARNING_PCT, UMBRAL_CPU_CRITICAL_PCT = 75, 90
+UMBRAL_RAM_WARNING_PCT, UMBRAL_RAM_CRITICAL_PCT = 80, 92
+UMBRAL_DISCO_WARNING_PCT, UMBRAL_DISCO_CRITICAL_PCT = 85, 95
+
 
 def _clasificar(valor, umbral_warning, umbral_critico):
     """Devuelve un estado (ok/warning/critical) para colorear un stat tile."""
@@ -33,6 +42,31 @@ def _clasificar(valor, umbral_warning, umbral_critico):
     if valor >= umbral_warning:
         return 'warning'
     return 'ok'
+
+
+def estados_de_recursos(muestra):
+    """Los tres colores de una muestra de recursos, calculados en un solo lugar.
+
+    Se devuelven juntos y no de a uno a propósito: el problema no era el valor de cada
+    umbral sino que hubiera dos caminos para llegar al color. Con esto, la lista y el
+    detalle no pueden divergir ni aunque alguien toque uno solo.
+
+    `muestra` puede ser None (estación sin métricas todavía): los tres salen 'sin_dato'.
+    """
+    return {
+        'estado_cpu': _clasificar(
+            muestra.cpu_carga_pct if muestra else None,
+            UMBRAL_CPU_WARNING_PCT, UMBRAL_CPU_CRITICAL_PCT,
+        ),
+        'estado_ram': _clasificar(
+            muestra.ram_usada_pct if muestra else None,
+            UMBRAL_RAM_WARNING_PCT, UMBRAL_RAM_CRITICAL_PCT,
+        ),
+        'estado_disco': _clasificar(
+            muestra.disco_usado_pct if muestra else None,
+            UMBRAL_DISCO_WARNING_PCT, UMBRAL_DISCO_CRITICAL_PCT,
+        ),
+    }
 
 
 @login_required
@@ -50,9 +84,7 @@ def monitoreo_lista(request):
         tarjetas.append({
             'estacion': estacion,
             'ultima': ultima,
-            'estado_cpu': _clasificar(ultima.cpu_carga_pct if ultima else None, 75, 90),
-            'estado_ram': _clasificar(ultima.ram_usada_pct if ultima else None, 80, 92),
-            'estado_disco': _clasificar(ultima.disco_usado_pct if ultima else None, 85, 95),
+            **estados_de_recursos(ultima),
         })
     return render(request, 'panel/monitoreo_lista.html', {'tarjetas': tarjetas})
 
@@ -94,9 +126,7 @@ def monitoreo_detalle_partial(request, pk):
         'g_disco': construir_grafico(disco_pct, escala_fija=100),
         'g_latencia': construir_grafico(latencia),
         'g_red': construir_grafico(red),
-        'estado_cpu': _clasificar(ultima.cpu_carga_pct if ultima else None, 75, 90),
-        'estado_ram': _clasificar(ultima.ram_usada_pct if ultima else None, 80, 92),
-        'estado_disco': _clasificar(ultima.disco_usado_pct if ultima else None, 85, 95),
+        **estados_de_recursos(ultima),
     })
 
 

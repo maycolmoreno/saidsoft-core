@@ -4050,3 +4050,83 @@ class EnlacesListaFiltrosYPaginacionTests(TestCase):
         self.assertEqual(resp.context['en_curso_total'], 1)
         self.assertContains(resp, '<details')
         self.assertNotContains(resp, '<details open')
+
+
+class UmbralesDeRecursosTests(TestCase):
+    """Los colores de CPU/RAM/disco salen de un solo cálculo.
+
+    Auditoría del 12-sep-2026: los seis umbrales estaban escritos como literales en las
+    DOS vistas que los usan (`monitoreo_lista` y `monitoreo_detalle_partial`). Ajustar
+    uno y olvidar el otro pintaba la misma estación de un color en la lista y de otro en
+    su ficha, sin que nada fallara. Estas pruebas fijan que no puedan divergir.
+    """
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-ADM', farmacia=farmacia, monitorear_recursos=True,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_umbrales', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_muestrametrica'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _muestra(self, cpu, ram_pct, disco_pct):
+        return MuestraMetrica.objects.create(
+            estacion=self.estacion, cpu_carga_pct=cpu,
+            ram_total=1000, ram_usada=int(ram_pct * 10),
+            disco_total_gb=100.0, disco_libre_gb=100.0 - disco_pct,
+        )
+
+    def _colores_de_ambas_pantallas(self):
+        lista = self.client.get(reverse('panel:monitoreo_lista'))
+        detalle = self.client.get(reverse('panel:monitoreo_detalle_partial', args=[self.estacion.pk]))
+        claves = ('estado_cpu', 'estado_ram', 'estado_disco')
+        return (
+            {k: lista.context['tarjetas'][0][k] for k in claves},
+            {k: detalle.context[k] for k in claves},
+        )
+
+    def test_la_lista_y_el_detalle_pintan_igual_la_misma_estacion(self):
+        """Es la prueba central: mismo dato, mismo color en las dos pantallas."""
+        for cpu, ram, disco in ((10, 10, 10), (78, 85, 88), (95, 96, 98)):
+            with self.subTest(cpu=cpu):
+                MuestraMetrica.objects.all().delete()
+                self._muestra(cpu, ram, disco)
+                en_lista, en_detalle = self._colores_de_ambas_pantallas()
+                self.assertEqual(en_lista, en_detalle)
+
+    def test_los_tres_niveles_se_clasifican_donde_corresponde(self):
+        from apps.panel.views.monitoreo import estados_de_recursos
+
+        self.assertEqual(estados_de_recursos(self._muestra(10, 10, 10))['estado_cpu'], 'ok')
+        MuestraMetrica.objects.all().delete()
+        self.assertEqual(estados_de_recursos(self._muestra(78, 10, 10))['estado_cpu'], 'warning')
+        MuestraMetrica.objects.all().delete()
+        self.assertEqual(estados_de_recursos(self._muestra(95, 10, 10))['estado_cpu'], 'critical')
+
+    def test_sin_muestra_no_inventa_un_color(self):
+        """null no es cero: una estación que nunca reportó no está "en verde"."""
+        from apps.panel.views.monitoreo import estados_de_recursos
+
+        self.assertEqual(
+            estados_de_recursos(None),
+            {'estado_cpu': 'sin_dato', 'estado_ram': 'sin_dato', 'estado_disco': 'sin_dato'},
+        )
+
+    def test_cambiar_un_umbral_cambia_las_dos_pantallas_a_la_vez(self):
+        """El objetivo real del cambio: que no exista un segundo camino al color. Si
+        alguien vuelve a poner literales en una vista, esta prueba falla."""
+        from apps.panel.views import monitoreo as vistas
+
+        self._muestra(50, 10, 10)  # con los umbrales reales, 50% de CPU es 'ok'
+        with patch.object(vistas, 'UMBRAL_CPU_WARNING_PCT', 40):
+            en_lista, en_detalle = self._colores_de_ambas_pantallas()
+        self.assertEqual(en_lista['estado_cpu'], 'warning')
+        self.assertEqual(en_detalle['estado_cpu'], 'warning')
