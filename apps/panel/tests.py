@@ -4130,3 +4130,145 @@ class UmbralesDeRecursosTests(TestCase):
             en_lista, en_detalle = self._colores_de_ambas_pantallas()
         self.assertEqual(en_lista['estado_cpu'], 'warning')
         self.assertEqual(en_detalle['estado_cpu'], 'warning')
+
+
+class EstacionesListaPaginacionTests(TestCase):
+    """Paginación y filtros de /estaciones/ (prioridad 2 de la auditoría del 12-sep-2026).
+
+    Se paginó ANTES del rollout del agente a propósito: hoy son 8 estaciones y no duele,
+    pero el parque son ~1.800. Paginar una lista de 8 filas es barato; hacerlo cuando ya
+    hay 1.800 en producción, no.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX001', version_objetivo='4.2.1')
+        # Grupo sin versión objetivo: sus estaciones NUNCA cuentan como desactualizadas.
+        self.grupo_sin_objetivo = Grupo.objects.create(codigo='TRX002', version_objetivo='')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=self.grupo, unidad_negocio=self.sg)
+        self.otra = Farmacia.objects.create(
+            codigo='ML002', grupo=self.grupo_sin_objetivo, unidad_negocio=self.sg,
+        )
+
+        for i in range(1, 31):
+            Estacion.objects.create(
+                codigo=f'ML001-{i:02d}', farmacia=farmacia,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+                # 10 en la versión objetivo, 20 atrasadas (una de ellas sin reportar).
+                version_pos='4.2.1' if i <= 10 else ('' if i == 11 else '4.1.0'),
+            )
+        Estacion.objects.create(
+            codigo='ML002-01', farmacia=self.otra,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, version_pos='9.9.9',
+        )
+
+        self.usuario = User.objects.create_user(username='u_est_pag', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
+        self.client.force_login(self.usuario)
+        self.url = reverse('panel:estaciones_lista')
+
+    def test_pagina_de_a_25(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(len(resp.context['estaciones']), 25)
+        self.assertEqual(resp.context['pagina'].paginator.count, 31)
+        self.assertEqual(len(self.client.get(self.url, {'pagina': 2}).context['estaciones']), 6)
+
+    def test_el_filtro_de_desactualizadas_se_resuelve_en_la_base(self):
+        """Antes era una comprensión de lista sobre el queryset: traía la tabla entera a
+        memoria y dejaba sin efecto la paginación. El resultado tiene que ser el mismo que
+        daba la property `Estacion.desactualizada`."""
+        resp = self.client.get(self.url, {'desactualizadas': '1'})
+        codigos = set(Estacion.objects.filter(pk__in=[e.pk for e in resp.context['pagina'].object_list]).values_list('codigo', flat=True))
+        esperado = {e.codigo for e in Estacion.objects.all() if e.desactualizada}
+        # La página trae 20; el total del paginador es el universo filtrado.
+        self.assertEqual(resp.context['pagina'].paginator.count, len(esperado))
+        self.assertTrue(codigos.issubset(esperado))
+
+    def test_una_estacion_que_nunca_reporto_cuenta_como_desactualizada(self):
+        """version_pos='' contra un objetivo definido es "atrasada", no "sin dato" —
+        mismo criterio que la property original."""
+        sin_reportar = Estacion.objects.get(codigo='ML001-11')
+        self.assertTrue(sin_reportar.desactualizada)
+        resp = self.client.get(self.url, {'desactualizadas': '1', 'pagina': 1})
+        todos = list(resp.context['pagina'].paginator.object_list.values_list('codigo', flat=True))
+        self.assertIn('ML001-11', todos)
+
+    def test_un_grupo_sin_version_objetivo_nunca_esta_desactualizado(self):
+        resp = self.client.get(self.url, {'desactualizadas': '1'})
+        todos = list(resp.context['pagina'].paginator.object_list.values_list('codigo', flat=True))
+        self.assertNotIn('ML002-01', todos)
+
+    def test_la_paginacion_conserva_los_filtros(self):
+        resp = self.client.get(self.url, {'grupo': 'TRX001', 'pagina': 2})
+        self.assertIn('grupo=TRX001', resp.context['query_filtros'])
+        self.assertNotIn('pagina', resp.context['query_filtros'])
+
+
+class MonitoreoListaConsultasTests(TestCase):
+    """La lista de servidores no hace una consulta por servidor.
+
+    Era `estacion.metricas.first()` dentro del bucle. Con 4 servidores no se notaba, pero
+    `monitorear_recursos` se activa en el servidor de cada farmacia: a escala de rollout
+    son ~700 consultas por carga.
+    """
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estaciones = []
+        for i in range(1, 11):
+            e = Estacion.objects.create(
+                codigo=f'ML001-{i:02d}', farmacia=farmacia, monitorear_recursos=True,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            )
+            self.estaciones.append(e)
+            for cpu in (10.0, 20.0, float(30 + i)):  # la última es la que debe mostrarse
+                MuestraMetrica.objects.create(
+                    estacion=e, cpu_carga_pct=cpu, ram_total=1000, ram_usada=100,
+                    disco_total_gb=100.0, disco_libre_gb=90.0,
+                )
+
+        usuario = User.objects.create_user(username='u_mon_q', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_muestrametrica'),
+        )
+        self.client.force_login(usuario)
+
+    def test_el_numero_de_consultas_no_crece_con_los_servidores(self):
+        """Lo que se fija no es un número exacto sino que sea CONSTANTE: con 10 servidores
+        tiene que hacer las mismas consultas que con 2."""
+        with self.assertNumQueries(self._consultas_con(2)):
+            self.client.get(reverse('panel:monitoreo_lista'))
+
+    def _consultas_con(self, cuantos):
+        Estacion.objects.filter(monitorear_recursos=True).exclude(
+            pk__in=[e.pk for e in self.estaciones[:cuantos]],
+        ).update(monitorear_recursos=False)
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get(reverse('panel:monitoreo_lista'))
+        Estacion.objects.filter(farmacia__codigo='ML001').update(monitorear_recursos=True)
+        return len(ctx)
+
+    def test_muestra_la_lectura_mas_reciente_de_cada_servidor(self):
+        resp = self.client.get(reverse('panel:monitoreo_lista'))
+        por_codigo = {t['estacion'].codigo: t['ultima'] for t in resp.context['tarjetas']}
+        for i, e in enumerate(self.estaciones, start=1):
+            self.assertEqual(por_codigo[e.codigo].cpu_carga_pct, float(30 + i))
+
+    def test_un_servidor_sin_muestras_no_rompe_la_lista(self):
+        Estacion.objects.create(
+            codigo='ML001-99', farmacia=self.estaciones[0].farmacia, monitorear_recursos=True,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        resp = self.client.get(reverse('panel:monitoreo_lista'))
+        vacia = [t for t in resp.context['tarjetas'] if t['estacion'].codigo == 'ML001-99'][0]
+        self.assertIsNone(vacia['ultima'])
+        self.assertEqual(vacia['estado_cpu'], 'sin_dato')

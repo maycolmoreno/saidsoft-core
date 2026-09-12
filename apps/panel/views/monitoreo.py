@@ -2,7 +2,7 @@ from datetime import timedelta
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
-from django.db.models import Avg
+from django.db.models import Avg, Max
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 from django.urls import reverse
@@ -14,6 +14,7 @@ from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acc
 from apps.monitoreo.forms import VentanaMantenimientoForm
 from apps.monitoreo.models import Alerta, MuestraMetrica, ReglaAlerta, VentanaMantenimiento
 
+from ..paginacion import paginar
 from .alertas import _top_mensajes_pos_errores
 
 # Umbral fijo en v1 (no hay Farmacia.capacidad_mbps todavía para mostrar % de la
@@ -78,9 +79,33 @@ def monitoreo_lista(request):
         .select_related('farmacia', 'farmacia__grupo'),
         request, 'farmacia__unidad_negocio',
     ).order_by('codigo')
+    # La última muestra de cada servidor en DOS consultas, no una por servidor. Antes
+    # era `estacion.metricas.first()` dentro del bucle: con 4 servidores monitoreados no
+    # se notaba, pero `monitorear_recursos` se activa en el servidor de cada farmacia, así
+    # que a escala de rollout son ~700 consultas por carga de pantalla.
+    #
+    # Se resuelve con Max(timestamp) por estación y después un `IN` sobre esos instantes,
+    # en vez de `DISTINCT ON (estacion)`: eso último es exclusivo de PostgreSQL y las
+    # pruebas corren sobre SQLite.
+    servidores = list(servidores)
+    ids = [e.pk for e in servidores]
+    ultimas = MuestraMetrica.objects.filter(estacion_id__in=ids).values('estacion_id').annotate(
+        ts=Max('timestamp'),
+    )
+    pares = {(u['estacion_id'], u['ts']) for u in ultimas}
+    por_estacion = {
+        m.estacion_id: m
+        for m in MuestraMetrica.objects.filter(
+            estacion_id__in=ids, timestamp__in=[ts for _e, ts in pares],
+        )
+        # El filtro por timestamp solo puede traer de más (dos estaciones que midieron en
+        # el mismo instante), nunca de menos: el par exacto es el que decide.
+        if (m.estacion_id, m.timestamp) in pares
+    }
+
     tarjetas = []
     for estacion in servidores:
-        ultima = estacion.metricas.first()  # ordering = -timestamp
+        ultima = por_estacion.get(estacion.pk)
         tarjetas.append({
             'estacion': estacion,
             'ultima': ultima,
@@ -287,7 +312,6 @@ def enlaces_farmacias_lista(request):
     Los KPI se calculan sobre el conjunto COMPLETO, no sobre la página: "154 caídos"
     tiene que seguir diciendo 154 aunque estés mirando la página 3 con 25 filas.
     """
-    from django.core.paginator import Paginator
     from django.db.models import Case, IntegerField, OuterRef, Q, Subquery, TextField, When
     from django.db.models.functions import Cast
 
@@ -363,8 +387,7 @@ def enlaces_farmacias_lista(request):
         ),
     ).order_by('orden_estado', 'codigo')
 
-    paginador = Paginator(listado, 25)
-    pagina = paginador.get_page(request.GET.get('pagina'))
+    pagina, query_filtros = paginar(listado, request)
 
     filas = []
     for farmacia in pagina.object_list:
@@ -388,11 +411,6 @@ def enlaces_farmacias_lista(request):
         fin__isnull=True, farmacia__in=base.values('pk'),
     ).select_related('farmacia').order_by('inicio')
 
-    # Parámetros de filtro sin `pagina`, para que los enlaces del paginador no arrastren
-    # la página vieja ni pierdan el filtro activo.
-    query = request.GET.copy()
-    query.pop('pagina', None)
-
     return render(request, 'panel/enlaces_farmacias_lista.html', {
         'filas': filas,
         'activas': activas,
@@ -404,7 +422,7 @@ def enlaces_farmacias_lista(request):
         'en_curso_total': en_curso.count(),
         'pagina': pagina,
         'filtros': filtros,
-        'query_filtros': query.urlencode(),
+        'query_filtros': query_filtros,
         'grupos': Grupo.objects.filter(farmacias__in=base.values('pk')).distinct().order_by('codigo'),
         'umbral_fallas': EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS,
     })

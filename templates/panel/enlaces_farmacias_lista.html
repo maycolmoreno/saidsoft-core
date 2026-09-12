@@ -224,29 +224,5 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
     </table>
 </div>
 
-{% if pagina.paginator.num_pages > 1 %}
-<div class="flex items-center justify-between gap-3 mt-4 flex-wrap">
-    <span class="text-xs text-[var(--text-faint)]">
-        Página {{ pagina.number }} de {{ pagina.paginator.num_pages }}
-    </span>
-    <div class="flex items-center gap-1 flex-wrap">
-        {% if pagina.has_previous %}
-        <a href="?{{ query_filtros }}{% if query_filtros %}&{% endif %}pagina={{ pagina.previous_page_number }}" class="btn secondary text-xs" style="padding:5px 10px;">‹ Anterior</a>
-        {% endif %}
-        {% comment %} Ventana de páginas alrededor de la actual: con 28 páginas, listarlas todas es otra pared de números. {% endcomment %}
-        {% for n in pagina.paginator.page_range %}
-            {% if n == pagina.number %}
-            <span class="btn primary text-xs" style="padding:5px 10px;">{{ n }}</span>
-            {% elif n == 1 or n == pagina.paginator.num_pages or n > pagina.number|add:"-3" and n < pagina.number|add:"3" %}
-            <a href="?{{ query_filtros }}{% if query_filtros %}&{% endif %}pagina={{ n }}" class="btn secondary text-xs" style="padding:5px 10px;">{{ n }}</a>
-            {% elif n == pagina.number|add:"-3" or n == pagina.number|add:"3" %}
-            <span class="text-xs text-[var(--text-faint)] px-1">…</span>
-            {% endif %}
-        {% endfor %}
-        {% if pagina.has_next %}
-        <a href="?{{ query_filtros }}{% if query_filtros %}&{% endif %}pagina={{ pagina.next_page_number }}" class="btn secondary text-xs" style="padding:5px 10px;">Siguiente ›</a>
-        {% endif %}
-    </div>
-</div>
-{% endif %}
+{% include "panel/_paginador.html" %}
 {% endblock %}

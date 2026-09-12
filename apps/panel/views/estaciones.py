@@ -1,5 +1,6 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
+from django.db.models import F
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
@@ -13,6 +14,8 @@ from apps.catalogo.services import (
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
 from apps.monitoreo.services import ventana_mantenimiento_activa
+
+from ..paginacion import paginar
 
 
 def _render_info_modal(request, estacion, **extra):
@@ -46,10 +49,25 @@ def estaciones_lista(request):
     if estado_conexion:
         estaciones = estaciones.filter(estado_conexion=estado_conexion)
     if solo_desactualizadas:
-        estaciones = [e for e in estaciones if e.desactualizada]
+        # Antes: `[e for e in estaciones if e.desactualizada]`, que evaluaba la property
+        # en Python y convertía el queryset en una lista. A 8 estaciones no se notaba; a
+        # ~1.800 trae la tabla entera a memoria en cada carga y además haría inútil la
+        # paginación de abajo (Paginator sobre una lista ya materializada no ahorra nada).
+        # Mismo criterio que `Estacion.desactualizada`: solo cuenta si el grupo tiene una
+        # versión objetivo definida, y una estación que nunca reportó `version_pos` ('')
+        # se considera desactualizada.
+        estaciones = estaciones.exclude(farmacia__grupo__version_objetivo='').exclude(
+            version_pos=F('farmacia__grupo__version_objetivo'),
+        )
+
+    pagina, query_filtros = paginar(estaciones, request)
 
     return render(request, 'panel/estaciones_lista.html', {
-        'estaciones': estaciones,
+        # `estaciones` sigue siendo el nombre que usa la plantilla: ahora es la página
+        # actual en vez del queryset completo, pero el bucle de la tabla no cambia.
+        'estaciones': pagina.object_list,
+        'pagina': pagina,
+        'query_filtros': query_filtros,
         'grupos': Grupo.objects.order_by('codigo'),
         'filtro_grupo': grupo or '',
         'filtro_estado': estado_conexion or '',
