@@ -101,18 +101,16 @@ fragmento, así el operador no pierde la ventana al disparar la consulta.
           hx-post="{% url 'panel:enlace_farmacia_solicitar' farmacia.pk %}"
           hx-target="#modal-info-content" hx-swap="innerHTML">
         {% csrf_token %}
-        {% if estacion_sondeadora %}
         <button type="submit" class="btn primary w-full">Pedir lectura ahora</button>
         <p class="text-xs text-[var(--text-faint)] mt-2">
-            Se la pide a {{ estacion_sondeadora.codigo }}: el consumo lo mide el agente por SNMP
-            al Mikrotik desde la LAN del sitio, no este servidor. El dato llega en unos segundos.
+            Consulta el Mikrotik por SNMP desde el servidor. Si el router no responde
+            —porque todavía no tiene SNMP habilitado— se le pide
+            {% if estacion_sondeadora %}a {{ estacion_sondeadora.codigo }}, que lo alcanza desde la LAN del sitio{% else %}a una estación de la farmacia, pero ahora mismo no hay ninguna en línea{% endif %}.
         </p>
-        {% else %}
-        <button type="button" class="btn secondary w-full" disabled>Pedir lectura ahora</button>
-        <p class="text-xs mt-2" style="color:var(--warning);">
-            Esta farmacia no tiene ninguna estación aprobada y en línea. El consumo lo mide el
-            agente desde la LAN del sitio, así que sin agente instalado no hay quién lo lea —
-            el estado del enlace de arriba sí funciona igual, porque ese se mide por ping.
+        {% if not ultima %}
+        <p class="text-xs text-[var(--text-faint)] mt-2">
+            La primera lectura de una farmacia siempre sale sin valor: el consumo se calcula
+            comparando dos lecturas seguidas. El número aparece en la segunda.
         </p>
         {% endif %}
     </form>

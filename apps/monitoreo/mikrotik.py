@@ -197,6 +197,33 @@ def sincronizar_ancho_banda_farmacias() -> int:
     return exitosas
 
 
+def sondear_y_guardar_farmacia(farmacia) -> bool:
+    """Sondea UNA farmacia por SNMP desde este servidor y persiste la muestra.
+
+    Extraído de `sincronizar_ancho_banda_farmacias` para que el botón "Pedir lectura
+    ahora" del panel use exactamente el mismo camino que la tarea periódica, en vez de
+    una segunda implementación que se desincronice.
+
+    Devuelve True si el router respondió y se guardó la muestra.
+
+    Ojo con la primera muestra de una farmacia: se guarda con `red_*_kbps` en null,
+    porque la tasa se calcula diferenciando contra la anterior y no hay ninguna. Eso no
+    es un fallo — el valor aparece recién en la segunda lectura.
+    """
+    from apps.monitoreo.models import MuestraRedFarmacia
+
+    resultado = asyncio.run(_sondear_farmacia(farmacia, _puerto()))
+    if resultado is None:
+        return False
+    _f, bytes_recibidos, bytes_enviados = resultado
+    rx, tx = _calcular_tasa(farmacia, bytes_recibidos, bytes_enviados)
+    MuestraRedFarmacia.objects.create(
+        farmacia=farmacia, bytes_recibidos=bytes_recibidos, bytes_enviados=bytes_enviados,
+        red_recibido_kbps=rx, red_enviado_kbps=tx,
+    )
+    return True
+
+
 def solicitar_sondeo_red_farmacias_via_agente() -> int:
     """Celery Beat periódico (cada 5 min, ver CELERY_BEAT_SCHEDULE): por cada
     Farmacia con `ip_router` y al menos una Estacion aprobada y en línea, le pide a

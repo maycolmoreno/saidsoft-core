@@ -373,17 +373,46 @@ def enlace_farmacia_modal(request, pk):
 def enlace_farmacia_solicitar(request, pk):
     """Pide AHORA la lectura de consumo del enlace de esta farmacia.
 
-    No sondea desde el servidor: le pide por MQTT a una estación de la propia farmacia
-    que consulte por SNMP su Mikrotik y reporte (misma LAN). Devuelve el modal
-    repintado, así el operador ve el pedido en curso sin salir de la ventana — el dato
-    llega asincrónicamente por MQTT unos segundos después.
+    Intenta primero el SNMP **directo desde este servidor**, y solo si eso falla le pide
+    a una estación de la propia farmacia que lo haga por MQTT.
+
+    Ese orden se invirtió el 12-sep-2026. La versión original solo sabía pedirle al
+    agente, porque el repo daba por sentado que el servidor no tenía ruta hacia las IP
+    de las farmacias. Ya no es así (ver el docstring de apps.monitoreo.enlaces), y se
+    comprobó leyendo los contadores reales de GNB01 desde el contenedor. El camino
+    directo es mejor por dos motivos: funciona en las ~700 farmacias y no solo en las
+    que tienen agente, y el dato queda guardado antes de responder, así que el operador
+    lo ve en el mismo repintado en vez de esperar a que llegue por MQTT.
+
+    La vía del agente se conserva como respaldo: sirve donde el Mikrotik todavía no
+    tiene SNMP habilitado pero sí hay un agente que lo alcanza desde la LAN.
     """
     from apps.catalogo.services import enviar_consultar_red_farmacia
+    from apps.monitoreo.mikrotik import sondear_y_guardar_farmacia
 
     farmacia = get_object_or_404(
         Farmacia.objects.select_related('grupo', 'unidad_negocio', 'estado_enlace'), pk=pk,
     )
     verificar_acceso(request.user, farmacia.unidad_negocio)
+
+    if farmacia.ip_router is not None and sondear_y_guardar_farmacia(farmacia):
+        registrar_evento(
+            usuario=request.user, accion='farmacia.consultar_red', objeto=farmacia,
+            detalle={'via': 'snmp_directo'}, request=request,
+        )
+        ultima = farmacia.muestras_red.first()
+        if ultima and ultima.red_total_kbps is None:
+            # Primera muestra de esta farmacia: no hay contra qué diferenciar todavía.
+            # Decirlo explícitamente evita que se lea como "el router no reporta nada".
+            messages.success(
+                request,
+                'Primera lectura guardada. El consumo se calcula comparando dos lecturas, '
+                'así que el valor aparece en la próxima (unos 5 minutos).',
+            )
+        else:
+            messages.success(request, 'Lectura tomada por SNMP directo.')
+        farmacia.refresh_from_db()
+        return _render_enlace_modal(request, farmacia)
 
     estacion = farmacia.estaciones.filter(
         estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
@@ -393,17 +422,22 @@ def enlace_farmacia_solicitar(request, pk):
     if estacion is None:
         messages.error(
             request,
-            f'{farmacia.codigo} no tiene ninguna estación aprobada y en línea: el consumo lo mide '
-            'el agente por SNMP desde la LAN del sitio, así que sin agente no hay quién lo lea.',
+            f'El Mikrotik de {farmacia.codigo} no respondió por SNMP y no hay ninguna estación en '
+            'línea que pueda leerlo desde la LAN. Habilitá SNMP en el router con la comunidad '
+            f'"{farmacia.codigo.lower()}" — probá con: probar_snmp_farmacia {farmacia.codigo}',
         )
     elif enviar_consultar_red_farmacia(estacion, farmacia.codigo.lower()):
         registrar_evento(
             usuario=request.user, accion='farmacia.consultar_red', objeto=farmacia,
-            detalle={'estacion': estacion.codigo}, request=request,
+            detalle={'via': 'agente', 'estacion': estacion.codigo}, request=request,
         )
-        messages.success(request, f'Lectura pedida a {estacion.codigo}. El dato llega en unos segundos.')
+        messages.success(
+            request,
+            f'El SNMP directo no respondió; se le pidió a {estacion.codigo}. El dato llega '
+            'en unos segundos.',
+        )
     else:
-        messages.error(request, 'No se pudo enviar el pedido por MQTT (¿broker caído?).')
+        messages.error(request, 'No respondió el SNMP ni se pudo pedir por MQTT (¿broker caído?).')
 
     farmacia.refresh_from_db()
     return _render_enlace_modal(request, farmacia)

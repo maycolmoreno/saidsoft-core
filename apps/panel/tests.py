@@ -566,9 +566,9 @@ class RedFarmaciasListaTests(TestCase):
     def test_farmacia_con_ip_router_pero_nunca_sondeada_aparece_sin_consumo(self):
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertContains(resp, 'ML001')
-        # Sin agente que sondee el Mikrotik no hay consumo, y la pantalla lo dice así en
+        # Sin SNMP habilitado en el router no hay consumo, y la pantalla lo dice así en
         # vez de mostrar un cero que se leería como "no consume nada".
-        self.assertContains(resp, 'sin agente')
+        self.assertContains(resp, 'sin SNMP')
 
     def test_muestra_el_consumo_de_la_ultima_muestra(self):
         MuestraRedFarmacia.objects.create(
@@ -3856,12 +3856,15 @@ class EnlaceFarmaciaModalTests(TestCase):
         self.assertContains(resp, '<polyline')
         self.assertNotContains(resp, 'Grafico(')
 
-    def test_sin_estacion_en_linea_no_ofrece_pedir_lectura(self):
-        """El consumo lo mide el agente desde la LAN del sitio. Sin agente, ofrecer el
-        botón sería prometer algo que va a fallar en silencio."""
+    def test_ofrece_pedir_lectura_aunque_no_haya_agente(self):
+        """Invertido el 12-sep-2026: antes el boton se deshabilitaba sin una estacion en
+        linea, porque se daba por sentado que solo el agente podia leer el Mikrotik. El
+        servidor si lo alcanza por SNMP (comprobado contra GNB01), asi que el boton se
+        ofrece siempre y el agente quedo como respaldo."""
         resp = self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.farmacia.pk]))
         self.assertIsNone(resp.context['estacion_sondeadora'])
-        self.assertContains(resp, 'no tiene ninguna estación aprobada y en línea')
+        self.assertContains(resp, 'Pedir lectura ahora')
+        self.assertNotContains(resp, 'disabled')
 
     @patch('apps.catalogo.services.enviar_consultar_red_farmacia', return_value=True)
     def test_pedir_lectura_le_habla_a_la_estacion_de_la_propia_farmacia(self, mock_enviar):
@@ -3879,10 +3882,25 @@ class EnlaceFarmaciaModalTests(TestCase):
         self.client.post(reverse('panel:enlace_farmacia_solicitar', args=[self.farmacia.pk]))
         self.assertTrue(EventoAuditoria.objects.filter(accion='farmacia.consultar_red').exists())
 
-    def test_pedir_lectura_sin_estacion_avisa_y_no_revienta(self):
+    @patch('apps.monitoreo.mikrotik.sondear_y_guardar_farmacia', return_value=False)
+    def test_si_no_hay_snmp_ni_agente_dice_como_habilitarlo(self, _mock):
+        """El mensaje tiene que ser accionable: sin SNMP y sin agente, lo que falta es
+        habilitar SNMP en el router, y con que comunidad."""
         resp = self.client.post(reverse('panel:enlace_farmacia_solicitar', args=[self.farmacia.pk]))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'sin agente')
+        self.assertContains(resp, 'ml001')
+        self.assertContains(resp, 'probar_snmp_farmacia')
+
+    @patch('apps.monitoreo.mikrotik.sondear_y_guardar_farmacia', return_value=True)
+    def test_intenta_snmp_directo_antes_que_el_agente(self, mock_snmp):
+        """El orden importa: el SNMP directo cubre las ~700 farmacias y deja el dato
+        guardado antes de responder; pedirselo al agente solo funciona donde hay uno y
+        el dato llega despues por MQTT."""
+        self._estacion_online()
+        with patch('apps.catalogo.services.enviar_consultar_red_farmacia') as mock_agente:
+            self.client.post(reverse('panel:enlace_farmacia_solicitar', args=[self.farmacia.pk]))
+        mock_snmp.assert_called_once()
+        mock_agente.assert_not_called()
 
     def test_solicitar_exige_permiso(self):
         sin_permiso = User.objects.create_user(username='modal_pelado', password='x')

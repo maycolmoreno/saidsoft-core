@@ -575,7 +575,7 @@ confirmada con el usuario para no hacer `Alerta.estacion` opcional, mismo criter
 que Windows Update v1/Plan de energía v1: probar primero que el dato SNMP es
 confiable, automatizar después.
 
-## Estado de enlaces por farmacia (ICMP, sin agente)
+## Estado de enlaces por farmacia (ICMP y SNMP, sin agente)
 
 Todo el resto del monitoreo de este proyecto depende de que la farmacia tenga un **agente
 instalado**, y eso hoy cubre 8 de ~1.800 estaciones. Un ping al equipo de borde no necesita
@@ -618,7 +618,16 @@ mide y reporta por HTTP, y el servidor persiste con el mismo `registrar_sondeo()
   biblioteca estándar, a propósito: va a correr en una máquina donde instalar cosas puede ser
   un trámite.
 
-**No está programado en Celery Beat, a propósito.** El servidor central no tiene ruta hacia
+**Corregido el 12-sep-2026:** lo de abajo se escribió asumiendo que el servidor no tenía
+ruta hacia las farmacias. **Ya no es así** — verificado sobre el NUC real, host y contenedor
+las alcanzan, y se leyeron los contadores SNMP de `GNB01` desde el contenedor. Por eso el
+sondeo **sí** está programado en Celery Beat (cada 2 min) y el consumo de ancho de banda ya
+no depende de tener un agente en la farmacia: alcanza con habilitar SNMP en su Mikrotik con
+la comunidad igual al código en minúscula. `probar_snmp_farmacia <CODIGO>` diagnostica cuál
+de las cuatro causas lo impide. Se deja el párrafo original porque el razonamiento sigue
+valiendo si la ruta vuelve a desaparecer:
+
+**~~No está programado en Celery Beat, a propósito.~~** El servidor central no tenía ruta hacia
 las IP de las farmacias (confirmado el 24-ago-2026: 100 % de pérdida de ping, sin entrada en
 la tabla de rutas del host) — es la misma razón por la que el SNMP al Mikrotik se hace desde
 el agente y no desde acá. Programarlo en el servidor registraría 704 caídas falsas. Se corre

@@ -3,11 +3,11 @@
 {% block content %}
 <h1 class="text-xl font-semibold mb-1">Estado de enlaces</h1>
 <p class="text-sm text-[var(--text-faint)] mb-6" style="max-width:680px;">
-    Sondeo ICMP al equipo de borde de cada farmacia. A diferencia del resto del monitoreo,
-    esto no necesita agente instalado: alcanza con tener la IP cargada. El consumo del enlace
-    sí depende del agente —lo sondea por SNMP al Mikrotik la estación del sitio—, así que la
-    columna de ancho de banda solo tiene dato donde hay una estación con agente
-    ({{ con_ancho_banda }} de {{ total }}).
+    Sondeo ICMP al equipo de borde de cada farmacia, desde el servidor. No necesita agente
+    instalado: alcanza con tener la IP cargada. El consumo del enlace se lee por SNMP al
+    Mikrotik, y solo aparece donde el router ya tiene SNMP habilitado con la comunidad
+    correcta ({{ con_ancho_banda }} de {{ total }}). Para habilitar uno nuevo, entrá a la
+    farmacia y mirá las instrucciones del pedido de lectura.
 </p>
 
 <div class="grid grid-cols-3 gap-4 mb-6 text-sm">
@@ -29,11 +29,11 @@
 <div class="card p-4 mb-6" style="border-left:3px solid var(--info);">
     <div class="text-sm font-medium mb-1">Todavía nadie sondeó estos enlaces</div>
     <p class="text-xs text-[var(--text-faint)]">
-        El sondeo no corre en este servidor a propósito: no tiene ruta de red hacia las IP de
-        las farmacias, y correrlo acá registraría caídas falsas. Hay que correr
-        <span class="font-mono">python manage.py sondear_enlaces</span> desde un host que sí
-        tenga ruta. Para saber si una máquina la tiene:
-        <span class="font-mono">sondear_enlaces --solo-probar</span>, que no escribe nada.
+        El barrido corre solo cada 2 minutos desde el servidor. Si esto no cambia, revisá que
+        la tarea <span class="font-mono">sondear_enlaces_farmacias_task</span> esté viva en
+        Celery, o corré <span class="font-mono">python manage.py sondear_enlaces</span> a mano.
+        Con <span class="font-mono">--solo-probar</span> mide sin escribir nada, para descartar
+        que sea un problema de ruta desde este host.
     </p>
 </div>
 {% endif %}
@@ -97,7 +97,7 @@
                     <span {% if fila.estado_bw == 'critical' %}style="color:var(--critical);"{% elif fila.estado_bw == 'warning' %}style="color:var(--warning);"{% endif %}>
                         {{ fila.total_kbps|floatformat:0 }} KB/s
                     </span>
-                    {% else %}<span class="text-[var(--text-faint)]">sin agente</span>{% endif %}
+                    {% else %}<span class="text-[var(--text-faint)]">sin SNMP</span>{% endif %}
                 </td>
                 <td class="px-4 py-3 font-mono text-xs text-[var(--text-faint)]">{{ fila.farmacia.circuito_proveedor|default:"—" }}</td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
