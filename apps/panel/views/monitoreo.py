@@ -249,3 +249,57 @@ def red_farmacias_lista(request):
             'estado': _clasificar(valor, RED_FARMACIA_UMBRAL_WARNING_KBPS, RED_FARMACIA_UMBRAL_CRITICAL_KBPS),
         })
     return render(request, 'panel/red_farmacias_lista.html', {'filas': filas})
+
+
+@login_required
+@permission_required('monitoreo.view_estadoenlacefarmacia', raise_exception=True)
+def enlaces_farmacias_lista(request):
+    """Estado del enlace de cada farmacia, sondeado por ICMP (apps.monitoreo.enlaces).
+
+    Complementa /monitoreo/red-farmacias/ (ancho de banda por SNMP): ahí se ve *cuánto*
+    tráfico pasa, acá *si el sitio responde*. La diferencia que importa es que esto no
+    necesita agente instalado ni Mikrotik configurado — cubre las ~704 sucursales con
+    solo tener la IP cargada, mientras que el resto del monitoreo cubre 8 de ~1.800
+    estaciones.
+
+    El sondeo NO corre en este servidor (no hay ruta hacia las IP de las farmacias, ver
+    el docstring de apps.monitoreo.enlaces). Si todas las farmacias aparecen "sin
+    sondear", es que nadie corrió `sondear_enlaces` desde un host con ruta todavía — la
+    plantilla lo dice explícitamente en vez de mostrar una tabla vacía sin explicación.
+    """
+    from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+    farmacias = scope_por_unidad_negocio_activa(
+        Farmacia.objects.exclude(ip_router__isnull=True),
+        request, 'unidad_negocio',
+    ).select_related('estado_enlace', 'grupo').order_by('codigo')
+
+    filas, caidas, activas, sin_sondear = [], 0, 0, 0
+    for farmacia in farmacias:
+        estado = getattr(farmacia, 'estado_enlace', None)
+        alcanzable = estado.alcanzable if estado else None
+        if alcanzable is None:
+            sin_sondear += 1
+        elif alcanzable:
+            activas += 1
+        else:
+            caidas += 1
+        filas.append({'farmacia': farmacia, 'estado': estado, 'alcanzable': alcanzable})
+
+    # Las caídas primero: es lo que el operador vino a ver. Dentro de cada grupo, por
+    # código, para que la lista no baile entre refrescos.
+    filas.sort(key=lambda f: (f['alcanzable'] is not False, f['alcanzable'] is None, f['farmacia'].codigo))
+
+    en_curso = EventoEnlaceFarmacia.objects.filter(
+        fin__isnull=True, farmacia__in=[f['farmacia'].pk for f in filas],
+    ).select_related('farmacia').order_by('inicio')
+
+    return render(request, 'panel/enlaces_farmacias_lista.html', {
+        'filas': filas,
+        'activas': activas,
+        'caidas': caidas,
+        'sin_sondear': sin_sondear,
+        'total': len(filas),
+        'en_curso': en_curso,
+        'umbral_fallas': EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS,
+    })

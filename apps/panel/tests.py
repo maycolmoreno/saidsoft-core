@@ -3693,3 +3693,96 @@ class AperturaPanelTests(TestCase):
 
         eventos = EventoAuditoria.objects.filter(accion='apertura.aprobar', objeto_id=str(apertura.pk))
         self.assertEqual(eventos.count(), 1)
+
+
+class EnlacesFarmaciasPanelTests(TestCase):
+    """Vista /monitoreo/enlaces/ (apps/panel/views/monitoreo.py)."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.viva = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=self.sg, ip_router='192.168.102.1',
+        )
+        self.caida = Farmacia.objects.create(
+            codigo='ML002', grupo=grupo, unidad_negocio=self.sg, ip_router='192.168.102.2',
+            circuito_proveedor='sangregorio2-santana',
+        )
+        # Sin ip_router: no se le puede hacer ping, no debe aparecer.
+        Farmacia.objects.create(codigo='ML003', grupo=grupo, unidad_negocio=self.sg)
+
+        self.usuario = User.objects.create_user(username='ver_enlaces', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia'),
+        )
+
+    def _sondear(self, farmacia, alcanzable, veces=1, latencia=None):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        for _ in range(veces):
+            registrar_sondeo(farmacia, alcanzable, latencia)
+
+    def test_exige_permiso(self):
+        sin_permiso = User.objects.create_user(username='sin_enlaces', password='x')
+        PerfilUsuario.objects.create(usuario=sin_permiso, acceso_todas_unidades=True)
+        self.client.force_login(sin_permiso)
+        self.assertEqual(self.client.get(reverse('panel:enlaces_farmacias_lista')).status_code, 403)
+
+    def test_cuenta_activos_caidos_y_sin_sondear(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self._sondear(self.viva, True, latencia=21.0)
+        self._sondear(self.caida, False, veces=EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS)
+
+        self.client.force_login(self.usuario)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['activas'], 1)
+        self.assertEqual(resp.context['caidas'], 1)
+        # ML003 no tiene ip_router: ni siquiera entra en la lista.
+        self.assertEqual(resp.context['total'], 2)
+        self.assertEqual(resp.context['sin_sondear'], 0)
+
+    def test_las_caidas_van_primero(self):
+        """Es lo que el operador vino a ver; si quedan mezcladas entre 704 filas, no sirve."""
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self._sondear(self.viva, True, latencia=21.0)
+        self._sondear(self.caida, False, veces=EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS)
+
+        self.client.force_login(self.usuario)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertEqual(resp.context['filas'][0]['farmacia'], self.caida)
+
+    def test_avisa_cuando_nadie_sondeo_todavia(self):
+        """Sin este aviso, una tabla toda en "sin sondear" parece una pantalla rota en vez
+        de "falta correr el comando desde un host con ruta"."""
+        self.client.force_login(self.usuario)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertEqual(resp.context['sin_sondear'], 2)
+        self.assertContains(resp, 'Todavía nadie sondeó estos enlaces')
+        self.assertContains(resp, 'sondear_enlaces')
+
+    def test_lista_las_caidas_en_curso_con_su_circuito(self):
+        """El circuito es lo que el proveedor pide al abrir el ticket: tenerlo a la vista
+        evita ir a buscarlo a una planilla mientras la farmacia está sin vender."""
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self._sondear(self.caida, False, veces=EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS)
+        self.client.force_login(self.usuario)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertEqual([e.farmacia for e in resp.context['en_curso']], [self.caida])
+        self.assertContains(resp, 'sangregorio2-santana')
+
+    def test_aislamiento_por_unidad_de_negocio(self):
+        ajeno = User.objects.create_user(username='ajeno_enlaces', password='x')
+        perfil = PerfilUsuario.objects.create(usuario=ajeno, acceso_todas_unidades=False)
+        perfil.unidades_negocio.set([self.mia])
+        ajeno.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia'),
+        )
+        self.client.force_login(ajeno)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertEqual(resp.context['total'], 0)
+        self.assertNotContains(resp, 'ML001')

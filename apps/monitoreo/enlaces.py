@@ -46,7 +46,11 @@ MAX_SONDEOS_CONCURRENTES = 50
 # donde se sondea, no 704 caídas simultáneas. Ver el docstring del módulo.
 UMBRAL_BARRIDO_SOSPECHOSO_PCT = 80
 
-_RE_LATENCIA = re.compile(r'(?:time|tiempo)[=<]\s*([\d.,]+)\s*ms', re.IGNORECASE)
+# La unidad se pide como `m` y no `ms` a propósito: Windows en español imprime
+# "tiempo<1m" (sin la s) cuando la respuesta es submilisegundo, y exigir "ms" hacía que
+# esos sondeos se registraran como vivos pero sin latencia. Encontrado corriéndolo de
+# verdad, no leyendo la documentación de ping.
+_RE_LATENCIA = re.compile(r'(?:time|tiempo)[=<]\s*([\d.,]+)\s*m', re.IGNORECASE)
 
 
 def sondear_enlace(ip: str, timeout=TIMEOUT_SEGUNDOS) -> tuple[bool, float | None]:

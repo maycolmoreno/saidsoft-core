@@ -1,0 +1,100 @@
+{% extends "panel/base.html" %}
+{% block title %}Enlaces · SAIDSOFT{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold mb-1">Estado de enlaces</h1>
+<p class="text-sm text-[var(--text-faint)] mb-6">
+    Sondeo ICMP al equipo de borde de cada farmacia. A diferencia del resto del monitoreo,
+    esto no necesita agente instalado: alcanza con tener la IP cargada.
+</p>
+
+<div class="grid grid-cols-3 gap-4 mb-6 text-sm">
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Activos</div>
+        <div class="text-2xl font-semibold" style="color:var(--good);">{{ activas }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Caídos</div>
+        <div class="text-2xl font-semibold" style="{% if caidas %}color:var(--critical);{% endif %}">{{ caidas }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Sin sondear</div>
+        <div class="text-2xl font-semibold">{{ sin_sondear }}</div>
+    </div>
+</div>
+
+{% if sin_sondear == total and total %}
+<div class="card p-4 mb-6" style="border-left:3px solid var(--info);">
+    <div class="text-sm font-medium mb-1">Todavía nadie sondeó estos enlaces</div>
+    <p class="text-xs text-[var(--text-faint)]">
+        El sondeo no corre en este servidor a propósito: no tiene ruta de red hacia las IP de
+        las farmacias, y correrlo acá registraría caídas falsas. Hay que correr
+        <span class="font-mono">python manage.py sondear_enlaces</span> desde un host que sí
+        tenga ruta. Para saber si una máquina la tiene:
+        <span class="font-mono">sondear_enlaces --solo-probar</span>, que no escribe nada.
+    </p>
+</div>
+{% endif %}
+
+{% if en_curso %}
+<div class="card p-4 mb-6" style="border-left:3px solid var(--critical);">
+    <div class="text-sm font-medium mb-2">Caídas en curso</div>
+    <ul class="text-xs text-[var(--text-faint)] space-y-1">
+        {% for evento in en_curso %}
+        <li>
+            <span class="font-medium text-[var(--text)]">{{ evento.farmacia.codigo }}</span>
+            desde {{ evento.inicio|date:"d/m H:i" }}
+            {% if evento.circuito_proveedor %}— circuito <span class="font-mono">{{ evento.circuito_proveedor }}</span>{% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<div class="card" style="overflow:hidden;">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-4 py-3">Farmacia</th>
+                <th class="text-left px-4 py-3">Grupo</th>
+                <th class="text-left px-4 py-3">IP</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Latencia</th>
+                <th class="text-left px-4 py-3">Circuito</th>
+                <th class="text-left px-4 py-3">Último sondeo</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for fila in filas %}
+            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3 font-medium">{{ fila.farmacia.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ fila.farmacia.grupo.codigo }}</td>
+                <td class="px-4 py-3 font-mono text-xs text-[var(--text-faint)]">{{ fila.farmacia.ip_router }}</td>
+                <td class="px-4 py-3">
+                    {% if fila.alcanzable is None %}
+                    <span class="pill neutral">Sin sondear</span>
+                    {% elif fila.alcanzable %}
+                    <span class="pill good">Activo</span>
+                    {% else %}
+                    <span class="pill critical">Caído</span>
+                    {% if fila.estado.ultimo_cambio_estado %}
+                    <div class="text-xs mt-1" style="color:var(--critical);">desde {{ fila.estado.ultimo_cambio_estado|date:"d/m H:i" }}</div>
+                    {% endif %}
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
+                    {% if fila.estado.latencia_ms %}{{ fila.estado.latencia_ms|floatformat:0 }} ms{% else %}—{% endif %}
+                </td>
+                <td class="px-4 py-3 font-mono text-xs text-[var(--text-faint)]">{{ fila.farmacia.circuito_proveedor|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
+                    {% if fila.estado.ultima_verificacion %}{{ fila.estado.ultima_verificacion|date:"d/m H:i" }}{% else %}nunca{% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="7">
+                {% include "panel/_estado_vacio.html" with titulo="Ninguna farmacia tiene IP de enlace cargada" pista="Se cargan desde el Excel de operaciones con importar_red_farmacias_xlsx. Sin IP no hay a qué hacerle ping." accion_puede=False %}
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

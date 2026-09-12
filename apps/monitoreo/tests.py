@@ -1279,6 +1279,10 @@ class SondeoEnlacesTests(TestCase):
             ('Reply from 192.168.102.1: bytes=32 time=24ms TTL=61', 24.0),
             ('Respuesta desde 192.168.102.1: bytes=32 tiempo=13ms TTL=61', 13.0),
             ('64 bytes from 192.168.102.1: icmp_seq=1 ttl=61 time=8.42 ms', 8.42),
+            # Windows en español, respuesta submilisegundo: imprime "tiempo<1m", SIN la s
+            # de ms. Exigir "ms" en el regex hacía que estos sondeos quedaran vivos pero
+            # sin latencia — encontrado corriendo el comando de verdad.
+            ('Respuesta desde 127.0.0.1: bytes=32 tiempo<1m TTL=128', 1.0),
         ):
             with patch('apps.monitoreo.enlaces.subprocess.run') as mock_run:
                 mock_run.return_value.returncode = 0

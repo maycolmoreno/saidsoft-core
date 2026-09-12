@@ -31,7 +31,7 @@
             </div>
         </div>
 
-        {% if perms.catalogo.view_estacion or perms.despliegues.view_despliegue or perms.aperturas.view_apertura or perms.monitoreo.view_muestrametrica or perms.monitoreo.view_alerta %}<div class="nav-label">Operación</div>{% endif %}
+        {% if perms.catalogo.view_estacion or perms.despliegues.view_despliegue or perms.aperturas.view_apertura or perms.monitoreo.view_estadoenlacefarmacia or perms.monitoreo.view_muestrametrica or perms.monitoreo.view_alerta %}<div class="nav-label">Operación</div>{% endif %}
         <a href="{% url 'panel:dashboard' %}" class="nav-item {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
             <span class="lbl">Dashboard</span>
@@ -52,6 +52,12 @@
         <a href="{% url 'panel:aperturas_lista' %}" class="nav-item {% if 'apertura' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V8l7-5 7 5v13"/><path d="M10 21v-6h4v6"/></svg>
             <span class="lbl">Aperturas</span>
+        </a>
+        {% endif %}
+        {% if perms.monitoreo.view_estadoenlacefarmacia %}
+        <a href="{% url 'panel:enlaces_farmacias_lista' %}" class="nav-item {% if 'enlaces' in request.resolver_match.url_name %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15l6-6"/><path d="M11 6l1-1a4 4 0 0 1 6 6l-1 1"/><path d="M13 18l-1 1a4 4 0 0 1-6-6l1-1"/></svg>
+            <span class="lbl">Enlaces</span>
         </a>
         {% endif %}
         {% if perms.monitoreo.view_muestrametrica %}

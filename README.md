@@ -591,8 +591,15 @@ que tenía `Cresio_enlaces`, el sistema anterior (ver `docs/evaluacion-cresio-en
 - **`EventoEnlaceFarmacia`** — historial de caídas con su duración y el circuito del
   proveedor copiado al momento. Es la línea base de disponibilidad real por sitio para
   discutir un SLA, y es el dato que no se puede reconstruir después.
-- **`python manage.py sondear_enlaces`** — barrido. Con `--solo-probar` no escribe nada y
-  solo responde "¿este host llega a las farmacias?".
+- **`python manage.py sondear_enlaces`** — un barrido y sale. Con `--intervalo 60` no termina:
+  queda sondeando hasta que lo interrumpan, que es la forma de dejarlo como servicio en el
+  host con ruta (así corría `Cresio_enlaces`). Relee las farmacias en cada vuelta, para que
+  un proceso que queda semanas corriendo se entere de las altas y los cambios de IP.
+  Con `--solo-probar` no escribe nada y solo responde "¿este host llega a las farmacias?".
+- **`/monitoreo/enlaces/`** — el panel: activos/caídos/sin sondear, las caídas en curso con su
+  circuito a la vista (es lo que el proveedor pide al abrir el ticket), y las caídas primero en
+  la tabla. Si nadie sondeó todavía, lo dice y explica qué comando falta correr, en vez de
+  mostrar una tabla vacía que parece una pantalla rota.
 
 **No está programado en Celery Beat, a propósito.** El servidor central no tiene ruta hacia
 las IP de las farmacias (confirmado el 24-ago-2026: 100 % de pérdida de ping, sin entrada en

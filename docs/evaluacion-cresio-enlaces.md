@@ -126,8 +126,10 @@ Concretamente, y en este orden:
    pregunta "¿este host llega a las farmacias?". Es la forma más rápida de encontrar la
    máquina que sí tiene ruta.
 
-   **Todavía sin panel**: los datos no se ven en la web. Es deliberado — no tiene sentido
-   construir la pantalla antes de saber si va a haber datos que mostrar.
+   **Panel `/monitoreo/enlaces/`** — hecho también el 11-sep-2026. El criterio inicial fue
+   dejarlo para después de saber si habría datos, pero es al revés: el panel es justamente
+   cómo se confirma que los datos llegan cuando alguien corra el sondeo desde el host con
+   ruta, y el admin estaba pensado solo como respaldo.
 3. **Conectarlo al motor de alertas que ya existe** (`ReglaAlerta`/`Alerta`) en vez de escribir
    uno nuevo. Ojo con una limitación conocida: `Alerta.estacion` es FK obligatoria hoy, y una
    alerta de enlace es de farmacia, no de estación — es el mismo obstáculo que ya frenó las

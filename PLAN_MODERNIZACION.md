@@ -205,8 +205,10 @@ caídas falsas — el mismo error que ya dejó inservible a
 reporta como problema de ruta. La caída se declara tras 3 fallos seguidos pero el evento se
 fecha en el primero, para que la duración sirva como línea base de SLA.
 `sondear_enlaces --solo-probar` responde sin escribir "¿este host llega?", que es la forma
-más rápida de encontrar la máquina con ruta. **Sin panel todavía**, deliberado: no tiene
-sentido construir la pantalla antes de saber si va a haber datos que mostrar.
+más rápida de encontrar la máquina con ruta. Panel en `/monitoreo/enlaces/`: activos/caídos/
+sin sondear, las caídas en curso con su circuito a la vista (es lo que el proveedor pide al
+abrir el ticket) y las caídas primero en la tabla; si nadie sondeó todavía lo dice y explica
+qué comando falta, en vez de mostrar una tabla vacía que parece una pantalla rota.
 
 **M4 — Activar TimescaleDB en producción** sigue bloqueada: requiere el servidor real
 para retomar desde el error exacto ya documentado (`cannot create a unique index

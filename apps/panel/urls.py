@@ -94,6 +94,7 @@ urlpatterns = [
     path('monitoreo/mantenimiento/', views.ventanas_mantenimiento_lista, name='ventanas_mantenimiento_lista'),
     path('monitoreo/mantenimiento/nueva/', views.ventana_mantenimiento_crear, name='ventana_mantenimiento_crear'),
     path('monitoreo/red-farmacias/', views.red_farmacias_lista, name='red_farmacias_lista'),
+    path('monitoreo/enlaces/', views.enlaces_farmacias_lista, name='enlaces_farmacias_lista'),
 
     path('alertas/', views.alertas_lista, name='alertas_lista'),
     path('alertas/errores-pos/', views.pos_errores_flota, name='pos_errores_flota'),

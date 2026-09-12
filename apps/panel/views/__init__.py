@@ -52,6 +52,7 @@ from .mantenimiento import (
 )
 from .mfa import mfa_configurar, mfa_desactivar, mfa_estado
 from .monitoreo import (
+    enlaces_farmacias_lista,
     monitoreo_detalle, monitoreo_detalle_partial, monitoreo_lista, red_farmacias_lista, tendencia_flota,
     ventana_mantenimiento_crear, ventanas_mantenimiento_lista,
 )
@@ -86,6 +87,7 @@ __all__ = [
     'apertura_aprobar', 'apertura_cancelar', 'apertura_crear', 'apertura_detalle', 'apertura_emitir_tokens',
     'apertura_paso_completar', 'apertura_paso_reintentar', 'apertura_pasos_partial', 'apertura_token_revocar',
     'aperturas_lista',
+    'enlaces_farmacias_lista',
     'auditoria_lista',
     'bodega_ajuste_stock', 'bodega_stock_ingresar', 'bodegas_lista',
     'colaborador_crear', 'colaboradores_lista',
