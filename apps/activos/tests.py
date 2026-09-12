@@ -1,4 +1,5 @@
 import datetime
+import io
 
 from django.contrib.auth.models import Group, User
 from django.core.management import call_command
@@ -979,3 +980,292 @@ class CrearActivosDesdeRmmTests(TestCase):
         igual desde adentro."""
         self._crear(tipo=Activo.Tipo.SERVIDOR)
         self.assertEqual(Activo.objects.get(numero_serie='MXL8192898').tipo, Activo.Tipo.SERVIDOR)
+
+
+class TopologiaActivoTests(TestCase):
+    """Campos de topología de `Activo` (Fase A).
+
+    La regla central: un activo CON estación vinculada no lleva IP/MAC cargadas a mano,
+    porque el agente ya las reporta. Duplicar ese dato garantiza que las dos versiones
+    diverjan y que nadie sepa cuál creer — el mismo problema que los umbrales de color
+    que estaban escritos dos veces en dos vistas.
+    """
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML016', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML016-A', farmacia=self.farmacia, ip_lan='10.20.30.40',
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_topo', password='x')
+
+    def _activo(self, tipo=Activo.Tipo.DESKTOP, **extra):
+        # `codigo` es editable=False y lo asigna `generar_codigo_activo` en el servicio de
+        # ingreso, no el modelo: creando por `objects.create()` hay que dárselo a mano o
+        # las filas chocan contra su unique.
+        from apps.activos.services import generar_codigo_activo
+
+        return Activo.objects.create(
+            codigo=generar_codigo_activo(tipo), tipo=tipo,
+            farmacia=self.farmacia, unidad_negocio=self.sg, **extra,
+        )
+
+    def test_un_activo_sin_estacion_acepta_ip_y_mac(self):
+        """Es el caso real de CR-TEL-0001: un Grandstream sin agente, que solo se puede
+        cargar a mano."""
+        from apps.activos.models import UbicacionInterna
+
+        telefono = self._activo(
+            tipo=Activo.Tipo.TELEFONO, ip='10.20.30.90', mac='AA:BB:CC:DD:EE:FF',
+            ubicacion_interna=UbicacionInterna.OFICINA,
+        )
+        telefono.full_clean()
+        self.assertEqual(telefono.ip_efectiva, ('10.20.30.90', 'manual'))
+
+    def test_un_activo_con_estacion_rechaza_ip_cargada_a_mano(self):
+        from django.core.exceptions import ValidationError
+
+        activo = self._activo(estacion=self.estacion)
+        activo.ip = '10.20.30.99'
+        with self.assertRaises(ValidationError) as ctx:
+            activo.full_clean()
+        self.assertIn('ip', ctx.exception.error_dict)
+
+    def test_la_ip_del_activo_vinculado_sale_del_agente(self):
+        """Regla 2: con estación vinculada manda `Estacion.ip_lan`, que es la única que
+        se actualiza sola."""
+        activo = self._activo(estacion=self.estacion)
+        self.assertEqual(activo.ip_efectiva, ('10.20.30.40', 'agente'))
+
+    def test_sin_ninguna_fuente_no_inventa_una_ip(self):
+        self.assertEqual(self._activo().ip_efectiva, (None, None))
+
+    def test_la_validacion_no_impide_guardar_una_fila_existente(self):
+        """`clean()` es de modelo/formulario, NO un constraint de base: si alguien vincula
+        la estación después de haber cargado la IP a mano, la fila tiene que poder
+        guardarse igual. Lo que se evita es que una persona lo EDITE, no que exista."""
+        activo = self._activo(ip='10.20.30.91')
+        activo.estacion = self.estacion
+        activo.save()  # no debe reventar
+        activo.refresh_from_db()
+        self.assertEqual(str(activo.ip), '10.20.30.91')
+        # Y el que manda para mostrar sigue siendo el agente.
+        self.assertEqual(activo.ip_efectiva, ('10.20.30.40', 'agente'))
+
+    def test_dos_activos_pueden_compartir_ip(self):
+        """Regla 3: sin unique sobre `ip`. La Epson L3250 va por WiFi con DHCP, así que
+        la misma dirección puede pasar de un equipo a otro sin que sea un error."""
+        self._activo(tipo=Activo.Tipo.IMPRESORA, ip='10.20.30.77')
+        segunda = self._activo(tipo=Activo.Tipo.IMPRESORA, ip='10.20.30.77')
+        segunda.full_clean()
+        self.assertEqual(Activo.objects.filter(ip='10.20.30.77').count(), 2)
+
+    def test_rechaza_una_mac_mal_formada(self):
+        from django.core.exceptions import ValidationError
+
+        activo = self._activo(mac='no-es-una-mac')
+        with self.assertRaises(ValidationError) as ctx:
+            activo.full_clean()
+        self.assertIn('mac', ctx.exception.error_dict)
+
+    def test_el_admin_bloquea_ip_y_mac_si_hay_estacion(self):
+        """El admin es el único lugar del sistema donde se edita un Activo existente: el
+        panel solo tiene acciones de ciclo de vida. Si la regla no se aplica acá, no se
+        aplica en ningún lado."""
+        from django.contrib.admin.sites import AdminSite
+
+        from apps.activos.admin import ActivoAdmin
+
+        admin = ActivoAdmin(Activo, AdminSite())
+        pedido = type('R', (), {'user': self.usuario})()
+
+        con_estacion = self._activo(estacion=self.estacion)
+        bloqueados = admin.get_readonly_fields(pedido, con_estacion)
+        self.assertIn('ip', bloqueados)
+        self.assertIn('mac', bloqueados)
+
+        sin_estacion = self._activo(tipo=Activo.Tipo.TELEFONO)
+        editables = admin.get_readonly_fields(pedido, sin_estacion)
+        self.assertNotIn('ip', editables)
+        self.assertNotIn('mac', editables)
+
+    def test_ubicacion_interna_no_reutiliza_el_modelo_Ubicacion(self):
+        """Regla 4: `Ubicacion` es la agencia/sede con dirección y coordenadas, que usa
+        visitas técnicas. Esto es dónde está montado dentro del local."""
+        from apps.activos.models import UbicacionInterna
+
+        campo = Activo._meta.get_field('ubicacion_interna')
+        self.assertEqual(
+            [v for v, _ in campo.choices],
+            [UbicacionInterna.RACK, UbicacionInterna.CAJA, UbicacionInterna.BODEGA,
+             UbicacionInterna.OFICINA, UbicacionInterna.OTRO],
+        )
+        self.assertFalse(campo.is_relation)
+
+
+class CrearTopologiaFarmaciaTests(TestCase):
+    """Alta del equipamiento SIN agente de una farmacia (`crear_topologia_farmacia`).
+
+    La regla que estas pruebas cuidan es que el comando **nunca invente un dato de red**.
+    Un activo con la serie vacía es información incompleta y se ve como tal; uno con una
+    serie de relleno es peor que no tenerlo, porque tiene apariencia de dato real y
+    alguien lo va a creer más adelante.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX016')
+        self.farmacia = Farmacia.objects.create(codigo='ML016', grupo=grupo, unidad_negocio=self.sg)
+        self.usuario = User.objects.create_superuser(username='u_topo_cmd', password='x' * 14)
+
+    def _crear(self, **extra):
+        from apps.activos.services import crear_topologia_farmacia
+
+        return crear_topologia_farmacia(farmacia=self.farmacia, usuario=self.usuario, **extra)
+
+    def test_por_defecto_simula_y_no_escribe_nada(self):
+        """Es un alta sobre el inventario real: conviene ver la lista antes de escribirla."""
+        resumen = self._crear()
+        self.assertEqual(len(resumen['creados']), 6)
+        self.assertEqual(Activo.objects.count(), 0)
+
+    def test_crea_el_equipamiento_como_instalado_en_la_farmacia(self):
+        """ASIGNADO en este dominio es "en servicio", no "entregado a una persona": un
+        switch de rack no pasa por bodega ni tiene colaborador (ver registrar_ingreso)."""
+        from apps.activos.models import UbicacionInterna
+
+        self._crear(aplicar=True)
+
+        mikrotik = Activo.objects.get(categoria__codigo='ROUTER-MIKROTIK')
+        self.assertEqual(mikrotik.estado, Activo.Estado.ASIGNADO)
+        self.assertEqual(mikrotik.farmacia, self.farmacia)
+        self.assertEqual(mikrotik.unidad_negocio, self.sg)
+        self.assertIsNone(mikrotik.colaborador_actual)
+        self.assertIsNone(mikrotik.bodega_actual)
+        self.assertEqual(mikrotik.ubicacion_interna, UbicacionInterna.RACK)
+        self.assertEqual(
+            Activo.objects.get(categoria__codigo='PINPAD-MEDIANET').ubicacion_interna,
+            UbicacionInterna.CAJA,
+        )
+
+    def test_sin_datos_deja_los_campos_vacios_y_los_reporta(self):
+        resumen = self._crear(slots=['switch'], aplicar=True)
+
+        switch = Activo.objects.get(categoria__codigo='SWITCH-NOADMIN')
+        self.assertIsNone(switch.ip)
+        self.assertEqual(switch.mac, '')
+        self.assertEqual(switch.numero_serie, '')
+        # No alcanza con dejarlo vacío: hay que decir a qué activo volver y por qué campo.
+        self.assertEqual(len(resumen['incompletos']), 1)
+        pendiente = resumen['incompletos'][0]
+        self.assertIn(switch.codigo, pendiente)
+        for campo in ('ip', 'mac', 'numero_serie'):
+            self.assertIn(campo, pendiente)
+
+    def test_carga_los_datos_reales_cuando_se_los_dan(self):
+        self._crear(
+            slots=['mikrotik'], aplicar=True,
+            datos={'mikrotik': {'ip': '10.111.16.1', 'mac': 'AA:BB:CC:DD:EE:01',
+                                'numero_serie': 'HFG1234ABCD'}},
+        )
+        mikrotik = Activo.objects.get(categoria__codigo='ROUTER-MIKROTIK')
+        self.assertEqual(str(mikrotik.ip), '10.111.16.1')
+        self.assertEqual(mikrotik.mac, 'AA:BB:CC:DD:EE:01')
+        self.assertEqual(mikrotik.numero_serie, 'HFG1234ABCD')
+
+    def test_una_mac_mal_tipeada_no_deja_la_farmacia_a_medio_inventariar(self):
+        """La validación corre entera ANTES del primer alta. Si falla la tercera fila de
+        la planilla, no queremos tres activos creados y el resto no."""
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaises(ValidationError):
+            self._crear(
+                aplicar=True,
+                datos={'mikrotik': {'ip': '10.111.16.1'}, 'switch': {'mac': 'no-es-una-mac'}},
+            )
+        self.assertEqual(Activo.objects.count(), 0)
+
+    def test_no_duplica_si_ya_esta_inventariado(self):
+        """Correrlo dos veces sobre la misma farmacia es el caso normal: se carga lo que
+        se conoce hoy y se vuelve cuando aparece el resto."""
+        self._crear(slots=['mikrotik'], aplicar=True)
+        resumen = self._crear(slots=['mikrotik'], aplicar=True)
+
+        self.assertEqual(Activo.objects.filter(categoria__codigo='ROUTER-MIKROTIK').count(), 1)
+        self.assertEqual(resumen['creados'], [])
+        self.assertEqual(len(resumen['omitidos']), 1)
+
+    def test_un_equipo_dado_de_baja_no_bloquea_a_su_reemplazo(self):
+        self._crear(slots=['mikrotik'], aplicar=True)
+        viejo = Activo.objects.get(categoria__codigo='ROUTER-MIKROTIK')
+        viejo.estado = Activo.Estado.DADO_DE_BAJA
+        viejo.save(update_fields=['estado'])
+
+        self._crear(slots=['mikrotik'], aplicar=True)
+        self.assertEqual(Activo.objects.filter(categoria__codigo='ROUTER-MIKROTIK').count(), 2)
+
+    def test_el_router_y_el_switch_se_distinguen_por_categoria(self):
+        """`Activo.Tipo.RED` es uno solo ('Red (switch/router)'). Lo que los separa —y lo
+        que mantenimiento ya usa para elegir el checklist— es CategoriaEquipo."""
+        self._crear(slots=['mikrotik', 'switch'], aplicar=True)
+
+        de_red = Activo.objects.filter(tipo=Activo.Tipo.RED)
+        self.assertEqual(de_red.count(), 2)
+        self.assertEqual(
+            sorted(de_red.values_list('categoria__codigo', flat=True)),
+            ['ROUTER-MIKROTIK', 'SWITCH-NOADMIN'],
+        )
+
+    def test_rechaza_un_slot_que_no_existe(self):
+        """Mejor que fallar: un slot mal escrito silenciosamente omitido dejaría la
+        farmacia inventariada a medias sin que nadie se entere."""
+        with self.assertRaises(ValueError):
+            self._crear(slots=['mikroitk'], aplicar=True)
+
+    def test_rechaza_datos_de_un_slot_que_no_se_va_a_crear(self):
+        with self.assertRaises(ValueError):
+            self._crear(slots=['mikrotik'], datos={'telefono': {'ip': '10.111.16.9'}})
+
+    def test_el_comando_simula_y_avisa_que_no_escribio(self):
+        salida = io.StringIO()
+        call_command('crear_topologia_farmacia', '--farmacia', 'ML016', stdout=salida)
+        texto = salida.getvalue()
+        self.assertIn('Se crearían: 6', texto)
+        self.assertIn('no se escribió nada', texto)
+        self.assertEqual(Activo.objects.count(), 0)
+
+    def test_el_comando_lee_el_csv_y_lista_lo_que_queda_pendiente(self):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False,
+                                         newline='', encoding='utf-8') as archivo:
+            archivo.write('slot,ip,mac,numero_serie\n')
+            archivo.write('mikrotik,10.111.16.1,AA:BB:CC:DD:EE:01,HFG1234ABCD\n')
+            archivo.write('switch,,,\n')
+            ruta = archivo.name
+
+        salida = io.StringIO()
+        call_command(
+            'crear_topologia_farmacia', '--farmacia', 'ML016', '--slots', 'mikrotik,switch',
+            '--datos', ruta, '--aplicar', stdout=salida,
+        )
+        texto = salida.getvalue()
+        self.assertIn('Creados: 2', texto)
+        self.assertIn('Quedan con datos pendientes', texto)
+
+        mikrotik = Activo.objects.get(categoria__codigo='ROUTER-MIKROTIK')
+        self.assertEqual(str(mikrotik.ip), '10.111.16.1')
+        # El switch entró sin nada y tiene que figurar entre los pendientes, no perderse.
+        switch = Activo.objects.get(categoria__codigo='SWITCH-NOADMIN')
+        self.assertIsNone(switch.ip)
+        self.assertIn(switch.codigo, texto)
+
+    def test_el_comando_falla_si_la_farmacia_no_existe(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command('crear_topologia_farmacia', '--farmacia', 'NOEXISTE', stdout=io.StringIO())

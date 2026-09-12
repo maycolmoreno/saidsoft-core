@@ -152,15 +152,21 @@ class EventoActivoInline(admin.TabularInline):
 class ActivoAdmin(admin.ModelAdmin):
     list_display = (
         'codigo', 'tipo', 'marca', 'categoria', 'modelo', 'estado', 'estado_fisico_actual',
-        'farmacia', 'bodega_actual', 'colaborador_actual', 'unidad_negocio', 'baja_recomendada',
+        'farmacia', 'ubicacion_interna', 'ip', 'bodega_actual', 'colaborador_actual',
+        'unidad_negocio', 'baja_recomendada',
     )
-    list_filter = ('tipo', 'estado', 'bodega_actual', 'unidad_negocio', 'baja_recomendada')
-    search_fields = ('codigo', 'numero_serie', 'marca__nombre', 'modelo', 'codigo_sap')
+    list_filter = (
+        'tipo', 'estado', 'ubicacion_interna', 'bodega_actual', 'unidad_negocio', 'baja_recomendada',
+    )
+    # `ip` queda afuera a propósito: en PostgreSQL es de tipo inet y un `icontains` sobre
+    # ella revienta (mismo motivo por el que enlaces_farmacias_lista castea ip_router a
+    # texto para poder buscarla). `mac` sí es texto y es lo que se lee de una etiqueta.
+    search_fields = ('codigo', 'numero_serie', 'marca__nombre', 'modelo', 'codigo_sap', 'mac')
     autocomplete_fields = (
         'orden_compra', 'bodega_actual', 'colaborador_actual', 'farmacia', 'marca', 'categoria', 'unidad_negocio',
         'estacion',
     )
-    readonly_fields = ('codigo', 'fecha_creacion')
+    readonly_fields = ('codigo', 'fecha_creacion', 'ip_reportada_por_el_agente')
     inlines = [EventoActivoInline]
 
     def get_queryset(self, request):
@@ -168,6 +174,30 @@ class ActivoAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+    @admin.display(description='IP (reportada por el agente)')
+    def ip_reportada_por_el_agente(self, obj):
+        """La IP que reporta el agente, de solo lectura.
+
+        El admin es el ÚNICO lugar del sistema donde se puede editar un Activo existente
+        —el panel solo tiene acciones de ciclo de vida—, así que es acá donde hay que
+        impedir que alguien cargue a mano una IP que ya viene sola.
+        """
+        if obj is None or not obj.estacion_id:
+            return '—'
+        return obj.estacion.ip_lan or f'{obj.estacion.codigo}: todavía no la reportó'
+
+    def get_readonly_fields(self, request, obj=None):
+        """`ip` y `mac` quedan bloqueados cuando el activo tiene estación vinculada.
+
+        Bloquear en vez de ocultar: que el campo siga a la vista, vacío y deshabilitado,
+        le dice al operador que el dato existe pero viene de otro lado. Ocultarlo lo
+        dejaría buscándolo.
+        """
+        campos = list(super().get_readonly_fields(request, obj))
+        if obj is not None and obj.estacion_id:
+            campos += ['ip', 'mac']
+        return campos
 
 
 class SyncCambioInline(admin.TabularInline):

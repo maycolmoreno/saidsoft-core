@@ -5,13 +5,15 @@ vive aquí, separada de las vistas, para que tanto el panel como el admin la
 reutilicen igual.
 """
 import datetime
+from dataclasses import dataclass
 
 from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.activos.models import (
-    Activo, EventoActivo, MovimientoInventario, OrdenCompraDetalle, RecepcionLote, StockBodega,
+    Activo, CategoriaEquipo, EventoActivo, Marca, MovimientoInventario, OrdenCompraDetalle,
+    RecepcionLote, StockBodega, UbicacionInterna,
 )
 
 
@@ -47,7 +49,7 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
                        vencimiento_garantia, orden_compra, usuario, bodega=None,
                        categoria=None, procesador='', ram_gb=None, almacenamiento_gb=None,
                        codigo_sap='', condicion_al_recibir='', farmacia=None,
-                       estado_fisico=None):
+                       estado_fisico=None, ip=None, mac='', ubicacion_interna=''):
     """Da de alta un activo, ya sea que ENTRE a bodega o que ya esté instalado.
 
     El flujo original asumía que todo activo nace en una bodega, lo que sirve para una
@@ -65,6 +67,12 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
     `estado_fisico` por defecto es NUEVO para una compra, pero un equipo que ya está
     operando no es nuevo: cuando se registra directo en farmacia se asume BUENO, y
     quien carga puede corregirlo.
+
+    `ip`/`mac`/`ubicacion_interna` (Fase A de topología) se aceptan en el alta y no solo
+    después: el momento en que alguien inventaria el switch de una farmacia es el mismo
+    en que tiene la etiqueta delante. Solo aplican a equipos SIN estación RMM vinculada
+    — los que la tienen reportan su IP solos (ver `Activo.clean`), y por eso ninguno de
+    los tres se adivina: vacío significa "todavía no lo sabemos", nunca un placeholder.
     """
     if bodega is None and farmacia is None:
         raise ValueError('Indicá la bodega donde ingresa el equipo o la farmacia donde ya está instalado.')
@@ -77,6 +85,7 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
         tipo=tipo, marca=marca, categoria=categoria, modelo=modelo, numero_serie=numero_serie,
         procesador=procesador, ram_gb=ram_gb, almacenamiento_gb=almacenamiento_gb,
         codigo_sap=codigo_sap, condicion_al_recibir=condicion_al_recibir, farmacia=farmacia,
+        ip=ip, mac=mac, ubicacion_interna=ubicacion_interna,
         fecha_compra=fecha_compra, vencimiento_garantia=vencimiento_garantia,
         orden_compra=orden_compra, bodega_actual=bodega,
         estado=Activo.Estado.ASIGNADO if farmacia is not None else Activo.Estado.EN_BODEGA,
@@ -98,6 +107,9 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
             'farmacia': farmacia.codigo if farmacia else None,
             'marca': marca.nombre if marca else None,
             'categoria': categoria.nombre if categoria else None,
+            'ip': ip,
+            'mac': mac,
+            'ubicacion_interna': ubicacion_interna,
         },
     )
     return activo
@@ -692,3 +704,177 @@ def datos_hardware_desde_estacion(numero_serie: str) -> dict | None:
     if estacion.almacenamiento_total_gb:
         datos['almacenamiento_gb'] = estacion.almacenamiento_total_gb
     return datos
+
+
+# --- Topología de infraestructura de una farmacia (Fase A) ---
+#
+# Hasta ahora el inventario solo conocía los equipos con agente RMM: las estaciones se
+# dan de alta solas (`crear_activos_desde_estaciones`) y el resto de la farmacia —el
+# router, el switch, las impresoras, el pinpad— no existía en ningún lado. Cuando se
+# cae un local, eso es justamente lo que nadie puede mirar: qué hay en el rack y con
+# qué IP.
+#
+# Este catálogo describe el equipamiento estándar de una farmacia. NO es una plantilla
+# que se aplique sola: es la lista de lo que hay que salir a inventariar, y el alta
+# sigue siendo un acto humano que aporta los datos reales.
+
+
+@dataclass(frozen=True)
+class SlotTopologia:
+    """Un puesto del equipamiento estándar de una farmacia.
+
+    `categoria_codigo` es la clave de idempotencia: una farmacia tiene un router y un
+    switch, y `CategoriaEquipo` es lo que los distingue dentro del tipo RED (que en las
+    choices es uno solo, 'Red (switch/router)'). Además es el eje que ya usa
+    mantenimiento para decidir qué checklist aplica — un MikroTik y un switch tonto no
+    se revisan igual.
+    """
+
+    slot: str
+    tipo: str
+    categoria_codigo: str
+    categoria_nombre: str
+    ubicacion_interna: str
+    marca: str = ''
+    modelo: str = ''
+
+
+TOPOLOGIA_ESTANDAR_FARMACIA = (
+    SlotTopologia(
+        slot='mikrotik', tipo=Activo.Tipo.RED,
+        categoria_codigo='ROUTER-MIKROTIK', categoria_nombre='Router MikroTik',
+        ubicacion_interna=UbicacionInterna.RACK, marca='MikroTik',
+    ),
+    SlotTopologia(
+        slot='switch', tipo=Activo.Tipo.RED,
+        categoria_codigo='SWITCH-NOADMIN', categoria_nombre='Switch no administrable',
+        ubicacion_interna=UbicacionInterna.RACK, modelo='Switch 24 puertos',
+    ),
+    SlotTopologia(
+        slot='pinpad', tipo=Activo.Tipo.PINPAD,
+        categoria_codigo='PINPAD-MEDIANET', categoria_nombre='Pinpad Medianet',
+        ubicacion_interna=UbicacionInterna.CAJA,
+    ),
+    SlotTopologia(
+        slot='impresora_termica', tipo=Activo.Tipo.IMPRESORA,
+        categoria_codigo='IMPRESORA-TERMICA', categoria_nombre='Impresora térmica',
+        ubicacion_interna=UbicacionInterna.CAJA,
+    ),
+    SlotTopologia(
+        slot='impresora_oficina', tipo=Activo.Tipo.IMPRESORA,
+        categoria_codigo='IMPRESORA-TINTA', categoria_nombre='Impresora de tinta',
+        ubicacion_interna=UbicacionInterna.OFICINA, marca='Epson', modelo='L3250',
+    ),
+    SlotTopologia(
+        slot='telefono', tipo=Activo.Tipo.TELEFONO,
+        categoria_codigo='TELEFONO-IP', categoria_nombre='Teléfono IP',
+        ubicacion_interna=UbicacionInterna.OFICINA, marca='Grandstream',
+    ),
+)
+
+SLOTS_POR_NOMBRE = {s.slot: s for s in TOPOLOGIA_ESTANDAR_FARMACIA}
+
+
+def _validar_dato_de_red(campo, valor):
+    """Corre los validadores del propio modelo sobre un valor que vino de afuera.
+
+    Se valida acá y no solo al guardar porque `registrar_ingreso` hace `save()` directo,
+    sin `full_clean()`: una MAC mal tipeada en la planilla entraría a la base sin que
+    nada chille. Reusar el campo del modelo evita tener el formato escrito dos veces.
+    """
+    Activo._meta.get_field(campo).clean(valor, None)
+
+
+def crear_topologia_farmacia(*, farmacia, usuario, slots=None, datos=None, aplicar=False) -> dict:
+    """Inventaria el equipamiento sin agente de una farmacia: router, switch, pinpad,
+    impresoras, teléfono.
+
+    Por defecto SIMULA. Es un alta sobre el inventario real y los datos los aporta una
+    persona mirando las etiquetas, así que conviene ver la lista antes de escribirla.
+
+    `slots` acota a un subconjunto del catálogo (no toda farmacia tiene teléfono IP, y
+    asumir que sí inventaría un equipo que no existe). Vacío = todo el catálogo.
+
+    `datos` es `{slot: {'ip': ..., 'mac': ..., 'numero_serie': ...}}` con lo que se
+    conozca de verdad. **Lo que no venga queda vacío**, nunca con un valor de relleno:
+    un activo con la serie en blanco es información incompleta y se ve como tal; uno con
+    una serie inventada es peor que no tenerlo, porque alguien la va a creer después.
+
+    Idempotente por `(farmacia, categoría)`: si la farmacia ya tiene un router MikroTik
+    inventariado y vigente, no crea un segundo. Un activo dado de baja no bloquea el
+    alta del reemplazo.
+
+    Devuelve `{'creados': [...], 'omitidos': [...], 'incompletos': [...]}`, donde
+    `incompletos` dice qué campo le falta a cada activo, para que el resumen dé la lista
+    de a qué hay que volver.
+    """
+    catalogo = TOPOLOGIA_ESTANDAR_FARMACIA
+    if slots is not None:
+        desconocidos = set(slots) - set(SLOTS_POR_NOMBRE)
+        if desconocidos:
+            raise ValueError('Slots desconocidos: %s.' % ', '.join(sorted(desconocidos)))
+        catalogo = tuple(SLOTS_POR_NOMBRE[s] for s in slots)
+
+    datos = datos or {}
+    sobrantes = set(datos) - {s.slot for s in catalogo}
+    if sobrantes:
+        raise ValueError(
+            'Hay datos para slots que no se van a crear: %s.' % ', '.join(sorted(sobrantes)),
+        )
+
+    # Validar TODO antes de escribir nada: si la tercera MAC de la planilla está mal, no
+    # queremos la farmacia a medio inventariar.
+    for valores in datos.values():
+        if valores.get('ip'):
+            _validar_dato_de_red('ip', valores['ip'])
+        if valores.get('mac'):
+            _validar_dato_de_red('mac', valores['mac'])
+
+    resumen = {'creados': [], 'omitidos': [], 'incompletos': []}
+
+    for slot in catalogo:
+        existente = Activo.objects.filter(
+            farmacia=farmacia, categoria__codigo=slot.categoria_codigo,
+        ).exclude(estado=Activo.Estado.DADO_DE_BAJA).first()
+        if existente is not None:
+            resumen['omitidos'].append(
+                '%s: %s ya tiene %s (%s), no se duplica'
+                % (slot.slot, farmacia.codigo, existente.codigo, slot.categoria_nombre),
+            )
+            continue
+
+        valores = datos.get(slot.slot, {})
+        ip = valores.get('ip') or None
+        mac = valores.get('mac') or ''
+        numero_serie = valores.get('numero_serie') or ''
+        faltantes = [
+            nombre for nombre, valor in (('ip', ip), ('mac', mac), ('numero_serie', numero_serie))
+            if not valor
+        ]
+
+        if not aplicar:
+            resumen['creados'].append(
+                '%s: crearía %s en %s' % (slot.slot, slot.categoria_nombre, farmacia.codigo),
+            )
+            if faltantes:
+                resumen['incompletos'].append('%s: faltaría %s' % (slot.slot, ', '.join(faltantes)))
+            continue
+
+        categoria, _ = CategoriaEquipo.objects.get_or_create(
+            codigo=slot.categoria_codigo, defaults={'nombre': slot.categoria_nombre},
+        )
+        marca = Marca.objects.get_or_create(nombre=slot.marca)[0] if slot.marca else None
+
+        activo = registrar_ingreso(
+            tipo=slot.tipo, marca=marca, categoria=categoria, modelo=slot.modelo,
+            numero_serie=numero_serie, fecha_compra=None, vencimiento_garantia=None,
+            orden_compra=None, farmacia=farmacia, usuario=usuario,
+            ip=ip, mac=mac, ubicacion_interna=slot.ubicacion_interna,
+        )
+        resumen['creados'].append('%s: %s (%s)' % (slot.slot, activo.codigo, slot.categoria_nombre))
+        if faltantes:
+            resumen['incompletos'].append(
+                '%s (%s): falta %s' % (activo.codigo, slot.slot, ', '.join(faltantes)),
+            )
+
+    return resumen

@@ -1,6 +1,8 @@
 import uuid
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.validators import RegexValidator
 from django.db import models
 
 from apps.catalogo.models import Farmacia, UnidadNegocio
@@ -375,6 +377,21 @@ class CondicionAlRecibir(models.TextChoices):
     REACONDICIONADO = 'reacondicionado', 'Reacondicionado'
 
 
+class UbicacionInterna(models.TextChoices):
+    """Dónde está montado un activo DENTRO de la farmacia.
+
+    Deliberadamente grueso: lo que necesita un técnico que llega al sitio es saber si
+    tiene que mirar el rack o abrir una caja, no un inventario de coordenadas. Y no
+    reutiliza `Ubicacion` (arriba), que es la agencia/sede con dirección y coordenadas y
+    la usa el módulo de visitas técnicas — son dos niveles distintos.
+    """
+    RACK = 'rack', 'Rack'
+    CAJA = 'caja', 'Caja / PDV'
+    BODEGA = 'bodega', 'Bodega'
+    OFICINA = 'oficina', 'Oficina'
+    OTRO = 'otro', 'Otro'
+
+
 class Activo(models.Model):
     """Un activo de información nunca se elimina: su historial es de auditoría permanente."""
 
@@ -388,6 +405,11 @@ class Activo(models.Model):
         UPS = 'UPS', 'UPS'
         TELEFONO = 'TEL', 'Teléfono IP'
         CAMARA = 'CAM', 'Cámara/CCTV'
+        # Agregado al inventariar la topología de ML016: un pinpad de Medianet no es
+        # ninguno de los anteriores. Se prefirió una choice nueva a encajarlo en RED
+        # ("switch/router") — un tipo equivocado es peor que uno faltante, porque el
+        # dato queda plausible y nadie lo revisa después.
+        PINPAD = 'PIN', 'Pinpad / datáfono'
 
     class Estado(models.TextChoices):
         # BUG-3 de la auditoría de gobernanza (22-ago-2026): EN_TRANSITO estuvo acá desde
@@ -456,17 +478,77 @@ class Activo(models.Model):
     estado = models.CharField(max_length=15, choices=Estado.choices, default=Estado.EN_BODEGA)
     estado_fisico_actual = models.CharField(max_length=10, choices=EstadoFisico.choices, blank=True)
 
+    # --- Topología de infraestructura (Fase A) ---
+    # Para los dispositivos de la farmacia que NO tienen agente: switch, Mikrotik,
+    # impresoras, teléfono. Los que sí lo tienen ya reportan su IP solos en
+    # `Estacion.ip_lan`, y duplicarla a mano garantiza que las dos versiones diverjan
+    # sin que nadie sepa cuál creer — el mismo problema que los umbrales de color que
+    # estaban escritos dos veces. Ver `ip_efectiva` y `clean()` abajo.
+    ip = models.GenericIPAddressField(
+        null=True, blank=True,
+        help_text='Solo para equipos SIN estación RMM vinculada. Si el activo tiene estación, '
+                  'la IP la reporta el agente y se muestra desde ahí.',
+    )
+    mac = models.CharField(
+        max_length=17, blank=True,
+        validators=[RegexValidator(
+            r'^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$',
+            'Formato de MAC inválido. Se espera AA:BB:CC:DD:EE:FF.',
+        )],
+        help_text='Dirección física del equipo. Útil para reservas DHCP y para reconocerlo en el '
+                  'switch cuando la IP cambia.',
+    )
+    ubicacion_interna = models.CharField(
+        max_length=20, choices=UbicacionInterna.choices, blank=True,
+        help_text='Dónde está montado DENTRO de la farmacia. No confundir con `Ubicacion`, que es '
+                  'la agencia/sede y la usa el módulo de visitas técnicas.',
+    )
+
     fecha_creacion = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'activo'
         ordering = ['codigo']
+        # A propósito SIN unique sobre `ip`: la Epson L3250 se conecta por WiFi y toma
+        # IP por DHCP, así que la misma dirección puede pasar de un equipo a otro sin que
+        # eso sea un error de datos.
 
     def __str__(self):
         return self.codigo
 
     def delete(self, *args, **kwargs):
         raise NotImplementedError('Un activo nunca se elimina; usa el estado "Dado de baja".')
+
+    @property
+    def ip_efectiva(self):
+        """La IP que hay que mostrar, y de dónde sale.
+
+        Devuelve `(ip, origen)` con origen en {'agente', 'manual', None}. Si el activo
+        tiene estación vinculada manda la que reporta el agente: es la única que se
+        actualiza sola y la que el resto del sistema ya usa.
+        """
+        if self.estacion_id and self.estacion.ip_lan:
+            return self.estacion.ip_lan, 'agente'
+        if self.ip:
+            return self.ip, 'manual'
+        return None, None
+
+    def clean(self):
+        """Impide cargar IP/MAC a mano en un activo que ya tiene estación vinculada.
+
+        Es validación de modelo/formulario y NO un constraint de base: un registro
+        existente con los dos datos tiene que poder guardarse igual (por ejemplo si
+        alguien vincula la estación después de haber cargado la IP a mano). Lo que se
+        evita es que una persona los EDITE cuando ya hay una fuente automática, no que
+        la fila exista.
+        """
+        super().clean()
+        if self.estacion_id and (self.ip or self.mac):
+            raise ValidationError({
+                'ip': 'Este activo tiene la estación %s vinculada: su IP y MAC las reporta el '
+                      'agente. Cargarlas a mano crearía una segunda versión del mismo dato.'
+                      % self.estacion.codigo,
+            })
 
 
 class EventoActivo(models.Model):
