@@ -528,8 +528,14 @@ class MonitoreoRedTests(TestCase):
 
 
 class RedFarmaciasListaTests(TestCase):
-    """Consumo de red por FARMACIA (Parte A, SNMP a Mikrotik) — solo visibilidad,
-    ver docstring de apps.panel.views.monitoreo.red_farmacias_lista."""
+    """Consumo de red por FARMACIA (SNMP a Mikrotik), ahora integrado a la pantalla de
+    enlaces: eran dos listados de las MISMAS farmacias y se fusionaron el 11-sep-2026
+    (ver el docstring de apps.panel.views.monitoreo.red_farmacias_lista).
+
+    Estas pruebas se reapuntaron en vez de borrarse: lo que verifican —que una farmacia
+    sin IP no aparezca, el aislamiento por tenant y que se muestre el consumo— sigue
+    siendo válido, solo cambió dónde se ve.
+    """
 
     def setUp(self):
         self.sg = UnidadNegocio.objects.get(codigo='SG')
@@ -539,29 +545,39 @@ class RedFarmaciasListaTests(TestCase):
             codigo='ML001', grupo=grupo, unidad_negocio=self.sg, ip_router='10.0.1.1',
         )
         self.farmacia_sin_ip = Farmacia.objects.create(codigo='ML002', grupo=grupo, unidad_negocio=self.sg)
-        usuario = User.objects.create_user(username='u_red_farmacia', password='x')
-        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
-        usuario.user_permissions.add(
+        self.usuario = User.objects.create_user(username='u_red_farmacia', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
             Permission.objects.get(content_type__app_label='monitoreo', codename='view_muestraredfarmacia'),
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia'),
         )
-        self.client.force_login(usuario)
+        self.client.force_login(self.usuario)
+
+    def test_la_url_vieja_redirige_a_la_pantalla_fusionada(self):
+        self.assertRedirects(
+            self.client.get(reverse('panel:red_farmacias_lista')),
+            reverse('panel:enlaces_farmacias_lista'),
+        )
 
     def test_farmacia_sin_ip_router_no_aparece(self):
-        resp = self.client.get(reverse('panel:red_farmacias_lista'))
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertNotContains(resp, 'ML002')
 
-    def test_farmacia_con_ip_router_pero_nunca_sondeada_muestra_sin_dato(self):
-        resp = self.client.get(reverse('panel:red_farmacias_lista'))
+    def test_farmacia_con_ip_router_pero_nunca_sondeada_aparece_sin_consumo(self):
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertContains(resp, 'ML001')
-        self.assertContains(resp, 'sin dato')
+        # Sin agente que sondee el Mikrotik no hay consumo, y la pantalla lo dice así en
+        # vez de mostrar un cero que se leería como "no consume nada".
+        self.assertContains(resp, 'sin agente')
 
     def test_muestra_el_consumo_de_la_ultima_muestra(self):
         MuestraRedFarmacia.objects.create(
             farmacia=self.farmacia_sg, bytes_recibidos=1000, bytes_enviados=500,
             red_recibido_kbps=1200.0, red_enviado_kbps=300.5,
         )
-        resp = self.client.get(reverse('panel:red_farmacias_lista'))
-        self.assertContains(resp, '1500,5kb/s')  # coma decimal por locale es-EC
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertEqual(resp.context['filas'][0]['total_kbps'], 1500.5)
+        self.assertEqual(resp.context['con_ancho_banda'], 1)
 
     def test_no_mezcla_farmacias_de_otro_tenant(self):
         grupo2 = Grupo.objects.create(codigo='TRX002')
@@ -570,11 +586,11 @@ class RedFarmaciasListaTests(TestCase):
         usuario_sg_only = User.objects.create_user(username='u_sg_only_red', password='x')
         PerfilUsuario.objects.create(usuario=usuario_sg_only).unidades_negocio.add(self.sg)
         usuario_sg_only.user_permissions.add(
-            Permission.objects.get(content_type__app_label='monitoreo', codename='view_muestraredfarmacia'),
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia'),
         )
         self.client.force_login(usuario_sg_only)
 
-        resp = self.client.get(reverse('panel:red_farmacias_lista'))
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertNotContains(resp, 'MAM01')
 
 
@@ -3786,3 +3802,106 @@ class EnlacesFarmaciasPanelTests(TestCase):
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertEqual(resp.context['total'], 0)
         self.assertNotContains(resp, 'ML001')
+
+
+class EnlaceFarmaciaModalTests(TestCase):
+    """Ventana emergente de una farmacia en /monitoreo/enlaces/, con su consumo."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=self.sg, ip_router='192.168.102.1',
+            circuito_proveedor='sangregorio2-santana',
+        )
+        self.usuario = User.objects.create_user(username='ver_modal', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia'),
+            Permission.objects.get(content_type__app_label='catalogo', codename='consultar_info_estacion'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _estacion_online(self):
+        return Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+
+    def test_el_modal_muestra_estado_y_circuito(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+
+        registrar_sondeo(self.farmacia, True, 28.0)
+        resp = self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.farmacia.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'ML001')
+        self.assertContains(resp, 'sangregorio2-santana')
+        self.assertContains(resp, '28')
+
+    def test_sin_estacion_en_linea_no_ofrece_pedir_lectura(self):
+        """El consumo lo mide el agente desde la LAN del sitio. Sin agente, ofrecer el
+        botón sería prometer algo que va a fallar en silencio."""
+        resp = self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.farmacia.pk]))
+        self.assertIsNone(resp.context['estacion_sondeadora'])
+        self.assertContains(resp, 'no tiene ninguna estación aprobada y en línea')
+
+    @patch('apps.catalogo.services.enviar_consultar_red_farmacia', return_value=True)
+    def test_pedir_lectura_le_habla_a_la_estacion_de_la_propia_farmacia(self, mock_enviar):
+        estacion = self._estacion_online()
+        resp = self.client.post(reverse('panel:enlace_farmacia_solicitar', args=[self.farmacia.pk]))
+        self.assertEqual(resp.status_code, 200)
+        mock_enviar.assert_called_once()
+        # La comunidad SNMP es el código de la farmacia en minúscula (ver mikrotik.py).
+        self.assertEqual(mock_enviar.call_args[0][0], estacion)
+        self.assertEqual(mock_enviar.call_args[0][1], 'ml001')
+
+    @patch('apps.catalogo.services.enviar_consultar_red_farmacia', return_value=True)
+    def test_pedir_lectura_queda_auditado(self, _mock):
+        self._estacion_online()
+        self.client.post(reverse('panel:enlace_farmacia_solicitar', args=[self.farmacia.pk]))
+        self.assertTrue(EventoAuditoria.objects.filter(accion='farmacia.consultar_red').exists())
+
+    def test_pedir_lectura_sin_estacion_avisa_y_no_revienta(self):
+        resp = self.client.post(reverse('panel:enlace_farmacia_solicitar', args=[self.farmacia.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'sin agente')
+
+    def test_solicitar_exige_permiso(self):
+        sin_permiso = User.objects.create_user(username='modal_pelado', password='x')
+        PerfilUsuario.objects.create(usuario=sin_permiso, acceso_todas_unidades=True)
+        sin_permiso.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia'),
+        )
+        self.client.force_login(sin_permiso)
+        resp = self.client.post(reverse('panel:enlace_farmacia_solicitar', args=[self.farmacia.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_aislamiento_por_unidad_de_negocio(self):
+        ajeno = User.objects.create_user(username='modal_ajeno', password='x')
+        perfil = PerfilUsuario.objects.create(usuario=ajeno, acceso_todas_unidades=False)
+        perfil.unidades_negocio.set([self.mia])
+        ajeno.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia'),
+        )
+        self.client.force_login(ajeno)
+        resp = self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.farmacia.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_la_pantalla_vieja_redirige_a_la_nueva(self):
+        """Eran dos listados de las mismas 700 farmacias; se fusionaron. La URL vieja se
+        conserva porque hay enlaces guardados apuntando ahí."""
+        resp = self.client.get(reverse('panel:red_farmacias_lista'))
+        self.assertRedirects(resp, reverse('panel:enlaces_farmacias_lista'))
+
+    def test_el_listado_trae_el_ancho_de_banda_sin_consultar_por_fila(self):
+        from apps.monitoreo.models import MuestraRedFarmacia
+
+        MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia, bytes_recibidos=1000, bytes_enviados=500,
+            red_recibido_kbps=120.0, red_enviado_kbps=30.0,
+        )
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertEqual(resp.context['con_ancho_banda'], 1)
+        self.assertEqual(resp.context['filas'][0]['total_kbps'], 150.0)

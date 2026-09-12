@@ -2,9 +2,12 @@
 {% block title %}Enlaces · SAIDSOFT{% endblock %}
 {% block content %}
 <h1 class="text-xl font-semibold mb-1">Estado de enlaces</h1>
-<p class="text-sm text-[var(--text-faint)] mb-6">
+<p class="text-sm text-[var(--text-faint)] mb-6" style="max-width:680px;">
     Sondeo ICMP al equipo de borde de cada farmacia. A diferencia del resto del monitoreo,
-    esto no necesita agente instalado: alcanza con tener la IP cargada.
+    esto no necesita agente instalado: alcanza con tener la IP cargada. El consumo del enlace
+    sí depende del agente —lo sondea por SNMP al Mikrotik la estación del sitio—, así que la
+    columna de ancho de banda solo tiene dato donde hay una estación con agente
+    ({{ con_ancho_banda }} de {{ total }}).
 </p>
 
 <div class="grid grid-cols-3 gap-4 mb-6 text-sm">
@@ -59,13 +62,18 @@
                 <th class="text-left px-4 py-3">IP</th>
                 <th class="text-left px-4 py-3">Estado</th>
                 <th class="text-left px-4 py-3">Latencia</th>
+                <th class="text-left px-4 py-3">Ancho de banda</th>
                 <th class="text-left px-4 py-3">Circuito</th>
                 <th class="text-left px-4 py-3">Último sondeo</th>
             </tr>
         </thead>
         <tbody>
         {% for fila in filas %}
-            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]"
+                style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}"
+                hx-get="{% url 'panel:enlace_farmacia_modal' fila.farmacia.pk %}"
+                hx-target="#modal-info-content" hx-swap="innerHTML"
+                onclick="document.getElementById('modal-info').showModal()">
                 <td class="px-4 py-3 font-medium">{{ fila.farmacia.codigo }}</td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ fila.farmacia.grupo.codigo }}</td>
                 <td class="px-4 py-3 font-mono text-xs text-[var(--text-faint)]">{{ fila.farmacia.ip_router }}</td>
@@ -84,13 +92,20 @@
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
                     {% if fila.estado.latencia_ms %}{{ fila.estado.latencia_ms|floatformat:0 }} ms{% else %}—{% endif %}
                 </td>
+                <td class="px-4 py-3 text-xs">
+                    {% if fila.total_kbps is not None %}
+                    <span {% if fila.estado_bw == 'critical' %}style="color:var(--critical);"{% elif fila.estado_bw == 'warning' %}style="color:var(--warning);"{% endif %}>
+                        {{ fila.total_kbps|floatformat:0 }} KB/s
+                    </span>
+                    {% else %}<span class="text-[var(--text-faint)]">sin agente</span>{% endif %}
+                </td>
                 <td class="px-4 py-3 font-mono text-xs text-[var(--text-faint)]">{{ fila.farmacia.circuito_proveedor|default:"—" }}</td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
                     {% if fila.estado.ultima_verificacion %}{{ fila.estado.ultima_verificacion|date:"d/m H:i" }}{% else %}nunca{% endif %}
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="7">
+            <tr><td colspan="8">
                 {% include "panel/_estado_vacio.html" with titulo="Ninguna farmacia tiene IP de enlace cargada" pista="Se cargan desde el Excel de operaciones con importar_red_farmacias_xlsx. Sin IP no hay a qué hacerle ping." accion_puede=False %}
             </td></tr>
         {% endfor %}

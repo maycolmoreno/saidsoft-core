@@ -4,6 +4,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
 from django.db.models import Avg
 from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_POST
 from django.urls import reverse
 from django.utils import timezone
 
@@ -222,33 +223,23 @@ def tendencia_flota(request):
 
 
 @login_required
-@permission_required('monitoreo.view_muestraredfarmacia', raise_exception=True)
 def red_farmacias_lista(request):
-    """Consumo de ancho de banda por FARMACIA (Parte A del monitoreo proactivo de
-    red, ver PLAN_MODERNIZACION.md §9) — sondeado por SNMP al Mikrotik de cada sitio
-    (apps.monitoreo.mikrotik, Celery Beat cada 5 min). Solo visibilidad en v1: sin
-    Alerta ni notificación — decisión confirmada con el usuario, mismo criterio que
-    Windows Update v1/Plan de energía v1 (probar primero que el dato es confiable,
-    automatizar después). Complementa el consumo por ESTACIÓN de /monitoreo/ (ahí sí
-    hay alertas reales, ver R8/MuestraMetrica.red_recibido_kbps): el Mikrotik no
-    reparte tráfico por equipo, así que esto es lo más granular que se puede medir
-    del lado del enlace."""
-    # GenericIPAddressField normaliza '' a None al guardar — __isnull=True alcanza
-    # solo (ver apps.monitoreo.mikrotik.sincronizar_ancho_banda_farmacias).
-    farmacias = scope_por_unidad_negocio_activa(
-        Farmacia.objects.exclude(ip_router__isnull=True),
-        request, 'unidad_negocio',
-    ).order_by('codigo')
-    filas = []
-    for farmacia in farmacias:
-        ultima = farmacia.muestras_red.first()  # ordering = -timestamp
-        valor = ultima.red_total_kbps if ultima else None
-        filas.append({
-            'farmacia': farmacia,
-            'ultima': ultima,
-            'estado': _clasificar(valor, RED_FARMACIA_UMBRAL_WARNING_KBPS, RED_FARMACIA_UMBRAL_CRITICAL_KBPS),
-        })
-    return render(request, 'panel/red_farmacias_lista.html', {'filas': filas})
+    """Redirección permanente a /monitoreo/enlaces/, que absorbió esta pantalla.
+
+    Eran dos listados de las MISMAS 700 farmacias: uno con el estado del enlace (ICMP)
+    y otro con su ancho de banda (SNMP). El usuario reportó la duplicación el
+    11-sep-2026 y tenía razón — y el desbalance la hacía peor: el ancho de banda
+    depende de que la farmacia tenga una estación con agente que sondee su Mikrotik,
+    y eso cubría **2 de 700**, así que esta pantalla mostraba 700 filas casi todas
+    vacías. El ancho de banda pasó a ser una columna más de la pantalla de enlaces.
+
+    Se conserva la URL y el nombre en vez de borrarlos: hay enlaces guardados y
+    `{% url %}` en plantillas que seguirían apuntando acá.
+
+    Solo `@login_required`: el permiso lo aplica la vista destino. Exigir acá el
+    permiso viejo daría 403 a alguien que sí puede ver la pantalla nueva.
+    """
+    return redirect('panel:enlaces_farmacias_lista')
 
 
 @login_required
@@ -267,14 +258,26 @@ def enlaces_farmacias_lista(request):
     sondear", es que nadie corrió `sondear_enlaces` desde un host con ruta todavía — la
     plantilla lo dice explícitamente en vez de mostrar una tabla vacía sin explicación.
     """
-    from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+    from django.db.models import OuterRef, Subquery
+
+    from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia, MuestraRedFarmacia
+
+    # Última muestra de ancho de banda por farmacia, en la MISMA consulta. La pantalla
+    # que esta absorbió lo resolvía con un `farmacia.muestras_red.first()` dentro del
+    # bucle: 700 consultas por carga. Subquery y no `.distinct('farmacia')` porque
+    # DISTINCT ON es exclusivo de PostgreSQL y las pruebas corren sobre SQLite.
+    ultima_muestra = MuestraRedFarmacia.objects.filter(farmacia=OuterRef('pk')).order_by('-timestamp')
 
     farmacias = scope_por_unidad_negocio_activa(
         Farmacia.objects.exclude(ip_router__isnull=True),
         request, 'unidad_negocio',
-    ).select_related('estado_enlace', 'grupo').order_by('codigo')
+    ).select_related('estado_enlace', 'grupo').annotate(
+        bw_rx=Subquery(ultima_muestra.values('red_recibido_kbps')[:1]),
+        bw_tx=Subquery(ultima_muestra.values('red_enviado_kbps')[:1]),
+        bw_ts=Subquery(ultima_muestra.values('timestamp')[:1]),
+    ).order_by('codigo')
 
-    filas, caidas, activas, sin_sondear = [], 0, 0, 0
+    filas, caidas, activas, sin_sondear, con_ancho_banda = [], 0, 0, 0, 0
     for farmacia in farmacias:
         estado = getattr(farmacia, 'estado_enlace', None)
         alcanzable = estado.alcanzable if estado else None
@@ -284,7 +287,16 @@ def enlaces_farmacias_lista(request):
             activas += 1
         else:
             caidas += 1
-        filas.append({'farmacia': farmacia, 'estado': estado, 'alcanzable': alcanzable})
+        total_kbps = None
+        if farmacia.bw_rx is not None or farmacia.bw_tx is not None:
+            total_kbps = round((farmacia.bw_rx or 0) + (farmacia.bw_tx or 0), 1)
+            con_ancho_banda += 1
+        filas.append({
+            'farmacia': farmacia, 'estado': estado, 'alcanzable': alcanzable,
+            'total_kbps': total_kbps,
+            'estado_bw': _clasificar(total_kbps, RED_FARMACIA_UMBRAL_WARNING_KBPS,
+                                     RED_FARMACIA_UMBRAL_CRITICAL_KBPS),
+        })
 
     # Las caídas primero: es lo que el operador vino a ver. Dentro de cada grupo, por
     # código, para que la lista no baile entre refrescos.
@@ -301,5 +313,97 @@ def enlaces_farmacias_lista(request):
         'sin_sondear': sin_sondear,
         'total': len(filas),
         'en_curso': en_curso,
+        'con_ancho_banda': con_ancho_banda,
         'umbral_fallas': EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS,
     })
+
+
+def _render_enlace_modal(request, farmacia):
+    """Contenido del modal de una farmacia: estado del enlace + su consumo.
+
+    El consumo de ancho de banda vive acá y no en la tabla porque es un dato de
+    profundidad: en el listado de 700 filas solo interesa "responde o no", y mirar el
+    tráfico es algo que se hace de a una farmacia, cuando ya sospechás de esa.
+    """
+    from apps.monitoreo.graficos import construir_grafico
+    from apps.monitoreo.models import EventoEnlaceFarmacia, MuestraRedFarmacia
+
+    muestras = list(MuestraRedFarmacia.objects.filter(farmacia=farmacia)[:40])[::-1]
+    ultima = muestras[-1] if muestras else None
+
+    # Una estación aprobada y en línea de esta farmacia es lo que hace posible pedir la
+    # lectura: el SNMP al Mikrotik lo hace el agente desde la LAN del sitio, no este
+    # servidor. Sin ella el botón no se ofrece, en vez de ofrecerlo y fallar en silencio.
+    estacion_sondeadora = (
+        farmacia.estaciones.filter(
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        ).order_by('codigo').first()
+    )
+
+    return render(request, 'panel/enlace_farmacia_modal.html', {
+        'farmacia': farmacia,
+        'estado': getattr(farmacia, 'estado_enlace', None),
+        'ultima': ultima,
+        'total_muestras': len(muestras),
+        'g_red': construir_grafico([m.red_total_kbps for m in muestras]),
+        'estado_bw': _clasificar(
+            ultima.red_total_kbps if ultima else None,
+            RED_FARMACIA_UMBRAL_WARNING_KBPS, RED_FARMACIA_UMBRAL_CRITICAL_KBPS,
+        ),
+        'estacion_sondeadora': estacion_sondeadora,
+        'caidas_recientes': EventoEnlaceFarmacia.objects.filter(farmacia=farmacia)[:5],
+        'puede_solicitar': request.user.has_perm('catalogo.consultar_info_estacion'),
+    })
+
+
+@login_required
+@permission_required('monitoreo.view_estadoenlacefarmacia', raise_exception=True)
+def enlace_farmacia_modal(request, pk):
+    farmacia = get_object_or_404(
+        Farmacia.objects.select_related('grupo', 'unidad_negocio', 'estado_enlace'), pk=pk,
+    )
+    verificar_acceso(request.user, farmacia.unidad_negocio)
+    return _render_enlace_modal(request, farmacia)
+
+
+@login_required
+@permission_required('catalogo.consultar_info_estacion', raise_exception=True)
+@require_POST
+def enlace_farmacia_solicitar(request, pk):
+    """Pide AHORA la lectura de consumo del enlace de esta farmacia.
+
+    No sondea desde el servidor: le pide por MQTT a una estación de la propia farmacia
+    que consulte por SNMP su Mikrotik y reporte (misma LAN). Devuelve el modal
+    repintado, así el operador ve el pedido en curso sin salir de la ventana — el dato
+    llega asincrónicamente por MQTT unos segundos después.
+    """
+    from apps.catalogo.services import enviar_consultar_red_farmacia
+
+    farmacia = get_object_or_404(
+        Farmacia.objects.select_related('grupo', 'unidad_negocio', 'estado_enlace'), pk=pk,
+    )
+    verificar_acceso(request.user, farmacia.unidad_negocio)
+
+    estacion = farmacia.estaciones.filter(
+        estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        estado_conexion=Estacion.EstadoConexion.ONLINE,
+    ).order_by('codigo').first()
+
+    if estacion is None:
+        messages.error(
+            request,
+            f'{farmacia.codigo} no tiene ninguna estación aprobada y en línea: el consumo lo mide '
+            'el agente por SNMP desde la LAN del sitio, así que sin agente no hay quién lo lea.',
+        )
+    elif enviar_consultar_red_farmacia(estacion, farmacia.codigo.lower()):
+        registrar_evento(
+            usuario=request.user, accion='farmacia.consultar_red', objeto=farmacia,
+            detalle={'estacion': estacion.codigo}, request=request,
+        )
+        messages.success(request, f'Lectura pedida a {estacion.codigo}. El dato llega en unos segundos.')
+    else:
+        messages.error(request, 'No se pudo enviar el pedido por MQTT (¿broker caído?).')
+
+    farmacia.refresh_from_db()
+    return _render_enlace_modal(request, farmacia)

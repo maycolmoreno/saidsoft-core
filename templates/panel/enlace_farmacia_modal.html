@@ -1,0 +1,112 @@
+{% comment %}
+Contenido de la ventana emergente de una farmacia en /monitoreo/enlaces/. Se inyecta en
+#modal-info-content (ver base.html); el POST de "Pedir lectura" devuelve este mismo
+fragmento, así el operador no pierde la ventana al disparar la consulta.
+{% endcomment %}
+<div class="p-5">
+    <div class="flex items-start justify-between mb-1">
+        <div>
+            <h2 class="text-lg font-semibold">{{ farmacia.codigo }}</h2>
+            <p class="text-xs text-[var(--text-faint)]">
+                {{ farmacia.nombre|default:"" }}{% if farmacia.ciudad %} · {{ farmacia.ciudad }}{% endif %}
+                · {{ farmacia.grupo.codigo }} · {{ farmacia.unidad_negocio.codigo }}
+            </p>
+        </div>
+        <button type="button" class="icon-btn" aria-label="Cerrar"
+                onclick="document.getElementById('modal-info').close()">✕</button>
+    </div>
+
+    {% if messages %}
+    {% for message in messages %}
+    <p class="text-xs px-3 py-2 rounded-md mt-3" style="background:var(--overlay-hover);">{{ message }}</p>
+    {% endfor %}
+    {% endif %}
+
+    <div class="grid grid-cols-2 gap-3 my-4 text-sm">
+        <div class="card p-3">
+            <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Estado del enlace</div>
+            {% if estado.alcanzable is None %}
+            <span class="pill neutral">Sin sondear</span>
+            {% elif estado.alcanzable %}
+            <span class="pill good">Activo</span>
+            <div class="text-xs text-[var(--text-faint)] mt-1">
+                {% if estado.latencia_ms %}{{ estado.latencia_ms|floatformat:0 }} ms{% endif %}
+            </div>
+            {% else %}
+            <span class="pill critical">Caído</span>
+            <div class="text-xs mt-1" style="color:var(--critical);">
+                desde {{ estado.ultimo_cambio_estado|date:"d/m H:i" }}
+            </div>
+            {% endif %}
+        </div>
+        <div class="card p-3">
+            <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Consumo del enlace</div>
+            {% if ultima %}
+            <div class="font-medium" {% if estado_bw == 'critical' %}style="color:var(--critical);"{% elif estado_bw == 'warning' %}style="color:var(--warning);"{% endif %}>
+                {{ ultima.red_total_kbps|floatformat:0 }} KB/s
+            </div>
+            <div class="text-xs text-[var(--text-faint)] mt-1">
+                ↓ {{ ultima.red_recibido_kbps|floatformat:0 }} · ↑ {{ ultima.red_enviado_kbps|floatformat:0 }}
+                · {{ ultima.timestamp|date:"d/m H:i" }}
+            </div>
+            {% else %}
+            <div class="text-[var(--text-faint)] text-sm">Sin lecturas</div>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if total_muestras > 1 %}
+    <div class="card p-3 mb-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-2">Últimas {{ total_muestras }} lecturas (KB/s)</div>
+        {{ g_red }}
+    </div>
+    {% endif %}
+
+    <div class="text-xs text-[var(--text-faint)] space-y-1 mb-4">
+        <div>IP del equipo de borde: <span class="font-mono">{{ farmacia.ip_router }}</span></div>
+        {% if farmacia.circuito_proveedor %}
+        <div>
+            Circuito: <span class="font-mono">{{ farmacia.circuito_proveedor }}</span>
+            {% if farmacia.tipo_enlace %} · {{ farmacia.tipo_enlace }}{% endif %}
+            {% if not farmacia.tiene_backup %}<span style="color:var(--warning);"> · sin enlace de respaldo</span>{% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    {% if caidas_recientes %}
+    <div class="mb-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase mb-2">Últimas caídas</div>
+        <ul class="text-xs text-[var(--text-faint)] space-y-1">
+            {% for c in caidas_recientes %}
+            <li>
+                {{ c.inicio|date:"d/m H:i" }} —
+                {% if c.en_curso %}<span style="color:var(--critical);">en curso</span>
+                {% else %}{{ c.duracion_minutos }} min{% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if puede_solicitar %}
+    <form method="post" action="{% url 'panel:enlace_farmacia_solicitar' farmacia.pk %}"
+          hx-post="{% url 'panel:enlace_farmacia_solicitar' farmacia.pk %}"
+          hx-target="#modal-info-content" hx-swap="innerHTML">
+        {% csrf_token %}
+        {% if estacion_sondeadora %}
+        <button type="submit" class="btn primary w-full">Pedir lectura ahora</button>
+        <p class="text-xs text-[var(--text-faint)] mt-2">
+            Se la pide a {{ estacion_sondeadora.codigo }}: el consumo lo mide el agente por SNMP
+            al Mikrotik desde la LAN del sitio, no este servidor. El dato llega en unos segundos.
+        </p>
+        {% else %}
+        <button type="button" class="btn secondary w-full" disabled>Pedir lectura ahora</button>
+        <p class="text-xs mt-2" style="color:var(--warning);">
+            Esta farmacia no tiene ninguna estación aprobada y en línea. El consumo lo mide el
+            agente desde la LAN del sitio, así que sin agente instalado no hay quién lo lea —
+            el estado del enlace de arriba sí funciona igual, porque ese se mide por ping.
+        </p>
+        {% endif %}
+    </form>
+    {% endif %}
+</div>
