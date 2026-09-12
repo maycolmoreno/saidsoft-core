@@ -1153,3 +1153,144 @@ class AlertaAbreMantenimientoTests(TestCase):
         alerta2.refresh_from_db()
         self.assertIsNone(alerta2.mantenimiento)
         self.assertEqual(Mantenimiento.objects.count(), 1)
+
+
+class SondeoEnlacesTests(TestCase):
+    """Sondeo ICMP del enlace de cada farmacia (apps/monitoreo/enlaces.py)."""
+
+    def setUp(self):
+        from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=sg,
+            ip_router='192.168.102.1', circuito_proveedor='sangregorio2-santana',
+        )
+
+    def _fallar(self, veces):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        for _ in range(veces):
+            registrar_sondeo(self.farmacia, False, None)
+        return self.farmacia.estado_enlace
+
+    def test_una_falla_suelta_no_declara_caida(self):
+        """Un paquete ICMP se pierde por mil motivos. Declarar la caída al primer fallo
+        llenaría el panel de caídas que no ocurrieron."""
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        estado = self._fallar(1)
+        self.assertEqual(estado.fallas_consecutivas, 1)
+        # Sigue en null: nunca se confirmó que estuviera viva, y tampoco que esté caída.
+        self.assertIsNone(estado.alcanzable)
+        self.assertFalse(EventoEnlaceFarmacia.objects.exists())
+
+        estado = self._fallar(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS - 1)
+        self.assertFalse(estado.alcanzable)
+        self.assertEqual(EventoEnlaceFarmacia.objects.count(), 1)
+
+    def test_la_recuperacion_cierra_el_evento_con_su_duracion(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        self._fallar(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS)
+        evento = EventoEnlaceFarmacia.objects.get()
+        self.assertTrue(evento.en_curso)
+        self.assertEqual(evento.circuito_proveedor, 'sangregorio2-santana')
+
+        registrar_sondeo(self.farmacia, True, 32.5)
+        evento.refresh_from_db()
+        self.assertFalse(evento.en_curso)
+        self.assertIsNotNone(evento.duracion_minutos)
+
+        estado = self.farmacia.estado_enlace
+        estado.refresh_from_db()
+        self.assertTrue(estado.alcanzable)
+        self.assertEqual(estado.fallas_consecutivas, 0)
+        self.assertEqual(estado.latencia_ms, 32.5)
+
+    def test_no_abre_un_segundo_evento_mientras_sigue_caida(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        self._fallar(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS + 5)
+        self.assertEqual(EventoEnlaceFarmacia.objects.count(), 1)
+
+    def test_el_barrido_se_aborta_si_casi_todo_falla(self):
+        """La guarda que evita el error que ya cometió mikrotik.py: correr esto desde un
+        host sin ruta reportaría toda la flota caída. 704 farmacias no se caen a la vez."""
+        from apps.catalogo.models import Farmacia, Grupo
+        from apps.monitoreo.enlaces import sondear_enlaces_farmacias
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        grupo = Grupo.objects.get(codigo='TRX001')
+        for i in range(2, 6):
+            Farmacia.objects.create(
+                codigo=f'ML00{i}', grupo=grupo, unidad_negocio=self.farmacia.unidad_negocio,
+                ip_router=f'192.168.102.{i}',
+            )
+
+        with patch('apps.monitoreo.enlaces.sondear_enlace', return_value=(False, None)):
+            resumen = sondear_enlaces_farmacias()
+
+        self.assertTrue(resumen['abortado'])
+        self.assertEqual(resumen['sondeadas'], 5)
+        # Lo que importa: no escribió NADA.
+        self.assertFalse(EstadoEnlaceFarmacia.objects.exists())
+        self.assertFalse(EventoEnlaceFarmacia.objects.exists())
+
+    def test_el_barrido_registra_cuando_la_ruta_funciona(self):
+        from apps.catalogo.models import Farmacia, Grupo
+        from apps.monitoreo.enlaces import sondear_enlaces_farmacias
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        grupo = Grupo.objects.get(codigo='TRX001')
+        for i in range(2, 6):
+            Farmacia.objects.create(
+                codigo=f'ML00{i}', grupo=grupo, unidad_negocio=self.farmacia.unidad_negocio,
+                ip_router=f'192.168.102.{i}',
+            )
+
+        with patch('apps.monitoreo.enlaces.sondear_enlace', return_value=(True, 21.0)):
+            resumen = sondear_enlaces_farmacias()
+
+        self.assertFalse(resumen['abortado'])
+        self.assertEqual(resumen['activas'], 5)
+        self.assertEqual(EstadoEnlaceFarmacia.objects.filter(alcanzable=True).count(), 5)
+
+    def test_ignora_farmacias_sin_ip_cargada(self):
+        """GenericIPAddressField normaliza '' a None; el filtro tiene que ser __isnull."""
+        from apps.catalogo.models import Farmacia, Grupo
+        from apps.monitoreo.enlaces import sondear_enlaces_farmacias
+
+        grupo = Grupo.objects.get(codigo='TRX001')
+        Farmacia.objects.create(
+            codigo='ML099', grupo=grupo, unidad_negocio=self.farmacia.unidad_negocio, ip_router=None,
+        )
+        with patch('apps.monitoreo.enlaces.sondear_enlace', return_value=(True, 10.0)):
+            resumen = sondear_enlaces_farmacias()
+        self.assertEqual(resumen['sondeadas'], 1)
+
+    def test_parsea_la_latencia_en_ingles_y_en_espanol(self):
+        """La salida de `ping` cambia con el idioma del SO; el servidor corre en un
+        contenedor Linux en inglés y las máquinas de oficina son Windows en español."""
+        from apps.monitoreo.enlaces import sondear_enlace
+
+        for salida, esperado in (
+            ('Reply from 192.168.102.1: bytes=32 time=24ms TTL=61', 24.0),
+            ('Respuesta desde 192.168.102.1: bytes=32 tiempo=13ms TTL=61', 13.0),
+            ('64 bytes from 192.168.102.1: icmp_seq=1 ttl=61 time=8.42 ms', 8.42),
+        ):
+            with patch('apps.monitoreo.enlaces.subprocess.run') as mock_run:
+                mock_run.return_value.returncode = 0
+                mock_run.return_value.stdout = salida
+                self.assertEqual(sondear_enlace('192.168.102.1'), (True, esperado))
+
+    def test_host_inaccesible_no_cuenta_como_vivo(self):
+        """`ping` en Windows devuelve 0 aunque responda "Host de destino inaccesible",
+        que es un ICMP de OTRO equipo de la ruta, no del destino."""
+        from apps.monitoreo.enlaces import sondear_enlace
+
+        with patch('apps.monitoreo.enlaces.subprocess.run') as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = 'Respuesta desde 10.111.6.1: Host de destino inaccesible.'
+            self.assertEqual(sondear_enlace('192.168.102.1'), (False, None))

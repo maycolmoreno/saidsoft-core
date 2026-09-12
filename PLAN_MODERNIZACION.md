@@ -196,6 +196,18 @@ averiguar cuál y por qué es la acción de mayor valor pendiente, porque destra
 rollout del agente. Segunda acción pendiente: confirmar si ese monitor sigue corriendo —
 si se apagó, nadie está viendo el estado de los enlaces de 704 sitios.
 
+**Portado el mismo día (11-sep-2026):** `apps/monitoreo/enlaces.py` + modelos
+`EstadoEnlaceFarmacia`/`EventoEnlaceFarmacia` + comando `sondear_enlaces`, sobre
+`Farmacia.ip_router` que ya se carga del Excel de operaciones. **No se programó en Celery
+Beat a propósito**: desde el servidor no hay ruta, así que programarlo ahí registraría 704
+caídas falsas — el mismo error que ya dejó inservible a
+`sincronizar_ancho_banda_farmacias`. Guarda de barrido: si falla ≥80% no escribe nada y lo
+reporta como problema de ruta. La caída se declara tras 3 fallos seguidos pero el evento se
+fecha en el primero, para que la duración sirva como línea base de SLA.
+`sondear_enlaces --solo-probar` responde sin escribir "¿este host llega?", que es la forma
+más rápida de encontrar la máquina con ruta. **Sin panel todavía**, deliberado: no tiene
+sentido construir la pantalla antes de saber si va a haber datos que mostrar.
+
 **M4 — Activar TimescaleDB en producción** sigue bloqueada: requiere el servidor real
 para retomar desde el error exacto ya documentado (`cannot create a unique index
 without the column "timestamp"`), no se puede resolver a ciegas sin una instancia

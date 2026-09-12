@@ -105,11 +105,29 @@ Concretamente, y en este orden:
 
 1. **Ubicar el repositorio real** (el `app/` y el `src/` que faltan) y averiguar en qué host
    corre. Sin esto no hay nada que decidir. Es la acción #1 de arriba.
-2. **Portar el sondeo ICMP** como hermano de `apps/monitoreo/mikrotik.py`: un poller que
-   recorre `Farmacia.ip_router` / `segmento_red` y persiste estado. El modelo de datos ya
-   existe casi entero — `Farmacia` ya tiene `segmento_red`, `circuito_proveedor`, `tipo_enlace`,
-   `tiene_backup` e `ip_router`, y `MuestraRedFarmacia` ya es el precedente de una métrica
-   con granularidad de farmacia en vez de estación.
+2. ~~**Portar el sondeo ICMP**~~ — **hecho el 11-sep-2026**: `apps/monitoreo/enlaces.py`
+   (sondeo + ingesta), modelos `EstadoEnlaceFarmacia` y `EventoEnlaceFarmacia`, y el comando
+   `python manage.py sondear_enlaces`. Usa `Farmacia.ip_router`, que ya se carga desde el
+   Excel de operaciones.
+
+   Tres decisiones que conviene conocer:
+
+   - **No se programó en Celery Beat**, a propósito. Desde el servidor central no hay ruta
+     (ver punto 3 de este documento), así que programarlo ahí registraría 704 caídas falsas.
+     Se corre a mano desde un host con ruta hasta que se responda la acción pendiente #1.
+   - **Guarda de barrido sospechoso**: si ≥80 % del barrido falla, no escribe nada y lo
+     reporta como problema de ruta. 704 farmacias no se caen a la vez. Es la red de
+     seguridad que evita repetir el error de `sincronizar_ancho_banda_farmacias`.
+   - **La caída no se declara al primer fallo** sino tras 3 sondeos fallidos seguidos
+     (igual que hacía `Cresio_enlaces`), pero el evento se fecha en el **primer** fallo: si
+     no, toda caída aparecería más corta de lo real y el dato no serviría para un SLA.
+
+   `python manage.py sondear_enlaces --solo-probar` responde, sin escribir nada, la
+   pregunta "¿este host llega a las farmacias?". Es la forma más rápida de encontrar la
+   máquina que sí tiene ruta.
+
+   **Todavía sin panel**: los datos no se ven en la web. Es deliberado — no tiene sentido
+   construir la pantalla antes de saber si va a haber datos que mostrar.
 3. **Conectarlo al motor de alertas que ya existe** (`ReglaAlerta`/`Alerta`) en vez de escribir
    uno nuevo. Ojo con una limitación conocida: `Alerta.estacion` es FK obligatoria hoy, y una
    alerta de enlace es de farmacia, no de estación — es el mismo obstáculo que ya frenó las

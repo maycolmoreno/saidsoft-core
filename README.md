@@ -575,6 +575,36 @@ confirmada con el usuario para no hacer `Alerta.estacion` opcional, mismo criter
 que Windows Update v1/Plan de energía v1: probar primero que el dato SNMP es
 confiable, automatizar después.
 
+## Estado de enlaces por farmacia (ICMP, sin agente)
+
+Todo el resto del monitoreo de este proyecto depende de que la farmacia tenga un **agente
+instalado**, y eso hoy cubre 8 de ~1.800 estaciones. Un ping al equipo de borde no necesita
+nada instalado del otro lado: cubre las ~704 sucursales desde el día uno. Es la capacidad
+que tenía `Cresio_enlaces`, el sistema anterior (ver `docs/evaluacion-cresio-enlaces.md`).
+
+- **`apps/monitoreo/enlaces.py`** — `sondear_enlace()` (ping vía el binario del sistema, no
+  una librería ICMP: evita necesitar root/CAP_NET_RAW) y `registrar_sondeo()`, que es el
+  punto de entrada para cualquier origen del dato (el comando, un agente, o un probe externo
+  por API el día que exista).
+- **`EstadoEnlaceFarmacia`** — estado actual por farmacia. `alcanzable=None` significa
+  "nunca se sondeó", que no es lo mismo que caída.
+- **`EventoEnlaceFarmacia`** — historial de caídas con su duración y el circuito del
+  proveedor copiado al momento. Es la línea base de disponibilidad real por sitio para
+  discutir un SLA, y es el dato que no se puede reconstruir después.
+- **`python manage.py sondear_enlaces`** — barrido. Con `--solo-probar` no escribe nada y
+  solo responde "¿este host llega a las farmacias?".
+
+**No está programado en Celery Beat, a propósito.** El servidor central no tiene ruta hacia
+las IP de las farmacias (confirmado el 24-ago-2026: 100 % de pérdida de ping, sin entrada en
+la tabla de rutas del host) — es la misma razón por la que el SNMP al Mikrotik se hace desde
+el agente y no desde acá. Programarlo en el servidor registraría 704 caídas falsas. Se corre
+desde un host que sí tenga ruta.
+
+Por si alguien lo corre igual desde el lugar equivocado, el barrido **se aborta sin escribir
+nada si falla el 80 % o más**: 704 farmacias no se caen a la vez, lo que se cayó es la ruta.
+Y una caída no se declara al primer fallo sino tras 3 sondeos fallidos seguidos, aunque el
+evento se fecha en el primero — si no, toda caída se registraría más corta de lo que fue.
+
 ## Monitoreo cruzado (MQTT × MeshCentral)
 
 Hoy el estado de conectividad se revisaba a mano cruzando dos paneles distintos.

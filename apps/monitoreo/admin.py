@@ -3,8 +3,8 @@ from django.contrib import admin
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_por_unidad_negocio
 
 from .models import (
-    Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, MuestraMetrica, MuestraRedFarmacia,
-    PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
+    Alerta, CanalNotificacion, EstadoDispositivo, EstadoEnlaceFarmacia, EventoEnlaceFarmacia, EventoMonitoreo,
+    MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
 
 
@@ -173,3 +173,52 @@ class AlertaAdmin(admin.ModelAdmin):
         return scope_por_unidad_negocio(
             super().get_queryset(request), request.user, 'estacion__farmacia__unidad_negocio',
         )
+
+
+@admin.register(EstadoEnlaceFarmacia)
+class EstadoEnlaceFarmaciaAdmin(admin.ModelAdmin):
+    """Vista de respaldo mientras no exista la pantalla del panel. Solo lectura: estos
+    campos los escribe `apps.monitoreo.enlaces.registrar_sondeo`, y editarlos a mano
+    dejaría el panel diciendo algo distinto de lo que midió el sondeo."""
+
+    list_display = ('farmacia', 'alcanzable', 'latencia_ms', 'fallas_consecutivas', 'ultima_verificacion')
+    list_filter = ('alcanzable', 'farmacia__unidad_negocio', 'farmacia__grupo')
+    search_fields = ('farmacia__codigo', 'farmacia__nombre', 'farmacia__circuito_proveedor')
+    readonly_fields = (
+        'farmacia', 'alcanzable', 'latencia_ms', 'fallas_consecutivas',
+        'ultima_verificacion', 'ultimo_cambio_estado',
+    )
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(
+            super().get_queryset(request).select_related('farmacia__unidad_negocio'),
+            request.user, 'farmacia__unidad_negocio',
+        )
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(EventoEnlaceFarmacia)
+class EventoEnlaceFarmaciaAdmin(admin.ModelAdmin):
+    """El historial de caídas es la linea base de disponibilidad para discutir un SLA con
+    el proveedor: se mira y se exporta, no se edita."""
+
+    list_display = ('farmacia', 'inicio', 'fin', 'duracion_minutos', 'circuito_proveedor')
+    list_filter = ('farmacia__unidad_negocio', 'farmacia__grupo')
+    search_fields = ('farmacia__codigo', 'circuito_proveedor')
+    date_hierarchy = 'inicio'
+    readonly_fields = ('farmacia', 'inicio', 'fin', 'circuito_proveedor')
+
+    @admin.display(description='Duración (min)')
+    def duracion_minutos(self, obj):
+        return obj.duracion_minutos if obj.fin else 'en curso'
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(
+            super().get_queryset(request).select_related('farmacia__unidad_negocio'),
+            request.user, 'farmacia__unidad_negocio',
+        )
+
+    def has_add_permission(self, request):
+        return False

@@ -445,3 +445,101 @@ class CanalNotificacion(models.Model):
     def __str__(self):
         destino_str = self.unidad_negocio.codigo if self.unidad_negocio_id else 'Global'
         return f'{self.get_tipo_display()} ({destino_str})'
+
+
+class EstadoEnlaceFarmacia(models.Model):
+    """Estado actual del enlace de una farmacia: ¿responde o no?
+
+    Por qué existe, y por qué es distinto de todo lo demás que ya monitorea este
+    proyecto: `MuestraMetrica` y `EstadoDispositivo` dependen de que la farmacia tenga
+    un **agente instalado**, y hoy eso cubre 8 de ~1.800 estaciones. Un sondeo ICMP al
+    equipo de borde no necesita nada instalado del otro lado, así que cubre las ~704
+    sucursales desde el día uno. Es la capacidad que tenía `Cresio_enlaces`, el sistema
+    anterior, y que acá faltaba (ver `docs/evaluacion-cresio-enlaces.md`).
+
+    Una fila por farmacia, sobrescrita en cada sondeo (estado actual, no historial —
+    el historial de caídas vive en `EventoEnlaceFarmacia`). Mismo criterio de
+    granularidad-por-sitio que `MuestraRedFarmacia`: el enlace es de la farmacia, no
+    de una estación.
+    """
+
+    # Un sondeo fallido no es una caída: un paquete ICMP se pierde por mil motivos.
+    # `Cresio_enlaces` contaba fallas consecutivas antes de declarar la caída y este
+    # modelo hace lo mismo. Con el ciclo de 5 min de este proyecto, 3 fallas son ~15
+    # minutos de enlace realmente ausente.
+    UMBRAL_FALLAS_CONSECUTIVAS = 3
+
+    farmacia = models.OneToOneField(Farmacia, on_delete=models.CASCADE, related_name='estado_enlace')
+    alcanzable = models.BooleanField(
+        null=True, blank=True,
+        help_text='True = respondió el último sondeo. False = caído (superó el umbral de fallas). '
+                  'null = nunca se sondeó todavía, que no es lo mismo que caído.',
+    )
+    latencia_ms = models.FloatField(
+        null=True, blank=True, help_text='Latencia del último sondeo exitoso. null = el último falló.',
+    )
+    fallas_consecutivas = models.PositiveIntegerField(default=0)
+    ultima_verificacion = models.DateTimeField(null=True, blank=True)
+    ultimo_cambio_estado = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Cuándo pasó de alcanzable a caído o viceversa. Sirve para "lleva N horas caída" '
+                  'sin tener que recorrer los eventos.',
+    )
+
+    class Meta:
+        db_table = 'estado_enlace_farmacia'
+        ordering = ['farmacia__codigo']
+        verbose_name = 'Estado de enlace de farmacia'
+        verbose_name_plural = 'Estados de enlace de farmacia'
+
+    def __str__(self):
+        if self.alcanzable is None:
+            estado = 'sin sondear'
+        else:
+            estado = 'activo' if self.alcanzable else 'caído'
+        return f'{self.farmacia.codigo}: enlace {estado}'
+
+
+class EventoEnlaceFarmacia(models.Model):
+    """Una caída del enlace de una farmacia, con su duración. Historial, no estado.
+
+    Es el dato que no se puede reconstruir después y que más valor tiene fuera de lo
+    operativo: es la línea base de disponibilidad real por sitio para discutir un SLA
+    con TELCONET/PUNTO NET. `Cresio_enlaces` lo venía acumulando desde mayo de 2026;
+    si esa base se pierde, se pierden meses de evidencia.
+
+    `fin` vacío = la caída sigue en curso.
+    """
+
+    farmacia = models.ForeignKey(Farmacia, on_delete=models.CASCADE, related_name='eventos_enlace')
+    inicio = models.DateTimeField(db_index=True)
+    fin = models.DateTimeField(null=True, blank=True)
+    circuito_proveedor = models.CharField(
+        max_length=80, blank=True,
+        help_text='Copia del circuito al momento de la caída. Es lo que el proveedor pide al abrir '
+                  'el ticket, y se guarda acá para que el evento siga siendo útil aunque la farmacia '
+                  'cambie de circuito después.',
+    )
+
+    class Meta:
+        db_table = 'evento_enlace_farmacia'
+        ordering = ['-inicio']
+        indexes = [
+            models.Index(fields=['farmacia', '-inicio']),
+        ]
+        verbose_name = 'Caída de enlace'
+        verbose_name_plural = 'Caídas de enlace'
+
+    def __str__(self):
+        estado = 'en curso' if self.fin is None else f'{self.duracion_minutos} min'
+        return f'{self.farmacia.codigo}: caída {self.inicio:%d/%m %H:%M} ({estado})'
+
+    @property
+    def en_curso(self) -> bool:
+        return self.fin is None
+
+    @property
+    def duracion_minutos(self) -> int | None:
+        if self.fin is None:
+            return None
+        return int((self.fin - self.inicio).total_seconds() // 60)
