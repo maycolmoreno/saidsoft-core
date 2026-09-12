@@ -6,28 +6,37 @@ necesita nada instalado del otro lado, así que cubre las ~704 sucursales desde 
 uno. Es la capacidad que tenía `Cresio_enlaces`, el sistema anterior, que estuvo vivo
 hasta el 4-sep-2026 sondeando la flota completa (ver `docs/evaluacion-cresio-enlaces.md`).
 
-**Dónde puede correr esto — leer antes de programarlo:**
+**Dónde corre esto (verificado en el servidor real el 11-sep-2026):**
 
-`apps.monitoreo.mikrotik.sincronizar_ancho_banda_farmacias` ya aprendió esta lección por
-las malas: el 24-ago-2026 se confirmó que el servidor **no tiene ninguna ruta de red
-hacia las IP privadas de las farmacias** (100% de pérdida de ping, sin entrada en la
-tabla de rutas del host). Esa función quedó como código que nunca puede funcionar desde
-ahí.
+Este módulo nació asumiendo que el servidor central no tenía ruta hacia las farmacias —
+así lo afirman `CLAUDE.md` y el docstring de
+`apps.monitoreo.mikrotik.sincronizar_ancho_banda_farmacias` desde el 24-ago-2026 ("100%
+de pérdida de ping, sin entrada en la tabla de rutas"). **Eso ya no es cierto.**
+Comprobado sobre el NUC de producción:
 
-Por eso este módulo **no se agrega a `CELERY_BEAT_SCHEDULE`**: correrlo en el servidor
-central reportaría 704 farmacias caídas que no lo están. Se expone como comando
-(`python manage.py sondear_enlaces`) para correrlo **desde un host que sí tenga ruta** —
-el mismo desde el que corría `Cresio_enlaces`. Cuando se sepa cuál es ese host (acción
-pendiente #1 de la evaluación), se decide si se programa ahí o si ese host reporta al
-central por API.
+- Desde el host: 19 de 25 gateways de San Gregorio responden al ping (las 6 que no son
+  caídas reales o sitios de baja — si no hubiera ruta fallarían las 25).
+- Desde adentro del contenedor de Celery: `connect()` TCP a esas mismas IP devuelve
+  **ConnectionRefused**, que prueba que el paquete llegó al destino y volvió.
+
+El ICMP fallaba en el contenedor por un motivo distinto y engañoso: la imagen no traía
+el binario `ping` (corregido en `deploy/Dockerfile`, y `verificar_ping_disponible` abajo
+ahora lo detecta y lo dice en vez de reportar la flota entera como caída).
+
+Por eso **sí** se programa en `CELERY_BEAT_SCHEDULE`. Sigue existiendo el comando
+(`python manage.py sondear_enlaces`) para correrlo desde otro host, y la API de ingesta
+(`apps.monitoreo.api_views`) para una sonda externa: las tres vías comparten
+`registrar_sondeo`, así que cuál se use es una decisión de operación, no de diseño.
 
 La guarda de `sondear_enlaces_farmacias` es la red de seguridad de todo esto: si casi
 todo el barrido falla, no registra nada. 704 farmacias no se caen a la vez; lo que se
-cayó es la ruta desde donde se está sondeando.
+cayó es la ruta desde donde se está sondeando. Con el sondeo ya programado, esa guarda
+es lo que hace que un cambio de red no llene la base de caídas falsas.
 """
 import logging
 import platform
 import re
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
@@ -51,6 +60,27 @@ UMBRAL_BARRIDO_SOSPECHOSO_PCT = 80
 # esos sondeos se registraran como vivos pero sin latencia. Encontrado corriéndolo de
 # verdad, no leyendo la documentación de ping.
 _RE_LATENCIA = re.compile(r'(?:time|tiempo)[=<]\s*([\d.,]+)\s*m', re.IGNORECASE)
+
+
+class PingNoDisponible(RuntimeError):
+    """No hay binario `ping` en este host.
+
+    Tiene excepción propia porque el síntoma es engañoso: `subprocess.run` de un binario
+    inexistente levanta FileNotFoundError, que el sondeo trataría como "no respondió", y
+    el barrido entero se vería idéntico a una flota caída o a una ruta rota. Pasó de
+    verdad — la imagen de producción no traía `iputils-ping` (ver deploy/Dockerfile).
+    """
+
+
+def verificar_ping_disponible():
+    """Levanta PingNoDisponible si falta el binario. Se llama UNA vez por barrido, no por
+    farmacia: es una propiedad del host, no de cada sondeo."""
+    if shutil.which('ping') is None:
+        raise PingNoDisponible(
+            'No hay binario `ping` en este host. En el contenedor se instala con el paquete '
+            'iputils-ping (ver deploy/Dockerfile); en Windows y en la mayoría de las distros '
+            'viene de fábrica. Sin él, el sondeo reportaría toda la flota como caída.',
+        )
 
 
 def sondear_enlace(ip: str, timeout=TIMEOUT_SEGUNDOS) -> tuple[bool, float | None]:
@@ -170,6 +200,10 @@ def sondear_enlaces_farmacias(farmacias=None) -> dict:
     resumen = {'sondeadas': 0, 'activas': 0, 'caidas': 0, 'abortado': False}
     if not farmacias:
         return resumen
+
+    # Antes de medir nada: si falta el binario, el barrido entero daría "todo caído" y el
+    # operador leería "se cayó la ruta" cuando en realidad falta un paquete del sistema.
+    verificar_ping_disponible()
 
     with ThreadPoolExecutor(max_workers=MAX_SONDEOS_CONCURRENTES) as pool:
         resultados = list(pool.map(lambda f: (f, *sondear_enlace(str(f.ip_router))), farmacias))

@@ -368,6 +368,22 @@ CELERY_BEAT_SCHEDULE = {
         # práctica -- ver docstring de solicitar_sondeo_red_farmacias_via_agente.
         'schedule': 60.0 * 5,
     },
+    'sondear-enlaces-farmacias': {
+        'task': 'apps.monitoreo.tasks.sondear_enlaces_farmacias_task',
+        # Cada 2 min, más seguido que el resto de apps.monitoreo a propósito: acá el
+        # valor ES la velocidad de detección. La caída se declara tras 3 sondeos
+        # fallidos seguidos (EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS), así que
+        # 2 min dan ~6 minutos hasta declarar una caída. Con los 5 min de las demás
+        # serían 15, y una farmacia sin vender un cuarto de hora antes de que nadie se
+        # entere no es monitoreo proactivo. `Cresio_enlaces` usaba ~60s.
+        #
+        # A diferencia de 'sincronizar-ancho-banda-farmacias' (arriba), esta tarea SÍ
+        # funciona desde este servidor: verificado el 11-sep-2026 sobre el NUC real,
+        # host y contenedor alcanzan las IP de las farmacias. Ver el docstring de
+        # apps.monitoreo.enlaces para la evidencia -- y ojo, la nota de la tarea de
+        # arriba quedó desactualizada por ese mismo hallazgo.
+        'schedule': 60.0 * 2,
+    },
 }
 
 # El handler "console" del LOGGING por defecto de Django viene filtrado por

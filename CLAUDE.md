@@ -37,9 +37,21 @@ corre sobre `timescale/timescaledb`.
 
 ### Lo que bloquea de verdad
 
-1. **Sin ruta de red a las farmacias.** El servidor no alcanza sus IP privadas; sin VPN
-   ningún agente en farmacia llega al broker. Es el bloqueante nº 1 del rollout y el
-   único que no se resuelve con código.
+1. **~~Sin ruta de red a las farmacias.~~ DESACTUALIZADO — verificado el 11-sep-2026.**
+   Esto decía que el servidor no alcanza las IP privadas de las farmacias (100% de
+   pérdida de ping, 24-ago-2026). **Ya no es cierto.** Comprobado sobre el NUC real:
+   - Desde el host: 19 de 25 gateways de San Gregorio responden al ping. Las 6 que no
+     son caídas reales o sitios de baja — sin ruta fallarían las 25.
+   - Desde adentro del contenedor de Celery: `connect()` TCP a esas IP devuelve
+     **ConnectionRefused**, que prueba que el paquete llegó y volvió. El ICMP fallaba ahí
+     por otra causa: la imagen no traía `iputils-ping` (corregido en `deploy/Dockerfile`).
+
+   **Ojo con la conclusión:** lo verificado es la dirección **servidor → farmacia**. La
+   otra mitad de la frase original (que un agente en farmacia llegue al broker) es la
+   dirección contraria y NO se probó acá — aunque las 8 estaciones que hoy reportan por
+   MQTT sugieren que funciona. **Antes de rearmar el plan de rollout alrededor de esto,
+   conviene entender por qué cambió y si es permanente**: nadie registró el cambio, y el
+   NUC sale por WiFi (`wlo1`) con ruta por defecto, no por una VPN dedicada.
 2. **El instalador nunca se usó a escala.** Las 8 estaciones se hicieron a mano y cada
    una destapó un bug distinto.
 3. **Los módulos están vacíos.** 9 activos, 9 colaboradores, 0 zonas de viáticos

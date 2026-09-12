@@ -1,5 +1,6 @@
 from celery import shared_task
 
+from .enlaces import sondear_enlaces_farmacias
 from .mikrotik import sincronizar_ancho_banda_farmacias, solicitar_sondeo_red_farmacias_via_agente
 from .services import (
     escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
@@ -70,3 +71,20 @@ def sincronizar_meshcentral_task():
 
     procesados = AdaptadorMeshCentral().sincronizar_todo()
     return f'{procesados} nodo(s) de MeshCentral sincronizado(s).'
+
+
+@shared_task(name='apps.monitoreo.tasks.sondear_enlaces_farmacias_task')
+def sondear_enlaces_farmacias_task():
+    """Cada 2 min (ver CELERY_BEAT_SCHEDULE): ping al equipo de borde de cada farmacia
+    con `ip_router` cargada. Es el único monitoreo del proyecto que no necesita agente
+    instalado, así que cubre las ~704 sucursales y no las 8 con agente.
+
+    Si el barrido falla casi entero no escribe nada y lo reporta como problema de ruta
+    -- ver apps.monitoreo.enlaces.sondear_enlaces_farmacias."""
+    resumen = sondear_enlaces_farmacias()
+    if resumen['abortado']:
+        return (
+            f'Barrido abortado: {resumen["caidas"]}/{resumen["sondeadas"]} sin responder. '
+            'Sin ruta desde este host; no se registró nada.'
+        )
+    return f'{resumen["sondeadas"]} enlace(s): {resumen["activas"]} activo(s), {resumen["caidas"]} caído(s).'

@@ -9,8 +9,17 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Dependencias del sistema para psycopg (binario) — mínimas.
+# iputils-ping: lo necesita apps.monitoreo.enlaces, que sondea el enlace de cada farmacia
+# con el `ping` del sistema en vez de una librería ICMP (pythonping/icmplib arman paquetes
+# crudos y en Linux exigen root o CAP_NET_RAW; este contenedor corre como appuser).
+# Sin este paquete el sondeo no falla ruidosamente: reporta TODA la flota como caída,
+# porque `ping: not found` devuelve exit != 0 igual que un host que no responde. Lo
+# atajaría la guarda de barrido sospechoso, pero el monitoreo simplemente no andaría.
+# Encontrado en el servidor real: el contenedor SÍ alcanza las farmacias (probado con
+# connect() TCP: ConnectionRefused = el host respondió), solo le faltaba el binario.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 \
+        iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
