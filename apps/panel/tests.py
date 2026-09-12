@@ -3840,6 +3840,22 @@ class EnlaceFarmaciaModalTests(TestCase):
         self.assertContains(resp, 'sangregorio2-santana')
         self.assertContains(resp, '28')
 
+    def test_el_grafico_se_dibuja_como_svg_y_no_como_repr(self):
+        """construir_grafico devuelve un objeto con los puntos, no markup. Imprimirlo
+        directo en la plantilla renderiza su repr de Python —"Grafico(puntos='4.0,40.3
+        ...')"— en medio del modal. Pasó de verdad el 11-sep-2026: se ve mal pero no
+        rompe nada, así que la suite no lo notaba."""
+        from apps.monitoreo.models import MuestraRedFarmacia
+
+        for rx in (100.0, 200.0):
+            MuestraRedFarmacia.objects.create(
+                farmacia=self.farmacia, bytes_recibidos=1, bytes_enviados=1,
+                red_recibido_kbps=rx, red_enviado_kbps=10.0,
+            )
+        resp = self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.farmacia.pk]))
+        self.assertContains(resp, '<polyline')
+        self.assertNotContains(resp, 'Grafico(')
+
     def test_sin_estacion_en_linea_no_ofrece_pedir_lectura(self):
         """El consumo lo mide el agente desde la LAN del sitio. Sin agente, ofrecer el
         botón sería prometer algo que va a fallar en silencio."""

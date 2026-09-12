@@ -58,7 +58,15 @@ fragmento, así el operador no pierde la ventana al disparar la consulta.
     {% if total_muestras > 1 %}
     <div class="card p-3 mb-4">
         <div class="text-[var(--text-faint)] text-xs uppercase mb-2">Últimas {{ total_muestras }} lecturas (KB/s)</div>
-        {{ g_red }}
+        {% comment %} construir_grafico devuelve un objeto con los puntos ya calculados, no
+           markup: el <svg> se arma acá, igual que en monitoreo_detalle_partial.html. {% endcomment %}
+        <svg viewBox="0 0 {{ g_red.ancho }} {{ g_red.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
+            <polyline points="{{ g_red.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
+            <polyline points="{{ g_red.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        </svg>
+        <div class="text-xs text-[var(--text-faint)] mt-1">
+            Pico {{ g_red.max_valor|floatformat:0 }} KB/s en esta ventana
+        </div>
     </div>
     {% endif %}
 
