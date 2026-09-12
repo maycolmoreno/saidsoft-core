@@ -491,6 +491,14 @@ class EstadoEnlaceFarmacia(models.Model):
         ordering = ['farmacia__codigo']
         verbose_name = 'Estado de enlace de farmacia'
         verbose_name_plural = 'Estados de enlace de farmacia'
+        permissions = [
+            # Permiso propio, separado de `add`/`change`, para la sonda externa que
+            # reporta por API (ver apps.monitoreo.api_views). El token de esa sonda vive
+            # en una máquina de oficina fuera del servidor: tiene que poder reportar
+            # mediciones y NADA más. Con `change_estadoenlacefarmacia` podría además
+            # editar el estado a mano desde el admin.
+            ('registrar_sondeo_enlace', 'Puede reportar resultados de sondeo de enlaces por API'),
+        ]
 
     def __str__(self):
         if self.alcanzable is None:

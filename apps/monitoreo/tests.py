@@ -4,10 +4,11 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import websocket
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Permission, User
 from django.core import mail
 from django.core.management import call_command
 from django.test import TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
@@ -1298,3 +1299,136 @@ class SondeoEnlacesTests(TestCase):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = 'Respuesta desde 10.111.6.1: Host de destino inaccesible.'
             self.assertEqual(sondear_enlace('192.168.102.1'), (False, None))
+
+
+class SondeoEnlaceAPITests(TestCase):
+    """Ingesta de sondeos por API (apps/monitoreo/api_views.py).
+
+    Existe para el caso en que el host con ruta a las farmacias no pueda alcanzar la base
+    de datos: la sonda mide y reporta por HTTP, reusando el mismo registrar_sondeo().
+    """
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.ml001 = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=self.sg, ip_router='192.168.102.1',
+        )
+        self.ml002 = Farmacia.objects.create(
+            codigo='ML002', grupo=grupo, unidad_negocio=self.sg, ip_router='192.168.102.2',
+        )
+        self.ajena = Farmacia.objects.create(
+            codigo='MAM01', grupo=grupo, unidad_negocio=self.mia, ip_router='10.101.18.225',
+        )
+
+        self.sonda = User.objects.create_user(username='sonda-sg', password='x')
+        PerfilUsuario.objects.create(usuario=self.sonda, acceso_todas_unidades=False).unidades_negocio.set([self.sg])
+        self.sonda.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='registrar_sondeo_enlace'),
+        )
+        self.token = Token.objects.create(user=self.sonda)
+
+        self.url = reverse('api-enlaces-sondeo')
+
+    def _post(self, resultados, token=None):
+        return self.client.post(
+            self.url, {'resultados': resultados}, content_type='application/json',
+            HTTP_AUTHORIZATION=f'Token {token or self.token.key}',
+        )
+
+    def test_registra_el_barrido(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        resp = self._post([
+            {'farmacia': 'ML001', 'alcanzable': True, 'latencia_ms': 21.5},
+            {'farmacia': 'ML002', 'alcanzable': False},
+        ])
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['registrados'], 2)
+        self.assertEqual(resp.json()['activas'], 1)
+
+        estado = EstadoEnlaceFarmacia.objects.get(farmacia=self.ml001)
+        self.assertTrue(estado.alcanzable)
+        self.assertEqual(estado.latencia_ms, 21.5)
+
+    def test_exige_el_permiso_propio_no_solo_estar_autenticado(self):
+        """El token de la sonda vive en una máquina de oficina, fuera del servidor: si se
+        filtra tiene que servir para reportar mediciones y para nada más."""
+        from rest_framework.authtoken.models import Token
+
+        pelado = User.objects.create_user(username='sin_permiso_api', password='x')
+        PerfilUsuario.objects.create(usuario=pelado, acceso_todas_unidades=True)
+        token = Token.objects.create(user=pelado)
+
+        resp = self._post([{'farmacia': 'ML001', 'alcanzable': True}], token=token.key)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_sin_token_no_entra(self):
+        resp = self.client.post(
+            self.url, {'resultados': [{'farmacia': 'ML001', 'alcanzable': True}]},
+            content_type='application/json',
+        )
+        self.assertIn(resp.status_code, (401, 403))
+
+    def test_rechaza_el_barrido_si_casi_todo_fallo(self):
+        """Una sonda que perdió su ruta reportaría toda la flota caída. Misma guarda que
+        el barrido local, y por el mismo motivo."""
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        resp = self._post([
+            {'farmacia': 'ML001', 'alcanzable': False},
+            {'farmacia': 'ML002', 'alcanzable': False},
+        ])
+        self.assertEqual(resp.status_code, 409)
+        self.assertTrue(resp.json()['abortado'])
+        self.assertFalse(EstadoEnlaceFarmacia.objects.exists())
+
+    def test_no_puede_reportar_farmacias_de_otra_unidad_de_negocio(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        resp = self._post([
+            {'farmacia': 'ML001', 'alcanzable': True},
+            {'farmacia': 'MAM01', 'alcanzable': True},
+        ])
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['registrados'], 1)
+        self.assertEqual(resp.json()['desconocidas'], ['MAM01'])
+        self.assertFalse(EstadoEnlaceFarmacia.objects.filter(farmacia=self.ajena).exists())
+
+    def test_rechaza_farmacias_repetidas_en_el_mismo_barrido(self):
+        """Cuál de las dos gana sería arbitrario, y una contaría mal en la guarda."""
+        resp = self._post([
+            {'farmacia': 'ML001', 'alcanzable': True},
+            {'farmacia': 'ML001', 'alcanzable': False},
+        ])
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('repetidas', str(resp.json()))
+
+    def test_rechaza_un_lote_vacio(self):
+        self.assertEqual(self._post([]).status_code, 400)
+
+    def test_entrega_la_lista_de_farmacias_a_sondear(self):
+        """La sonda no mantiene su propia copia de las IP: esa copia es lo que se
+        desincroniza cuando abre una farmacia o cambia una IP."""
+        resp = self.client.get(
+            reverse('api-enlaces-farmacias'), HTTP_AUTHORIZATION=f'Token {self.token.key}',
+        )
+        self.assertEqual(resp.status_code, 200)
+        codigos = [f['codigo'] for f in resp.json()['farmacias']]
+        # Solo las de su alcance: MAM01 es de MIA.
+        self.assertEqual(codigos, ['ML001', 'ML002'])
+        self.assertEqual(resp.json()['farmacias'][0]['ip'], '192.168.102.1')
+
+    def test_la_lista_tambien_exige_el_permiso(self):
+        from rest_framework.authtoken.models import Token
+
+        pelado = User.objects.create_user(username='sin_permiso_lista', password='x')
+        PerfilUsuario.objects.create(usuario=pelado, acceso_todas_unidades=True)
+        token = Token.objects.create(user=pelado)
+        resp = self.client.get(
+            reverse('api-enlaces-farmacias'), HTTP_AUTHORIZATION=f'Token {token.key}',
+        )
+        self.assertEqual(resp.status_code, 403)

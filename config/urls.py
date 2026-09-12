@@ -9,6 +9,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/auth/token/', obtain_auth_token, name='api-auth-token'),
     path('api/v1/', include('apps.mantenimiento.api_urls')),
+    path('api/v1/monitoreo/', include('apps.monitoreo.api_urls')),
     path('', include('apps.panel.urls')),
 ]
 

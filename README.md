@@ -601,6 +601,23 @@ que tenía `Cresio_enlaces`, el sistema anterior (ver `docs/evaluacion-cresio-en
   la tabla. Si nadie sondeó todavía, lo dice y explica qué comando falta correr, en vez de
   mostrar una tabla vacía que parece una pantalla rota.
 
+**Si el host con ruta no alcanza la base de datos**, hay una segunda vía: una sonda liviana
+mide y reporta por HTTP, y el servidor persiste con el mismo `registrar_sondeo()`.
+
+- `POST /api/v1/monitoreo/enlaces/sondeo/` — recibe el **barrido completo** en una sola
+  llamada, no una farmacia por request: la guarda de "¿se cayó la flota o se cayó la sonda?"
+  solo se puede evaluar sobre el conjunto. Si falla ≥80 % responde `409` y no escribe nada.
+- `GET /api/v1/monitoreo/enlaces/farmacias/` — qué sondear y con qué IP, para que la sonda no
+  mantenga su propia copia. Esa copia es justamente lo que se desincroniza cuando abre una
+  farmacia o cambia una IP.
+- Ambos exigen el permiso propio `monitoreo.registrar_sondeo_enlace`, no solo estar
+  autenticado: el token vive en una máquina de oficina, fuera del servidor, y si se filtra
+  tiene que servir para reportar mediciones y para nada más. Todo escopado por unidad de
+  negocio.
+- **`deploy/sonda-enlaces/sonda_enlaces.py`** — la sonda. Sin dependencias fuera de la
+  biblioteca estándar, a propósito: va a correr en una máquina donde instalar cosas puede ser
+  un trámite.
+
 **No está programado en Celery Beat, a propósito.** El servidor central no tiene ruta hacia
 las IP de las farmacias (confirmado el 24-ago-2026: 100 % de pérdida de ping, sin entrada en
 la tabla de rutas del host) — es la misma razón por la que el SNMP al Mikrotik se hace desde

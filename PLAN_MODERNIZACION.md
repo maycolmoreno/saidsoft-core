@@ -209,6 +209,16 @@ más rápida de encontrar la máquina con ruta. Panel en `/monitoreo/enlaces/`: 
 sin sondear, las caídas en curso con su circuito a la vista (es lo que el proveedor pide al
 abrir el ticket) y las caídas primero en la tabla; si nadie sondeó todavía lo dice y explica
 qué comando falta, en vez de mostrar una tabla vacía que parece una pantalla rota.
+**Segunda vía de ingesta (11-sep-2026)**, para cuando el host con ruta tampoco alcance la
+base: `POST /api/v1/monitoreo/enlaces/sondeo/` recibe el barrido completo (la guarda de
+"¿se cayó la flota o la sonda?" solo se evalúa sobre el conjunto; ≥80% de fallo devuelve
+409 y no escribe nada) y `GET /api/v1/monitoreo/enlaces/farmacias/` entrega qué sondear,
+para que la sonda no mantenga una copia de las IP que se desincronice. Permiso propio
+`registrar_sondeo_enlace`, separado de add/change: el token vive fuera del servidor.
+Sonda en `deploy/sonda-enlaces/sonda_enlaces.py`, sin dependencias fuera de la stdlib.
+Verificado de punta a punta contra un servidor real: la sonda pidió la lista, midió,
+reportó y el estado quedó persistido; y con IP inalcanzables el servidor devolvió 409 sin
+escribir una sola fila.
 
 **M4 — Activar TimescaleDB en producción** sigue bloqueada: requiere el servidor real
 para retomar desde el error exacto ya documentado (`cannot create a unique index
