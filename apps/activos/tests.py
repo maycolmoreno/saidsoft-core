@@ -1110,27 +1110,91 @@ class TopologiaActivoTests(TestCase):
 class CrearTopologiaFarmaciaTests(TestCase):
     """Alta del equipamiento SIN agente de una farmacia (`crear_topologia_farmacia`).
 
-    La regla que estas pruebas cuidan es que el comando **nunca invente un dato de red**.
-    Un activo con la serie vacía es información incompleta y se ve como tal; uno con una
-    serie de relleno es peor que no tenerlo, porque tiene apariencia de dato real y
-    alguien lo va a creer más adelante.
+    Dos reglas que estas pruebas cuidan:
+
+    1. El comando **nunca inventa un dato de red**. Un activo con la serie vacía es
+       información incompleta y se ve como tal; uno con una serie de relleno es peor que
+       no tenerlo, porque tiene apariencia de dato real y alguien lo va a creer después.
+    2. Ante una ambigüedad **no adivina**: si hay una impresora sin slot y dos cajas
+       posibles, no crea ni adopta nada de esa categoría. Crear igual dejaría tres
+       registros para dos equipos físicos.
     """
+
+    ROL_UNICO = 7  # mikrotik, switch, voip, biometrico, camaras, alarmas, impresora_oficina
 
     def setUp(self):
         self.sg = UnidadNegocio.objects.get(codigo='SG')
         grupo = Grupo.objects.create(codigo='TRX016')
         self.farmacia = Farmacia.objects.create(codigo='ML016', grupo=grupo, unidad_negocio=self.sg)
+        self.adm = self._estacion('ML016-ADM')
+        self.caja_a = self._estacion('ML016-A')
         self.usuario = User.objects.create_superuser(username='u_topo_cmd', password='x' * 14)
+
+    def _estacion(self, codigo, aprobada=True):
+        return Estacion.objects.create(
+            codigo=codigo, farmacia=self.farmacia,
+            estado_aprobacion=(
+                Estacion.EstadoAprobacion.APROBADA if aprobada
+                else Estacion.EstadoAprobacion.PENDIENTE
+            ),
+        )
 
     def _crear(self, **extra):
         from apps.activos.services import crear_topologia_farmacia
 
         return crear_topologia_farmacia(farmacia=self.farmacia, usuario=self.usuario, **extra)
 
+    def _activo_suelto(self, categoria_codigo, **extra):
+        """Un activo de la farmacia sin slot, como los que cargó el piloto de ML016 antes
+        de que el campo existiera."""
+        from apps.activos.models import CategoriaEquipo
+        from apps.activos.services import generar_codigo_activo
+
+        categoria, _ = CategoriaEquipo.objects.get_or_create(
+            codigo=categoria_codigo, defaults={'nombre': categoria_codigo},
+        )
+        tipo = extra.pop('tipo', Activo.Tipo.RED)
+        return Activo.objects.create(
+            codigo=generar_codigo_activo(tipo), tipo=tipo, categoria=categoria,
+            farmacia=self.farmacia, unidad_negocio=self.sg,
+            estado=Activo.Estado.ASIGNADO, **extra,
+        )
+
+    # --- el catálogo se expande según las cajas reales ---
+
+    def test_el_catalogo_sale_de_las_estaciones_reales_de_la_farmacia(self):
+        """El patrón es 1 impresora + 1 medianet por caja. Con 2 estaciones son 4
+        periféricos; el número no está fijo en ningún lado."""
+        from apps.activos.services import slots_de_farmacia
+
+        slots = {s.slot for s in slots_de_farmacia(self.farmacia)}
+        self.assertEqual(len(slots), self.ROL_UNICO + 4)
+        self.assertIn('impresora_ADM', slots)
+        self.assertIn('medianet_ADM', slots)
+        self.assertIn('impresora_A', slots)
+        self.assertIn('medianet_A', slots)
+
+    def test_una_caja_mas_son_dos_puestos_mas(self):
+        from apps.activos.services import slots_de_farmacia
+
+        antes = len(slots_de_farmacia(self.farmacia))
+        self._estacion('ML016-B')
+        self.assertEqual(len(slots_de_farmacia(self.farmacia)), antes + 2)
+
+    def test_una_estacion_sin_aprobar_no_suma_perifericos(self):
+        """Una pendiente puede ser un enrolamiento que se rechaza: darle impresora y
+        medianet sería inventariar los periféricos de una caja que quizá no existe."""
+        from apps.activos.services import slots_de_farmacia
+
+        antes = len(slots_de_farmacia(self.farmacia))
+        self._estacion('ML016-Z', aprobada=False)
+        self.assertEqual(len(slots_de_farmacia(self.farmacia)), antes)
+
+    # --- alta ---
+
     def test_por_defecto_simula_y_no_escribe_nada(self):
-        """Es un alta sobre el inventario real: conviene ver la lista antes de escribirla."""
         resumen = self._crear()
-        self.assertEqual(len(resumen['creados']), 6)
+        self.assertEqual(len(resumen['creados']), self.ROL_UNICO + 4)
         self.assertEqual(Activo.objects.count(), 0)
 
     def test_crea_el_equipamiento_como_instalado_en_la_farmacia(self):
@@ -1140,42 +1204,28 @@ class CrearTopologiaFarmaciaTests(TestCase):
 
         self._crear(aplicar=True)
 
-        mikrotik = Activo.objects.get(categoria__codigo='ROUTER-MIKROTIK')
+        mikrotik = Activo.objects.get(slot='mikrotik')
         self.assertEqual(mikrotik.estado, Activo.Estado.ASIGNADO)
         self.assertEqual(mikrotik.farmacia, self.farmacia)
         self.assertEqual(mikrotik.unidad_negocio, self.sg)
         self.assertIsNone(mikrotik.colaborador_actual)
         self.assertIsNone(mikrotik.bodega_actual)
         self.assertEqual(mikrotik.ubicacion_interna, UbicacionInterna.RACK)
-        self.assertEqual(
-            Activo.objects.get(categoria__codigo='PINPAD-MEDIANET').ubicacion_interna,
-            UbicacionInterna.CAJA,
-        )
+        self.assertEqual(Activo.objects.get(slot='medianet_A').ubicacion_interna, UbicacionInterna.CAJA)
+        self.assertEqual(Activo.objects.get(slot='biometrico').tipo, Activo.Tipo.BIOMETRICO)
+        self.assertEqual(Activo.objects.get(slot='alarmas_sipao').tipo, Activo.Tipo.SIPAO_ALARMA)
 
     def test_sin_datos_deja_los_campos_vacios_y_los_reporta(self):
         resumen = self._crear(slots=['switch'], aplicar=True)
 
-        switch = Activo.objects.get(categoria__codigo='SWITCH-NOADMIN')
+        switch = Activo.objects.get(slot='switch')
         self.assertIsNone(switch.ip)
         self.assertEqual(switch.mac, '')
         self.assertEqual(switch.numero_serie, '')
         # No alcanza con dejarlo vacío: hay que decir a qué activo volver y por qué campo.
-        self.assertEqual(len(resumen['incompletos']), 1)
-        pendiente = resumen['incompletos'][0]
-        self.assertIn(switch.codigo, pendiente)
+        pendiente = next(p for p in resumen['incompletos'] if switch.codigo in p)
         for campo in ('ip', 'mac', 'numero_serie'):
             self.assertIn(campo, pendiente)
-
-    def test_carga_los_datos_reales_cuando_se_los_dan(self):
-        self._crear(
-            slots=['mikrotik'], aplicar=True,
-            datos={'mikrotik': {'ip': '10.111.16.1', 'mac': 'AA:BB:CC:DD:EE:01',
-                                'numero_serie': 'HFG1234ABCD'}},
-        )
-        mikrotik = Activo.objects.get(categoria__codigo='ROUTER-MIKROTIK')
-        self.assertEqual(str(mikrotik.ip), '10.111.16.1')
-        self.assertEqual(mikrotik.mac, 'AA:BB:CC:DD:EE:01')
-        self.assertEqual(mikrotik.numero_serie, 'HFG1234ABCD')
 
     def test_una_mac_mal_tipeada_no_deja_la_farmacia_a_medio_inventariar(self):
         """La validación corre entera ANTES del primer alta. Si falla la tercera fila de
@@ -1185,87 +1235,273 @@ class CrearTopologiaFarmaciaTests(TestCase):
         with self.assertRaises(ValidationError):
             self._crear(
                 aplicar=True,
-                datos={'mikrotik': {'ip': '10.111.16.1'}, 'switch': {'mac': 'no-es-una-mac'}},
+                datos={'mikrotik': {'ip': '10.201.7.225'}, 'switch': {'mac': 'no-es-una-mac'}},
             )
         self.assertEqual(Activo.objects.count(), 0)
 
     def test_no_duplica_si_ya_esta_inventariado(self):
-        """Correrlo dos veces sobre la misma farmacia es el caso normal: se carga lo que
-        se conoce hoy y se vuelve cuando aparece el resto."""
         self._crear(slots=['mikrotik'], aplicar=True)
         resumen = self._crear(slots=['mikrotik'], aplicar=True)
 
-        self.assertEqual(Activo.objects.filter(categoria__codigo='ROUTER-MIKROTIK').count(), 1)
+        self.assertEqual(Activo.objects.filter(slot='mikrotik').count(), 1)
         self.assertEqual(resumen['creados'], [])
         self.assertEqual(len(resumen['omitidos']), 1)
 
-    def test_un_equipo_dado_de_baja_no_bloquea_a_su_reemplazo(self):
+    def test_un_equipo_dado_de_baja_suelta_su_puesto(self):
+        """El router que se quemó sigue existiendo para la auditoría (un activo nunca se
+        borra), pero ya no es "el mikrotik de ML016": su reemplazo tiene que poder ocupar
+        el slot. Por eso el constraint excluye los dados de baja."""
         self._crear(slots=['mikrotik'], aplicar=True)
-        viejo = Activo.objects.get(categoria__codigo='ROUTER-MIKROTIK')
+        viejo = Activo.objects.get(slot='mikrotik')
         viejo.estado = Activo.Estado.DADO_DE_BAJA
         viejo.save(update_fields=['estado'])
 
         self._crear(slots=['mikrotik'], aplicar=True)
-        self.assertEqual(Activo.objects.filter(categoria__codigo='ROUTER-MIKROTIK').count(), 2)
+        self.assertEqual(Activo.objects.filter(slot='mikrotik').count(), 2)
 
-    def test_el_router_y_el_switch_se_distinguen_por_categoria(self):
-        """`Activo.Tipo.RED` es uno solo ('Red (switch/router)'). Lo que los separa —y lo
-        que mantenimiento ya usa para elegir el checklist— es CategoriaEquipo."""
-        self._crear(slots=['mikrotik', 'switch'], aplicar=True)
-
-        de_red = Activo.objects.filter(tipo=Activo.Tipo.RED)
-        self.assertEqual(de_red.count(), 2)
-        self.assertEqual(
-            sorted(de_red.values_list('categoria__codigo', flat=True)),
-            ['ROUTER-MIKROTIK', 'SWITCH-NOADMIN'],
+    def test_dos_farmacias_pueden_tener_el_mismo_slot(self):
+        otra = Farmacia.objects.create(
+            codigo='ML017', grupo=Grupo.objects.create(codigo='TRX017'), unidad_negocio=self.sg,
         )
+        from apps.activos.services import crear_topologia_farmacia
 
-    def test_rechaza_un_slot_que_no_existe(self):
-        """Mejor que fallar: un slot mal escrito silenciosamente omitido dejaría la
-        farmacia inventariada a medias sin que nadie se entere."""
-        with self.assertRaises(ValueError):
-            self._crear(slots=['mikroitk'], aplicar=True)
+        self._crear(slots=['mikrotik'], aplicar=True)
+        crear_topologia_farmacia(
+            farmacia=otra, usuario=self.usuario, slots=['mikrotik'], aplicar=True,
+        )
+        self.assertEqual(Activo.objects.filter(slot='mikrotik').count(), 2)
 
-    def test_rechaza_datos_de_un_slot_que_no_se_va_a_crear(self):
-        with self.assertRaises(ValueError):
-            self._crear(slots=['mikrotik'], datos={'telefono': {'ip': '10.111.16.9'}})
+    # --- adopción y ambigüedad ---
+
+    def test_adopta_un_activo_sin_slot_cuando_no_hay_duda(self):
+        """El piloto de ML016 se cargó antes de que existieran los slots. Hay un solo
+        MikroTik y un solo puesto de MikroTik: no hay nada que deducir."""
+        viejo = self._activo_suelto('ROUTER-MIKROTIK')
+
+        resumen = self._crear(slots=['mikrotik'], aplicar=True)
+
+        viejo.refresh_from_db()
+        self.assertEqual(viejo.slot, 'mikrotik')
+        self.assertEqual(resumen['creados'], [])
+        self.assertEqual(len(resumen['adoptados']), 1)
+        self.assertEqual(Activo.objects.filter(slot='mikrotik').count(), 1)
+
+    def test_no_adivina_cuando_hay_una_impresora_y_dos_cajas(self):
+        """Es el caso real de ML016: 1 térmica cargada, 2 estaciones. Cuál de las dos es
+        no se puede deducir, así que no se crea NI se adopta nada de esa categoría —
+        crear igual dejaría tres registros para dos equipos físicos."""
+        suelta = self._activo_suelto('IMPRESORA-TERMICA', tipo=Activo.Tipo.IMPRESORA)
+
+        resumen = self._crear(slots=['impresora_ADM', 'impresora_A'], aplicar=True)
+
+        suelta.refresh_from_db()
+        self.assertEqual(suelta.slot, '')
+        self.assertEqual(resumen['creados'], [])
+        self.assertEqual(resumen['adoptados'], [])
+        self.assertEqual(len(resumen['ambiguos']), 1)
+        self.assertIn(suelta.codigo, resumen['ambiguos'][0])
+
+    def test_le_pone_slot_al_activo_de_cada_estacion(self):
+        """Esos activos ya existen (los crea crear_activos_desde_estaciones); acá solo se
+        los ubica en el esquema para que el vocabulario de slots esté completo."""
+        from apps.activos.services import generar_codigo_activo
+
+        activo = Activo.objects.create(
+            codigo=generar_codigo_activo(Activo.Tipo.DESKTOP), tipo=Activo.Tipo.DESKTOP,
+            farmacia=self.farmacia, unidad_negocio=self.sg, estacion=self.adm,
+            estado=Activo.Estado.ASIGNADO,
+        )
+        self._crear(slots=[], aplicar=True)
+
+        activo.refresh_from_db()
+        self.assertEqual(activo.slot, 'estacion_ADM')
+
+    # --- validación del modelo ---
+
+    def test_un_slot_sin_farmacia_no_significa_nada(self):
+        from django.core.exceptions import ValidationError
+
+        from apps.activos.services import generar_codigo_activo
+
+        activo = Activo(
+            codigo=generar_codigo_activo(Activo.Tipo.RED), tipo=Activo.Tipo.RED, slot='mikrotik',
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            activo.full_clean()
+        self.assertIn('slot', ctx.exception.error_dict)
+
+    # --- comando ---
 
     def test_el_comando_simula_y_avisa_que_no_escribio(self):
         salida = io.StringIO()
         call_command('crear_topologia_farmacia', '--farmacia', 'ML016', stdout=salida)
         texto = salida.getvalue()
-        self.assertIn('Se crearían: 6', texto)
+        self.assertIn('Se crearían: %d' % (self.ROL_UNICO + 4), texto)
         self.assertIn('no se escribió nada', texto)
         self.assertEqual(Activo.objects.count(), 0)
 
-    def test_el_comando_lee_el_csv_y_lista_lo_que_queda_pendiente(self):
-        import tempfile
-
-        with tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False,
-                                         newline='', encoding='utf-8') as archivo:
-            archivo.write('slot,ip,mac,numero_serie\n')
-            archivo.write('mikrotik,10.111.16.1,AA:BB:CC:DD:EE:01,HFG1234ABCD\n')
-            archivo.write('switch,,,\n')
-            ruta = archivo.name
-
+    def test_el_comando_lista_los_puestos_de_la_farmacia(self):
         salida = io.StringIO()
-        call_command(
-            'crear_topologia_farmacia', '--farmacia', 'ML016', '--slots', 'mikrotik,switch',
-            '--datos', ruta, '--aplicar', stdout=salida,
-        )
+        call_command('crear_topologia_farmacia', '--farmacia', 'ML016', '--listar-slots', stdout=salida)
         texto = salida.getvalue()
-        self.assertIn('Creados: 2', texto)
-        self.assertIn('Quedan con datos pendientes', texto)
-
-        mikrotik = Activo.objects.get(categoria__codigo='ROUTER-MIKROTIK')
-        self.assertEqual(str(mikrotik.ip), '10.111.16.1')
-        # El switch entró sin nada y tiene que figurar entre los pendientes, no perderse.
-        switch = Activo.objects.get(categoria__codigo='SWITCH-NOADMIN')
-        self.assertIsNone(switch.ip)
-        self.assertIn(switch.codigo, texto)
+        self.assertIn('impresora_A', texto)
+        self.assertIn('medianet_ADM', texto)
+        self.assertEqual(Activo.objects.count(), 0)
 
     def test_el_comando_falla_si_la_farmacia_no_existe(self):
         from django.core.management.base import CommandError
 
         with self.assertRaises(CommandError):
             call_command('crear_topologia_farmacia', '--farmacia', 'NOEXISTE', stdout=io.StringIO())
+
+
+class CompletarTopologiaTests(TestCase):
+    """Carga de ip/mac/numero_serie en activos que ya existen (`completar_datos_topologia`).
+
+    Todo o nada: la planilla entera se valida antes de escribir la primera fila. Media
+    planilla aplicada es peor que ninguna, porque nadie sabría desde dónde retomar.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX016')
+        self.farmacia = Farmacia.objects.create(codigo='ML016', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML016-ADM', farmacia=self.farmacia, ip_lan='10.201.7.226',
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_superuser(username='u_comp', password='x' * 14)
+        from apps.activos.services import crear_topologia_farmacia
+
+        crear_topologia_farmacia(
+            farmacia=self.farmacia, usuario=self.usuario,
+            slots=['mikrotik', 'switch'], aplicar=True,
+        )
+
+    def _completar(self, filas, aplicar=True):
+        from apps.activos.services import completar_datos_topologia
+
+        return completar_datos_topologia(filas=filas, usuario=self.usuario, aplicar=aplicar)
+
+    def _fila(self, slot, **extra):
+        fila = {'farmacia': 'ML016', 'slot': slot, 'ip': '', 'mac': '', 'numero_serie': ''}
+        fila.update(extra)
+        return fila
+
+    def test_carga_los_campos_vacios(self):
+        self._completar([self._fila('mikrotik', ip='10.201.7.225', mac='AA:BB:CC:DD:EE:01',
+                                    numero_serie='HFG1234ABCD')])
+        mikrotik = Activo.objects.get(slot='mikrotik')
+        self.assertEqual(str(mikrotik.ip), '10.201.7.225')
+        self.assertEqual(mikrotik.mac, 'AA:BB:CC:DD:EE:01')
+        self.assertEqual(mikrotik.numero_serie, 'HFG1234ABCD')
+
+    def test_una_fila_puede_traer_solo_algunos_campos(self):
+        self._completar([self._fila('switch', numero_serie='SW9988')])
+        switch = Activo.objects.get(slot='switch')
+        self.assertEqual(switch.numero_serie, 'SW9988')
+        self.assertIsNone(switch.ip)
+
+    def test_por_defecto_simula(self):
+        resumen = self._completar([self._fila('mikrotik', ip='10.201.7.225')], aplicar=False)
+        self.assertEqual(len(resumen['actualizados']), 1)
+        self.assertIsNone(Activo.objects.get(slot='mikrotik').ip)
+
+    def test_no_pisa_un_valor_que_ya_esta_cargado(self):
+        """Puede que el equipo se haya movido, o que la planilla esté vieja. Eso lo
+        resuelve una persona, no un UPDATE silencioso."""
+        from apps.activos.services import ErroresDeCarga
+
+        self._completar([self._fila('mikrotik', ip='10.201.7.225')])
+        with self.assertRaises(ErroresDeCarga):
+            self._completar([self._fila('mikrotik', ip='10.201.7.99')])
+        self.assertEqual(str(Activo.objects.get(slot='mikrotik').ip), '10.201.7.225')
+
+    def test_el_mismo_valor_no_es_un_conflicto(self):
+        self._completar([self._fila('mikrotik', ip='10.201.7.225')])
+        resumen = self._completar([self._fila('mikrotik', ip='10.201.7.225')])
+        self.assertEqual(resumen['actualizados'], [])
+
+    def test_una_fila_sin_activo_aborta_la_planilla_entera(self):
+        """Si la mitad se aplicara, nadie sabría desde dónde retomar."""
+        from apps.activos.services import ErroresDeCarga
+
+        with self.assertRaises(ErroresDeCarga) as ctx:
+            self._completar([
+                self._fila('mikrotik', ip='10.201.7.225'),
+                self._fila('impresora_Z', ip='10.201.7.240'),
+            ])
+        self.assertEqual(len(ctx.exception.errores), 1)
+        self.assertIsNone(Activo.objects.get(slot='mikrotik').ip)
+
+    def test_rechaza_una_mac_mal_formada_sin_escribir_nada(self):
+        from apps.activos.services import ErroresDeCarga
+
+        with self.assertRaises(ErroresDeCarga):
+            self._completar([
+                self._fila('mikrotik', ip='10.201.7.225'),
+                self._fila('switch', mac='no-es-una-mac'),
+            ])
+        self.assertIsNone(Activo.objects.get(slot='mikrotik').ip)
+
+    def test_no_deja_cargar_la_ip_de_un_activo_con_estacion(self):
+        """Esa la reporta el agente: cargarla a mano crearía una segunda versión del
+        mismo dato (misma regla que Activo.clean)."""
+        from apps.activos.services import ErroresDeCarga, generar_codigo_activo
+
+        Activo.objects.create(
+            codigo=generar_codigo_activo(Activo.Tipo.DESKTOP), tipo=Activo.Tipo.DESKTOP,
+            farmacia=self.farmacia, unidad_negocio=self.sg, estacion=self.estacion,
+            estado=Activo.Estado.ASIGNADO, slot='estacion_ADM',
+        )
+        with self.assertRaises(ErroresDeCarga) as ctx:
+            self._completar([self._fila('estacion_ADM', ip='10.201.7.99')])
+        self.assertIn('agente', ctx.exception.errores[0])
+
+    def test_una_farmacia_inexistente_es_un_error_de_planilla(self):
+        from apps.activos.services import ErroresDeCarga
+
+        with self.assertRaises(ErroresDeCarga):
+            self._completar([{'farmacia': 'NOEXISTE', 'slot': 'mikrotik', 'ip': '10.0.0.1'}])
+
+    def test_deja_rastro_en_el_historial_del_activo(self):
+        """El historial de un activo es de auditoría permanente, y cargarle la IP no es
+        menos real que asignárselo a alguien."""
+        self._completar([self._fila('mikrotik', ip='10.201.7.225')])
+        evento = EventoActivo.objects.get(
+            activo__slot='mikrotik', tipo_evento=EventoActivo.TipoEvento.DATOS_RED_CARGADOS,
+        )
+        self.assertEqual(evento.detalle['ip'], '10.201.7.225')
+        self.assertEqual(evento.detalle['slot'], 'mikrotik')
+
+    def test_el_comando_lee_el_csv_y_avisa_que_simulo(self):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False,
+                                         newline='', encoding='utf-8') as archivo:
+            archivo.write('farmacia,slot,ip,mac,numero_serie\n')
+            archivo.write('ML016,mikrotik,10.201.7.225,AA:BB:CC:DD:EE:01,HFG1234ABCD\n')
+            archivo.write('ML016,switch,,,SW9988\n')
+            ruta = archivo.name
+
+        salida = io.StringIO()
+        call_command('completar_topologia', '--datos', ruta, stdout=salida)
+        self.assertIn('Se actualizarían: 2', salida.getvalue())
+        self.assertIsNone(Activo.objects.get(slot='mikrotik').ip)
+
+        call_command('completar_topologia', '--datos', ruta, '--aplicar', stdout=io.StringIO())
+        self.assertEqual(str(Activo.objects.get(slot='mikrotik').ip), '10.201.7.225')
+        self.assertEqual(Activo.objects.get(slot='switch').numero_serie, 'SW9988')
+
+    def test_el_comando_falla_si_el_csv_no_tiene_las_columnas(self):
+        import tempfile
+
+        from django.core.management.base import CommandError
+
+        with tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False,
+                                         newline='', encoding='utf-8') as archivo:
+            archivo.write('farmacia,ip\nML016,10.0.0.1\n')
+            ruta = archivo.name
+
+        with self.assertRaises(CommandError):
+            call_command('completar_topologia', '--datos', ruta, stdout=io.StringIO())

@@ -410,6 +410,8 @@ class Activo(models.Model):
         # ("switch/router") — un tipo equivocado es peor que uno faltante, porque el
         # dato queda plausible y nadie lo revisa después.
         PINPAD = 'PIN', 'Pinpad / datáfono'
+        BIOMETRICO = 'BIO', 'Biométrico'
+        SIPAO_ALARMA = 'ALM', 'Alarma SIPAO'
 
     class Estado(models.TextChoices):
         # BUG-3 de la auditoría de gobernanza (22-ago-2026): EN_TRANSITO estuvo acá desde
@@ -503,6 +505,12 @@ class Activo(models.Model):
         help_text='Dónde está montado DENTRO de la farmacia. No confundir con `Ubicacion`, que es '
                   'la agencia/sede y la usa el módulo de visitas técnicas.',
     )
+    slot = models.CharField(
+        max_length=40, blank=True,
+        help_text='Qué puesto ocupa este equipo dentro del esquema estándar de la farmacia: '
+                  '"mikrotik", "switch", "voip", o uno atado a una estación como "impresora_A" '
+                  'o "medianet_B". Vacío = todavía no se sabe cuál de los puestos es.',
+    )
 
     fecha_creacion = models.DateTimeField(auto_now_add=True)
 
@@ -512,6 +520,20 @@ class Activo(models.Model):
         # A propósito SIN unique sobre `ip`: la Epson L3250 se conecta por WiFi y toma
         # IP por DHCP, así que la misma dirección puede pasar de un equipo a otro sin que
         # eso sea un error de datos.
+        constraints = [
+            # Una farmacia tiene UN puesto de cada cosa: un router, una impresora por
+            # caja. La condición excluye el vacío porque la enorme mayoría de los activos
+            # (los de oficina, los que están en bodega) no pertenecen a ningún esquema de
+            # farmacia — mismo patrón que `una_apertura_vigente_por_farmacia`.
+            models.UniqueConstraint(
+                fields=['farmacia', 'slot'],
+                # Un activo dado de baja suelta su puesto: el router que se quemó sigue
+                # existiendo para la auditoría (nunca se borra) pero ya no es "el
+                # mikrotik de ML016", y su reemplazo tiene que poder ocupar ese slot.
+                condition=~models.Q(slot='') & ~models.Q(estado='dado_de_baja'),
+                name='un_slot_por_farmacia',
+            ),
+        ]
 
     def __str__(self):
         return self.codigo
@@ -543,6 +565,11 @@ class Activo(models.Model):
         la fila exista.
         """
         super().clean()
+        if self.slot and not self.farmacia_id:
+            raise ValidationError({
+                'slot': 'El slot dice qué puesto ocupa el equipo DENTRO de una farmacia, '
+                        'así que no significa nada sin una farmacia asignada.',
+            })
         if self.estacion_id and (self.ip or self.mac):
             raise ValidationError({
                 'ip': 'Este activo tiene la estación %s vinculada: su IP y MAC las reporta el '
@@ -565,6 +592,7 @@ class EventoActivo(models.Model):
         BAJA_RECOMENDADA = 'baja_recomendada', 'Baja recomendada (mantenimiento)'
         TRANSITO = 'transito', 'En tránsito entre bodegas'
         UBICACION_ACTUALIZADA = 'ubicacion_actualizada', 'Ubicación (farmacia) actualizada'
+        DATOS_RED_CARGADOS = 'datos_red_cargados', 'Datos de red cargados (IP/MAC/serie)'
 
     activo = models.ForeignKey(Activo, on_delete=models.CASCADE, related_name='eventos')
     tipo_evento = models.CharField(max_length=25, choices=TipoEvento.choices)

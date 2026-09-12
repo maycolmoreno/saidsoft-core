@@ -152,7 +152,7 @@ class EventoActivoInline(admin.TabularInline):
 class ActivoAdmin(admin.ModelAdmin):
     list_display = (
         'codigo', 'tipo', 'marca', 'categoria', 'modelo', 'estado', 'estado_fisico_actual',
-        'farmacia', 'ubicacion_interna', 'ip', 'bodega_actual', 'colaborador_actual',
+        'farmacia', 'slot', 'ubicacion_interna', 'ip', 'bodega_actual', 'colaborador_actual',
         'unidad_negocio', 'baja_recomendada',
     )
     list_filter = (
@@ -161,7 +161,7 @@ class ActivoAdmin(admin.ModelAdmin):
     # `ip` queda afuera a propósito: en PostgreSQL es de tipo inet y un `icontains` sobre
     # ella revienta (mismo motivo por el que enlaces_farmacias_lista castea ip_router a
     # texto para poder buscarla). `mac` sí es texto y es lo que se lee de una etiqueta.
-    search_fields = ('codigo', 'numero_serie', 'marca__nombre', 'modelo', 'codigo_sap', 'mac')
+    search_fields = ('codigo', 'numero_serie', 'marca__nombre', 'modelo', 'codigo_sap', 'mac', 'slot')
     autocomplete_fields = (
         'orden_compra', 'bodega_actual', 'colaborador_actual', 'farmacia', 'marca', 'categoria', 'unidad_negocio',
         'estacion',

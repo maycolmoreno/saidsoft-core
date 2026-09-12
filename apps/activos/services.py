@@ -5,8 +5,9 @@ vive aquí, separada de las vistas, para que tanto el panel como el admin la
 reutilicen igual.
 """
 import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
@@ -49,7 +50,7 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
                        vencimiento_garantia, orden_compra, usuario, bodega=None,
                        categoria=None, procesador='', ram_gb=None, almacenamiento_gb=None,
                        codigo_sap='', condicion_al_recibir='', farmacia=None,
-                       estado_fisico=None, ip=None, mac='', ubicacion_interna=''):
+                       estado_fisico=None, ip=None, mac='', ubicacion_interna='', slot=''):
     """Da de alta un activo, ya sea que ENTRE a bodega o que ya esté instalado.
 
     El flujo original asumía que todo activo nace en una bodega, lo que sirve para una
@@ -68,11 +69,12 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
     operando no es nuevo: cuando se registra directo en farmacia se asume BUENO, y
     quien carga puede corregirlo.
 
-    `ip`/`mac`/`ubicacion_interna` (Fase A de topología) se aceptan en el alta y no solo
+    `ip`/`mac`/`ubicacion_interna`/`slot` (topología) se aceptan en el alta y no solo
     después: el momento en que alguien inventaria el switch de una farmacia es el mismo
-    en que tiene la etiqueta delante. Solo aplican a equipos SIN estación RMM vinculada
-    — los que la tienen reportan su IP solos (ver `Activo.clean`), y por eso ninguno de
-    los tres se adivina: vacío significa "todavía no lo sabemos", nunca un placeholder.
+    en que tiene la etiqueta delante. `ip` y `mac` solo aplican a equipos SIN estación
+    RMM vinculada — los que la tienen reportan su IP solos (ver `Activo.clean`), y por
+    eso ninguno se adivina: vacío significa "todavía no lo sabemos", nunca un
+    placeholder.
     """
     if bodega is None and farmacia is None:
         raise ValueError('Indicá la bodega donde ingresa el equipo o la farmacia donde ya está instalado.')
@@ -85,7 +87,7 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
         tipo=tipo, marca=marca, categoria=categoria, modelo=modelo, numero_serie=numero_serie,
         procesador=procesador, ram_gb=ram_gb, almacenamiento_gb=almacenamiento_gb,
         codigo_sap=codigo_sap, condicion_al_recibir=condicion_al_recibir, farmacia=farmacia,
-        ip=ip, mac=mac, ubicacion_interna=ubicacion_interna,
+        ip=ip, mac=mac, ubicacion_interna=ubicacion_interna, slot=slot,
         fecha_compra=fecha_compra, vencimiento_garantia=vencimiento_garantia,
         orden_compra=orden_compra, bodega_actual=bodega,
         estado=Activo.Estado.ASIGNADO if farmacia is not None else Activo.Estado.EN_BODEGA,
@@ -110,6 +112,7 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
             'ip': ip,
             'mac': mac,
             'ubicacion_interna': ubicacion_interna,
+            'slot': slot,
         },
     )
     return activo
@@ -706,28 +709,39 @@ def datos_hardware_desde_estacion(numero_serie: str) -> dict | None:
     return datos
 
 
-# --- Topología de infraestructura de una farmacia (Fase A) ---
+# --- Topología de infraestructura de una farmacia ---
 #
 # Hasta ahora el inventario solo conocía los equipos con agente RMM: las estaciones se
 # dan de alta solas (`crear_activos_desde_estaciones`) y el resto de la farmacia —el
-# router, el switch, las impresoras, el pinpad— no existía en ningún lado. Cuando se
-# cae un local, eso es justamente lo que nadie puede mirar: qué hay en el rack y con
-# qué IP.
+# router, el switch, las impresoras, los medianet— no existía en ningún lado. Cuando se
+# cae un local, eso es justamente lo que nadie puede mirar: qué hay en el rack y con qué
+# IP.
 #
-# Este catálogo describe el equipamiento estándar de una farmacia. NO es una plantilla
-# que se aplique sola: es la lista de lo que hay que salir a inventariar, y el alta
-# sigue siendo un acto humano que aporta los datos reales.
+# El equipamiento de una farmacia sigue un patrón fijo que se repite igual en todas:
+# un bloque de equipos de rol único (router, switch, VoIP, biométrico, cámaras y alarmas
+# SIPAO, impresora de oficina) y, por cada estación, su impresora térmica y su medianet.
+# De ahí que el catálogo no sea una lista fija sino algo que se expande según cuántas
+# estaciones tenga realmente la farmacia.
+#
+# Lo que este módulo NO modela es el direccionamiento: subred, máscara, gateway y rango
+# DHCP no viven todavía en ningún campo, y no se inventó ninguno acá. Por eso el orden
+# de los bloques (que sí importa para asignar IPs) es irrelevante para este código: se
+# crean activos, no direcciones.
 
 
 @dataclass(frozen=True)
 class SlotTopologia:
     """Un puesto del equipamiento estándar de una farmacia.
 
-    `categoria_codigo` es la clave de idempotencia: una farmacia tiene un router y un
-    switch, y `CategoriaEquipo` es lo que los distingue dentro del tipo RED (que en las
-    choices es uno solo, 'Red (switch/router)'). Además es el eje que ya usa
-    mantenimiento para decidir qué checklist aplica — un MikroTik y un switch tonto no
-    se revisan igual.
+    El `slot` es la identidad del puesto dentro de la farmacia: 'mikrotik' para los de
+    rol único, 'impresora_A' / 'medianet_B' para los que cuelgan de una estación. Es lo
+    que hace que se pueda decir "la impresora de la caja A" — el modelo no tiene ninguna
+    otra forma de saberlo, porque `Activo.estacion` significa "este activo ES esa
+    estación", no "cuelga de ella".
+
+    `categoria_codigo` mapea a `CategoriaEquipo`, que es el eje que ya usa mantenimiento
+    para decidir qué checklist aplica: un MikroTik y un switch tonto comparten
+    `Tipo.RED` pero no se revisan igual.
     """
 
     slot: str
@@ -739,7 +753,10 @@ class SlotTopologia:
     modelo: str = ''
 
 
-TOPOLOGIA_ESTANDAR_FARMACIA = (
+# Equipos de los que hay exactamente uno por farmacia. Confirmados como universales por
+# Ronald el 12-sep-2026: si mañana aparece una farmacia sin biométrico, el alta se acota
+# con `--slots` en vez de sacarlo del catálogo.
+TOPOLOGIA_ROL_UNICO = (
     SlotTopologia(
         slot='mikrotik', tipo=Activo.Tipo.RED,
         categoria_codigo='ROUTER-MIKROTIK', categoria_nombre='Router MikroTik',
@@ -751,28 +768,86 @@ TOPOLOGIA_ESTANDAR_FARMACIA = (
         ubicacion_interna=UbicacionInterna.RACK, modelo='Switch 24 puertos',
     ),
     SlotTopologia(
-        slot='pinpad', tipo=Activo.Tipo.PINPAD,
-        categoria_codigo='PINPAD-MEDIANET', categoria_nombre='Pinpad Medianet',
-        ubicacion_interna=UbicacionInterna.CAJA,
+        slot='voip', tipo=Activo.Tipo.TELEFONO,
+        categoria_codigo='TELEFONO-IP', categoria_nombre='Teléfono IP',
+        ubicacion_interna=UbicacionInterna.OFICINA,
     ),
     SlotTopologia(
-        slot='impresora_termica', tipo=Activo.Tipo.IMPRESORA,
-        categoria_codigo='IMPRESORA-TERMICA', categoria_nombre='Impresora térmica',
-        ubicacion_interna=UbicacionInterna.CAJA,
+        slot='biometrico', tipo=Activo.Tipo.BIOMETRICO,
+        categoria_codigo='BIOMETRICO', categoria_nombre='Biométrico',
+        ubicacion_interna=UbicacionInterna.OFICINA,
     ),
+    SlotTopologia(
+        slot='camaras_sipao', tipo=Activo.Tipo.CAMARA,
+        categoria_codigo='CAMARAS-SIPAO', categoria_nombre='Cámaras SIPAO',
+        ubicacion_interna=UbicacionInterna.RACK,
+    ),
+    SlotTopologia(
+        slot='alarmas_sipao', tipo=Activo.Tipo.SIPAO_ALARMA,
+        categoria_codigo='ALARMAS-SIPAO', categoria_nombre='Alarmas SIPAO',
+        ubicacion_interna=UbicacionInterna.RACK,
+    ),
+    # No está en el esquema de direccionamiento fijo porque va por WiFi con DHCP: su IP
+    # cambia sola y por eso `Activo.ip` no lleva unique.
     SlotTopologia(
         slot='impresora_oficina', tipo=Activo.Tipo.IMPRESORA,
         categoria_codigo='IMPRESORA-TINTA', categoria_nombre='Impresora de tinta',
         ubicacion_interna=UbicacionInterna.OFICINA, marca='Epson', modelo='L3250',
     ),
+)
+
+# Lo que cuelga de CADA estación, 1:1. El `%s` se reemplaza por el sufijo del código de
+# estación (`ML016-A` -> `A`), que es la convención que ya usa todo el sistema
+# (`codigo_estacion_validator`, `PerfilEstacionPlantilla.sufijo`).
+TOPOLOGIA_POR_ESTACION = (
     SlotTopologia(
-        slot='telefono', tipo=Activo.Tipo.TELEFONO,
-        categoria_codigo='TELEFONO-IP', categoria_nombre='Teléfono IP',
-        ubicacion_interna=UbicacionInterna.OFICINA, marca='Grandstream',
+        slot='impresora_%s', tipo=Activo.Tipo.IMPRESORA,
+        categoria_codigo='IMPRESORA-TERMICA', categoria_nombre='Impresora térmica',
+        ubicacion_interna=UbicacionInterna.CAJA,
+    ),
+    SlotTopologia(
+        slot='medianet_%s', tipo=Activo.Tipo.PINPAD,
+        categoria_codigo='PINPAD-MEDIANET', categoria_nombre='Pinpad Medianet',
+        ubicacion_interna=UbicacionInterna.CAJA,
     ),
 )
 
-SLOTS_POR_NOMBRE = {s.slot: s for s in TOPOLOGIA_ESTANDAR_FARMACIA}
+SLOT_ESTACION = 'estacion_%s'
+
+
+def sufijo_de_estacion(codigo: str) -> str:
+    """`ML016-A` -> `A`. El código de estación es siempre FARMACIA-SUFIJO
+    (`codigo_estacion_validator`), así que partir por el primer guion es seguro."""
+    return codigo.split('-', 1)[1] if '-' in codigo else codigo
+
+
+def estaciones_de_topologia(farmacia):
+    """Las estaciones que cuentan para armar la topología: solo las APROBADAS.
+
+    Una pendiente de aprobación todavía no es un equipo de la flota —puede ser un
+    enrolamiento que se rechaza— y darle impresora y medianet sería inventariar
+    periféricos de una caja que quizá no existe. Mismo criterio que
+    `crear_activos_desde_estaciones`.
+    """
+    from apps.catalogo.models import Estacion
+
+    return Estacion.objects.filter(
+        farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+    ).order_by('codigo')
+
+
+def slots_de_farmacia(farmacia) -> list:
+    """Expande el catálogo estándar para ESTA farmacia, según sus estaciones reales.
+
+    Una farmacia con 2 cajas lleva 2 impresoras y 2 medianet; una con 5, cinco de cada
+    uno. El número no está fijo en ningún lado: sale de contar las estaciones aprobadas.
+    """
+    slots = list(TOPOLOGIA_ROL_UNICO)
+    for estacion in estaciones_de_topologia(farmacia):
+        sufijo = sufijo_de_estacion(estacion.codigo)
+        for plantilla in TOPOLOGIA_POR_ESTACION:
+            slots.append(replace(plantilla, slot=plantilla.slot % sufijo))
+    return slots
 
 
 def _validar_dato_de_red(campo, valor):
@@ -785,35 +860,74 @@ def _validar_dato_de_red(campo, valor):
     Activo._meta.get_field(campo).clean(valor, None)
 
 
+def _activos_vigentes(farmacia):
+    return Activo.objects.filter(farmacia=farmacia).exclude(estado=Activo.Estado.DADO_DE_BAJA)
+
+
+def _adoptar_estaciones(farmacia, aplicar, resumen):
+    """Le pone slot (`estacion_A`) al Activo de cada estación, que ya existe.
+
+    Esos activos los crea `crear_activos_desde_estaciones` a partir de lo que reporta el
+    agente; acá solo se los ubica dentro del esquema de la farmacia para que el
+    vocabulario de slots esté completo y `completar_datos_topologia` pueda referirse a
+    ellos. No se crea ninguno: si una estación no tiene activo vinculado, ese es un
+    problema de vinculación por número de serie, no de topología.
+    """
+    for estacion in estaciones_de_topologia(farmacia):
+        activo = getattr(estacion, 'activo_vinculado', None)
+        if activo is None or activo.estado == Activo.Estado.DADO_DE_BAJA:
+            continue
+        slot = SLOT_ESTACION % sufijo_de_estacion(estacion.codigo)
+        if activo.slot == slot:
+            continue
+        if activo.slot:
+            resumen['ambiguos'].append(
+                '%s: %s ya tiene el slot "%s" y le correspondería "%s"; no se pisa'
+                % (slot, activo.codigo, activo.slot, slot),
+            )
+            continue
+        resumen['adoptados'].append('%s: %s (estación %s)' % (slot, activo.codigo, estacion.codigo))
+        if aplicar:
+            activo.slot = slot
+            activo.save(update_fields=['slot'])
+
+
 def crear_topologia_farmacia(*, farmacia, usuario, slots=None, datos=None, aplicar=False) -> dict:
-    """Inventaria el equipamiento sin agente de una farmacia: router, switch, pinpad,
-    impresoras, teléfono.
+    """Inventaria el equipamiento sin agente de una farmacia, expandido según sus cajas.
 
     Por defecto SIMULA. Es un alta sobre el inventario real y los datos los aporta una
     persona mirando las etiquetas, así que conviene ver la lista antes de escribirla.
 
-    `slots` acota a un subconjunto del catálogo (no toda farmacia tiene teléfono IP, y
-    asumir que sí inventaría un equipo que no existe). Vacío = todo el catálogo.
+    `slots` acota a un subconjunto (por ejemplo `['biometrico']` para la farmacia que lo
+    tiene aparte). Vacío = el catálogo completo que le corresponda a esta farmacia.
 
-    `datos` es `{slot: {'ip': ..., 'mac': ..., 'numero_serie': ...}}` con lo que se
-    conozca de verdad. **Lo que no venga queda vacío**, nunca con un valor de relleno:
-    un activo con la serie en blanco es información incompleta y se ve como tal; uno con
-    una serie inventada es peor que no tenerlo, porque alguien la va a creer después.
+    `datos` es `{slot: {'ip':…, 'mac':…, 'numero_serie':…}}` con lo que se conozca de
+    verdad. **Lo que no venga queda vacío**, nunca con un valor de relleno: un activo con
+    la serie en blanco es información incompleta y se ve como tal; uno con una serie
+    inventada es peor que no tenerlo, porque alguien la va a creer más adelante.
 
-    Idempotente por `(farmacia, categoría)`: si la farmacia ya tiene un router MikroTik
-    inventariado y vigente, no crea un segundo. Un activo dado de baja no bloquea el
-    alta del reemplazo.
+    Tres resultados posibles por puesto, y la diferencia importa:
 
-    Devuelve `{'creados': [...], 'omitidos': [...], 'incompletos': [...]}`, donde
-    `incompletos` dice qué campo le falta a cada activo, para que el resumen dé la lista
-    de a qué hay que volver.
+    - **creado**: no había nada de esa categoría, se da de alta.
+    - **adoptado**: ya existía un activo de esa categoría sin slot y el puesto es uno
+      solo, así que no hay duda de cuál es — se le pone el slot en vez de crear un
+      duplicado. Es el caso del piloto de ML016, cargado antes de que existieran los
+      slots.
+    - **ambiguo**: hay activos sin slot de esa categoría pero más de un puesto posible
+      (dos cajas, una sola impresora cargada). Cuál es cuál no se puede deducir, así que
+      **no se crea ni se adopta nada** de esa categoría y se reporta para que un humano
+      lo resuelva. Crear igual dejaría tres registros para dos equipos físicos.
     """
-    catalogo = TOPOLOGIA_ESTANDAR_FARMACIA
+    catalogo = slots_de_farmacia(farmacia)
+    por_nombre = {s.slot: s for s in catalogo}
     if slots is not None:
-        desconocidos = set(slots) - set(SLOTS_POR_NOMBRE)
+        desconocidos = set(slots) - set(por_nombre)
         if desconocidos:
-            raise ValueError('Slots desconocidos: %s.' % ', '.join(sorted(desconocidos)))
-        catalogo = tuple(SLOTS_POR_NOMBRE[s] for s in slots)
+            raise ValueError(
+                'Slots que no corresponden a esta farmacia: %s. Disponibles: %s.'
+                % (', '.join(sorted(desconocidos)), ', '.join(sorted(por_nombre))),
+            )
+        catalogo = [por_nombre[s] for s in slots]
 
     datos = datos or {}
     sobrantes = set(datos) - {s.slot for s in catalogo}
@@ -830,51 +944,223 @@ def crear_topologia_farmacia(*, farmacia, usuario, slots=None, datos=None, aplic
         if valores.get('mac'):
             _validar_dato_de_red('mac', valores['mac'])
 
-    resumen = {'creados': [], 'omitidos': [], 'incompletos': []}
+    resumen = {'creados': [], 'adoptados': [], 'omitidos': [], 'ambiguos': [], 'incompletos': []}
+    _adoptar_estaciones(farmacia, aplicar, resumen)
 
+    ocupados = set(_activos_vigentes(farmacia).exclude(slot='').values_list('slot', flat=True))
+    pendientes = []
     for slot in catalogo:
-        existente = Activo.objects.filter(
-            farmacia=farmacia, categoria__codigo=slot.categoria_codigo,
-        ).exclude(estado=Activo.Estado.DADO_DE_BAJA).first()
-        if existente is not None:
-            resumen['omitidos'].append(
-                '%s: %s ya tiene %s (%s), no se duplica'
-                % (slot.slot, farmacia.codigo, existente.codigo, slot.categoria_nombre),
+        if slot.slot in ocupados:
+            resumen['omitidos'].append('%s: ya está inventariado en %s' % (slot.slot, farmacia.codigo))
+        else:
+            pendientes.append(slot)
+
+    # Agrupar por categoría para poder distinguir "no hay duda de cuál es" de "hay que
+    # preguntarle a alguien".
+    por_categoria = {}
+    for slot in pendientes:
+        por_categoria.setdefault(slot.categoria_codigo, []).append(slot)
+
+    for categoria_codigo, slots_categoria in por_categoria.items():
+        sin_slot = list(
+            _activos_vigentes(farmacia).filter(categoria__codigo=categoria_codigo, slot=''),
+        )
+        if sin_slot and not (len(sin_slot) == 1 and len(slots_categoria) == 1):
+            resumen['ambiguos'].append(
+                '%s: %s tiene %d activo(s) sin slot de esa categoría (%s) y %d puesto(s) '
+                'posible(s) (%s). No se puede deducir cuál es cuál; asignales el slot a mano '
+                'y volvé a correr.'
+                % (categoria_codigo, farmacia.codigo, len(sin_slot),
+                   ', '.join(a.codigo for a in sin_slot), len(slots_categoria),
+                   ', '.join(s.slot for s in slots_categoria)),
             )
             continue
 
-        valores = datos.get(slot.slot, {})
-        ip = valores.get('ip') or None
-        mac = valores.get('mac') or ''
-        numero_serie = valores.get('numero_serie') or ''
-        faltantes = [
-            nombre for nombre, valor in (('ip', ip), ('mac', mac), ('numero_serie', numero_serie))
-            if not valor
-        ]
+        for slot in slots_categoria:
+            valores = datos.get(slot.slot, {})
+            ip = valores.get('ip') or None
+            mac = valores.get('mac') or ''
+            numero_serie = valores.get('numero_serie') or ''
+            faltantes = [
+                nombre for nombre, valor in
+                (('ip', ip), ('mac', mac), ('numero_serie', numero_serie)) if not valor
+            ]
 
-        if not aplicar:
+            if sin_slot:
+                existente = sin_slot[0]
+                resumen['adoptados'].append(
+                    '%s: %s (%s, ya existía sin slot)'
+                    % (slot.slot, existente.codigo, slot.categoria_nombre),
+                )
+                if aplicar:
+                    existente.slot = slot.slot
+                    existente.save(update_fields=['slot'])
+                if not existente.ip or not existente.mac or not existente.numero_serie:
+                    resumen['incompletos'].append(
+                        '%s (%s): falta %s' % (
+                            existente.codigo, slot.slot,
+                            ', '.join(
+                                c for c, v in (('ip', existente.ip), ('mac', existente.mac),
+                                               ('numero_serie', existente.numero_serie)) if not v
+                            ),
+                        ),
+                    )
+                continue
+
+            if not aplicar:
+                resumen['creados'].append(
+                    '%s: crearía %s en %s' % (slot.slot, slot.categoria_nombre, farmacia.codigo),
+                )
+                if faltantes:
+                    resumen['incompletos'].append(
+                        '%s: faltaría %s' % (slot.slot, ', '.join(faltantes)),
+                    )
+                continue
+
+            categoria, _ = CategoriaEquipo.objects.get_or_create(
+                codigo=slot.categoria_codigo, defaults={'nombre': slot.categoria_nombre},
+            )
+            marca = Marca.objects.get_or_create(nombre=slot.marca)[0] if slot.marca else None
+            activo = registrar_ingreso(
+                tipo=slot.tipo, marca=marca, categoria=categoria, modelo=slot.modelo,
+                numero_serie=numero_serie, fecha_compra=None, vencimiento_garantia=None,
+                orden_compra=None, farmacia=farmacia, usuario=usuario,
+                ip=ip, mac=mac, ubicacion_interna=slot.ubicacion_interna, slot=slot.slot,
+            )
             resumen['creados'].append(
-                '%s: crearía %s en %s' % (slot.slot, slot.categoria_nombre, farmacia.codigo),
+                '%s: %s (%s)' % (slot.slot, activo.codigo, slot.categoria_nombre),
             )
             if faltantes:
-                resumen['incompletos'].append('%s: faltaría %s' % (slot.slot, ', '.join(faltantes)))
+                resumen['incompletos'].append(
+                    '%s (%s): falta %s' % (activo.codigo, slot.slot, ', '.join(faltantes)),
+                )
+
+    return resumen
+
+
+CAMPOS_COMPLETABLES = ('ip', 'mac', 'numero_serie')
+
+
+class ErroresDeCarga(Exception):
+    """Una o más filas de la planilla no se pudieron aplicar. No se escribió nada."""
+
+    def __init__(self, errores):
+        self.errores = errores
+        super().__init__('%d fila(s) con problemas; no se escribió nada.' % len(errores))
+
+
+def completar_datos_topologia(*, filas, usuario, aplicar=False) -> dict:
+    """Carga ip/mac/numero_serie en activos que YA existen, desde la planilla de IPs.
+
+    Todo o nada: se resuelve y valida la planilla entera antes de escribir la primera
+    fila, y cualquier problema aborta la corrida completa con la lista de los problemas.
+    Media planilla aplicada es peor que ninguna — nadie sabría desde dónde retomar.
+
+    **Nunca pisa un valor que ya está.** Si la planilla trae una IP distinta de la
+    cargada, eso es un conflicto que resuelve una persona, no un `UPDATE`: puede ser que
+    el equipo se haya movido, o que la planilla esté vieja. Si trae el mismo valor, no
+    hace nada y no lo cuenta como cambio.
+
+    Tampoco acepta ip/mac para un activo con estación vinculada: esos los reporta el
+    agente (ver `Activo.clean`), y cargarlos a mano crearía una segunda versión del mismo
+    dato.
+
+    Cada activo tocado deja un `EventoActivo` con qué campos se cargaron: el historial de
+    un activo es de auditoría permanente y una carga de datos de red no es menos real que
+    una asignación.
+    """
+    from apps.catalogo.models import Farmacia
+
+    errores = []
+    planeado = []
+    vistos = set()
+
+    for numero, fila in enumerate(filas, start=1):
+        codigo_farmacia = (fila.get('farmacia') or '').strip()
+        slot = (fila.get('slot') or '').strip()
+        etiqueta = 'fila %d (%s/%s)' % (numero, codigo_farmacia or '?', slot or '?')
+
+        if not codigo_farmacia or not slot:
+            errores.append('%s: faltan "farmacia" o "slot".' % etiqueta)
+            continue
+        if (codigo_farmacia, slot) in vistos:
+            errores.append('%s: repetida en la planilla.' % etiqueta)
+            continue
+        vistos.add((codigo_farmacia, slot))
+
+        farmacia = Farmacia.objects.filter(codigo=codigo_farmacia).first()
+        if farmacia is None:
+            errores.append('%s: no existe la farmacia "%s".' % (etiqueta, codigo_farmacia))
             continue
 
-        categoria, _ = CategoriaEquipo.objects.get_or_create(
-            codigo=slot.categoria_codigo, defaults={'nombre': slot.categoria_nombre},
-        )
-        marca = Marca.objects.get_or_create(nombre=slot.marca)[0] if slot.marca else None
+        activo = _activos_vigentes(farmacia).filter(slot=slot).first()
+        if activo is None:
+            errores.append(
+                '%s: %s no tiene ningún activo con slot "%s". Creálo antes con '
+                'crear_topologia_farmacia.' % (etiqueta, codigo_farmacia, slot),
+            )
+            continue
 
-        activo = registrar_ingreso(
-            tipo=slot.tipo, marca=marca, categoria=categoria, modelo=slot.modelo,
-            numero_serie=numero_serie, fecha_compra=None, vencimiento_garantia=None,
-            orden_compra=None, farmacia=farmacia, usuario=usuario,
-            ip=ip, mac=mac, ubicacion_interna=slot.ubicacion_interna,
+        cambios = {}
+        for campo in CAMPOS_COMPLETABLES:
+            valor = (fila.get(campo) or '').strip()
+            if not valor:
+                continue
+            actual = getattr(activo, campo)
+            if actual and str(actual) == valor:
+                continue
+            if actual:
+                errores.append(
+                    '%s: %s ya tiene %s=%s y la planilla trae %s. No se pisa: resolvelo a mano.'
+                    % (etiqueta, activo.codigo, campo, actual, valor),
+                )
+                continue
+            if campo in ('ip', 'mac'):
+                if activo.estacion_id:
+                    errores.append(
+                        '%s: %s tiene la estación %s vinculada, su %s la reporta el agente.'
+                        % (etiqueta, activo.codigo, activo.estacion.codigo, campo),
+                    )
+                    continue
+                try:
+                    _validar_dato_de_red(campo, valor)
+                except ValidationError as exc:
+                    errores.append('%s: %s inválida (%s).' % (etiqueta, campo, '; '.join(exc.messages)))
+                    continue
+            cambios[campo] = valor
+
+        if cambios:
+            planeado.append((activo, cambios))
+
+    if errores:
+        raise ErroresDeCarga(errores)
+
+    resumen = {'actualizados': [], 'sin_cambios': len(filas) - len(planeado), 'incompletos': []}
+    for activo, cambios in planeado:
+        resumen['actualizados'].append(
+            '%s (%s): %s' % (
+                activo.codigo, activo.slot,
+                ', '.join('%s=%s' % (c, v) for c, v in sorted(cambios.items())),
+            ),
         )
-        resumen['creados'].append('%s: %s (%s)' % (slot.slot, activo.codigo, slot.categoria_nombre))
+
+    if aplicar:
+        with transaction.atomic():
+            for activo, cambios in planeado:
+                for campo, valor in cambios.items():
+                    setattr(activo, campo, valor)
+                activo.save(update_fields=list(cambios))
+                EventoActivo.objects.create(
+                    activo=activo, tipo_evento=EventoActivo.TipoEvento.DATOS_RED_CARGADOS,
+                    usuario=usuario, detalle={'slot': activo.slot, **cambios},
+                )
+
+    for activo, cambios in planeado:
+        # `or cambios.get(c)` para que la simulación informe lo mismo que va a quedar
+        # después de aplicar, y no los campos que esta misma planilla viene a llenar.
+        faltantes = [c for c in CAMPOS_COMPLETABLES if not (getattr(activo, c) or cambios.get(c))]
         if faltantes:
             resumen['incompletos'].append(
-                '%s (%s): falta %s' % (activo.codigo, slot.slot, ', '.join(faltantes)),
+                '%s (%s): sigue sin %s' % (activo.codigo, activo.slot, ', '.join(faltantes)),
             )
-
     return resumen

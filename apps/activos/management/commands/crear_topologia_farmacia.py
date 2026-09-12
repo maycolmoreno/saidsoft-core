@@ -1,39 +1,33 @@
-"""Inventaria el equipamiento SIN agente de una farmacia: router, switch, pinpad,
-impresoras, teléfono.
+"""Inventaria el equipamiento SIN agente de una farmacia: router, switch, VoIP,
+biométrico, cámaras y alarmas SIPAO, y la impresora + medianet de cada caja.
 
 `crear_activos_desde_rmm` ya da de alta todo lo que tiene agente. Lo que queda afuera es
 justamente lo que hace falta cuando una farmacia se cae: qué hay en el rack y con qué
 IP. Eso nadie lo puede reportar solo — lo carga una persona mirando las etiquetas.
 
+El catálogo no es una lista fija: se expande según cuántas estaciones aprobadas tenga
+realmente la farmacia, porque el patrón es 1 impresora y 1 medianet por caja.
+
 Por defecto SIMULA. Los datos de red vienen de la planilla de IPs por farmacia, y lo que
 no esté en ella queda VACÍO: un activo con la serie en blanco es información incompleta
 y se ve como tal; uno con una serie inventada es peor que no tenerlo, porque alguien la
-va a creer más adelante. El resumen final lista exactamente a qué activos hay que volver.
+va a creer más adelante. Para cargarlos después está `completar_topologia`.
 
     python manage.py crear_topologia_farmacia --farmacia ML016
-    python manage.py crear_topologia_farmacia --farmacia ML016 --datos ml016.csv --aplicar
-    python manage.py crear_topologia_farmacia --farmacia ML016 --slots mikrotik,switch
-
-El CSV de `--datos` lleva cabecera y una fila por equipo que se conozca:
-
-    slot,ip,mac,numero_serie
-    mikrotik,10.111.16.1,AA:BB:CC:DD:EE:FF,HFG1234ABCD
-    switch,,,
+    python manage.py crear_topologia_farmacia --farmacia ML016 --aplicar
+    python manage.py crear_topologia_farmacia --farmacia ML016 --slots biometrico,voip
+    python manage.py crear_topologia_farmacia --farmacia ML016 --listar-slots
 """
-import csv
-
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 
-from apps.activos.services import SLOTS_POR_NOMBRE, crear_topologia_farmacia
+from apps.activos.services import crear_topologia_farmacia, slots_de_farmacia
 from apps.catalogo.models import Farmacia
-
-COLUMNAS_DATOS = ('ip', 'mac', 'numero_serie')
 
 
 class Command(BaseCommand):
-    help = 'Da de alta en ITAM el equipamiento sin agente de una farmacia (router, switch, pinpad, impresoras).'
+    help = 'Da de alta en ITAM el equipamiento sin agente de una farmacia (router, switch, impresoras, medianet).'
 
     def add_arguments(self, parser):
         parser.add_argument('--farmacia', required=True, help='Código de la farmacia, ej. ML016.')
@@ -43,13 +37,12 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             '--slots',
-            help='Lista separada por comas para acotar el alta. No toda farmacia tiene '
-                 'teléfono IP, y asumir que sí inventaría un equipo que no existe. '
-                 'Disponibles: %s.' % ', '.join(SLOTS_POR_NOMBRE),
+            help='Lista separada por comas para acotar el alta, ej. "biometrico,voip". '
+                 'Vacío = el catálogo completo que le corresponde a la farmacia.',
         )
         parser.add_argument(
-            '--datos',
-            help='CSV con cabecera slot,ip,mac,numero_serie. Lo que no venga queda vacío.',
+            '--listar-slots', action='store_true',
+            help='Muestra los puestos que le corresponden a esta farmacia y termina.',
         )
         parser.add_argument(
             '--usuario',
@@ -61,6 +54,11 @@ class Command(BaseCommand):
         if farmacia is None:
             raise CommandError('No existe la farmacia "%s".' % options['farmacia'])
 
+        if options['listar_slots']:
+            for slot in slots_de_farmacia(farmacia):
+                self.stdout.write('  %-22s %s' % (slot.slot, slot.categoria_nombre))
+            return
+
         if options['usuario']:
             usuario = User.objects.filter(username=options['usuario']).first()
             if usuario is None:
@@ -71,28 +69,35 @@ class Command(BaseCommand):
                 raise CommandError('No hay superusuarios; indicá uno con --usuario.')
 
         slots = [s.strip() for s in options['slots'].split(',')] if options['slots'] else None
-        datos = self._leer_datos(options['datos']) if options['datos'] else None
 
         try:
             resumen = crear_topologia_farmacia(
-                farmacia=farmacia, usuario=usuario, slots=slots, datos=datos,
-                aplicar=options['aplicar'],
+                farmacia=farmacia, usuario=usuario, slots=slots, aplicar=options['aplicar'],
             )
         except (ValueError, ValidationError) as exc:
             # Nada se escribió: la validación corre entera antes del primer alta, para no
-            # dejar la farmacia a medio inventariar por una MAC mal tipeada.
+            # dejar la farmacia a medio inventariar.
             raise CommandError(str(exc))
 
         for linea in resumen['creados']:
             self.stdout.write('  %s' % linea)
+        for linea in resumen['adoptados']:
+            self.stdout.write('  adopta  %s' % linea)
         for linea in resumen['omitidos']:
             self.stdout.write(self.style.WARNING('  %s' % linea))
         self.stdout.write('')
 
         verbo = 'Creados' if options['aplicar'] else 'Se crearían'
         self.stdout.write(self.style.SUCCESS(
-            '%s: %d activo(s) en %s.' % (verbo, len(resumen['creados']), farmacia.codigo),
+            '%s: %d activo(s) en %s. Adoptados (ya existían sin slot): %d.'
+            % (verbo, len(resumen['creados']), farmacia.codigo, len(resumen['adoptados'])),
         ))
+
+        if resumen['ambiguos']:
+            self.stdout.write('')
+            self.stdout.write(self.style.ERROR('Sin resolver — no se creó ni adoptó nada de estas categorías:'))
+            for linea in resumen['ambiguos']:
+                self.stdout.write(self.style.ERROR('  %s' % linea))
 
         if resumen['incompletos']:
             self.stdout.write('')
@@ -103,25 +108,3 @@ class Command(BaseCommand):
         if not options['aplicar']:
             self.stdout.write('')
             self.stdout.write(self.style.WARNING('Simulación: no se escribió nada. Repetí con --aplicar.'))
-
-    def _leer_datos(self, ruta):
-        try:
-            with open(ruta, newline='', encoding='utf-8-sig') as archivo:
-                filas = list(csv.DictReader(archivo))
-        except OSError as exc:
-            raise CommandError('No se pudo leer %s: %s' % (ruta, exc))
-
-        if not filas:
-            raise CommandError('%s no tiene ninguna fila de datos.' % ruta)
-        if 'slot' not in (filas[0].keys() or ()):
-            raise CommandError('%s no tiene la columna "slot" en la cabecera.' % ruta)
-
-        datos = {}
-        for numero, fila in enumerate(filas, start=2):
-            slot = (fila.get('slot') or '').strip()
-            if not slot:
-                raise CommandError('Fila %d de %s: la columna "slot" está vacía.' % (numero, ruta))
-            if slot in datos:
-                raise CommandError('%s repite el slot "%s" (fila %d).' % (ruta, slot, numero))
-            datos[slot] = {c: (fila.get(c) or '').strip() for c in COLUMNAS_DATOS}
-        return datos
