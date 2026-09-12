@@ -11,6 +11,7 @@ from apps.cuentas.services import (
 from apps.software.forms import AplicacionCatalogoForm, SolicitudInstalacionForm, VersionAplicacionForm
 from apps.software.models import AplicacionCatalogo, EstadoSolicitud, ResultadoInstalacion, SolicitudInstalacion
 from apps.software.services import estaciones_desactualizadas, publicar_solicitud
+from ..progreso import resumen_de_progreso
 
 
 @login_required
@@ -160,17 +161,16 @@ def solicitud_instalacion_progreso_partial(request, pk):
     verificar_acceso(request.user, solicitud.unidad_negocio)
     resultados = solicitud.resultados.select_related('estacion', 'estacion__farmacia').order_by('estacion__codigo')
 
-    total = resultados.count()
-    conteo = {estado: 0 for estado, _ in ResultadoInstalacion.Estado.choices}
-    for r in resultados:
-        conteo[r.estado] += 1
-    instalados = conteo.get(ResultadoInstalacion.Estado.INSTALADO, 0)
-    errores = conteo.get(ResultadoInstalacion.Estado.ERROR, 0)
-    pct_completado = round(100 * instalados / total) if total else 0
-
+    estados = ResultadoInstalacion.Estado
+    progreso = resumen_de_progreso(
+        resultados, estados,
+        estado_ok=estados.INSTALADO,
+        estados_error=(estados.ERROR,),
+        etiqueta_completados='instalados',
+        estados_visibles=(estados.PENDIENTE, estados.DESCARGANDO, estados.INSTALANDO),
+    )
     return render(request, 'panel/solicitud_instalacion_progreso_partial.html', {
-        'solicitud': solicitud, 'resultados': resultados, 'total': total,
-        'instalados': instalados, 'errores': errores, 'pct_completado': pct_completado, 'conteo': conteo,
+        'solicitud': solicitud, 'resultados': resultados, 'progreso': progreso,
     })
 
 

@@ -1,0 +1,28 @@
+{% comment %}
+Barra de progreso de un envío a varias estaciones. Se incluye con:
+
+    {% include "panel/_barra_progreso.html" %}
+
+y espera `progreso` en el contexto: un `apps.panel.progreso.ResumenProgreso`.
+
+Lo comparten el despliegue de POS y la instalación de software. No lo usan scripts ni
+aperturas — ver el docstring de apps/panel/progreso.py sobre por qué.
+{% endcomment %}
+<div class="card p-5 mb-6">
+    <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-medium">
+            Progreso: {{ progreso.completados }} / {{ progreso.total }} {{ progreso.etiqueta_completados }}
+        </span>
+        <span class="text-sm text-[var(--text-faint)]">{{ progreso.pct_completado }}%</span>
+    </div>
+    <div class="rank-row mb-3"><span class="track"><span class="fill" style="width:{{ progreso.pct_completado }}%; background:var(--good);"></span></span></div>
+    <div class="flex gap-4 text-xs text-[var(--text-faint)] flex-wrap">
+        {% for paso in progreso.desglose %}
+        <span>{{ paso.etiqueta }}: {{ paso.cantidad }}</span>
+        {% endfor %}
+        <span style="color:var(--good);">{{ progreso.etiqueta_completados|capfirst }}: {{ progreso.completados }}</span>
+        {% if progreso.errores %}
+        <span style="color:var(--critical);" class="font-medium">Errores: {{ progreso.errores }}</span>
+        {% endif %}
+    </div>
+</div>

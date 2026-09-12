@@ -85,11 +85,25 @@ Resuelto con `estados_de_recursos(muestra)`, que devuelve los tres colores junto
 devuelven juntos y no de a uno a propósito: el problema no era el valor de cada umbral
 sino que existieran dos caminos para llegar al color.
 
-### 4.2 Aritmética de progreso repetida tres veces — **pendiente**
+### 4.2 Aritmética de progreso repetida — **corregido, y la auditoría la contó mal**
 
-`despliegues.py:110-115`, `software.py:163-168` y una variante en `scripts.py` comparten
-el patrón `total = count()` → `conteo = {estado: 0}` → bucle → porcentaje, con tres
-templates casi gemelos (53/45/47 líneas). Impacto bajo, riesgo del cambio bajo.
+`despliegues.py:110-115` y `software.py:163-168` compartían el patrón
+`total = count()` → `conteo = {estado: 0}` → bucle → porcentaje.
+
+**Corrección de esta auditoría:** se reportó como "tres veces" incluyendo `scripts.py`.
+Es falso. Esa vista no calcula progreso: muestra un estado general y la salida de cada
+estación, sin barra ni desglose. Forzarla al mismo molde habría inventado una
+duplicación que no existía. `apps/aperturas` tampoco encaja: su avance son pasos de
+distinta naturaleza sobre estaciones distintas, no "N de M".
+
+Resuelto con `apps/panel/progreso.py` + `templates/panel/_barra_progreso.html`, que
+comparten las dos vistas que sí lo necesitaban.
+
+**Hallazgo secundario, más grave que la duplicación:** ese cálculo **no tenía ninguna
+prueba**. El refactor se hizo sin red, y las 343 pruebas que pasaban no verificaban un
+solo porcentaje. Ahora hay 6, incluidos los casos que un cálculo ingenuo se come: envío
+sin resultados (división por cero) y rollback contando como error — una estación que
+volvió atrás quedó sin la versión nueva, aunque el agente no haya roto el POS.
 
 ### 4.3 `DestinoTipo` ×4 y `Resultado*`/`Evento*` ×12 — **no tocar**
 
@@ -137,7 +151,7 @@ Vistas de listado, reportes CSV, templates de progreso, admin.
 |---|---|---|
 | 1 | Umbrales de CPU/RAM/disco en un solo cálculo | hecho (`75854c6`) |
 | 2 | Paginar `estaciones_lista` + N+1 de `monitoreo_lista` | hecho |
-| 3 | Unificar el partial de progreso ×3 | pendiente |
+| 3 | Unificar la barra de progreso (×2, no ×3) | hecho |
 | — | Dividir `activos.py`, separar dominios de `monitoreo.py` | pendiente |
 
 La prioridad 2 se hizo **antes** del rollout del agente a propósito: hoy son 8 estaciones

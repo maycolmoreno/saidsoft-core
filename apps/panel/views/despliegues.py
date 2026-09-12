@@ -10,6 +10,7 @@ from apps.despliegues.models import Despliegue, ResultadoDespliegue
 from apps.despliegues.services import publicar_despliegue, reintentar_despliegue
 
 from ..forms import DespliegueForm, PromoverDespliegueForm
+from ..progreso import resumen_de_progreso
 
 
 @login_required
@@ -107,22 +108,20 @@ def despliegue_progreso_partial(request, pk):
     verificar_acceso(request.user, despliegue.unidad_negocio)
     resultados = despliegue.resultados.select_related('estacion', 'estacion__farmacia').order_by('estacion__codigo')
 
-    total = resultados.count()
-    conteo = {estado: 0 for estado, _ in ResultadoDespliegue.Estado.choices}
-    for r in resultados:
-        conteo[r.estado] += 1
-    aplicados = conteo.get(ResultadoDespliegue.Estado.APLICADO, 0)
-    errores = conteo.get(ResultadoDespliegue.Estado.ERROR, 0) + conteo.get(ResultadoDespliegue.Estado.ROLLBACK, 0)
-    pct_completado = round(100 * aplicados / total) if total else 0
-
+    estados = ResultadoDespliegue.Estado
+    progreso = resumen_de_progreso(
+        resultados, estados,
+        estado_ok=estados.APLICADO,
+        # El rollback cuenta como error: la estación quedó sin la versión nueva, aunque
+        # el agente haya sabido volver atrás sin romper el POS.
+        estados_error=(estados.ERROR, estados.ROLLBACK),
+        etiqueta_completados='aplicados',
+        estados_visibles=(estados.PENDIENTE, estados.DESCARGANDO, estados.APLICANDO),
+    )
     return render(request, 'panel/despliegue_progreso_partial.html', {
         'despliegue': despliegue,
         'resultados': resultados,
-        'total': total,
-        'aplicados': aplicados,
-        'errores': errores,
-        'pct_completado': pct_completado,
-        'conteo': conteo,
+        'progreso': progreso,
     })
 
 

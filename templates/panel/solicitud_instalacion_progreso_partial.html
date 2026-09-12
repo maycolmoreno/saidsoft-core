@@ -1,18 +1,4 @@
-{% load i18n %}
-<div class="card p-5 mb-6">
-    <div class="flex items-center justify-between mb-2">
-        <span class="text-sm font-medium">Progreso: {{ instalados }} / {{ total }} instalados</span>
-        <span class="text-sm text-[var(--text-faint)]">{{ pct_completado }}%</span>
-    </div>
-    <div class="rank-row mb-3"><span class="track"><span class="fill" style="width:{{ pct_completado }}%; background:var(--good);"></span></span></div>
-    <div class="flex gap-4 text-xs text-[var(--text-faint)]">
-        <span>Pendientes: {{ conteo.pendiente }}</span>
-        <span>Descargando: {{ conteo.descargando }}</span>
-        <span>Instalando: {{ conteo.instalando }}</span>
-        <span style="color:var(--good);">Instalados: {{ conteo.instalado }}</span>
-        {% if errores %}<span style="color:var(--critical);" class="font-medium">Errores: {{ errores }}</span>{% endif %}
-    </div>
-</div>
+{% include "panel/_barra_progreso.html" %}
 
 <div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">

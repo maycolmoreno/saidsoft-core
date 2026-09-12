@@ -4272,3 +4272,121 @@ class MonitoreoListaConsultasTests(TestCase):
         vacia = [t for t in resp.context['tarjetas'] if t['estacion'].codigo == 'ML001-99'][0]
         self.assertIsNone(vacia['ultima'])
         self.assertEqual(vacia['estado_cpu'], 'sin_dato')
+
+
+class ResumenDeProgresoTests(TestCase):
+    """Aritmética de la barra de progreso (`apps.panel.progreso`).
+
+    Estaba duplicada entre despliegues y software, y —hallazgo de la auditoría— **sin
+    ninguna prueba**: el refactor que la unificó no tenía red. Estas pruebas la fijan,
+    incluidos los casos borde que un cálculo ingenuo se come.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.usuario = User.objects.create_user(username='u_prog', password='x')
+        self.despliegue = Despliegue.objects.create(
+            version='4.2.1', archivo=SimpleUploadedFile('p.zip', b'x'),
+            modo_aplicacion=Despliegue.ModoAplicacion.INMEDIATO, unidad_negocio=self.sg,
+            destino_tipo=Despliegue.DestinoTipo.ESTACIONES, creado_por=self.usuario,
+        )
+
+    def _resultado(self, codigo, estado):
+        from apps.despliegues.models import ResultadoDespliegue
+
+        estacion = Estacion.objects.create(
+            codigo=codigo, farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        return ResultadoDespliegue.objects.create(
+            despliegue=self.despliegue, estacion=estacion, estado=estado,
+        )
+
+    def _resumen(self):
+        from apps.despliegues.models import ResultadoDespliegue
+        from apps.panel.progreso import resumen_de_progreso
+
+        estados = ResultadoDespliegue.Estado
+        return resumen_de_progreso(
+            self.despliegue.resultados.all(), estados,
+            estado_ok=estados.APLICADO,
+            estados_error=(estados.ERROR, estados.ROLLBACK),
+            etiqueta_completados='aplicados',
+            estados_visibles=(estados.PENDIENTE, estados.DESCARGANDO, estados.APLICANDO),
+        )
+
+    def test_sin_resultados_no_divide_por_cero(self):
+        """Un envío recién creado todavía no publicó a ninguna estación."""
+        resumen = self._resumen()
+        self.assertEqual((resumen.total, resumen.completados, resumen.pct_completado), (0, 0, 0))
+
+    def test_cuenta_y_calcula_el_porcentaje(self):
+        from apps.despliegues.models import ResultadoDespliegue
+
+        estados = ResultadoDespliegue.Estado
+        self._resultado('ML001-A', estados.APLICADO)
+        self._resultado('ML001-B', estados.APLICADO)
+        self._resultado('ML001-C', estados.PENDIENTE)
+        self._resultado('ML001-D', estados.DESCARGANDO)
+
+        resumen = self._resumen()
+        self.assertEqual(resumen.total, 4)
+        self.assertEqual(resumen.completados, 2)
+        self.assertEqual(resumen.pct_completado, 50)
+
+    def test_el_rollback_cuenta_como_error(self):
+        """La estación quedó sin la versión nueva, aunque el agente haya sabido volver
+        atrás sin romper el POS. Contarlo como "no error" escondería el fracaso."""
+        from apps.despliegues.models import ResultadoDespliegue
+
+        estados = ResultadoDespliegue.Estado
+        self._resultado('ML001-A', estados.ERROR)
+        self._resultado('ML001-B', estados.ROLLBACK)
+        self._resultado('ML001-C', estados.APLICADO)
+
+        self.assertEqual(self._resumen().errores, 2)
+
+    def test_el_desglose_respeta_el_orden_pedido(self):
+        from apps.despliegues.models import ResultadoDespliegue
+
+        estados = ResultadoDespliegue.Estado
+        self._resultado('ML001-A', estados.PENDIENTE)
+        self._resultado('ML001-B', estados.APLICANDO)
+
+        etiquetas = [p['etiqueta'] for p in self._resumen().desglose]
+        self.assertEqual(etiquetas, ['Pendiente', 'Descargando', 'Aplicando'])
+
+    def test_la_instalacion_no_cuenta_rollback(self):
+        """Software solo tiene ERROR: pasarle los mismos estados que a despliegues
+        reventaría. Cada envío declara los suyos."""
+        from apps.panel.progreso import resumen_de_progreso
+        from apps.software.models import ResultadoInstalacion
+
+        estados = ResultadoInstalacion.Estado
+        resumen = resumen_de_progreso(
+            ResultadoInstalacion.objects.none(), estados,
+            estado_ok=estados.INSTALADO, estados_error=(estados.ERROR,),
+            etiqueta_completados='instalados',
+            estados_visibles=(estados.PENDIENTE, estados.DESCARGANDO, estados.INSTALANDO),
+        )
+        self.assertEqual(resumen.etiqueta_completados, 'instalados')
+        self.assertEqual([p['etiqueta'] for p in resumen.desglose],
+                         ['Pendiente', 'Descargando', 'Instalando'])
+
+    def test_la_vista_de_despliegue_renderiza_el_progreso(self):
+        from apps.despliegues.models import ResultadoDespliegue
+
+        self._resultado('ML001-A', ResultadoDespliegue.Estado.APLICADO)
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='despliegues', codename='view_despliegue'),
+        )
+        self.client.force_login(self.usuario)
+        resp = self.client.get(
+            reverse('panel:despliegue_progreso_partial', args=[self.despliegue.pk]),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['progreso'].pct_completado, 100)
+        self.assertContains(resp, '1 / 1 aplicados')
