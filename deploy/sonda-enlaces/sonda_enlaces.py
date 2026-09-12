@@ -33,6 +33,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 TIMEOUT_PING = 2
 MAX_CONCURRENTES = 50
+# 3 y no 1, igual que el servidor: medido contra la flota real, la misma IP responde en
+# un sondeo y falla en el siguiente. Un paquete perdido en un enlace WAN de farmacia es
+# normal y no significa que el sitio esté caído.
+PAQUETES_POR_SONDEO = 3
 # Igual que el servidor: la unidad se pide como "m" y no "ms" porque Windows en español
 # imprime "tiempo<1m" cuando la respuesta es submilisegundo.
 RE_LATENCIA = re.compile(r'(?:time|tiempo)[=<]\s*([\d.,]+)\s*m', re.IGNORECASE)
@@ -41,12 +45,12 @@ RE_LATENCIA = re.compile(r'(?:time|tiempo)[=<]\s*([\d.,]+)\s*m', re.IGNORECASE)
 def sondear(ip):
     """Un ping. Devuelve (alcanzable, latencia_ms)."""
     if platform.system() == 'Windows':
-        comando = ['ping', '-n', '1', '-w', str(TIMEOUT_PING * 1000), ip]
+        comando = ['ping', '-n', str(PAQUETES_POR_SONDEO), '-w', str(TIMEOUT_PING * 1000), ip]
     else:
-        comando = ['ping', '-c', '1', '-W', str(TIMEOUT_PING), ip]
+        comando = ['ping', '-c', str(PAQUETES_POR_SONDEO), '-W', str(TIMEOUT_PING), ip]
     try:
         proceso = subprocess.run(
-            comando, capture_output=True, text=True, timeout=TIMEOUT_PING + 3, errors='replace',
+            comando, capture_output=True, text=True, timeout=TIMEOUT_PING * PAQUETES_POR_SONDEO + 5, errors='replace',
         )
     except (subprocess.TimeoutExpired, OSError):
         return False, None

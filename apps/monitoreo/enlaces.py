@@ -51,6 +51,15 @@ logger = logging.getLogger(__name__)
 TIMEOUT_SEGUNDOS = 2
 MAX_SONDEOS_CONCURRENTES = 50
 
+# Paquetes por sondeo. UNO SOLO NO ALCANZA: medido contra la flota real el 11-sep-2026,
+# la misma IP responde en un sondeo y falla en el siguiente pocos segundos después
+# (192.168.11.1 lo hizo dos veces seguidas). Estos son enlaces WAN de farmacia, no una
+# LAN: un paquete perdido es normal y no significa que el sitio esté caído. Con 3, se
+# cuenta alcanzable si contesta CUALQUIERA — que es lo que `ping` ya refleja en su
+# código de salida. Las caídas reales siguen detectándose: las que se comprobaron caídas
+# perdieron los 4 paquetes de 4, no 1 de 4.
+PAQUETES_POR_SONDEO = 3
+
 # Si este porcentaje del barrido o más falla, se asume que el problema es la ruta desde
 # donde se sondea, no 704 caídas simultáneas. Ver el docstring del módulo.
 UMBRAL_BARRIDO_SOSPECHOSO_PCT = 80
@@ -92,13 +101,15 @@ def sondear_enlace(ip: str, timeout=TIMEOUT_SEGUNDOS) -> tuple[bool, float | Non
     que es mejor que descartar un sondeo bueno por un problema de locale).
     """
     if platform.system() == 'Windows':
-        comando = ['ping', '-n', '1', '-w', str(int(timeout * 1000)), ip]
+        comando = ['ping', '-n', str(PAQUETES_POR_SONDEO), '-w', str(int(timeout * 1000)), ip]
     else:
-        comando = ['ping', '-c', '1', '-W', str(int(timeout)), ip]
+        comando = ['ping', '-c', str(PAQUETES_POR_SONDEO), '-W', str(int(timeout)), ip]
 
     try:
         proceso = subprocess.run(
-            comando, capture_output=True, text=True, timeout=timeout + 3,
+            # El timeout del proceso cubre el peor caso: todos los paquetes agotando su
+            # espera, más margen para que `ping` imprima el resumen.
+            comando, capture_output=True, text=True, timeout=timeout * PAQUETES_POR_SONDEO + 5,
             # El texto de `ping` viene en la codificación de la consola del SO, que en
             # Windows en español no es UTF-8. Sin errors='replace', una tilde en
             # "Tiempo de espera agotado" revienta el decode y pierde el sondeo entero.
