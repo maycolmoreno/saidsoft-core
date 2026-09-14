@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.19'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.20'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -540,6 +540,47 @@ class AgentePrueba:
             bdd, servidor, puerto, ruta,
         )
 
+    def _version_pos_reportable(self) -> dict:
+        """`{'version_pos': '3.0.2.28'}` leído del propio ejecutable del POS, o `{}`.
+
+        Hasta 0.19 el agente mandaba la cadena fija 'N/A (agente de prueba)'. Eso dejaba
+        sin sentido a toda una cadena que ya existía completa: `Estacion.version_pos`,
+        `Grupo.version_objetivo`, la property `Estacion.desactualizada` y el filtro "Solo
+        desactualizadas" del panel comparaban un texto que nunca cambiaba. La maquinaria
+        estaba entera y no medía nada — ML027-ADM figuraba "desactualizada" solo porque
+        'N/A (agente de prueba)' no es igual a '3.0.2.28'.
+
+        Devuelve un dict y no una cadena para poder NO mandar la clave cuando no se pudo
+        leer: `manejar_heartbeat` usa `payload.get('version_pos', <valor actual>)`, así
+        que mandar '' borraría lo que ya se sabía. Mismo criterio que `_leer_config_pos`.
+
+        Se cachea por mtime, también como `_leer_config_pos`: esto viaja en cada latido y
+        el ejecutable solo cambia cuando se actualiza el POS.
+        """
+        ruta = self.args.pos_comando_iniciar
+        try:
+            mtime = os.path.getmtime(ruta)
+        except OSError:
+            return {}
+
+        cacheado = getattr(self, '_cache_version_pos', None)
+        if cacheado and cacheado[0] == mtime:
+            return cacheado[1]
+
+        try:
+            import win32api
+
+            info = win32api.GetFileVersionInfo(ruta, '\\')
+            ms, ls = info['FileVersionMS'], info['FileVersionLS']
+            version = '%d.%d.%d.%d' % (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF)
+            resultado = {'version_pos': version}
+        except Exception:
+            logging.exception('No se pudo leer la versión del POS en %s', ruta)
+            resultado = {}
+
+        self._cache_version_pos = (mtime, resultado)
+        return resultado
+
     def _leer_config_pos(self) -> dict:
         """Servidor/Bdd/Puerto del .Config del POS -- a qué nodo apunta REALMENTE esta
         estación, leído del propio equipo en vez de una planilla.
@@ -595,7 +636,6 @@ class AgentePrueba:
             self._publicar(f'/saidsof/agente/{self.args.codigo}/heartbeat/', {
                 'token': self._token(),
                 'version_agente': VERSION_AGENTE_PRUEBA,
-                'version_pos': 'N/A (agente de prueba)',
                 'so_nombre': f'Windows {platform.win32_ver()[0]}',
                 'so_build': platform.win32_ver()[1],
                 'hostname': socket.gethostname(),
@@ -612,6 +652,7 @@ class AgentePrueba:
                 # A qué nodo apunta REALMENTE el POS de esta estación (ver
                 # _leer_config_pos). Va en el heartbeat y no en consultar_info para que
                 # se mantenga solo, sin depender de que alguien apriete un botón.
+                **self._version_pos_reportable(),
                 **self._leer_config_pos(),
             })
             logging.info('Heartbeat enviado')

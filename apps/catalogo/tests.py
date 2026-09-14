@@ -1250,3 +1250,144 @@ class ZonaConElMismoOffsetTests(TestCase):
         call_command('seed_scripts_hora')
         contenido = Script.objects.get(nombre__startswith='Sincronizar hora').contenido
         self.assertIn(Estacion.ZONA_HORARIA_ESPERADA, contenido)
+
+
+class VersionPosReportadaTests(TestCase):
+    """La versión del POS que reporta el agente y la comparación contra el objetivo.
+
+    Hasta el agente 0.19 el latido mandaba la cadena fija `'N/A (agente de prueba)'`.
+    Eso dejaba sin sentido una cadena que ya existía completa —`Estacion.version_pos`,
+    `Grupo.version_objetivo`, `Estacion.desactualizada` y el filtro "Solo desactualizadas"
+    del panel— comparando un texto que nunca cambiaba. La maquinaria estaba entera y no
+    medía nada: ML027-ADM figuraba desactualizada solo porque esa cadena no es igual a
+    "3.0.2.28" (verificado en producción el 14-sep-2026).
+    """
+
+    VERSION_EN_PRODUCCION = '3.0.2.28'
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX004', version_objetivo=self.VERSION_EN_PRODUCCION)
+        self.farmacia = Farmacia.objects.create(codigo='GMI04', grupo=self.grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='GMI04-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def _latido(self, **extra):
+        from apps.mqtt_worker.services import manejar_heartbeat
+
+        manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento, **extra})
+        self.estacion.refresh_from_db()
+
+    def test_el_agente_ya_no_manda_la_cadena_fija(self):
+        """Se lee del archivo del agente porque `agente-prueba` no es un paquete
+        importable (el guion del nombre lo impide)."""
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(encoding='utf-8')
+        self.assertNotIn("'version_pos': 'N/A", fuente)
+        self.assertIn('_version_pos_reportable', fuente)
+
+    def test_una_estacion_en_la_version_objetivo_no_esta_desactualizada(self):
+        self._latido(version_pos=self.VERSION_EN_PRODUCCION)
+        self.assertEqual(self.estacion.version_pos, self.VERSION_EN_PRODUCCION)
+        self.assertFalse(self.estacion.desactualizada)
+
+    def test_una_version_anterior_si_lo_esta(self):
+        self._latido(version_pos='3.0.2.27')
+        self.assertTrue(self.estacion.desactualizada)
+
+    def test_un_latido_sin_la_version_no_borra_la_que_ya_se_sabia(self):
+        """El agente omite la clave cuando no pudo leer el ejecutable (POS no instalado,
+        ruta distinta). Mandar '' borraría el dato; omitirla lo conserva — mismo criterio
+        que la config del POS."""
+        self._latido(version_pos=self.VERSION_EN_PRODUCCION)
+        self._latido()
+        self.assertEqual(self.estacion.version_pos, self.VERSION_EN_PRODUCCION)
+
+    def test_sin_version_objetivo_no_se_acusa_a_nadie(self):
+        """6 de los 7 grupos con farmacias tenían `version_objetivo` vacía (14-sep-2026).
+        Un grupo sin objetivo definido no puede tener estaciones "desactualizadas": no hay
+        contra qué comparar."""
+        self.grupo.version_objetivo = ''
+        self.grupo.save(update_fields=['version_objetivo'])
+        self._latido(version_pos='3.0.0.1')
+        self.assertFalse(self.estacion.desactualizada)
+
+
+class FijarVersionObjetivoPosTests(TestCase):
+    """Carga masiva de `Grupo.version_objetivo`.
+
+    Un objetivo equivocado es peor que ninguno: deja cientos de farmacias marcadas como
+    desactualizadas para siempre, y un indicador que siempre está en rojo se deja de
+    mirar. De ahí que simule por defecto, valide el formato y no pise lo ya cargado.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.con_farmacias = Grupo.objects.create(codigo='TRX003')
+        self.ya_cargado = Grupo.objects.create(codigo='TRX004', version_objetivo='3.0.2.27')
+        self.sin_farmacias = Grupo.objects.create(codigo='VACIO')
+        for i, grupo in enumerate((self.con_farmacias, self.ya_cargado)):
+            Farmacia.objects.create(codigo='ML10%d' % i, grupo=grupo, unidad_negocio=self.sg)
+
+    def _correr(self, *args):
+        salida = io.StringIO()
+        call_command('fijar_version_objetivo_pos', *args, stdout=salida)
+        return salida.getvalue()
+
+    def test_por_defecto_simula(self):
+        texto = self._correr('--objetivo', '3.0.2.28')
+        self.assertIn('Se cambiarían', texto)
+        self.con_farmacias.refresh_from_db()
+        self.assertEqual(self.con_farmacias.version_objetivo, '')
+
+    def test_completa_los_vacios(self):
+        self._correr('--objetivo', '3.0.2.28', '--aplicar')
+        self.con_farmacias.refresh_from_db()
+        self.assertEqual(self.con_farmacias.version_objetivo, '3.0.2.28')
+
+    def test_no_toca_un_grupo_sin_farmacias(self):
+        """Un grupo sin farmacias no tiene estaciones que comparar; ponerle un objetivo
+        sería ensuciar el catálogo sin que sirva para nada."""
+        self._correr('--objetivo', '3.0.2.28', '--aplicar')
+        self.sin_farmacias.refresh_from_db()
+        self.assertEqual(self.sin_farmacias.version_objetivo, '')
+
+    def test_no_pisa_un_objetivo_ya_cargado(self):
+        """Alguien pudo ponerlo sabiendo algo que este comando no."""
+        texto = self._correr('--objetivo', '3.0.2.28', '--aplicar')
+        self.ya_cargado.refresh_from_db()
+        self.assertEqual(self.ya_cargado.version_objetivo, '3.0.2.27')
+        self.assertIn('--pisar', texto)
+
+    def test_con_pisar_si_lo_cambia(self):
+        self._correr('--objetivo', '3.0.2.28', '--aplicar', '--pisar')
+        self.ya_cargado.refresh_from_db()
+        self.assertEqual(self.ya_cargado.version_objetivo, '3.0.2.28')
+
+    def test_rechaza_algo_que_no_parece_una_version(self):
+        """Un dedazo quedaría fijado como objetivo de cientos de farmacias."""
+        from django.core.management.base import CommandError
+
+        for malo in ('3.0.2.28-beta', 'ultima', '3', ''):
+            with self.assertRaises(CommandError):
+                self._correr('--objetivo', malo)
+
+    def test_acota_a_los_grupos_pedidos(self):
+        self._correr('--objetivo', '3.0.2.28', '--grupos', 'TRX003', '--aplicar')
+        self.con_farmacias.refresh_from_db()
+        self.ya_cargado.refresh_from_db()
+        self.assertEqual(self.con_farmacias.version_objetivo, '3.0.2.28')
+        self.assertEqual(self.ya_cargado.version_objetivo, '3.0.2.27')
+
+    def test_falla_si_se_pide_un_grupo_que_no_existe(self):
+        """Mejor que omitirlo en silencio: un código mal escrito dejaría ese grupo sin
+        objetivo sin que nadie se entere."""
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            self._correr('--objetivo', '3.0.2.28', '--grupos', 'NOEXISTE')
