@@ -368,3 +368,114 @@ class DiagnosticoRegionalTests(TestCase):
                           'tzutil /s', 'w32tm.exe /config', 'Set-Service', 'net.exe time'):
             self.assertNotIn(peligroso, self.codigo)
         self.assertIn('Get-ItemProperty', self.codigo)
+
+
+class SincronizarVerificaElResultadoTests(TestCase):
+    """El script no puede anunciar un arreglo que no ocurrió.
+
+    El 14-sep-2026 la primera versión devolvió código 0 en cinco estaciones y ninguna
+    sincronizó: el panel siguió midiendo los mismos desfases (+34, +96, −103, +102) y el
+    propio `w32tm /query /status` decía "sin sincronizar", con el origen en
+    "Free-running System Clock". El script había confiado en `$LASTEXITCODE`.
+
+    Un script que miente sobre el resultado es peor que uno que falla: deja a todos
+    creyendo que el problema está resuelto y nadie vuelve a mirarlo.
+    """
+
+    def setUp(self):
+        User.objects.create_superuser(username='u_verif', password='x' * 14)
+        call_command('seed_scripts_hora')
+        self.contenido = Script.objects.get(nombre__startswith='Sincronizar hora').contenido
+        self.codigo = '\n'.join(
+            linea for linea in self.contenido.splitlines() if not linea.lstrip().startswith('#')
+        )
+
+    def test_no_anuncia_exito_sin_verificar(self):
+        """La frase vieja afirmaba el resultado a partir del código de salida."""
+        self.assertNotIn('Hora sincronizada via w32tm', self.codigo)
+
+    def test_comprueba_el_origen_real_del_reloj(self):
+        """`Free-running System Clock` y `Local CMOS Clock` significan que el equipo NO
+        tiene fuente de tiempo. w32tm los devuelve en inglés aun en Windows en español."""
+        self.assertIn('Free-running', self.codigo)
+        self.assertIn('CMOS', self.codigo)
+        self.assertIn('/query /source', self.codigo)
+
+    def test_el_respaldo_depende_de_la_verificacion_y_no_del_codigo_de_salida(self):
+        """`net time` tiene que dispararse cuando la comprobación dice que no sincronizó,
+        no cuando w32tm devuelve un número distinto de cero."""
+        indice_verificacion = self.codigo.index('Esta-Sincronizado')
+        indice_net_time = self.codigo.index('net.exe time')
+        self.assertLess(
+            indice_verificacion, indice_net_time,
+            'el respaldo tiene que ir después de comprobar el estado real',
+        )
+
+    def test_informa_la_hora_antes_y_despues(self):
+        """Sin el antes y el después no hay forma de distinguir un reloj corregido de un
+        script que tardó unos segundos en correr."""
+        self.assertIn('Antes', self.contenido)
+        self.assertIn('Despues', self.contenido)
+
+    def test_deja_claro_que_la_confirmacion_la_da_el_panel(self):
+        self.assertIn('el panel', self.contenido)
+
+    def test_compara_la_zona_por_nombre_y_no_por_offset(self):
+        """Ecuador y la zona Este de México son las dos UTC-5: comparar el offset daría
+        por buena una región equivocada (el caso real de ML016-B)."""
+        self.assertIn('$zonaActual -ne $ZonaEsperada', self.codigo)
+
+
+class SeedActualizaScriptExistenteTests(TestCase):
+    """`--actualizar` para pisar el contenido de un script ya sembrado.
+
+    Hizo falta el 14-sep-2026: la primera versión del script de sincronizar anunciaba un
+    éxito que no ocurría, y ya estaba cargada en producción. `get_or_create` la dejaba
+    intacta por ser idempotente — correcto por defecto, porque el contenido de un script
+    es ejecutable y alguien pudo haberlo ajustado a mano, pero deja sin camino la
+    corrección de un script equivocado.
+    """
+
+    def setUp(self):
+        User.objects.create_superuser(username='u_act', password='x' * 14)
+        call_command('seed_scripts_hora')
+        self.script = Script.objects.get(nombre__startswith='Sincronizar hora')
+        self.contenido_bueno = self.script.contenido
+        self.script.contenido = 'Write-Output "version vieja y equivocada"'
+        self.script.save(update_fields=['contenido'])
+
+    def test_sin_el_flag_no_pisa_nada(self):
+        """El default tiene que seguir siendo no tocar: el seed corre en cada despliegue."""
+        call_command('seed_scripts_hora')
+        self.script.refresh_from_db()
+        self.assertEqual(self.script.contenido, 'Write-Output "version vieja y equivocada"')
+
+    def test_con_el_flag_restaura_el_contenido(self):
+        call_command('seed_scripts_hora', '--actualizar')
+        self.script.refresh_from_db()
+        self.assertEqual(self.script.contenido, self.contenido_bueno)
+
+    def test_no_duplica_el_script(self):
+        call_command('seed_scripts_hora', '--actualizar')
+        self.assertEqual(Script.objects.filter(nombre=self.script.nombre).count(), 1)
+
+    def test_no_reescribe_el_historial_de_ejecuciones(self):
+        """Cada EjecucionScript guarda su propio `contenido_snapshot`: actualizar la
+        biblioteca no puede cambiar qué se ejecutó realmente aquella vez."""
+        from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
+        from apps.scripts.models import EjecucionScript
+
+        unidad = UnidadNegocio.objects.get(codigo='SG')
+        Farmacia.objects.create(
+            codigo='ML001', grupo=Grupo.objects.create(codigo='TRX001'), unidad_negocio=unidad,
+        )
+        ejecucion = EjecucionScript.objects.create(
+            script=self.script, contenido_snapshot=self.script.contenido,
+            destino_tipo=EjecucionScript.DestinoTipo.ESTACIONES, unidad_negocio=unidad,
+            creado_por=User.objects.first(),
+        )
+
+        call_command('seed_scripts_hora', '--actualizar')
+
+        ejecucion.refresh_from_db()
+        self.assertEqual(ejecucion.contenido_snapshot, 'Write-Output "version vieja y equivocada"')

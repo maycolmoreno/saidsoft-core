@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.18'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.19'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -134,20 +134,28 @@ def offset_utc_minutos() -> int:
 def leer_zona_horaria() -> str:
     """El identificador de zona horaria de Windows, ej. "SA Pacific Standard Time".
 
-    Se lee UNA vez al arrancar y se cachea: es un subproceso, y mandarlo en cada latido
-    (uno por minuto, por estación) sería pagar un proceso nuevo por un dato que casi
-    nunca cambia. Si alguien corrige la región, el valor se actualiza al reiniciar el
-    agente — que es justo lo que pasa cuando se aplica el arreglo.
+    Se lee del registro y NO con `tzutil /g`: es el mismo dato sin pagar un subproceso,
+    así que se puede leer en cada latido en vez de cachearlo.
+
+    La primera versión sí cacheaba al arrancar, con el argumento de que la región casi
+    nunca cambia y que al corregirla el agente se reiniciaría igual. Eso resultó falso:
+    el 14-sep-2026 se corrigió la zona de ML016-B con un script del panel —que no
+    reinicia el agente— y la estación siguió reportando "Eastern Standard Time (Mexico)"
+    con la región ya arreglada. Un panel que muestra el problema después de resuelto es
+    peor que uno que no lo muestra: manda a arreglar lo que ya está bien.
     """
     try:
-        salida = subprocess.run(
-            ['tzutil', '/g'], capture_output=True, text=True, timeout=10, check=False,
-        )
-        return salida.stdout.strip() if salida.returncode == 0 else ''
-    except (OSError, subprocess.SubprocessError):
-        # No es motivo para que el agente no arranque: sin este dato el panel igual ve
-        # el offset, que es lo que dice si la región está mal.
-        logging.warning('No se pudo leer la zona horaria con tzutil.', exc_info=True)
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SYSTEM\CurrentControlSet\Control\TimeZoneInformation',
+        ) as clave:
+            return winreg.QueryValueEx(clave, 'TimeZoneKeyName')[0].strip()
+    except (ImportError, OSError, ValueError):
+        # No es motivo para que el agente falle: sin este dato el panel igual ve el
+        # offset, que detecta una región de otro huso (aunque no una del mismo).
+        logging.warning('No se pudo leer la zona horaria del registro.', exc_info=True)
         return ''
 
 
@@ -180,8 +188,6 @@ class AgentePrueba:
     def __init__(self, args):
         self.args = args
         self.identidad = self._cargar_identidad()
-        # Ver leer_zona_horaria(): se resuelve una vez por proceso, no en cada latido.
-        self.zona_horaria = leer_zona_horaria()
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f'agente-prueba-{args.codigo}')
         # Si esta estación ya tiene una credencial MQTT propia guardada de un
         # enrolamiento anterior (ver _manejar_respuesta_enrolamiento), se usa esa en vez
@@ -602,7 +608,7 @@ class AgentePrueba:
                 # solo y no depender de que alguien apriete un botón.
                 'reloj_epoch': time.time(),
                 'offset_utc_minutos': offset_utc_minutos(),
-                'zona_horaria': self.zona_horaria,
+                'zona_horaria': leer_zona_horaria(),
                 # A qué nodo apunta REALMENTE el POS de esta estación (ver
                 # _leer_config_pos). Va en el heartbeat y no en consultar_info para que
                 # se mantenga solo, sin depender de que alguien apriete un botón.

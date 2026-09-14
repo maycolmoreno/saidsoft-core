@@ -87,11 +87,24 @@ CONTENIDO_SINCRONIZAR = r"""$ErrorActionPreference = 'Continue'
 $ServidorHora = 'SERVIDOR_HORA'
 $ZonaEsperada = 'ZONA_ESPERADA'
 
-"Antes  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  zona: $(tzutil /g)"
+function Origen-Del-Reloj {
+    (& w32tm.exe /query /source) -join ' '
+}
+
+function Esta-Sincronizado {
+    # "Free-running System Clock" y "Local CMOS Clock" los devuelve w32tm en ingles aun
+    # en un Windows en espanol, y significan lo contrario de sincronizado: el equipo
+    # sigue con su reloj de hardware suelto, sin ninguna fuente.
+    $origen = Origen-Del-Reloj
+    -not ($origen -match 'Free-running' -or $origen -match 'CMOS')
+}
+
+"Antes  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  zona: $(tzutil /g)  origen: $(Origen-Del-Reloj)"
 
 # 1) Zona horaria. Es un problema APARTE del desfase: el reloj UTC puede estar perfecto
-# y la hora local mostrarse mal porque la region quedo en otro pais. Sincronizar no
-# arregla eso, por eso se corrige por separado y solo si hace falta.
+# y la hora local mostrarse mal porque la region quedo en otro pais. Ademas, dos regiones
+# distintas pueden compartir el mismo huso (Ecuador y la zona Este de Mexico son las dos
+# UTC-5), asi que se compara el NOMBRE y no el offset.
 $zonaActual = (tzutil /g)
 if ($zonaActual -ne $ZonaEsperada) {
     tzutil /s $ZonaEsperada
@@ -105,29 +118,36 @@ if ($zonaActual -ne $ZonaEsperada) {
 Set-Service -Name W32Time -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service -Name W32Time -ErrorAction SilentlyContinue
 
-# 3) Se configura el peer ADEMAS de sincronizar ahora: corregir el reloj una vez no
-# evita que se vuelva a desviar en semanas. Con el peer configurado, Windows lo mantiene
-# sincronizado solo de ahi en adelante.
+# 3) Se configura el peer ADEMAS de sincronizar ahora: corregir el reloj una vez no evita
+# que se vuelva a desviar en semanas. Queda listo para cuando el servidor sirva NTP.
 & w32tm.exe /config /manualpeerlist:$ServidorHora /syncfromflags:manual /update | Out-Null
 & w32tm.exe /resync | Out-Null
 
-if ($LASTEXITCODE -ne 0) {
-    # w32tm puede fallar si el peer no responde NTP pero si SMB. 'net time' es el camino
-    # que ya se sabe que funciona en esta red (ver instalar-servicio.ps1).
-    "w32tm no pudo sincronizar (codigo $LASTEXITCODE); se intenta con 'net time'..."
-    & net.exe time "\\$ServidorHora" /set /yes | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        "ERROR: no se pudo sincronizar contra $ServidorHora ni con w32tm ni con net time."
-    } else {
-        "Hora sincronizada via 'net time'."
-    }
+# 4) NO se confia en el codigo de salida de w32tm. El 14-sep-2026 esta misma secuencia
+# devolvio 0 en cinco estaciones y ninguna sincronizo: el panel seguia midiendo los
+# mismos desfases y el propio 'query /status' decia "sin sincronizar". Un script que
+# anuncia un arreglo que no ocurrio es peor que uno que falla, porque deja a todos
+# creyendo que el problema esta resuelto. Se verifica el estado real.
+if (Esta-Sincronizado) {
+    "w32tm quedo sincronizado contra $ServidorHora."
 } else {
-    "Hora sincronizada via w32tm contra $ServidorHora."
+    "w32tm NO sincronizo (el origen sigue siendo el reloj local). Se aplica 'net time'..."
+    # net time va por SMB, no por NTP. En esta red el servidor no responde NTP (UDP/123
+    # sin servicio, verificado desde dos puntos el 14-sep-2026) pero si responde SMB, asi
+    # que este es hoy el unico camino que realmente corrige la hora.
+    & net.exe time "\\$ServidorHora" /set /yes | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        "net time aplicado contra $ServidorHora."
+    } else {
+        "ERROR: no se pudo corregir la hora ni con w32tm ni con net time (codigo $LASTEXITCODE)."
+    }
 }
 
-"Despues: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  zona: $(tzutil /g)"
+"Despues: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  zona: $(tzutil /g)  origen: $(Origen-Del-Reloj)"
 "--- w32tm /query /status ---"
 w32tm /query /status
+""
+"El desfase real lo confirma el panel en el proximo latido; esta salida no lo afirma."
 """
 
 
@@ -156,6 +176,15 @@ SCRIPTS = [
 class Command(BaseCommand):
     help = 'Crea los scripts compartidos de diagnóstico y sincronización de hora (biblioteca).'
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--actualizar', action='store_true',
+            help='Pisa el contenido de los scripts que ya existan con el de esta versión. '
+                 'Sin esto solo se crean los que faltan, y un script ya sembrado se deja '
+                 'intacto — que es lo correcto por defecto: el contenido de un script es '
+                 'ejecutable y alguien pudo haberlo ajustado a mano.',
+        )
+
     @transaction.atomic
     def handle(self, *args, **options):
         admin = User.objects.filter(is_superuser=True).order_by('id').first()
@@ -163,9 +192,9 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR('Necesitas al menos un superusuario antes de correr este seed.'))
             return
 
-        creados = 0
+        creados = actualizados = 0
         for nombre, descripcion, contenido in SCRIPTS:
-            _, creado = Script.objects.get_or_create(
+            script, creado = Script.objects.get_or_create(
                 nombre=nombre, unidad_negocio=None,
                 defaults={
                     'descripcion': descripcion, 'tipo': TipoScript.POWERSHELL,
@@ -173,12 +202,31 @@ class Command(BaseCommand):
                 },
             )
             creados += int(creado)
-            self.stdout.write(f'  {"creado " if creado else "ya existía"}  {nombre}')
+            estado = 'creado '
+            if not creado and options['actualizar'] and script.contenido != contenido:
+                # No toca `creado_por` ni la fecha de creación: el script sigue siendo el
+                # mismo de la biblioteca, con el contenido corregido. Las ejecuciones ya
+                # hechas guardan su propio `contenido_snapshot`, así que el historial no
+                # se reescribe.
+                script.contenido = contenido
+                script.descripcion = descripcion
+                script.categoria = CATEGORIA
+                script.save(update_fields=['contenido', 'descripcion', 'categoria'])
+                actualizados += 1
+                estado = 'ACTUALIZADO'
+            elif not creado:
+                estado = 'ya existía'
+            self.stdout.write(f'  {estado:<12} {nombre}')
 
         self.stdout.write('')
         self.stdout.write(self.style.SUCCESS(
-            f'{creados} script(s) de hora creado(s) (los ya existentes se dejaron igual).',
+            f'{creados} creado(s), {actualizados} actualizado(s).',
         ))
+        if not options['actualizar']:
+            self.stdout.write(
+                'Los que ya existían se dejaron intactos. Si venís de una versión anterior '
+                'de estos scripts, repetí con --actualizar.',
+            )
         self.stdout.write(self.style.WARNING(
             'Corré primero el de diagnóstico: cambiar la hora de un equipo con el POS abierto '
             'no es gratis, y conviene saber qué estación necesita el arreglo antes de aplicarlo.',
