@@ -4492,3 +4492,74 @@ class ActivoTopologiaEnElPanelTests(TestCase):
         )
         resp = self.client.get(reverse('panel:activo_detalle', args=[laptop.pk]))
         self.assertNotContains(resp, 'Red y puesto')
+
+
+class EstacionesRelojEnElPanelTests(TestCase):
+    """Columna "Reloj" y su filtro en el listado de estaciones.
+
+    El objetivo del filtro es poder responder "¿a cuántas les pasa?" sin mirar de a una.
+    Con 8 estaciones da igual; con ~1.800 es la diferencia entre verlo y no verlo.
+    """
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+
+        self.en_hora = self._estacion('ML001-A', desfase_reloj_segundos=0, offset_utc_minutos=-300)
+        self.corrida = self._estacion('ML001-B', desfase_reloj_segundos=45, offset_utc_minutos=-300)
+        self.incomunicada = self._estacion('ML001-C', desfase_reloj_segundos=-400, offset_utc_minutos=-300)
+        self.zona_mala = self._estacion('ML001-D', desfase_reloj_segundos=2, offset_utc_minutos=-180)
+        self.sin_dato = self._estacion('ML001-E')
+
+        self.usuario = User.objects.create_user(username='u_reloj', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _estacion(self, codigo, **extra):
+        return Estacion.objects.create(
+            codigo=codigo, farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, **extra,
+        )
+
+    def _codigos(self, **filtros):
+        resp = self.client.get(reverse('panel:estaciones_lista'), filtros)
+        self.assertEqual(resp.status_code, 200)
+        return {e.codigo for e in resp.context['estaciones']}
+
+    def test_sin_filtro_salen_todas(self):
+        self.assertEqual(len(self._codigos()), 5)
+
+    def test_filtra_las_que_ya_no_reciben_comandos(self):
+        self.assertEqual(self._codigos(reloj='incomunicado'), {'ML001-C'})
+
+    def test_el_filtro_de_reloj_corrido_incluye_a_las_incomunicadas(self):
+        """Una estación con 400 s de desfase también tiene el reloj corrido: el filtro
+        más amplio no puede esconder al caso más grave."""
+        self.assertEqual(self._codigos(reloj='desincronizado'), {'ML001-B', 'ML001-C'})
+
+    def test_filtra_por_zona_horaria_sin_mirar_el_desfase(self):
+        """ML001-D tiene el reloj casi perfecto y la región mal: son problemas distintos."""
+        self.assertEqual(self._codigos(reloj='zona'), {'ML001-D'})
+
+    def test_la_estacion_sin_dato_no_aparece_en_ningun_filtro(self):
+        """Todavía no reportó (agente viejo o nunca conectó). No se la acusa de nada."""
+        for filtro in ('incomunicado', 'desincronizado', 'zona'):
+            self.assertNotIn('ML001-E', self._codigos(reloj=filtro))
+
+    def test_la_columna_distingue_en_hora_de_sin_dato(self):
+        """0 segundos es el valor perfecto, no "sin dato": si la plantilla lo tratara como
+        vacío, la estación mejor sincronizada se vería igual que una que nunca reportó."""
+        resp = self.client.get(reverse('panel:estaciones_lista'), {'estado_conexion': ''})
+        contenido = resp.content.decode()
+        self.assertIn('en hora', contenido)
+        self.assertIn('sin comandos', contenido)
+
+    def test_el_filtro_no_trae_la_tabla_entera_a_memoria(self):
+        """El filtro corre en base, no evaluando las properties en Python: si no, la
+        paginación no serviría de nada (mismo problema que tuvo `desactualizadas`)."""
+        resp = self.client.get(reverse('panel:estaciones_lista'), {'reloj': 'incomunicado'})
+        self.assertEqual(resp.context['pagina'].paginator.count, 1)

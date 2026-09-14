@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.17'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.18'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -119,6 +119,38 @@ def firmar(secreto: str, **campos) -> str:
     return hmac.new(secreto.encode(), mensaje.encode(), hashlib.sha256).hexdigest()
 
 
+def offset_utc_minutos() -> int:
+    """Offset de la zona horaria configurada, en minutos (Ecuador: -300).
+
+    `time.timezone` viene en segundos al OESTE de UTC (o sea, con el signo invertido
+    respecto de como se escribe un offset: UTC-5 es +18000). `altzone` es el equivalente
+    mientras rige horario de verano — Ecuador no lo usa, pero una máquina con la región
+    mal asignada puede estar en una zona que sí, y entonces el valor bueno es ese.
+    """
+    en_horario_de_verano = time.daylight and time.localtime().tm_isdst > 0
+    return -round((time.altzone if en_horario_de_verano else time.timezone) / 60)
+
+
+def leer_zona_horaria() -> str:
+    """El identificador de zona horaria de Windows, ej. "SA Pacific Standard Time".
+
+    Se lee UNA vez al arrancar y se cachea: es un subproceso, y mandarlo en cada latido
+    (uno por minuto, por estación) sería pagar un proceso nuevo por un dato que casi
+    nunca cambia. Si alguien corrige la región, el valor se actualiza al reiniciar el
+    agente — que es justo lo que pasa cuando se aplica el arreglo.
+    """
+    try:
+        salida = subprocess.run(
+            ['tzutil', '/g'], capture_output=True, text=True, timeout=10, check=False,
+        )
+        return salida.stdout.strip() if salida.returncode == 0 else ''
+    except (OSError, subprocess.SubprocessError):
+        # No es motivo para que el agente no arranque: sin este dato el panel igual ve
+        # el offset, que es lo que dice si la región está mal.
+        logging.warning('No se pudo leer la zona horaria con tzutil.', exc_info=True)
+        return ''
+
+
 def timestamp_en_ventana(timestamp, ventana_segundos: int = VENTANA_TIMESTAMP_SEGUNDOS) -> bool:
     try:
         return abs(time.time() - float(timestamp)) <= ventana_segundos
@@ -148,6 +180,8 @@ class AgentePrueba:
     def __init__(self, args):
         self.args = args
         self.identidad = self._cargar_identidad()
+        # Ver leer_zona_horaria(): se resuelve una vez por proceso, no en cada latido.
+        self.zona_horaria = leer_zona_horaria()
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f'agente-prueba-{args.codigo}')
         # Si esta estación ya tiene una credencial MQTT propia guardada de un
         # enrolamiento anterior (ver _manejar_respuesta_enrolamiento), se usa esa en vez
@@ -560,6 +594,15 @@ class AgentePrueba:
                 'so_build': platform.win32_ver()[1],
                 'hostname': socket.gethostname(),
                 'numero_serie': self.identidad.get('numero_serie', ''),
+                # Reloj y zona horaria. El desfase lo calcula el SERVIDOR comparando este
+                # epoch con el suyo: el agente no tiene contra qué compararse, porque si
+                # su reloj está mal su idea de "ahora" también lo está. Va en el latido y
+                # no en consultar_info porque un reloj que se corre deja a la estación sin
+                # recibir comandos (ventana de 120 s), o sea que el aviso tiene que llegar
+                # solo y no depender de que alguien apriete un botón.
+                'reloj_epoch': time.time(),
+                'offset_utc_minutos': offset_utc_minutos(),
+                'zona_horaria': self.zona_horaria,
                 # A qué nodo apunta REALMENTE el POS de esta estación (ver
                 # _leer_config_pos). Va en el heartbeat y no en consultar_info para que
                 # se mantenga solo, sin depender de que alguien apriete un botón.

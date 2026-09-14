@@ -17,6 +17,11 @@ va a creer más adelante. Para cargarlos después está `completar_topologia`.
     python manage.py crear_topologia_farmacia --farmacia ML016 --aplicar
     python manage.py crear_topologia_farmacia --farmacia ML016 --slots biometrico,voip
     python manage.py crear_topologia_farmacia --farmacia ML016 --listar-slots
+    python manage.py crear_topologia_farmacia --farmacia GMI04 --cajas ADM,A,B,C --aplicar
+
+Las impresoras y los medianet se deducen de las estaciones enroladas. Cuando la farmacia
+todavía no tiene agentes —a 12-sep-2026 son 694 de 700— hay que declarar las cajas con
+`--cajas`, tomándolas de la planilla de direccionamiento.
 """
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
@@ -41,6 +46,13 @@ class Command(BaseCommand):
                  'Vacío = el catálogo completo que le corresponde a la farmacia.',
         )
         parser.add_argument(
+            '--cajas',
+            help='Sufijos de las cajas separados por comas, ej. "ADM,A,B,C". Usalo cuando '
+                 'la farmacia todavía no tiene agentes enrolados: el dato sale de la '
+                 'planilla de direccionamiento, que ya sabe cuántas cajas tiene cada local. '
+                 'Vacío = se deducen de las estaciones aprobadas.',
+        )
+        parser.add_argument(
             '--listar-slots', action='store_true',
             help='Muestra los puestos que le corresponden a esta farmacia y termina.',
         )
@@ -54,8 +66,10 @@ class Command(BaseCommand):
         if farmacia is None:
             raise CommandError('No existe la farmacia "%s".' % options['farmacia'])
 
+        cajas = [c.strip() for c in options['cajas'].split(',')] if options['cajas'] else None
+
         if options['listar_slots']:
-            for slot in slots_de_farmacia(farmacia):
+            for slot in slots_de_farmacia(farmacia, cajas):
                 self.stdout.write('  %-22s %s' % (slot.slot, slot.categoria_nombre))
             return
 
@@ -72,7 +86,8 @@ class Command(BaseCommand):
 
         try:
             resumen = crear_topologia_farmacia(
-                farmacia=farmacia, usuario=usuario, slots=slots, aplicar=options['aplicar'],
+                farmacia=farmacia, usuario=usuario, slots=slots, cajas=cajas,
+                aplicar=options['aplicar'],
             )
         except (ValueError, ValidationError) as exc:
             # Nada se escribió: la validación corre entera antes del primer alta, para no

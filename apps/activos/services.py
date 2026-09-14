@@ -5,6 +5,7 @@ vive aquí, separada de las vistas, para que tanto el panel como el admin la
 reutilicen igual.
 """
 import datetime
+import re
 from dataclasses import dataclass, replace
 
 from django.core.exceptions import ValidationError
@@ -842,18 +843,49 @@ def estaciones_de_topologia(farmacia):
     ).order_by('codigo')
 
 
-def slots_de_farmacia(farmacia) -> list:
-    """Expande el catálogo estándar para ESTA farmacia, según sus estaciones reales.
+_SUFIJO_VALIDO = re.compile(r'^[A-Z0-9]+$')
+
+
+def sufijos_de_cajas(farmacia, cajas=None) -> list:
+    """Qué cajas tiene la farmacia, en sufijos (`['ADM', 'A', 'B', 'C']`).
+
+    Por defecto salen de las estaciones enroladas, que es el dato con autoridad cuando
+    existe. Pero el rollout del agente va muy por detrás del parque —a 12-sep-2026, 6
+    farmacias de 700 tienen alguna estación— así que atar la topología a eso dejaría 694
+    farmacias sin poder cargar sus impresoras ni sus medianet.
+
+    `cajas` permite declararlas a mano, tomadas de la planilla de direccionamiento, que
+    ya sabe cuántas tiene cada local. No es adivinar: es transcribir un dato real que
+    existe en otro lado. Cuando el agente se enrole, el activo de esa estación se adopta
+    solo (`_adoptar_estaciones`) y las dos fuentes quedan alineadas.
+    """
+    if cajas is None:
+        sufijos = [sufijo_de_estacion(e.codigo) for e in estaciones_de_topologia(farmacia)]
+    else:
+        sufijos = []
+        for cruda in cajas:
+            sufijo = (cruda or '').strip().upper()
+            if not sufijo:
+                continue
+            if not _SUFIJO_VALIDO.match(sufijo):
+                raise ValueError(
+                    'Caja "%s" inválida: el sufijo de estación va en mayúsculas y sin '
+                    'símbolos (ej. ADM, A, B).' % cruda,
+                )
+            if sufijo not in sufijos:
+                sufijos.append(sufijo)
+    # BASE tiene dirección propia pero no atiende público: no lleva impresora ni pinpad.
+    return [s for s in sufijos if s not in SUFIJOS_SIN_PERIFERICOS]
+
+
+def slots_de_farmacia(farmacia, cajas=None) -> list:
+    """Expande el catálogo estándar para ESTA farmacia.
 
     Una farmacia con 2 cajas lleva 2 impresoras y 2 medianet; una con 4, cuatro de cada
-    uno. El número no está fijo en ningún lado: sale de contar las estaciones aprobadas,
-    salteando las de `SUFIJOS_SIN_PERIFERICOS`.
+    uno. El número no está fijo en ningún lado: sale de `sufijos_de_cajas`.
     """
     slots = list(TOPOLOGIA_ROL_UNICO)
-    for estacion in estaciones_de_topologia(farmacia):
-        sufijo = sufijo_de_estacion(estacion.codigo)
-        if sufijo in SUFIJOS_SIN_PERIFERICOS:
-            continue
+    for sufijo in sufijos_de_cajas(farmacia, cajas):
         for plantilla in TOPOLOGIA_POR_ESTACION:
             slots.append(replace(plantilla, slot=plantilla.slot % sufijo))
     return slots
@@ -901,7 +933,7 @@ def _adoptar_estaciones(farmacia, aplicar, resumen):
             activo.save(update_fields=['slot'])
 
 
-def crear_topologia_farmacia(*, farmacia, usuario, slots=None, datos=None, aplicar=False) -> dict:
+def crear_topologia_farmacia(*, farmacia, usuario, slots=None, cajas=None, datos=None, aplicar=False) -> dict:
     """Inventaria el equipamiento sin agente de una farmacia, expandido según sus cajas.
 
     Por defecto SIMULA. Es un alta sobre el inventario real y los datos los aporta una
@@ -909,6 +941,9 @@ def crear_topologia_farmacia(*, farmacia, usuario, slots=None, datos=None, aplic
 
     `slots` acota a un subconjunto (por ejemplo `['biometrico']` para la farmacia que lo
     tiene aparte). Vacío = el catálogo completo que le corresponda a esta farmacia.
+
+    `cajas` declara los sufijos de caja cuando la farmacia todavía no tiene agentes
+    enrolados (ver `sufijos_de_cajas`). Vacío = se deducen de las estaciones.
 
     `datos` es `{slot: {'ip':…, 'mac':…, 'numero_serie':…}}` con lo que se conozca de
     verdad. **Lo que no venga queda vacío**, nunca con un valor de relleno: un activo con
@@ -927,7 +962,7 @@ def crear_topologia_farmacia(*, farmacia, usuario, slots=None, datos=None, aplic
       **no se crea ni se adopta nada** de esa categoría y se reporta para que un humano
       lo resuelva. Crear igual dejaría tres registros para dos equipos físicos.
     """
-    catalogo = slots_de_farmacia(farmacia)
+    catalogo = slots_de_farmacia(farmacia, cajas)
     por_nombre = {s.slot: s for s in catalogo}
     if slots is not None:
         desconocidos = set(slots) - set(por_nombre)
@@ -1106,7 +1141,9 @@ def completar_datos_topologia(*, filas, usuario, aplicar=False) -> dict:
         if activo is None:
             errores.append(
                 '%s: %s no tiene ningún activo con slot "%s". Creálo antes con '
-                'crear_topologia_farmacia.' % (etiqueta, codigo_farmacia, slot),
+                'crear_topologia_farmacia (si es una impresora o un medianet y la farmacia '
+                'no tiene agentes enrolados, declará las cajas con --cajas).'
+                % (etiqueta, codigo_farmacia, slot),
             )
             continue
 

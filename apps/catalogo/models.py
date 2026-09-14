@@ -342,6 +342,35 @@ class Estacion(models.Model):
     )
     meshcentral_vinculado_en = models.DateTimeField(null=True, blank=True)
 
+    # --- Reloj y zona horaria, reportados por el agente en cada latido ---
+    # Que una estación tenga la hora corrida no es cosmético: el agente descarta todo
+    # mensaje firmado cuyo timestamp esté fuera de ±120 s (VENTANA_TIMESTAMP_SEGUNDOS,
+    # SEC-1 de la auditoría del 22-ago-2026). Pasado ese desfase la estación deja de
+    # recibir comandos, scripts, despliegues e instalaciones — incluido el que le
+    # arreglaría el reloj. Le pasó a MAM06-A el 26-ago-2026 con la instalación #9.
+    #
+    # Zona horaria y hora son problemas distintos: el reloj UTC puede estar perfecto y la
+    # hora local mostrarse mal porque la región quedó en otro país. Sincronizar no
+    # arregla eso, y por eso se miden por separado.
+    desfase_reloj_segundos = models.IntegerField(
+        null=True, blank=True,
+        help_text='Diferencia entre el reloj de la estación y el del servidor, en segundos '
+                  '(positivo = la estación va adelantada). Incluye la latencia del camino '
+                  'MQTT, así que no es una medida de precisión NTP: sirve para detectar '
+                  'desfases de segundos o minutos, no de milisegundos.',
+    )
+    offset_utc_minutos = models.SmallIntegerField(
+        null=True, blank=True,
+        help_text='Offset UTC de la zona horaria configurada, en minutos. Ecuador es -300 '
+                  '(UTC-5, sin horario de verano); cualquier otro valor es una región mal '
+                  'asignada.',
+    )
+    zona_horaria = models.CharField(
+        max_length=60, blank=True,
+        help_text='Identificador de zona horaria de Windows tal como lo reporta `tzutil /g`, '
+                  'ej. "SA Pacific Standard Time".',
+    )
+
     fecha_creacion = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -368,6 +397,15 @@ class Estacion(models.Model):
             ('actualizar_agente_estacion', 'Puede actualizar remotamente el agente de una estación'),
         ]
 
+    # Ecuador es UTC-5 todo el año (no tiene horario de verano), así que el offset
+    # esperado es uno solo y cualquier otro valor es una región mal asignada.
+    OFFSET_UTC_ESPERADO_MINUTOS = -300
+    UMBRAL_RELOJ_AVISO_SEGUNDOS = 30
+    # Atado a VENTANA_TIMESTAMP_SEGUNDOS del agente (agente_prueba.py): a partir de este
+    # desfase la estación descarta todo mensaje firmado. Si allá cambia, acá también —
+    # son el mismo número visto desde los dos lados.
+    UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS = 120
+
     def __str__(self):
         return self.codigo
 
@@ -382,6 +420,36 @@ class Estacion(models.Model):
         """True si la versión de POS reportada no coincide con la versión objetivo de su grupo."""
         objetivo = self.farmacia.grupo.version_objetivo
         return bool(objetivo) and self.version_pos != objetivo
+
+    @property
+    def reloj_incomunicado(self):
+        """El desfase ya supera la ventana de firma del agente: esta estación **no puede
+        recibir comandos**.
+
+        Es el estado grave, no una advertencia de precisión: pasado este desfase el agente
+        descarta comandos, scripts, despliegues e instalaciones, incluido cualquier intento
+        de arreglarle el reloj desde acá. Hay que ir por otro camino (política de dominio,
+        o a mano).
+        """
+        if self.desfase_reloj_segundos is None:
+            return False
+        return abs(self.desfase_reloj_segundos) > self.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS
+
+    @property
+    def reloj_desincronizado(self):
+        """El reloj se corrió lo suficiente como para mirarlo, pero todavía obedece
+        comandos. Es la ventana en la que el problema se puede arreglar solo."""
+        if self.desfase_reloj_segundos is None:
+            return False
+        return abs(self.desfase_reloj_segundos) > self.UMBRAL_RELOJ_AVISO_SEGUNDOS
+
+    @property
+    def zona_horaria_incorrecta(self):
+        """La región está mal asignada. Es independiente del desfase: una estación puede
+        tener el reloj UTC perfecto y mostrar la hora de otro país."""
+        if self.offset_utc_minutos is None:
+            return False
+        return self.offset_utc_minutos != self.OFFSET_UTC_ESPERADO_MINUTOS
 
     @property
     def nodo_discrepante(self):

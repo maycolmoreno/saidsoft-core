@@ -884,8 +884,15 @@ class ManejarRedFarmaciaTests(TestCase):
             'token': self.estacion.token_enrolamiento, 'bytes_recibidos': 112_000_000, 'bytes_enviados': 56_000_000,
         })
         muestra = MuestraRedFarmacia.objects.filter(farmacia=self.estacion.farmacia).exclude(pk=anterior.pk).get()
-        self.assertEqual(muestra.red_recibido_kbps, 320.0)
-        self.assertEqual(muestra.red_enviado_kbps, 160.0)
+        # Con delta y no exacto: `_calcular_tasa` divide por `now() - timestamp_anterior`,
+        # así que exigir 320.0 clavado equivale a exigir que entre el `update()` de arriba
+        # y el handler pasen 0.0 segundos. En cualquier máquina real pasan décimas y la
+        # tasa da 319.8, con lo que la prueba fallaba SIEMPRE (verificado también en
+        # HEAD, 14-sep-2026). El margen de 1 kbps sigue atrapando lo que esta prueba
+        # existe para atrapar: bytes en vez de bits, /1024 en vez de /1000, o tomar la
+        # muestra de otra farmacia.
+        self.assertAlmostEqual(muestra.red_recibido_kbps, 320.0, delta=1)
+        self.assertAlmostEqual(muestra.red_enviado_kbps, 160.0, delta=1)
 
     def test_token_invalido_no_crea_nada(self):
         manejar_red_farmacia(self.estacion.codigo, {

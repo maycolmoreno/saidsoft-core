@@ -1676,3 +1676,133 @@ class PlanillaDeIpsTests(TestCase):
             call_command('importar_planilla_ips', '--farmacia', 'GMI04',
                          '--datos', self._csv(HOJA_GMI04), '--aplicar', stdout=io.StringIO())
         self.assertEqual(Activo.objects.filter(farmacia=self.farmacia).count(), 0)
+
+
+class CajasDeclaradasTests(TestCase):
+    """Declarar las cajas a mano cuando la farmacia todavía no tiene agentes.
+
+    Las impresoras y los medianet salían de las estaciones enroladas, que es el dato con
+    autoridad cuando existe. Pero a 12-sep-2026 el parque tiene 700 farmacias y **6** con
+    alguna estación: atar la topología a eso dejaba 694 sin poder cargar sus periféricos.
+
+    `--cajas` no es adivinar: transcribe un dato que la planilla de direccionamiento ya
+    tiene (GMI04 declara ADM, A, B, C sin que haya un agente instalado).
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX004')
+        # GMI04 sin ninguna estación: el caso de 694 farmacias de 700.
+        self.farmacia = Farmacia.objects.create(codigo='GMI04', grupo=grupo, unidad_negocio=self.sg)
+        self.usuario = User.objects.create_superuser(username='u_cajas', password='x' * 14)
+
+    def _slots(self, cajas=None):
+        from apps.activos.services import slots_de_farmacia
+
+        return {s.slot for s in slots_de_farmacia(self.farmacia, cajas)}
+
+    def test_sin_estaciones_y_sin_cajas_solo_quedan_los_de_rol_unico(self):
+        """El estado que tenía el comando antes de este flag: una farmacia sin agentes no
+        podía inventariar ni una impresora."""
+        slots = self._slots()
+        self.assertEqual(len(slots), 7)
+        self.assertFalse([s for s in slots if s.startswith(('impresora_A', 'medianet_'))])
+
+    def test_las_cajas_declaradas_generan_sus_perifericos(self):
+        slots = self._slots(['ADM', 'A', 'B', 'C'])
+        for sufijo in ('ADM', 'A', 'B', 'C'):
+            self.assertIn('impresora_%s' % sufijo, slots)
+            self.assertIn('medianet_%s' % sufijo, slots)
+        self.assertEqual(len(slots), 7 + 8)
+
+    def test_base_declarada_a_mano_tampoco_lleva_perifericos(self):
+        """La regla no depende de cómo llegó el sufijo: BASE es el servidor."""
+        slots = self._slots(['BASE', 'ADM', 'A'])
+        self.assertNotIn('impresora_BASE', slots)
+        self.assertNotIn('medianet_BASE', slots)
+        self.assertIn('impresora_ADM', slots)
+
+    def test_normaliza_y_no_repite(self):
+        self.assertEqual(self._slots(['adm', 'ADM', ' a ']), self._slots(['ADM', 'A']))
+
+    def test_rechaza_un_sufijo_con_simbolos(self):
+        """Un sufijo mal tipeado crearía un puesto que ninguna planilla va a poder
+        referenciar después."""
+        with self.assertRaises(ValueError):
+            self._slots(['ADM', 'A/B'])
+
+    def test_crea_los_perifericos_declarados(self):
+        from apps.activos.services import crear_topologia_farmacia
+
+        crear_topologia_farmacia(
+            farmacia=self.farmacia, usuario=self.usuario, cajas=['ADM', 'A', 'B', 'C'],
+            aplicar=True,
+        )
+        # Por categoría y no por `slot__startswith='impresora_'`: la Epson de oficina
+        # comparte ese prefijo y contaría de más.
+        self.assertEqual(
+            Activo.objects.filter(categoria__codigo='IMPRESORA-TERMICA').count(), 4,
+        )
+        self.assertEqual(
+            Activo.objects.filter(categoria__codigo='PINPAD-MEDIANET').count(), 4,
+        )
+        self.assertEqual(Activo.objects.filter(slot='impresora_oficina').count(), 1)
+
+    def test_cuando_llegue_el_agente_la_estacion_se_adopta_sola(self):
+        """Las dos fuentes quedan alineadas: los periféricos ya existían declarados a
+        mano, y el activo de la estación toma su slot cuando el agente se enrola."""
+        from apps.activos.services import crear_topologia_farmacia, generar_codigo_activo
+
+        crear_topologia_farmacia(
+            farmacia=self.farmacia, usuario=self.usuario, cajas=['ADM', 'A'], aplicar=True,
+        )
+        estacion = Estacion.objects.create(
+            codigo='GMI04-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        activo = Activo.objects.create(
+            codigo=generar_codigo_activo(Activo.Tipo.DESKTOP), tipo=Activo.Tipo.DESKTOP,
+            farmacia=self.farmacia, unidad_negocio=self.sg, estacion=estacion,
+            estado=Activo.Estado.ASIGNADO,
+        )
+
+        crear_topologia_farmacia(
+            farmacia=self.farmacia, usuario=self.usuario, cajas=['ADM', 'A'], aplicar=True,
+        )
+        activo.refresh_from_db()
+        self.assertEqual(activo.slot, 'estacion_A')
+        # Y no duplicó los periféricos que ya estaban.
+        self.assertEqual(Activo.objects.filter(slot='impresora_A').count(), 1)
+
+    def test_el_comando_acepta_cajas(self):
+        salida = io.StringIO()
+        call_command('crear_topologia_farmacia', '--farmacia', 'GMI04',
+                     '--cajas', 'ADM,A,B,C', '--listar-slots', stdout=salida)
+        texto = salida.getvalue()
+        self.assertIn('impresora_C', texto)
+        self.assertIn('medianet_ADM', texto)
+
+    def test_la_hoja_de_gmi04_se_carga_entera_declarando_las_cajas(self):
+        """La prueba de punta a punta del caso real: GMI04 no tiene ni un agente, y aun
+        así su planilla se carga completa."""
+        import tempfile
+
+        from apps.activos.services import crear_topologia_farmacia
+
+        crear_topologia_farmacia(
+            farmacia=self.farmacia, usuario=self.usuario, cajas=['ADM', 'A', 'B', 'C'],
+            aplicar=True,
+        )
+        with tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False,
+                                         newline='', encoding='utf-8') as archivo:
+            csv.writer(archivo).writerows(HOJA_GMI04)
+            ruta = archivo.name
+
+        salida = io.StringIO()
+        call_command('importar_planilla_ips', '--farmacia', 'GMI04', '--datos', ruta,
+                     '--aplicar', stdout=salida)
+
+        self.assertIn('Actualizados: 13', salida.getvalue())
+        self.assertEqual(str(Activo.objects.get(slot='impresora_C').ip), '10.201.7.235')
+        self.assertEqual(str(Activo.objects.get(slot='medianet_ADM').ip), '10.201.7.237')
+        self.assertEqual(str(Activo.objects.get(slot='mikrotik').ip), '10.201.7.225')

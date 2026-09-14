@@ -30,6 +30,12 @@ seleccionadas" termina enviando una lista vacía.
         <input type="checkbox" name="desactualizadas" value="1" onchange="this.form.submit()" {% if filtro_desactualizadas %}checked{% endif %}>
         Solo desactualizadas
     </label>
+    <select name="reloj" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+        <option value="">Reloj: todas</option>
+        <option value="incomunicado" {% if filtro_reloj == 'incomunicado' %}selected{% endif %}>Sin recibir comandos (&gt;2 min)</option>
+        <option value="desincronizado" {% if filtro_reloj == 'desincronizado' %}selected{% endif %}>Reloj corrido</option>
+        <option value="zona" {% if filtro_reloj == 'zona' %}selected{% endif %}>Zona horaria incorrecta</option>
+    </select>
 </form>
 
 <div class="card" style="overflow:hidden;">
@@ -43,6 +49,7 @@ seleccionadas" termina enviando una lista vacía.
                 <th class="text-left px-4 py-3">SO</th>
                 <th class="text-left px-4 py-3">Conexión</th>
                 <th class="text-left px-4 py-3">Último heartbeat</th>
+                <th class="text-left px-4 py-3">Reloj</th>
                 <th class="text-right px-4 py-3"></th>
             </tr>
         </thead>
@@ -74,6 +81,26 @@ seleccionadas" termina enviando una lista vacía.
                     </span>
                 </td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.ultimo_heartbeat|default:"nunca" }}</td>
+                {% comment %}
+                "Sin comandos" no es una advertencia de precisión: pasado el desfase de la
+                ventana de firma, el agente descarta todo mensaje firmado — incluido el que
+                le arreglaría el reloj. Por eso va en critical y con ese texto.
+                {% endcomment %}
+                <td class="px-4 py-3 text-xs">
+                    {% if e.desfase_reloj_segundos is None %}
+                        <span class="text-[var(--text-faint)]">—</span>
+                    {% elif e.reloj_incomunicado %}
+                        <span class="pill critical">sin comandos</span>
+                        <div class="mono text-[var(--text-faint)]">{{ e.desfase_reloj_segundos }} s</div>
+                    {% elif e.reloj_desincronizado %}
+                        <span class="pill warning">{{ e.desfase_reloj_segundos }} s</span>
+                    {% else %}
+                        <span class="pill good">en hora</span>
+                    {% endif %}
+                    {% if e.zona_horaria_incorrecta %}
+                        <div><span class="pill warning">zona: {{ e.zona_horaria|default:"?" }}</span></div>
+                    {% endif %}
+                </td>
                 <td class="px-4 py-3 text-right">
                     {% if e.estado_aprobacion == 'aprobada' and e.estado_conexion == 'online' %}
                     <form method="post" action="{% url 'panel:estacion_reiniciar' e.pk %}"
@@ -87,7 +114,7 @@ seleccionadas" termina enviando una lista vacía.
                 </td>
             </tr>
         {% empty %}
-            <tr><td colspan="8">
+            <tr><td colspan="9">
                 {% include "panel/_estado_vacio.html" with titulo="Ninguna estación enrolada todavía" pista="Una estación aparece acá cuando su agente se enrola y alguien aprueba el enrolamiento." %}
             </td></tr>
         {% endfor %}

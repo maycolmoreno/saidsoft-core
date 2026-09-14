@@ -1,6 +1,6 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
-from django.db.models import F
+from django.db.models import F, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
@@ -43,6 +43,7 @@ def estaciones_lista(request):
     grupo = request.GET.get('grupo')
     estado_conexion = request.GET.get('estado_conexion')
     solo_desactualizadas = request.GET.get('desactualizadas')
+    reloj = request.GET.get('reloj')
 
     if grupo:
         estaciones = estaciones.filter(farmacia__grupo__codigo=grupo)
@@ -59,6 +60,22 @@ def estaciones_lista(request):
         estaciones = estaciones.exclude(farmacia__grupo__version_objetivo='').exclude(
             version_pos=F('farmacia__grupo__version_objetivo'),
         )
+    if reloj:
+        # En base y no evaluando las properties de Estacion en Python, por el mismo
+        # motivo que `desactualizadas` de arriba: a ~1.800 estaciones traer la tabla
+        # entera a memoria haría inútil la paginación.
+        umbral = {
+            'desincronizado': Estacion.UMBRAL_RELOJ_AVISO_SEGUNDOS,
+            'incomunicado': Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS,
+        }.get(reloj)
+        if umbral is not None:
+            estaciones = estaciones.filter(
+                Q(desfase_reloj_segundos__gt=umbral) | Q(desfase_reloj_segundos__lt=-umbral),
+            )
+        elif reloj == 'zona':
+            estaciones = estaciones.filter(offset_utc_minutos__isnull=False).exclude(
+                offset_utc_minutos=Estacion.OFFSET_UTC_ESPERADO_MINUTOS,
+            )
 
     pagina, query_filtros = paginar(estaciones, request)
 
@@ -72,6 +89,7 @@ def estaciones_lista(request):
         'filtro_grupo': grupo or '',
         'filtro_estado': estado_conexion or '',
         'filtro_desactualizadas': solo_desactualizadas or '',
+        'filtro_reloj': reloj or '',
     })
 
 

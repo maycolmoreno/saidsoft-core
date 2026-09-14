@@ -180,6 +180,23 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
     estacion.pos_servidor = payload.get('pos_servidor', estacion.pos_servidor)
     estacion.pos_bdd = payload.get('pos_bdd', estacion.pos_bdd)
     estacion.pos_puerto = payload.get('pos_puerto', estacion.pos_puerto)
+    # Reloj y zona horaria (ver los campos en catalogo.Estacion). El desfase se calcula
+    # acá y no en el agente a propósito: el agente no tiene con qué compararse — si su
+    # reloj está mal, su idea de "ahora" también lo está. El servidor sí es la referencia.
+    reloj_epoch = payload.get('reloj_epoch')
+    if reloj_epoch is not None:
+        try:
+            estacion.desfase_reloj_segundos = round(float(reloj_epoch) - timezone.now().timestamp())
+        except (TypeError, ValueError):
+            logger.warning('Heartbeat de %s con reloj_epoch ilegible: %r', codigo_estacion, reloj_epoch)
+    offset = payload.get('offset_utc_minutos')
+    if offset is not None:
+        try:
+            estacion.offset_utc_minutos = int(offset)
+        except (TypeError, ValueError):
+            logger.warning('Heartbeat de %s con offset_utc_minutos ilegible: %r', codigo_estacion, offset)
+    estacion.zona_horaria = payload.get('zona_horaria', estacion.zona_horaria)
+
     if payload.get('ip_lan'):
         estacion.ip_lan = payload['ip_lan']
     if payload.get('puerto_cache'):

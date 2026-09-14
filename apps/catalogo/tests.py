@@ -1050,3 +1050,150 @@ class CerrarConexionesViejasTests(TestCase):
         manejar_enrolamiento({'codigo': 'ZZZ99-A', 'hardware_id': 'x'})
         # Si el handler hubiera cerrado la conexión, esto lanzaría OperationalError.
         self.assertGreaterEqual(UnidadNegocio.objects.count(), 0)
+
+
+class RelojDeEstacionTests(TestCase):
+    """Desfase de reloj y zona horaria de una estación.
+
+    Que una estación tenga la hora corrida no es cosmético: el agente descarta todo
+    mensaje firmado fuera de su ventana de timestamp, así que pasado ese desfase la
+    estación deja de recibir comandos, scripts y despliegues — incluido el que le
+    arreglaría el reloj. Le pasó a MAM06-A el 26-ago-2026.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def _con(self, **campos):
+        for campo, valor in campos.items():
+            setattr(self.estacion, campo, valor)
+        return self.estacion
+
+    def test_el_umbral_grave_es_el_mismo_que_la_ventana_del_agente(self):
+        """Los dos números son el mismo visto desde los dos lados: el agente decide qué
+        descarta y el panel decide qué muestra en rojo. Si se separan, el panel mentiría
+        — diría "en hora" sobre una estación que ya no recibe nada.
+
+        Se lee del archivo del agente y no se importa porque `agente-prueba` no es un
+        paquete (el guion del nombre lo impide).
+        """
+        import re
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(encoding='utf-8')
+        encontrado = re.search(r'^VENTANA_TIMESTAMP_SEGUNDOS\s*=\s*(\d+)', fuente, re.MULTILINE)
+        self.assertIsNotNone(encontrado, 'no se encontró VENTANA_TIMESTAMP_SEGUNDOS en el agente')
+        self.assertEqual(
+            int(encontrado.group(1)), Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS,
+            'la ventana del agente y el umbral del panel se separaron: el panel diría '
+            '"en hora" sobre una estación que ya no recibe comandos.',
+        )
+
+    def test_un_reloj_en_cero_esta_en_hora_no_desconocido(self):
+        """0 es el valor perfecto, no "sin dato". Tratarlo como falsy haría que la
+        estación mejor sincronizada apareciera igual que una que nunca reportó."""
+        estacion = self._con(desfase_reloj_segundos=0)
+        self.assertFalse(estacion.reloj_desincronizado)
+        self.assertFalse(estacion.reloj_incomunicado)
+
+    def test_sin_dato_no_se_inventa_un_diagnostico(self):
+        estacion = self._con(desfase_reloj_segundos=None, offset_utc_minutos=None)
+        self.assertFalse(estacion.reloj_desincronizado)
+        self.assertFalse(estacion.reloj_incomunicado)
+        self.assertFalse(estacion.zona_horaria_incorrecta)
+
+    def test_el_desfase_cuenta_para_los_dos_lados(self):
+        """Una estación atrasada queda igual de incomunicada que una adelantada: la
+        ventana del agente es un valor absoluto."""
+        self.assertTrue(self._con(desfase_reloj_segundos=200).reloj_incomunicado)
+        self.assertTrue(self._con(desfase_reloj_segundos=-200).reloj_incomunicado)
+
+    def test_un_desfase_intermedio_avisa_pero_todavia_obedece(self):
+        estacion = self._con(desfase_reloj_segundos=45)
+        self.assertTrue(estacion.reloj_desincronizado)
+        self.assertFalse(estacion.reloj_incomunicado)
+
+    def test_la_zona_horaria_es_un_problema_aparte_del_desfase(self):
+        """El reloj UTC puede estar perfecto y la hora local mostrarse mal porque la
+        región quedó en otro país. Sincronizar no arregla eso."""
+        estacion = self._con(desfase_reloj_segundos=0, offset_utc_minutos=-180)
+        self.assertFalse(estacion.reloj_desincronizado)
+        self.assertTrue(estacion.zona_horaria_incorrecta)
+
+    def test_ecuador_es_utc_menos_cinco(self):
+        self.assertEqual(Estacion.OFFSET_UTC_ESPERADO_MINUTOS, -300)
+        self.assertFalse(self._con(offset_utc_minutos=-300).zona_horaria_incorrecta)
+
+
+class HeartbeatConRelojTests(TestCase):
+    """Ingesta del reloj en `manejar_heartbeat`.
+
+    El desfase lo calcula el SERVIDOR y no el agente: el agente no tiene contra qué
+    compararse, porque si su reloj está mal su idea de "ahora" también lo está.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def _latido(self, **extra):
+        from django.utils import timezone
+
+        from apps.mqtt_worker.services import manejar_heartbeat
+
+        payload = {'token': self.estacion.token_enrolamiento, **extra}
+        manejar_heartbeat(self.estacion.codigo, payload)
+        self.estacion.refresh_from_db()
+        return timezone.now()
+
+    def test_guarda_el_desfase_la_zona_y_el_offset(self):
+        import time
+
+        self._latido(
+            reloj_epoch=time.time() + 300, offset_utc_minutos=-300,
+            zona_horaria='SA Pacific Standard Time',
+        )
+        # ~300 s, con holgura para lo que tarde la propia prueba.
+        self.assertAlmostEqual(self.estacion.desfase_reloj_segundos, 300, delta=5)
+        self.assertEqual(self.estacion.offset_utc_minutos, -300)
+        self.assertEqual(self.estacion.zona_horaria, 'SA Pacific Standard Time')
+        self.assertTrue(self.estacion.reloj_incomunicado)
+
+    def test_una_estacion_en_hora_queda_en_cero(self):
+        import time
+
+        self._latido(reloj_epoch=time.time(), offset_utc_minutos=-300)
+        self.assertAlmostEqual(self.estacion.desfase_reloj_segundos, 0, delta=5)
+        self.assertFalse(self.estacion.reloj_desincronizado)
+
+    def test_un_agente_viejo_no_borra_lo_que_ya_se_sabia(self):
+        """Durante el rollout de 0.18 van a convivir agentes que reportan el reloj y
+        agentes que no. El que no lo reporta tiene que dejar el dato como estaba, no
+        pisarlo con vacío — mismo criterio que la config del POS."""
+        self._latido(reloj_epoch=1, offset_utc_minutos=-300, zona_horaria='SA Pacific Standard Time')
+        desfase_previo = self.estacion.desfase_reloj_segundos
+
+        self._latido()  # latido de un agente 0.17
+
+        self.assertEqual(self.estacion.desfase_reloj_segundos, desfase_previo)
+        self.assertEqual(self.estacion.zona_horaria, 'SA Pacific Standard Time')
+
+    def test_un_valor_ilegible_no_rompe_el_latido(self):
+        """Un dato de reloj mal formado no puede costar el heartbeat entero: la estación
+        quedaría marcada offline por un campo secundario."""
+        self._latido(reloj_epoch='no-es-un-numero', offset_utc_minutos='tampoco')
+        self.assertEqual(self.estacion.estado_conexion, Estacion.EstadoConexion.ONLINE)
+        self.assertIsNone(self.estacion.desfase_reloj_segundos)
