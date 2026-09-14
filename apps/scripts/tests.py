@@ -229,3 +229,142 @@ class CambiarNodoPosTests(TestCase):
         ejecucion = EjecucionScript.objects.get()
         self.assertEqual(ejecucion.resultados.count(), 1)
         self.assertEqual(ejecucion.resultados.first().estacion.codigo, 'ML002-A')
+
+
+class SeedScriptsHoraTests(TestCase):
+    """Scripts de biblioteca para diagnosticar y corregir la hora de una estación.
+
+    El reloj corrido no es cosmético: pasado el desfase de la ventana de firma, la
+    estación descarta en silencio todos los scripts y comandos del panel, incluido el que
+    le arreglaría el reloj. Estos scripts son el camino para arreglarlo mientras todavía
+    está dentro de la ventana.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username='u_hora', password='x' * 14)
+
+    def test_crea_los_dos_scripts_como_compartidos(self):
+        """`unidad_negocio=None` los hace visibles para todos los clientes: un reloj
+        corrido no es un problema de una unidad de negocio en particular."""
+        call_command('seed_scripts_hora')
+        scripts = Script.objects.filter(categoria='Hora')
+        self.assertEqual(scripts.count(), 2)
+        for s in scripts:
+            self.assertIsNone(s.unidad_negocio)
+            self.assertEqual(s.tipo, TipoScript.POWERSHELL)
+
+    def test_es_idempotente(self):
+        """Se corre en cada despliegue nuevo; no puede ir dejando copias."""
+        call_command('seed_scripts_hora')
+        call_command('seed_scripts_hora')
+        self.assertEqual(Script.objects.filter(categoria='Hora').count(), 2)
+
+    def test_el_de_diagnostico_no_cambia_nada(self):
+        """Es la mitad del valor: poder mirar antes de tocar. Si se le colara un comando
+        que escribe, dejaría de ser seguro correrlo sobre toda la cadena."""
+        call_command('seed_scripts_hora')
+        contenido = Script.objects.get(nombre__startswith='Diagnóstico de hora').contenido
+        for peligroso in ('tzutil /s', 'w32tm.exe /config', '/resync', 'net.exe time', 'Set-Service'):
+            self.assertNotIn(peligroso, contenido)
+        self.assertIn('w32tm /query /status', contenido)
+
+    def test_el_de_sincronizar_corrige_zona_y_reloj(self):
+        """Son dos problemas distintos: el reloj UTC puede estar perfecto y la hora local
+        mostrarse mal porque la región quedó en otro país."""
+        call_command('seed_scripts_hora')
+        contenido = Script.objects.get(nombre__startswith='Sincronizar hora').contenido
+        self.assertIn('tzutil /s', contenido)
+        self.assertIn('w32tm.exe /config', contenido)
+        self.assertIn('/resync', contenido)
+
+    def test_deja_el_peer_configurado_y_no_solo_sincroniza_una_vez(self):
+        """Corregir el reloj una vez no evita que se vuelva a desviar en semanas. El
+        `/manualpeerlist` es lo que hace que Windows lo mantenga solo — sin eso volvemos
+        a estar acá el mes que viene."""
+        call_command('seed_scripts_hora')
+        contenido = Script.objects.get(nombre__startswith='Sincronizar hora').contenido
+        self.assertIn('/manualpeerlist:', contenido)
+
+    def test_tiene_el_respaldo_de_net_time(self):
+        """w32tm falla si el peer no responde NTP pero sí SMB. `net time` es el camino que
+        ya se sabe que funciona en esta red (ver instalar-servicio.ps1)."""
+        call_command('seed_scripts_hora')
+        contenido = Script.objects.get(nombre__startswith='Sincronizar hora').contenido
+        self.assertIn('net.exe time', contenido)
+
+    def test_los_valores_quedan_sustituidos_en_el_contenido(self):
+        """Las plantillas llevan marcadores; si alguno quedara sin reemplazar, el script
+        correría contra un servidor llamado literalmente SERVIDOR_HORA."""
+        call_command('seed_scripts_hora')
+        for s in Script.objects.filter(categoria='Hora'):
+            self.assertNotIn('ZONA_ESPERADA', s.contenido)
+            self.assertNotIn('SERVIDOR_HORA', s.contenido)
+        contenido = Script.objects.get(nombre__startswith='Sincronizar hora').contenido
+        self.assertIn('farmaciasmia.int', contenido)
+        self.assertIn('SA Pacific Standard Time', contenido)
+
+    def test_la_zona_coincide_con_la_que_espera_el_panel(self):
+        """El script corrige a la zona de Ecuador y el panel marca como incorrecta
+        cualquier otra. Si los dos lados se separaran, el script "arreglaría" estaciones
+        que el panel seguiría mostrando en rojo."""
+        from apps.catalogo.models import Estacion as EstacionModelo
+
+        call_command('seed_scripts_hora')
+        contenido = Script.objects.get(nombre__startswith='Sincronizar hora').contenido
+        # SA Pacific Standard Time es UTC-5, que es lo que el panel exige.
+        self.assertIn('SA Pacific Standard Time', contenido)
+        self.assertEqual(EstacionModelo.OFFSET_UTC_ESPERADO_MINUTOS, -300)
+
+    def test_sin_superusuario_avisa_y_no_crea_nada(self):
+        User.objects.all().delete()
+        call_command('seed_scripts_hora')
+        self.assertEqual(Script.objects.filter(categoria='Hora').count(), 0)
+
+
+class DiagnosticoRegionalTests(TestCase):
+    """La parte de configuración regional del script de diagnóstico.
+
+    Es un problema DISTINTO del reloj: una estación puede tener la hora perfecta, la zona
+    correcta, y aun así romper el POS si el separador decimal quedó en "," y lee "1.50"
+    como mil quinientos.
+    """
+
+    def setUp(self):
+        User.objects.create_superuser(username='u_regional', password='x' * 14)
+        call_command('seed_scripts_hora')
+        self.contenido = Script.objects.get(nombre__startswith='Diagnóstico de hora').contenido
+        # Solo el código: los comentarios de PowerShell nombran HKCU justamente para
+        # explicar por qué NO se usa, y buscarlo en el texto crudo daba un falso positivo.
+        self.codigo = '\n'.join(
+            linea for linea in self.contenido.splitlines() if not linea.lstrip().startswith('#')
+        )
+
+    def test_lee_los_perfiles_de_usuario_y_no_hkcu(self):
+        """El agente corre como LocalSystem: mirar HKCU mostraría el perfil de SYSTEM y no
+        el del cajero, o sea reportaría "todo bien" sobre una estación rota. Por eso se
+        recorre HKEY_USERS.
+        """
+        self.assertIn('HKEY_USERS', self.codigo)
+        self.assertNotIn('HKCU', self.codigo)
+        self.assertNotIn('HKEY_CURRENT_USER', self.codigo)
+
+    def test_reporta_los_valores_que_le_importan_al_pos(self):
+        """El separador decimal y el símbolo de moneda son los que deciden si el POS
+        interpreta bien un precio; los de fecha, si interpreta bien una venta."""
+        for clave in ('sDecimal', 'sThousand', 'sCurrency', 'sShortDate', 'sShortTime',
+                      'iCurrDigits', 'LocaleName'):
+            self.assertIn(clave, self.contenido)
+
+    def test_resuelve_el_sid_a_un_nombre_de_usuario(self):
+        """Un SID suelto no le dice nada a quien lee la salida: hay que poder saber si el
+        perfil mal configurado es el del cajero o uno de servicio."""
+        self.assertIn('SecurityIdentifier', self.contenido)
+        self.assertIn('NTAccount', self.contenido)
+
+    def test_sigue_sin_escribir_nada(self):
+        """Agregarle la lectura del registro no puede haberlo vuelto peligroso: el valor
+        de este script es poder lanzarlo sobre toda la cadena sin pensarlo."""
+        for peligroso in ('Set-ItemProperty', 'New-ItemProperty', 'Remove-Item',
+                          'tzutil /s', 'w32tm.exe /config', 'Set-Service', 'net.exe time'):
+            self.assertNotIn(peligroso, self.codigo)
+        self.assertIn('Get-ItemProperty', self.codigo)
