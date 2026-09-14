@@ -1197,3 +1197,56 @@ class HeartbeatConRelojTests(TestCase):
         self._latido(reloj_epoch='no-es-un-numero', offset_utc_minutos='tampoco')
         self.assertEqual(self.estacion.estado_conexion, Estacion.EstadoConexion.ONLINE)
         self.assertIsNone(self.estacion.desfase_reloj_segundos)
+
+
+class ZonaConElMismoOffsetTests(TestCase):
+    """Una región mal asignada que comparte huso con la correcta.
+
+    Encontrado en producción en ML016-B (14-sep-2026): estaba en "Eastern Standard Time
+    (Mexico)", que también es UTC-5. La comprobación original solo miraba el offset, así
+    que la daba por buena — y era exactamente el caso que motivó todo este trabajo.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX016')
+        self.farmacia = Farmacia.objects.create(codigo='ML016', grupo=grupo, unidad_negocio=self.sg)
+
+    def _estacion(self, codigo, **extra):
+        return Estacion.objects.create(
+            codigo=codigo, farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, **extra,
+        )
+
+    def test_detecta_mexico_aunque_el_offset_coincida(self):
+        estacion = self._estacion(
+            'ML016-B', offset_utc_minutos=-300, zona_horaria='Eastern Standard Time (Mexico)',
+        )
+        self.assertTrue(estacion.zona_horaria_incorrecta)
+
+    def test_ecuador_bien_configurada_no_se_marca(self):
+        estacion = self._estacion(
+            'ML016-A', offset_utc_minutos=-300, zona_horaria='SA Pacific Standard Time',
+        )
+        self.assertFalse(estacion.zona_horaria_incorrecta)
+
+    def test_un_offset_distinto_se_marca_aunque_no_haya_nombre(self):
+        """Un agente que reportó el offset pero no pudo leer `tzutil` igual se evalúa."""
+        estacion = self._estacion('ML016-C', offset_utc_minutos=-180, zona_horaria='')
+        self.assertTrue(estacion.zona_horaria_incorrecta)
+
+    def test_sin_ningun_dato_no_se_acusa_a_nadie(self):
+        estacion = self._estacion('ML016-D')
+        self.assertFalse(estacion.zona_horaria_incorrecta)
+
+    def test_la_zona_esperada_es_la_que_corrige_el_script(self):
+        """El script de biblioteca corrige a este mismo identificador. Si los dos lados se
+        separaran, el panel marcaría en rojo estaciones que el script ya "arregló"."""
+        from django.core.management import call_command
+
+        from apps.scripts.models import Script
+
+        User.objects.create_superuser(username='u_zona_mx', password='x' * 14)
+        call_command('seed_scripts_hora')
+        contenido = Script.objects.get(nombre__startswith='Sincronizar hora').contenido
+        self.assertIn(Estacion.ZONA_HORARIA_ESPERADA, contenido)

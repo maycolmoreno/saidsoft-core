@@ -73,9 +73,15 @@ def estaciones_lista(request):
                 Q(desfase_reloj_segundos__gt=umbral) | Q(desfase_reloj_segundos__lt=-umbral),
             )
         elif reloj == 'zona':
-            estaciones = estaciones.filter(offset_utc_minutos__isnull=False).exclude(
+            # Las dos condiciones, por lo mismo que `Estacion.zona_horaria_incorrecta`:
+            # el offset atrapa a la estación puesta en otro huso, y el nombre a la puesta
+            # en otro país con el mismo huso (ML016-B estaba en "Eastern Standard Time
+            # (Mexico)", también UTC-5, e iba a pasar desapercibida).
+            offset_malo = Q(offset_utc_minutos__isnull=False) & ~Q(
                 offset_utc_minutos=Estacion.OFFSET_UTC_ESPERADO_MINUTOS,
             )
+            zona_mala = ~Q(zona_horaria='') & ~Q(zona_horaria=Estacion.ZONA_HORARIA_ESPERADA)
+            estaciones = estaciones.filter(offset_malo | zona_mala)
 
     pagina, query_filtros = paginar(estaciones, request)
 

@@ -400,6 +400,12 @@ class Estacion(models.Model):
     # Ecuador es UTC-5 todo el año (no tiene horario de verano), así que el offset
     # esperado es uno solo y cualquier otro valor es una región mal asignada.
     OFFSET_UTC_ESPERADO_MINUTOS = -300
+    # El offset NO alcanza para dar la región por buena: encontrado en ML016-B
+    # (14-sep-2026), que estaba en "Eastern Standard Time (Mexico)" — otra región, el
+    # mismo UTC-5, y por lo tanto invisible para una comprobación que solo mirara el
+    # offset. Es justo el caso que motivó todo esto ("la región está mal asignada"), así
+    # que se compara también el identificador de Windows.
+    ZONA_HORARIA_ESPERADA = 'SA Pacific Standard Time'
     UMBRAL_RELOJ_AVISO_SEGUNDOS = 30
     # Atado a VENTANA_TIMESTAMP_SEGUNDOS del agente (agente_prueba.py): a partir de este
     # desfase la estación descarta todo mensaje firmado. Si allá cambia, acá también —
@@ -446,10 +452,17 @@ class Estacion(models.Model):
     @property
     def zona_horaria_incorrecta(self):
         """La región está mal asignada. Es independiente del desfase: una estación puede
-        tener el reloj UTC perfecto y mostrar la hora de otro país."""
-        if self.offset_utc_minutos is None:
-            return False
-        return self.offset_utc_minutos != self.OFFSET_UTC_ESPERADO_MINUTOS
+        tener el reloj UTC perfecto y mostrar la hora de otro país.
+
+        Se miran las dos cosas porque ninguna alcanza sola: el offset atrapa a una
+        estación puesta en otro huso, y el nombre atrapa a una puesta en un país distinto
+        con el MISMO huso — que es lo que pasaba con "Eastern Standard Time (Mexico)",
+        también UTC-5. Una estación que todavía no reportó ninguno de los dos no se acusa
+        de nada.
+        """
+        if self.offset_utc_minutos is not None and self.offset_utc_minutos != self.OFFSET_UTC_ESPERADO_MINUTOS:
+            return True
+        return bool(self.zona_horaria) and self.zona_horaria != self.ZONA_HORARIA_ESPERADA
 
     @property
     def nodo_discrepante(self):

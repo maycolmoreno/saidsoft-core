@@ -4510,6 +4510,12 @@ class EstacionesRelojEnElPanelTests(TestCase):
         self.corrida = self._estacion('ML001-B', desfase_reloj_segundos=45, offset_utc_minutos=-300)
         self.incomunicada = self._estacion('ML001-C', desfase_reloj_segundos=-400, offset_utc_minutos=-300)
         self.zona_mala = self._estacion('ML001-D', desfase_reloj_segundos=2, offset_utc_minutos=-180)
+        # Mismo huso que Ecuador (UTC-5) pero otra región: si el filtro solo mirara el
+        # offset, esta pasaría desapercibida. Es el caso real de ML016-B (14-sep-2026).
+        self.zona_mexico = self._estacion(
+            'ML001-F', desfase_reloj_segundos=5, offset_utc_minutos=-300,
+            zona_horaria='Eastern Standard Time (Mexico)',
+        )
         self.sin_dato = self._estacion('ML001-E')
 
         self.usuario = User.objects.create_user(username='u_reloj', password='x')
@@ -4531,7 +4537,7 @@ class EstacionesRelojEnElPanelTests(TestCase):
         return {e.codigo for e in resp.context['estaciones']}
 
     def test_sin_filtro_salen_todas(self):
-        self.assertEqual(len(self._codigos()), 5)
+        self.assertEqual(len(self._codigos()), 6)
 
     def test_filtra_las_que_ya_no_reciben_comandos(self):
         self.assertEqual(self._codigos(reloj='incomunicado'), {'ML001-C'})
@@ -4542,8 +4548,10 @@ class EstacionesRelojEnElPanelTests(TestCase):
         self.assertEqual(self._codigos(reloj='desincronizado'), {'ML001-B', 'ML001-C'})
 
     def test_filtra_por_zona_horaria_sin_mirar_el_desfase(self):
-        """ML001-D tiene el reloj casi perfecto y la región mal: son problemas distintos."""
-        self.assertEqual(self._codigos(reloj='zona'), {'ML001-D'})
+        """ML001-D tiene el reloj casi perfecto y la región mal: son problemas distintos.
+        ML001-F tiene el offset correcto y la región de México — el filtro tiene que
+        atrapar a las dos, o la segunda queda invisible para siempre."""
+        self.assertEqual(self._codigos(reloj='zona'), {'ML001-D', 'ML001-F'})
 
     def test_la_estacion_sin_dato_no_aparece_en_ningun_filtro(self):
         """Todavía no reportó (agente viejo o nunca conectó). No se la acusa de nada."""
