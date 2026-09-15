@@ -75,7 +75,7 @@ Sin esa respuesta, cualquier decisión sobre monitoreo proactivo se toma a ciega
 
 ## 4. Qué aporta que SAIDSOFT hoy no tiene
 
-| Capacidad | `Cresio_enlaces` | `saidsoft-core` |
+| Capacidad | `Farmacias_enlaces` | `saidsoft-core` |
 |---|---|---|
 | Estado up/down de los 704 enlaces | ✅ en producción | ❌ no existe |
 | Monitoreo **sin agente instalado** | ✅ ICMP central | ❌ todo depende del agente (8/1.800) o MeshCentral |
