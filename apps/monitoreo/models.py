@@ -119,6 +119,26 @@ class MuestraRedFarmacia(models.Model):
             return None
         return round((self.red_recibido_kbps or 0) + (self.red_enviado_kbps or 0), 1)
 
+    @property
+    def porcentaje_del_contratado(self):
+        """Qué parte del enlace contratado está usando la farmacia, o None.
+
+        La conversión es lo único delicado acá y es donde estuvo el error que se corrigió
+        el 15-sep-2026: el consumo se mide en **kilobits** por segundo y lo contratado en
+        **megabits**, así que el denominador es `mbps * 1000`. Las pantallas decían
+        "KB/s" —kilobytes— sobre el mismo número, y quien comparara contra un contrato de
+        10 Mbps calculaba ocho veces el uso real.
+
+        None cuando falta cualquiera de los dos datos: sin el contratado no se puede
+        decir si 831 kbps es mucho o poco, y fingir un valor típico sería peor que no
+        mostrar nada.
+        """
+        contratado = self.farmacia.ancho_contratado_mbps
+        total = self.red_total_kbps
+        if not contratado or total is None:
+            return None
+        return round(100 * total / (contratado * 1000), 1)
+
 
 class Metrica(models.TextChoices):
     CPU_CARGA_PCT = 'cpu_carga_pct', 'CPU (%)'

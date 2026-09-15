@@ -133,6 +133,12 @@ class Farmacia(models.Model):
         max_length=30, blank=True,
         help_text='Proveedor/tecnología del enlace principal (ej. TELCONET, PUNTO NET).',
     )
+    ancho_contratado_mbps = models.PositiveSmallIntegerField(
+        null=True, blank=True, verbose_name='Ancho contratado (Mbps)',
+        help_text='Megabits por segundo contratados al proveedor. Vacío = no se sabe, que NO es '
+                  'lo mismo que cero ni que el valor típico: sin este dato el consumo se puede '
+                  'mostrar, pero no se puede decir si es mucho o poco.',
+    )
     circuito_proveedor = models.CharField(
         max_length=80, blank=True,
         help_text='Nombre del circuito en el proveedor (ej. "sangregorio2-santana"). Es el '

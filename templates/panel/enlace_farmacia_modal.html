@@ -87,6 +87,10 @@ pedir una lectura.
                         <dd class="mono text-right">{{ farmacia.circuito_proveedor|default:"—" }}</dd>
                     </div>
                     <div class="flex justify-between gap-3">
+                        <dt class="text-[var(--text-faint)]">Ancho contratado</dt>
+                        <dd class="num">{% if farmacia.ancho_contratado_mbps %}{{ farmacia.ancho_contratado_mbps }} Mbps{% else %}—{% endif %}</dd>
+                    </div>
+                    <div class="flex justify-between gap-3">
                         <dt class="text-[var(--text-faint)]">Enlace de respaldo</dt>
                         <dd>{% if farmacia.tiene_backup %}sí{% else %}<span style="color:var(--warning);">no</span>{% endif %}</dd>
                     </div>
@@ -111,6 +115,27 @@ pedir una lectura.
                     ↑ {{ ultima.red_enviado_kbps|floatformat:0 }} subida ·
                     {{ ultima.timestamp|date:"d/m H:i" }}
                 </div>
+                {% if ultima.porcentaje_del_contratado is not None %}
+                <div class="mt-2">
+                    <div class="rank-row"><span class="track"><span class="fill"
+                        style="width:{% if ultima.porcentaje_del_contratado > 100 %}100{% else %}{{ ultima.porcentaje_del_contratado }}{% endif %}%;
+                               background:{% if ultima.porcentaje_del_contratado >= 90 %}var(--critical){% elif ultima.porcentaje_del_contratado >= 70 %}var(--warning){% else %}var(--good){% endif %};"></span></span></div>
+                    <div class="text-xs text-[var(--text-faint)] mt-1">
+                        {{ ultima.porcentaje_del_contratado }}% de los {{ farmacia.ancho_contratado_mbps }} Mbps contratados
+                        {% if farmacia.tipo_enlace %}a {{ farmacia.tipo_enlace }}{% endif %}
+                    </div>
+                </div>
+                {% elif not farmacia.ancho_contratado_mbps %}
+                {% comment %}
+                Sin el contratado se muestra el consumo pero NO un porcentaje: inventar un
+                valor típico haría que la barra mintiera justo en las farmacias de las que
+                menos se sabe.
+                {% endcomment %}
+                <div class="text-xs text-[var(--text-faint)] mt-2">
+                    Falta cargar el ancho contratado de esta farmacia para saber qué parte del
+                    enlace representa.
+                </div>
+                {% endif %}
                 {% else %}
                 <div class="text-sm text-[var(--text-faint)]">Sin lecturas todavía</div>
                 {% endif %}

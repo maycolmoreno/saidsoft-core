@@ -1396,3 +1396,143 @@ class FijarVersionObjetivoPosTests(TestCase):
 
         with self.assertRaises(CommandError):
             self._correr('--objetivo', '3.0.2.28', '--grupos', 'NOEXISTE')
+
+
+class AnchoContratadoTests(TestCase):
+    """Consumo contra el ancho contratado.
+
+    La conversión es lo único delicado: el consumo se mide en **kilobits** por segundo y
+    lo contratado en **megabits**. Ese factor de 1000 —y el de 8 entre bits y bytes que se
+    corrigió el mismo día— es exactamente donde se rompe una comparación de este tipo.
+
+    A 15-sep-2026 el parque son 579 farmacias TELCONET y 109 PUNTO NET, casi todas con
+    10 Mbps; las 12 restantes (FIBROMARK, ETAPA, CLARO, GONET, CORVINET) sin dato.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX001')
+
+    def _farmacia(self, codigo, **extra):
+        return Farmacia.objects.create(
+            codigo=codigo, grupo=self.grupo, unidad_negocio=self.sg, **extra,
+        )
+
+    def _muestra(self, farmacia, recibido, enviado):
+        from apps.monitoreo.models import MuestraRedFarmacia
+
+        return MuestraRedFarmacia.objects.create(
+            farmacia=farmacia, bytes_recibidos=0, bytes_enviados=0,
+            red_recibido_kbps=recibido, red_enviado_kbps=enviado,
+        )
+
+    def test_el_porcentaje_convierte_kilobits_contra_megabits(self):
+        """831 kbps sobre 10 Mbps son 8,3%. Si alguien tratara el consumo como kilobytes
+        daría 66,5% — el error que tenían las pantallas hasta hoy."""
+        farmacia = self._farmacia('MC001', ancho_contratado_mbps=10)
+        muestra = self._muestra(farmacia, 831, 0)
+        self.assertEqual(muestra.porcentaje_del_contratado, 8.3)
+
+    def test_un_enlace_saturado_da_cerca_de_cien(self):
+        farmacia = self._farmacia('ML002', ancho_contratado_mbps=10)
+        muestra = self._muestra(farmacia, 8000, 1500)
+        self.assertEqual(muestra.porcentaje_del_contratado, 95.0)
+
+    def test_puede_pasar_de_cien(self):
+        """No se recorta el valor: un enlace que mide más de lo contratado es un dato
+        real —ráfaga, o el contrato no es el que creemos— y esconderlo sería peor."""
+        farmacia = self._farmacia('ML003', ancho_contratado_mbps=10)
+        self.assertGreater(self._muestra(farmacia, 12000, 0).porcentaje_del_contratado, 100)
+
+    def test_sin_ancho_contratado_no_inventa_un_porcentaje(self):
+        """Fingir un valor típico haría que la barra mintiera justo en las farmacias de
+        las que menos se sabe."""
+        farmacia = self._farmacia('ML004')
+        self.assertIsNone(self._muestra(farmacia, 831, 0).porcentaje_del_contratado)
+
+    def test_sin_lectura_de_consumo_tampoco(self):
+        farmacia = self._farmacia('ML005', ancho_contratado_mbps=10)
+        self.assertIsNone(self._muestra(farmacia, None, None).porcentaje_del_contratado)
+
+
+class FijarAnchoContratadoTests(TestCase):
+    """Carga masiva de `ancho_contratado_mbps` agrupando por proveedor."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.telconet = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=self.sg, tipo_enlace='TELCONET',
+        )
+        self.puntonet = Farmacia.objects.create(
+            codigo='ML002', grupo=grupo, unidad_negocio=self.sg, tipo_enlace='PUNTO NET',
+        )
+        self.otra = Farmacia.objects.create(
+            codigo='ML003', grupo=grupo, unidad_negocio=self.sg, tipo_enlace='FIBROMARK',
+        )
+
+    def _correr(self, *args):
+        salida = io.StringIO()
+        call_command('fijar_ancho_contratado', *args, stdout=salida)
+        return salida.getvalue()
+
+    def test_por_defecto_simula(self):
+        texto = self._correr('--mbps', '10', '--proveedores', 'TELCONET')
+        self.assertIn('Se actualizarían', texto)
+        self.telconet.refresh_from_db()
+        self.assertIsNone(self.telconet.ancho_contratado_mbps)
+
+    def test_carga_los_dos_proveedores_y_no_toca_el_resto(self):
+        """Las 12 de proveedores minoritarios quedan sin dato hasta saber cuánto tienen —
+        que es correcto: vacío significa "no se sabe", no "cero"."""
+        self._correr('--mbps', '10', '--proveedores', 'TELCONET,PUNTO NET', '--aplicar')
+
+        for farmacia in (self.telconet, self.puntonet, self.otra):
+            farmacia.refresh_from_db()
+        self.assertEqual(self.telconet.ancho_contratado_mbps, 10)
+        self.assertEqual(self.puntonet.ancho_contratado_mbps, 10)
+        self.assertIsNone(self.otra.ancho_contratado_mbps)
+
+    def test_no_pisa_un_valor_ya_cargado(self):
+        """Si alguien cargó 20 Mbps en una farmacia puntual, sabe algo que el comando no."""
+        self.telconet.ancho_contratado_mbps = 20
+        self.telconet.save(update_fields=['ancho_contratado_mbps'])
+
+        texto = self._correr('--mbps', '10', '--proveedores', 'TELCONET', '--aplicar')
+
+        self.telconet.refresh_from_db()
+        self.assertEqual(self.telconet.ancho_contratado_mbps, 20)
+        self.assertIn('DEJAN como están', texto)
+
+    def test_con_pisar_si_lo_cambia(self):
+        self.telconet.ancho_contratado_mbps = 20
+        self.telconet.save(update_fields=['ancho_contratado_mbps'])
+        self._correr('--mbps', '10', '--proveedores', 'TELCONET', '--aplicar', '--pisar')
+        self.telconet.refresh_from_db()
+        self.assertEqual(self.telconet.ancho_contratado_mbps, 10)
+
+    def test_acota_a_farmacias_puntuales(self):
+        self._correr('--mbps', '50', '--farmacias', 'ML003', '--aplicar')
+        self.otra.refresh_from_db()
+        self.telconet.refresh_from_db()
+        self.assertEqual(self.otra.ancho_contratado_mbps, 50)
+        self.assertIsNone(self.telconet.ancho_contratado_mbps)
+
+    def test_exige_un_filtro(self):
+        """Sin filtro tocaría las 700 de una, incluidas las que tienen otro contrato."""
+        with self.assertRaises(CommandError):
+            self._correr('--mbps', '10')
+
+    def test_rechaza_un_valor_absurdo(self):
+        """Cargar 1000 en vez de 10 dejaría a esa farmacia en "0,08% de uso" para siempre
+        y nadie lo miraría dos veces."""
+        for malo in ('0', '-5', '99999'):
+            with self.assertRaises(CommandError):
+                self._correr('--mbps', malo, '--proveedores', 'TELCONET')
+
+    def test_avisa_si_ningun_proveedor_coincide(self):
+        """Un nombre mal escrito tiene que fallar, no actualizar cero farmacias en
+        silencio. El mensaje lista los valores que sí existen."""
+        with self.assertRaises(CommandError) as ctx:
+            self._correr('--mbps', '10', '--proveedores', 'TELCONEt SA')
+        self.assertIn('TELCONET', str(ctx.exception))
