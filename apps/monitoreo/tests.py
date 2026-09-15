@@ -675,6 +675,11 @@ class ReglasAplicablesMultiTenantTests(TestCase):
         self.assertIn(self.regla_global, aplicables_sg)
 
 
+# `CELERY_TASK_ALWAYS_EAGER` solo está puesto en config/settings/desarrollo.py, y no
+# se lee del entorno. Sin este override la prueba pasa en local y falla SIEMPRE dentro
+# del contenedor — que es justo donde CLAUDE.md pide correr la suite para probar contra
+# PostgreSQL. Una prueba no debe depender de qué módulo de settings esté cargado.
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class PurgarMetricasTaskTests(TestCase):
     """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test."""
 
@@ -696,6 +701,11 @@ class PurgarMetricasTaskTests(TestCase):
         self.assertIn('1 muestra', resultado.get())
 
 
+# `CELERY_TASK_ALWAYS_EAGER` solo está puesto en config/settings/desarrollo.py, y no
+# se lee del entorno. Sin este override la prueba pasa en local y falla SIEMPRE dentro
+# del contenedor — que es justo donde CLAUDE.md pide correr la suite para probar contra
+# PostgreSQL. Una prueba no debe depender de qué módulo de settings esté cargado.
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class PurgarEventosMonitoreoTaskTests(TestCase):
     def test_delay_borra_eventos_viejos(self):
         from apps.monitoreo.tasks import purgar_eventos_monitoreo_task
@@ -717,6 +727,11 @@ class PurgarEventosMonitoreoTaskTests(TestCase):
         self.assertIn('1 evento', resultado.get())
 
 
+# `CELERY_TASK_ALWAYS_EAGER` solo está puesto en config/settings/desarrollo.py, y no
+# se lee del entorno. Sin este override la prueba pasa en local y falla SIEMPRE dentro
+# del contenedor — que es justo donde CLAUDE.md pide correr la suite para probar contra
+# PostgreSQL. Una prueba no debe depender de qué módulo de settings esté cargado.
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class EvaluarCruceMonitoreoTaskTests(TestCase):
     def test_delay_abre_alertas_del_cruce(self):
         from apps.monitoreo.tasks import evaluar_cruce_monitoreo_task

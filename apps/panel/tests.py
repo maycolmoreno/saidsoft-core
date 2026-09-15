@@ -3354,6 +3354,10 @@ class ArchivosMantenimientoProtegidosTests(TestCase):
         self.client.force_login(self._usuario('u_mia_img', unidad=self.mia))
         self.assertEqual(self.client.get(self.url_imagen).status_code, 403)
 
+    # En producción `SERVIR_MEDIA_CON_NGINX=True` y la vista devuelve un HttpResponse
+    # con X-Accel-Redirect, sin `streaming_content`. La prueba de esa rama ya declara
+    # su override; a esta le faltaba el inverso y solo pasaba con settings de dev.
+    @override_settings(SERVIR_MEDIA_CON_NGINX=False)
     def test_con_permiso_entrega_el_archivo(self):
         self.client.force_login(self._usuario('u_ok_img'))
         resp = self.client.get(self.url_imagen)

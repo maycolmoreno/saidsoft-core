@@ -2,7 +2,7 @@ from datetime import timedelta
 
 from django.contrib.auth.models import User
 from django.core.management import CommandError, call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
@@ -145,6 +145,11 @@ class RegistrarEjecucionScriptAprobacionTests(TestCase):
             aprobar_ejecucion_script(ejecucion=ejecucion, usuario=self.aprobador)
 
 
+# `CELERY_TASK_ALWAYS_EAGER` solo está puesto en config/settings/desarrollo.py, y no
+# se lee del entorno. Sin este override la prueba pasa en local y falla SIEMPRE dentro
+# del contenedor — que es justo donde CLAUDE.md pide correr la suite para probar contra
+# PostgreSQL. Una prueba no debe depender de qué módulo de settings esté cargado.
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class GenerarEjecucionesProgramadasTaskTests(TestCase):
     """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test."""
 

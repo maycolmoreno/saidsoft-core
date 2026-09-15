@@ -173,6 +173,11 @@ class MultiTenantAislamientoTests(TestCase):
         validar_destino_unidad_negocio(self.sg, farmacias=[self.farmacia_sg], estaciones=[self.estacion_sg])
 
 
+# `CELERY_TASK_ALWAYS_EAGER` solo está puesto en config/settings/desarrollo.py, y no
+# se lee del entorno. Sin este override la prueba pasa en local y falla SIEMPRE dentro
+# del contenedor — que es justo donde CLAUDE.md pide correr la suite para probar contra
+# PostgreSQL. Una prueba no debe depender de qué módulo de settings esté cargado.
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class MarcarEstacionesOfflineTaskTests(TestCase):
     """CELERY_TASK_ALWAYS_EAGER=True en desarrollo.py hace que .delay() corra sincrónico
     en el mismo proceso — sirve para probar que la tarea está bien registrada y hace lo
