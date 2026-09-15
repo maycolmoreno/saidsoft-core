@@ -1,4 +1,4 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
@@ -89,6 +89,10 @@ class EjecutarSyncTests(TestCase):
         self.assertEqual(sincronizacion.eventos.last().estado, EstadoSync.ERROR)
 
 
+# `CELERY_TASK_ALWAYS_EAGER` solo está en config/settings/desarrollo.py y no se lee del
+# entorno: sin este override la prueba pasa en local y falla siempre en el contenedor,
+# que es donde CLAUDE.md pide correr la suite contra PostgreSQL.
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class SincronizarTaskTests(TestCase):
     """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test."""
 

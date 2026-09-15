@@ -1176,6 +1176,10 @@ class AprovisionarCredencialEstacionTests(TestCase):
         farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
         self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
 
+    # En producción EMQX_ADMIN_CONFIG SÍ está poblado, así que "sin config" no se cumple
+    # solo por el default del entorno. La prueba del caso exitoso ya declara el suyo;
+    # a esta le faltaba declarar el vacío.
+    @override_settings(EMQX_ADMIN_CONFIG={})
     def test_sin_config_devuelve_none_sin_llamar_a_emqx(self):
         with patch('apps.mqtt_worker.emqx_admin.urllib.request.urlopen') as mock_urlopen:
             resultado = aprovisionar_credencial_estacion(self.estacion)

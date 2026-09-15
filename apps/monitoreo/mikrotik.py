@@ -29,7 +29,8 @@ from django.conf import settings
 from django.utils import timezone
 
 from pysnmp.hlapi.v3arch.asyncio import (
-    CommunityData, ContextData, ObjectIdentity, ObjectType, SnmpEngine, UdpTransportTarget, get_cmd,
+    CommunityData, ContextData, ObjectIdentity, ObjectType, SnmpEngine, UdpTransportTarget,
+    bulk_walk_cmd, get_cmd,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,17 @@ def _comunidad_para(farmacia) -> str:
     """La community SNMP de cada Mikrotik es el código de la farmacia en minúscula
     (ej. "ml006" para ML006) — convención confirmada contra un router real de
     producción (20-ago-2026), no una community global compartida como se había
-    asumido al diseñar esto. No hace falta cargar nada extra por sitio."""
+    asumido al diseñar esto. No hace falta cargar nada extra por sitio.
+
+    Al habilitar SNMP en el resto de la flota, la community tiene que quedar de SOLO
+    LECTURA (`/snmp community print` en RouterOS: `write-access` en `no`). El motivo es
+    esta misma convención: si la community es el código de la farmacia, es adivinable
+    para cualquiera que vea una pantalla del sistema, y SNMP v2c la manda en texto plano
+    por la red. Con lectura, lo peor que puede pasar es que alguien vea la topología;
+    con escritura, podría apagar interfaces y dejar la farmacia sin servicio.
+
+    Este módulo nunca escribe: solo `get_cmd` y `bulk_walk_cmd`. La advertencia es sobre
+    cómo se configuran los equipos, no sobre lo que hace este código."""
     return farmacia.codigo.lower()
 
 
@@ -258,3 +269,271 @@ def solicitar_sondeo_red_farmacias_via_agente() -> int:
         if enviar_consultar_red_farmacia(estacion, _comunidad_para(estacion.farmacia)):
             enviadas += 1
     return enviadas
+
+
+# --- Identidad del equipo de borde (ver monitoreo.models.EquipoBordeFarmacia) ---
+#
+# Los cuatro primeros son estándar (RFC 1213) y los contesta cualquier equipo con SNMP.
+# Los dos últimos son de la rama privada de Mikrotik (enterprise 14988): verificados
+# contra GNB01, MC001 y MCAR3 el 15-sep-2026, los tres responden.
+#
+# NO se piden temperatura (14988.1.1.3.10), voltaje (…3.8) ni memoria (hrStorage):
+# ninguno de los tres equipos los contesta. Son RB941/RB951, gama baja sin esos
+# sensores — pedirlos sería pagar la latencia de un OID que nunca va a traer nada.
+_OID_SYS_DESCR = '1.3.6.1.2.1.1.1.0'
+_OID_SYS_UPTIME = '1.3.6.1.2.1.1.3.0'
+_OID_SYS_NAME = '1.3.6.1.2.1.1.5.0'
+_OID_MTXR_VERSION = '1.3.6.1.4.1.14988.1.1.4.4.0'
+_OID_MTXR_SERIE = '1.3.6.1.4.1.14988.1.1.7.3.0'
+
+# sysUpTime viene en centésimas de segundo (TimeTicks), no en segundos.
+_CENTESIMAS_POR_SEGUNDO = 100
+
+
+async def _leer_identidad(ip, comunidad, puerto):
+    """`{'modelo':…, 'numero_serie':…, …}` o None. Nunca lanza.
+
+    Los OID privados de Mikrotik se piden en el mismo GET que los estándar: si el equipo
+    no los conoce devuelve "No Such Object" para esos y contesta igual los otros, así que
+    un equipo que no sea Mikrotik igual entrega modelo, nombre y uptime.
+    """
+    engine = SnmpEngine()
+    try:
+        target = await UdpTransportTarget.create((ip, puerto), timeout=3, retries=0)
+        errorIndication, errorStatus, _errorIndex, varBinds = await get_cmd(
+            engine, CommunityData(comunidad), target, ContextData(),
+            ObjectType(ObjectIdentity(_OID_SYS_DESCR)),
+            ObjectType(ObjectIdentity(_OID_SYS_UPTIME)),
+            ObjectType(ObjectIdentity(_OID_SYS_NAME)),
+            ObjectType(ObjectIdentity(_OID_MTXR_VERSION)),
+            ObjectType(ObjectIdentity(_OID_MTXR_SERIE)),
+        )
+    except Exception:
+        logger.warning('Mikrotik %s: excepción leyendo la identidad.', ip, exc_info=True)
+        return None
+    if errorIndication or errorStatus:
+        logger.warning('Mikrotik %s: error leyendo la identidad (%s).', ip, errorIndication or errorStatus)
+        return None
+
+    valores = [_texto_snmp(v) for _n, v in varBinds]
+    if len(valores) != 5:
+        logger.warning('Mikrotik %s: respuesta de identidad con forma inesperada.', ip)
+        return None
+
+    descr, uptime, nombre, version, serie = valores
+    return {
+        'modelo': descr,
+        'uptime_segundos': int(uptime) // _CENTESIMAS_POR_SEGUNDO if uptime.isdigit() else None,
+        'nombre_sistema': nombre,
+        'version_routeros': version,
+        'numero_serie': serie,
+    }
+
+
+def _texto_snmp(valor) -> str:
+    """El texto de una variable SNMP, o '' si el equipo no conoce ese OID.
+
+    pysnmp devuelve marcadores como "No Such Object currently exists at this OID" en vez
+    de un error cuando el OID no existe en ese equipo: sin filtrarlos, esa frase
+    terminaría guardada como el número de serie.
+    """
+    texto = str(valor).strip()
+    if not texto or 'No Such' in texto or texto == 'No more variables left in this MIB View':
+        return ''
+    return texto
+
+
+def sincronizar_identidad_equipos(farmacias=None) -> dict:
+    """Lee la identidad de los equipos de borde y la guarda en EquipoBordeFarmacia.
+
+    `farmacias` acota a un subconjunto; vacío = todas las que tengan `ip_router`.
+
+    A diferencia de `sincronizar_ancho_banda_farmacias`, esto no necesita correr cada 5
+    minutos: el número de serie no cambia nunca y la versión de RouterOS solo cuando
+    alguien actualiza. Pensado para una corrida diaria o a pedido.
+
+    Devuelve un resumen con qué se leyó y qué no. Un equipo que no responde no es un
+    error de la corrida: puede estar apagado o sin SNMP habilitado (a 15-sep-2026, 696
+    de 700 no lo tienen).
+    """
+    from apps.monitoreo.models import EquipoBordeFarmacia
+
+    if farmacias is None:
+        from apps.catalogo.models import Farmacia
+        farmacias = Farmacia.objects.exclude(ip_router__isnull=True).order_by('codigo')
+
+    puerto = _puerto()
+    resumen = {'leidos': 0, 'sin_responder': 0, 'nombres_discrepantes': [], 'versiones': {}}
+
+    async def _todas():
+        limite = asyncio.Semaphore(_MAX_SONDEOS_CONCURRENTES)
+
+        async def _una(farmacia):
+            async with limite:
+                datos = await _leer_identidad(str(farmacia.ip_router), _comunidad_para(farmacia), puerto)
+                return farmacia, datos
+
+        return await asyncio.gather(*(_una(f) for f in farmacias))
+
+    for farmacia, datos in asyncio.run(_todas()):
+        if datos is None:
+            resumen['sin_responder'] += 1
+            continue
+        equipo, _creado = EquipoBordeFarmacia.objects.update_or_create(
+            farmacia=farmacia, defaults={**datos, 'ultima_lectura': timezone.now()},
+        )
+        resumen['leidos'] += 1
+        if equipo.version_routeros:
+            resumen['versiones'][equipo.version_routeros] = (
+                resumen['versiones'].get(equipo.version_routeros, 0) + 1
+            )
+        if equipo.nombre_coincide is False:
+            resumen['nombres_discrepantes'].append(
+                '%s: el equipo dice llamarse "%s"' % (farmacia.codigo, equipo.nombre_sistema),
+            )
+    return resumen
+
+
+# --- Descubrimiento por tabla ARP (ver monitoreo.models.DispositivoDetectado) ---
+#
+# IP-MIB, ipNetToMediaPhysAddress: la tabla ARP del router, o sea IP -> MAC de todo lo
+# que habló por su LAN. El índice del OID trae el ifIndex y la IP:
+#
+#     1.3.6.1.2.1.4.22.1.2 . 8 . 10.101.41.194   ->  0xd0ad08586165
+#                            ^              ^
+#                            ifIndex        IP
+#
+# Verificado contra MCAR3 el 15-sep-2026: devolvió 8 entradas, una del gateway del
+# proveedor por ether3_TELCO y siete de la LAN.
+_OID_ARP = '1.3.6.1.2.1.4.22.1.2'
+
+# Tope por farmacia: una LAN de farmacia tiene decenas de equipos, no miles. Si un
+# router devolviera muchísimo más sería una red mal segmentada (o la tabla ARP de un
+# equipo que no es el de esta farmacia), y traerlo entero solo llenaría la base de ruido.
+_MAX_ENTRADAS_ARP = 200
+
+
+def _normalizar_mac(valor) -> str:
+    """`0xd0ad08586165` -> `D0:AD:08:58:61:65`.
+
+    Se normaliza al mismo formato que valida `Activo.mac` para que el cruce entre lo
+    descubierto y lo declarado sea una comparación de texto y no una función.
+    """
+    texto = str(valor).strip().lower()
+    if texto.startswith('0x'):
+        texto = texto[2:]
+    crudo = texto.replace(':', '').replace('-', '').replace(' ', '')
+    if len(crudo) != 12 or not all(c in '0123456789abcdef' for c in crudo):
+        return ''
+    return ':'.join(crudo[i:i + 2] for i in range(0, 12, 2)).upper()
+
+
+def _ip_e_indice_desde_oid(oid: str):
+    """`…4.22.1.2.8.10.101.41.194` -> `(8, '10.101.41.194')`, o `(None, None)`.
+
+    El sufijo es ifIndex seguido de los cuatro octetos de la IP. Se parsea desde el final
+    para no depender de cuántos componentes tenga el prefijo según cómo lo formatee
+    pysnmp.
+    """
+    partes = str(oid).split('.')
+    if len(partes) < 5:
+        return None, None
+    octetos = partes[-4:]
+    if not all(p.isdigit() and 0 <= int(p) <= 255 for p in octetos):
+        return None, None
+    indice = partes[-5]
+    return (int(indice) if indice.isdigit() else None), '.'.join(octetos)
+
+
+async def _leer_tabla_arp(ip, comunidad, puerto):
+    """`[(mac, ip, ifIndex), …]` o None si no se pudo consultar. Nunca lanza."""
+    engine = SnmpEngine()
+    filas = []
+    try:
+        target = await UdpTransportTarget.create((ip, puerto), timeout=4, retries=0)
+        async for errorIndication, errorStatus, _errorIndex, varBinds in bulk_walk_cmd(
+            engine, CommunityData(comunidad), target, ContextData(),
+            0, 20, ObjectType(ObjectIdentity(_OID_ARP)), lexicographicMode=False,
+        ):
+            if errorIndication or errorStatus:
+                logger.warning(
+                    'Mikrotik %s: error recorriendo la tabla ARP (%s).',
+                    ip, errorIndication or errorStatus,
+                )
+                return None
+            for nombre, valor in varBinds:
+                mac = _normalizar_mac(valor)
+                indice, ip_vista = _ip_e_indice_desde_oid(nombre)
+                if mac and ip_vista:
+                    filas.append((mac, ip_vista, indice))
+            if len(filas) >= _MAX_ENTRADAS_ARP:
+                logger.warning(
+                    'Mikrotik %s: la tabla ARP superó %d entradas, se corta.', ip, _MAX_ENTRADAS_ARP,
+                )
+                break
+    except Exception:
+        logger.warning('Mikrotik %s: excepción recorriendo la tabla ARP.', ip, exc_info=True)
+        return None
+    return filas
+
+
+def sincronizar_dispositivos_detectados(farmacias=None) -> dict:
+    """Recorre la tabla ARP de cada Mikrotik y registra lo que ve en `DispositivoDetectado`.
+
+    Una fila por MAC y farmacia: si el equipo cambió de IP (DHCP), se actualiza la IP y
+    `visto_por_ultima_vez`. Un equipo que se desconecta NO se borra — deja de
+    actualizarse, que es lo que permite notar después que algo desapareció.
+
+    Devuelve el resumen, incluidos los que no matchean con ningún `Activo` declarado:
+    eso es equipo enchufado que nadie inventarió.
+    """
+    from apps.monitoreo.models import DispositivoDetectado
+
+    if farmacias is None:
+        from apps.catalogo.models import Farmacia
+        farmacias = Farmacia.objects.exclude(ip_router__isnull=True).order_by('codigo')
+
+    puerto = _puerto()
+    resumen = {'farmacias_leidas': 0, 'sin_responder': 0, 'nuevos': 0, 'actualizados': 0, 'sin_declarar': []}
+
+    async def _todas():
+        limite = asyncio.Semaphore(_MAX_SONDEOS_CONCURRENTES)
+
+        async def _una(farmacia):
+            async with limite:
+                filas = await _leer_tabla_arp(str(farmacia.ip_router), _comunidad_para(farmacia), puerto)
+                return farmacia, filas
+
+        return await asyncio.gather(*(_una(f) for f in farmacias))
+
+    ahora = timezone.now()
+    for farmacia, filas in asyncio.run(_todas()):
+        if filas is None:
+            resumen['sin_responder'] += 1
+            continue
+        resumen['farmacias_leidas'] += 1
+        for mac, ip_vista, indice in filas:
+            _dispositivo, creado = DispositivoDetectado.objects.update_or_create(
+                farmacia=farmacia, mac=mac,
+                defaults={'ip': ip_vista, 'interfaz_indice': indice, 'visto_por_ultima_vez': ahora},
+            )
+            resumen['nuevos' if creado else 'actualizados'] += 1
+
+    # El cruce contra lo declarado se hace con DOS consultas y no llamando a
+    # `activo_declarado` por dispositivo: a 700 farmacias con decenas de equipos cada una
+    # serían miles de consultas (el mismo N+1 que la auditoría sacó de monitoreo_lista).
+    from apps.activos.models import Activo
+
+    declaradas = {
+        (farmacia_id, (mac or '').upper())
+        for farmacia_id, mac in Activo.objects.filter(farmacia__in=farmacias)
+        .exclude(mac='').values_list('farmacia_id', 'mac')
+    }
+    for dispositivo in DispositivoDetectado.objects.filter(
+        farmacia__in=farmacias,
+    ).select_related('farmacia'):
+        if (dispositivo.farmacia_id, dispositivo.mac.upper()) not in declaradas:
+            resumen['sin_declarar'].append(
+                '%s %s (%s)' % (dispositivo.farmacia.codigo, dispositivo.ip, dispositivo.mac),
+            )
+    return resumen

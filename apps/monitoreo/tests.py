@@ -1,3 +1,4 @@
+import io
 import json
 import urllib.error
 from datetime import timedelta
@@ -1447,3 +1448,386 @@ class SondeoEnlaceAPITests(TestCase):
             reverse('api-enlaces-farmacias'), HTTP_AUTHORIZATION=f'Token {token.key}',
         )
         self.assertEqual(resp.status_code, 403)
+
+
+class UnidadesDeAnchoDeBandaTests(TestCase):
+    """La tasa de red se calcula en kilobits y tiene que etiquetarse como kilobits.
+
+    Hasta el 15-sep-2026 las pantallas de enlaces decían "KB/s" —kilobytes— sobre un
+    número que es kbps: ocho veces más. Con MC001 en 831 kbps, alguien que comparara
+    contra un contrato de 10 Mbps leía 6,6 Mbps (66% del enlace) cuando el consumo real
+    era 0,83 Mbps (8%).
+
+    Peor: `Metrica.RED_TOTAL_KBPS` llevaba esa etiqueta en el desplegable de crear reglas
+    de alerta, así que un umbral "Red > 500" puesto pensando en kilobytes habría
+    disparado a 62,5 KB/s reales. No llegó a pasar —había 0 reglas sobre esa métrica—
+    pero le tocaba al primero que creara una.
+    """
+
+    def test_la_tasa_se_calcula_en_kilobits(self):
+        """1.000.000 de bytes en 10 s son 800 kbps (×8 bits, ÷1000). Si alguien cambiara
+        la fórmula a kilobytes daría 100 y esta prueba lo atrapa."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
+        from apps.monitoreo.mikrotik import _calcular_tasa
+        from apps.monitoreo.models import MuestraRedFarmacia
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+
+        anterior = MuestraRedFarmacia.objects.create(
+            farmacia=farmacia, bytes_recibidos=0, bytes_enviados=0,
+        )
+        MuestraRedFarmacia.objects.filter(pk=anterior.pk).update(
+            timestamp=timezone.now() - timedelta(seconds=10),
+        )
+
+        recibido, enviado = _calcular_tasa(farmacia, 1_000_000, 500_000)
+        self.assertAlmostEqual(recibido, 800, delta=10)
+        self.assertAlmostEqual(enviado, 400, delta=10)
+
+    def test_la_etiqueta_de_la_metrica_dice_kbps(self):
+        """Es la que ve quien crea una regla de alerta y elige un umbral."""
+        from apps.monitoreo.models import Metrica
+
+        etiqueta = dict(Metrica.choices)[Metrica.RED_TOTAL_KBPS]
+        self.assertIn('kbps', etiqueta)
+        self.assertNotIn('KB/s', etiqueta)
+
+    def test_ninguna_plantilla_etiqueta_kilobits_como_kilobytes(self):
+        """Regresión invisible para el resto de la suite: la página sigue devolviendo 200
+        y el número sigue siendo correcto — solo la unidad miente, y por un factor de 8.
+        """
+        from pathlib import Path
+
+        from django.conf import settings
+
+        culpables = []
+        for ruta in sorted((Path(settings.BASE_DIR) / 'templates').rglob('*.html')):
+            contenido = ruta.read_text(encoding='utf-8')
+            if 'KB/s' in contenido or 'kb/s' in contenido:
+                culpables.append(ruta.name)
+        self.assertEqual(
+            culpables, [],
+            'estas plantillas etiquetan kilobits como kilobytes: %s. La tasa se calcula '
+            'en kbps (bytes * 8 / 1000), así que "KB/s" es ocho veces el valor real.'
+            % ', '.join(culpables),
+        )
+
+
+class IdentidadEquipoBordeTests(TestCase):
+    """Lectura SNMP de la identidad del Mikrotik (`sincronizar_identidad_equipos`).
+
+    Los OID se verificaron contra tres equipos reales el 15-sep-2026 (GNB01, MC001,
+    MCAR3): los cinco que se piden contestan en los tres. Temperatura, voltaje y memoria
+    no responden en ninguno —son RB941/RB951, sin esos sensores— y por eso no se piden.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='GNB01', grupo=grupo, unidad_negocio=self.sg, ip_router='10.101.50.65',
+        )
+
+    def _respuesta(self, **cambios):
+        """La respuesta real de GNB01, para no inventar formas de datos."""
+        datos = {
+            'modelo': 'RouterOS RB951Ui-2nD',
+            'uptime_segundos': 1170673,
+            'nombre_sistema': 'GNB01',
+            'version_routeros': '6.49.17',
+            'numero_serie': 'HH70A5GKB55',
+        }
+        datos.update(cambios)
+        return datos
+
+    def _sincronizar(self, respuesta):
+        from apps.monitoreo.mikrotik import sincronizar_identidad_equipos
+
+        async def _falso(ip, comunidad, puerto):
+            return respuesta
+
+        with patch('apps.monitoreo.mikrotik._leer_identidad', _falso):
+            return sincronizar_identidad_equipos([self.farmacia])
+
+    def test_guarda_lo_que_reporta_el_equipo(self):
+        from apps.monitoreo.models import EquipoBordeFarmacia
+
+        resumen = self._sincronizar(self._respuesta())
+
+        equipo = EquipoBordeFarmacia.objects.get(farmacia=self.farmacia)
+        self.assertEqual(equipo.numero_serie, 'HH70A5GKB55')
+        self.assertEqual(equipo.version_routeros, '6.49.17')
+        self.assertEqual(equipo.modelo, 'RouterOS RB951Ui-2nD')
+        self.assertIsNotNone(equipo.ultima_lectura)
+        self.assertEqual(resumen['leidos'], 1)
+        self.assertEqual(resumen['versiones'], {'6.49.17': 1})
+
+    def test_una_segunda_lectura_actualiza_y_no_duplica(self):
+        """El equipo es uno solo por farmacia: `update_or_create`, no una fila por
+        corrida. El historial de tráfico sí es serie; esto no."""
+        from apps.monitoreo.models import EquipoBordeFarmacia
+
+        self._sincronizar(self._respuesta())
+        self._sincronizar(self._respuesta(version_routeros='7.1.5'))
+
+        self.assertEqual(EquipoBordeFarmacia.objects.count(), 1)
+        self.assertEqual(EquipoBordeFarmacia.objects.get().version_routeros, '7.1.5')
+
+    def test_detecta_que_la_ip_apunta_a_otro_equipo(self):
+        """Verificación de integridad sobre las ~700 IP cargadas desde una planilla: si
+        el equipo dice llamarse distinto, todo lo que se monitorea de esta farmacia es
+        en realidad de otra."""
+        from apps.monitoreo.models import EquipoBordeFarmacia
+
+        resumen = self._sincronizar(self._respuesta(nombre_sistema='MCAR3'))
+
+        equipo = EquipoBordeFarmacia.objects.get()
+        self.assertFalse(equipo.nombre_coincide)
+        self.assertEqual(len(resumen['nombres_discrepantes']), 1)
+        self.assertIn('MCAR3', resumen['nombres_discrepantes'][0])
+
+    def test_el_nombre_que_coincide_no_se_reporta(self):
+        resumen = self._sincronizar(self._respuesta())
+        self.assertEqual(resumen['nombres_discrepantes'], [])
+
+    def test_sin_nombre_no_se_acusa_de_discrepancia(self):
+        """Un equipo que no reporta sysName no es un equipo mal asignado."""
+        from apps.monitoreo.models import EquipoBordeFarmacia
+
+        self._sincronizar(self._respuesta(nombre_sistema=''))
+        self.assertIsNone(EquipoBordeFarmacia.objects.get().nombre_coincide)
+
+    def test_un_equipo_que_no_responde_no_rompe_la_corrida(self):
+        """A 15-sep-2026 son 696 de 700 los que no tienen SNMP: que no respondan es lo
+        normal, no un error."""
+        from apps.monitoreo.models import EquipoBordeFarmacia
+
+        resumen = self._sincronizar(None)
+
+        self.assertEqual(resumen['leidos'], 0)
+        self.assertEqual(resumen['sin_responder'], 1)
+        self.assertEqual(EquipoBordeFarmacia.objects.count(), 0)
+
+    def test_marca_un_equipo_recien_reiniciado(self):
+        """Un router que se reinicia solo responde perfecto al ping entre reinicio y
+        reinicio, así que el monitoreo de enlace no lo distingue de uno estable."""
+        from apps.monitoreo.models import EquipoBordeFarmacia
+
+        self._sincronizar(self._respuesta(uptime_segundos=600))
+        self.assertTrue(EquipoBordeFarmacia.objects.get().reinicio_reciente)
+
+        self._sincronizar(self._respuesta(uptime_segundos=1170673))
+        self.assertFalse(EquipoBordeFarmacia.objects.get().reinicio_reciente)
+
+    def test_el_texto_snmp_descarta_los_marcadores_de_oid_inexistente(self):
+        """pysnmp devuelve "No Such Object..." en vez de un error cuando el equipo no
+        conoce el OID. Sin filtrarlo, esa frase quedaría guardada como número de serie."""
+        from apps.monitoreo.mikrotik import _texto_snmp
+
+        self.assertEqual(_texto_snmp('No Such Object currently exists at this OID'), '')
+        self.assertEqual(_texto_snmp('No more variables left in this MIB View'), '')
+        self.assertEqual(_texto_snmp('  HH70A5GKB55  '), 'HH70A5GKB55')
+
+    def test_el_comando_informa_la_brecha_de_versiones(self):
+        from apps.monitoreo.models import EquipoBordeFarmacia
+
+        otra = Farmacia.objects.create(
+            codigo='MC001', grupo=self.farmacia.grupo, unidad_negocio=self.sg,
+            ip_router='10.101.24.225',
+        )
+        EquipoBordeFarmacia.objects.create(farmacia=self.farmacia, version_routeros='6.49.17')
+        EquipoBordeFarmacia.objects.create(farmacia=otra, version_routeros='6.47.7')
+
+        salida = io.StringIO()
+        with patch('apps.monitoreo.mikrotik._leer_identidad') as falso:
+            async def _sin_respuesta(*a, **k):
+                return None
+            falso.side_effect = _sin_respuesta
+            call_command('sondear_identidad_mikrotik', '--farmacias', 'GNB01,MC001', stdout=salida)
+        self.assertIn('Sin responder: 2', salida.getvalue())
+
+    def test_el_comando_falla_si_la_farmacia_no_tiene_ip(self):
+        from django.core.management.base import CommandError
+
+        Farmacia.objects.create(codigo='ML999', grupo=self.farmacia.grupo, unidad_negocio=self.sg)
+        with self.assertRaises(CommandError):
+            call_command('sondear_identidad_mikrotik', '--farmacias', 'ML999', stdout=io.StringIO())
+
+
+class DescubrimientoPorArpTests(TestCase):
+    """Descubrimiento de equipos por la tabla ARP del Mikrotik.
+
+    Los datos de las pruebas son los que devolvió MCAR3 de verdad el 15-sep-2026: ocho
+    entradas, una del gateway del proveedor por `ether3_TELCO` (ifIndex 3) y siete de la
+    LAN por `farmamia` (ifIndex 8).
+    """
+
+    # Tal como llega de pysnmp: MAC en hexadecimal con 0x, y el OID con ifIndex + IP.
+    ARP_MCAR3 = [
+        ('1.3.6.1.2.1.4.22.1.2.3.10.107.128.17', '0xecf40c63cfe0'),
+        ('1.3.6.1.2.1.4.22.1.2.8.10.101.41.194', '0x48210b5c7247'),
+        ('1.3.6.1.2.1.4.22.1.2.8.10.101.41.195', '0xd0ad08586165'),
+        ('1.3.6.1.2.1.4.22.1.2.8.10.101.41.205', '0x18b6f7762274'),
+    ]
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='MCAR3', grupo=grupo, unidad_negocio=self.sg, ip_router='10.101.41.193',
+        )
+
+    def _sincronizar(self, filas):
+        """`filas` son (mac, ip, ifIndex) ya parseadas, como devuelve `_leer_tabla_arp`."""
+        from apps.monitoreo.mikrotik import sincronizar_dispositivos_detectados
+
+        async def _falso(ip, comunidad, puerto):
+            return filas
+
+        with patch('apps.monitoreo.mikrotik._leer_tabla_arp', _falso):
+            return sincronizar_dispositivos_detectados([self.farmacia])
+
+    def _parseadas(self):
+        from apps.monitoreo.mikrotik import _ip_e_indice_desde_oid, _normalizar_mac
+
+        return [
+            (_normalizar_mac(mac), _ip_e_indice_desde_oid(oid)[1], _ip_e_indice_desde_oid(oid)[0])
+            for oid, mac in self.ARP_MCAR3
+        ]
+
+    # --- parseo de lo que entrega SNMP ---
+
+    def test_normaliza_la_mac_al_formato_de_activo(self):
+        """Se guarda igual que `Activo.mac` para que el cruce sea comparar texto."""
+        from apps.monitoreo.mikrotik import _normalizar_mac
+
+        self.assertEqual(_normalizar_mac('0xd0ad08586165'), 'D0:AD:08:58:61:65')
+        self.assertEqual(_normalizar_mac('d0-ad-08-58-61-65'), 'D0:AD:08:58:61:65')
+        self.assertEqual(_normalizar_mac('D0:AD:08:58:61:65'), 'D0:AD:08:58:61:65')
+
+    def test_descarta_una_mac_que_no_lo_es(self):
+        """Mejor vacía que inventada: una fila con basura en la MAC rompería el cruce sin
+        que nadie entienda por qué."""
+        from apps.monitoreo.mikrotik import _normalizar_mac
+
+        for basura in ('', '0x', 'no-es-una-mac', '0xd0ad0858616', '0xzzad08586165'):
+            self.assertEqual(_normalizar_mac(basura), '')
+
+    def test_saca_la_ip_y_la_interfaz_del_indice_del_oid(self):
+        from apps.monitoreo.mikrotik import _ip_e_indice_desde_oid
+
+        self.assertEqual(_ip_e_indice_desde_oid('1.3.6.1.2.1.4.22.1.2.8.10.101.41.194'), (8, '10.101.41.194'))
+        self.assertEqual(_ip_e_indice_desde_oid('1.3.6.1.2.1.4.22.1.2.3.10.107.128.17'), (3, '10.107.128.17'))
+        self.assertEqual(_ip_e_indice_desde_oid('1.2.3'), (None, None))
+
+    # --- sincronización ---
+
+    def test_registra_lo_que_ve_el_router(self):
+        from apps.monitoreo.models import DispositivoDetectado
+
+        resumen = self._sincronizar(self._parseadas())
+
+        self.assertEqual(DispositivoDetectado.objects.count(), 4)
+        self.assertEqual(resumen['nuevos'], 4)
+        gateway = DispositivoDetectado.objects.get(ip='10.107.128.17')
+        self.assertEqual(gateway.mac, 'EC:F4:0C:63:CF:E0')
+        self.assertEqual(gateway.interfaz_indice, 3)
+
+    def test_una_ip_nueva_para_la_misma_mac_actualiza_y_no_duplica(self):
+        """La identidad es la MAC: la Epson va por WiFi con DHCP y cambia de dirección,
+        pero sigue siendo el mismo equipo."""
+        from apps.monitoreo.models import DispositivoDetectado
+
+        self._sincronizar([('D0:AD:08:58:61:65', '10.101.41.195', 8)])
+        self._sincronizar([('D0:AD:08:58:61:65', '10.101.41.250', 8)])
+
+        self.assertEqual(DispositivoDetectado.objects.count(), 1)
+        self.assertEqual(str(DispositivoDetectado.objects.get().ip), '10.101.41.250')
+
+    def test_un_equipo_que_se_desconecta_no_se_borra(self):
+        """Deja de actualizarse, que es lo que permite notar después que algo desapareció.
+        Borrarlo haría imposible distinguir "nunca estuvo" de "ya no está"."""
+        from apps.monitoreo.models import DispositivoDetectado
+
+        self._sincronizar(self._parseadas())
+        self._sincronizar([('D0:AD:08:58:61:65', '10.101.41.195', 8)])
+
+        self.assertEqual(DispositivoDetectado.objects.count(), 4)
+
+    def test_una_farmacia_que_no_responde_no_rompe_la_corrida(self):
+        resumen = self._sincronizar(None)
+        self.assertEqual(resumen['sin_responder'], 1)
+        self.assertEqual(resumen['farmacias_leidas'], 0)
+
+    # --- el cruce con lo declarado ---
+
+    def test_lista_lo_conectado_que_nadie_inventario(self):
+        resumen = self._sincronizar(self._parseadas())
+        self.assertEqual(len(resumen['sin_declarar']), 4)
+
+    def test_un_activo_con_esa_mac_deja_de_figurar_como_sin_declarar(self):
+        """Es el cruce que da sentido a todo esto: lo descubierto contra lo declarado."""
+        from apps.activos.models import Activo
+        from apps.activos.services import generar_codigo_activo
+
+        Activo.objects.create(
+            codigo=generar_codigo_activo(Activo.Tipo.IMPRESORA), tipo=Activo.Tipo.IMPRESORA,
+            farmacia=self.farmacia, unidad_negocio=self.sg, mac='D0:AD:08:58:61:65',
+            estado=Activo.Estado.ASIGNADO,
+        )
+        resumen = self._sincronizar(self._parseadas())
+
+        sin_declarar = ' '.join(resumen['sin_declarar'])
+        self.assertNotIn('D0:AD:08:58:61:65', sin_declarar)
+        self.assertEqual(len(resumen['sin_declarar']), 3)
+
+    def test_el_cruce_no_distingue_mayusculas(self):
+        """`Activo.mac` la carga una persona y puede venir en minúscula; la del router
+        siempre llega normalizada. Una diferencia de grafía no puede hacer que un equipo
+        inventariado aparezca como desconocido."""
+        from apps.activos.models import Activo
+        from apps.activos.services import generar_codigo_activo
+
+        Activo.objects.create(
+            codigo=generar_codigo_activo(Activo.Tipo.IMPRESORA), tipo=Activo.Tipo.IMPRESORA,
+            farmacia=self.farmacia, unidad_negocio=self.sg, mac='d0:ad:08:58:61:65',
+            estado=Activo.Estado.ASIGNADO,
+        )
+        resumen = self._sincronizar(self._parseadas())
+        self.assertEqual(len(resumen['sin_declarar']), 3)
+
+    def test_el_activo_declarado_se_puede_consultar_desde_el_dispositivo(self):
+        from apps.activos.models import Activo
+        from apps.activos.services import generar_codigo_activo
+        from apps.monitoreo.models import DispositivoDetectado
+
+        activo = Activo.objects.create(
+            codigo=generar_codigo_activo(Activo.Tipo.IMPRESORA), tipo=Activo.Tipo.IMPRESORA,
+            farmacia=self.farmacia, unidad_negocio=self.sg, mac='D0:AD:08:58:61:65',
+            estado=Activo.Estado.ASIGNADO,
+        )
+        self._sincronizar(self._parseadas())
+
+        dispositivo = DispositivoDetectado.objects.get(mac='D0:AD:08:58:61:65')
+        self.assertEqual(dispositivo.activo_declarado, activo)
+        otro = DispositivoDetectado.objects.get(ip='10.107.128.17')
+        self.assertIsNone(otro.activo_declarado)
+
+    def test_el_comando_informa_lo_no_inventariado(self):
+        salida = io.StringIO()
+
+        async def _falso(ip, comunidad, puerto):
+            return self._parseadas()
+
+        with patch('apps.monitoreo.mikrotik._leer_tabla_arp', _falso):
+            call_command('descubrir_dispositivos_farmacia', '--farmacias', 'MCAR3', stdout=salida)
+
+        texto = salida.getvalue()
+        self.assertIn('Farmacias leídas: 1', texto)
+        self.assertIn('SIN inventariar', texto)

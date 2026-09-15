@@ -35,7 +35,7 @@ class MuestraMetrica(models.Model):
     disco_total_gb = models.FloatField(null=True, blank=True)
     disco_libre_gb = models.FloatField(null=True, blank=True)
 
-    # Red (KB/s) — tasa ya calculada por el agente (contadores acumulados del
+    # Red (kbps, kilobits) — tasa ya calculada por el agente (contadores acumulados del
     # adaptador de la ruta por defecto, convertidos a tasa entre dos muestras, ver
     # agente-prueba/agente_prueba.py::_tasa_red_kbps). No se guarda el contador
     # crudo acá — a diferencia de MuestraRedFarmacia (SNMP a Mikrotik), este valor ya
@@ -126,7 +126,10 @@ class Metrica(models.TextChoices):
     DISCO_USADO_PCT = 'disco_usado_pct', 'Disco usado (%)'
     LATENCIA_MS = 'latencia_ms', 'Latencia (ms)'
     TEMPERATURA_C = 'temperatura_c', 'Temperatura (°C)'
-    RED_TOTAL_KBPS = 'red_total_kbps', 'Red (KB/s)'
+    # kbps = kilobits, que es lo que calcula `_calcular_tasa` (bytes * 8 / 1000). La
+    # etiqueta decía "KB/s" —kilobytes—, ocho veces más: quien creara una regla
+    # "alertar si Red > 500" pensando en kilobytes disparaba a 62,5 KB/s reales.
+    RED_TOTAL_KBPS = 'red_total_kbps', 'Red (kbps)'
     SIN_HEARTBEAT = 'sin_heartbeat', 'Sin heartbeat (minutos)'
     BITLOCKER_DESHABILITADO = 'bitlocker_deshabilitado', 'BitLocker deshabilitado'
     AGENTE_CAIDO_RED_VIVA = 'agente_caido_red_viva', 'Agente sin reportar (con red viva)'
@@ -445,6 +448,133 @@ class CanalNotificacion(models.Model):
     def __str__(self):
         destino_str = self.unidad_negocio.codigo if self.unidad_negocio_id else 'Global'
         return f'{self.get_tipo_display()} ({destino_str})'
+
+
+class EquipoBordeFarmacia(models.Model):
+    """Identidad del equipo de borde (Mikrotik) de una farmacia, leída por SNMP.
+
+    Modelo aparte de `EstadoEnlaceFarmacia` y de `MuestraRedFarmacia` porque el ciclo de
+    vida es otro: el estado del enlace se sobrescribe cada 2 minutos, las muestras de
+    tráfico son una serie que crece sin parar, y esto casi nunca cambia — el número de
+    serie nunca, la versión de RouterOS solo cuando alguien actualiza.
+
+    Sirve para tres cosas que hoy no se pueden hacer:
+
+    - **Inventariar sin ir al sitio.** El router entrega su modelo y su número de serie,
+      que es justo lo que quedó vacío en los activos de topología cargados a mano.
+    - **Ver la brecha de parcheo.** El 15-sep-2026 el primer sondeo encontró MC001 en
+      RouterOS 6.47.7 y GNB01/MCAR3 en 6.49.17, y nadie tenía forma de saberlo.
+    - **Distinguir una caída de un router que se reinicia solo.** Con `uptime_segundos`,
+      un equipo que se reinicia cada noche deja de verse igual que uno estable.
+    """
+
+    # Un uptime por debajo de esto significa que el equipo arrancó hace poco. No es un
+    # problema por sí mismo —alguien pudo actualizarlo—, pero repetido entre sondeos
+    # sucesivos es un router reiniciándose solo, que es un problema y de los difíciles
+    # de ver: entre reinicio y reinicio responde perfectamente.
+    UMBRAL_REINICIO_RECIENTE_SEGUNDOS = 3600
+
+    farmacia = models.OneToOneField(Farmacia, on_delete=models.CASCADE, related_name='equipo_borde')
+    modelo = models.CharField(
+        max_length=120, blank=True,
+        help_text='Tal como lo reporta sysDescr, ej. "RouterOS RB951Ui-2nD".',
+    )
+    numero_serie = models.CharField(max_length=60, blank=True)
+    version_routeros = models.CharField(max_length=30, blank=True)
+    nombre_sistema = models.CharField(
+        max_length=60, blank=True,
+        help_text='sysName del equipo. Normalmente es el código de la farmacia: si no coincide, '
+                  'la IP cargada apunta a otro equipo (ver `nombre_coincide`).',
+    )
+    uptime_segundos = models.BigIntegerField(
+        null=True, blank=True,
+        help_text='Hace cuánto arrancó el equipo. Se guarda en segundos aunque SNMP lo entregue '
+                  'en centésimas, para no obligar a dividir en cada lectura.',
+    )
+    ultima_lectura = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'equipo_borde_farmacia'
+        ordering = ['farmacia__codigo']
+        verbose_name = 'Equipo de borde de farmacia'
+        verbose_name_plural = 'Equipos de borde de farmacia'
+
+    def __str__(self):
+        return f'{self.farmacia.codigo}: {self.modelo or "sin identificar"}'
+
+    @property
+    def nombre_coincide(self):
+        """False si el equipo dice llamarse distinto de la farmacia a la que lo asignamos.
+
+        Es una verificación de integridad gratis sobre las ~700 IP cargadas desde una
+        planilla: si `ip_router` de ML016 apunta a un equipo que se llama GNB01, el dato
+        está mal y todo lo que se monitoree de esa farmacia es de otra. None = el equipo
+        todavía no reportó su nombre.
+        """
+        if not self.nombre_sistema:
+            return None
+        return self.nombre_sistema.strip().upper() == self.farmacia.codigo.upper()
+
+    @property
+    def reinicio_reciente(self):
+        """True si el equipo arrancó hace menos de una hora."""
+        if self.uptime_segundos is None:
+            return None
+        return self.uptime_segundos < self.UMBRAL_REINICIO_RECIENTE_SEGUNDOS
+
+
+class DispositivoDetectado(models.Model):
+    """Un equipo que el Mikrotik de la farmacia vio en su LAN (tabla ARP, por SNMP).
+
+    Es la mitad **verificada** del inventario. `Activo` guarda lo que alguien declaró que
+    hay; esto guarda lo que el router realmente ve, con su IP y su MAC, sin que nadie
+    visite el local. El cruce entre las dos responde dos preguntas que hoy no se pueden
+    contestar: qué hay enchufado que nadie inventarió, y qué está inventariado pero no
+    aparece.
+
+    La identidad es la **MAC**, no la IP: la Epson va por WiFi con DHCP y cambia de
+    dirección, pero su MAC no. Por eso la clave única es (farmacia, mac) y la IP se
+    actualiza — el mismo criterio por el que `Activo.ip` no lleva unique.
+
+    No es un historial: una fila por equipo, con cuándo se lo vio por primera y por
+    última vez. Un equipo que se desconecta no se borra, deja de actualizarse — y eso es
+    justamente lo que permite notar que algo desapareció.
+    """
+
+    farmacia = models.ForeignKey(Farmacia, on_delete=models.CASCADE, related_name='dispositivos_detectados')
+    mac = models.CharField(max_length=17, help_text='Normalizada a AA:BB:CC:DD:EE:FF, como `Activo.mac`.')
+    ip = models.GenericIPAddressField()
+    interfaz_indice = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='ifIndex del puerto del router donde se lo vio. Cruzado con el nombre de la '
+                  'interfaz (ej. "ether4_BASE") dice en qué puerto está enchufado.',
+    )
+    visto_por_primera_vez = models.DateTimeField(auto_now_add=True)
+    visto_por_ultima_vez = models.DateTimeField()
+
+    class Meta:
+        db_table = 'dispositivo_detectado'
+        ordering = ['farmacia__codigo', 'ip']
+        constraints = [
+            models.UniqueConstraint(fields=['farmacia', 'mac'], name='un_dispositivo_por_mac_y_farmacia'),
+        ]
+        indexes = [models.Index(fields=['farmacia', 'ip'])]
+        verbose_name = 'Dispositivo detectado'
+        verbose_name_plural = 'Dispositivos detectados'
+
+    def __str__(self):
+        return f'{self.farmacia.codigo}: {self.ip} ({self.mac})'
+
+    @property
+    def activo_declarado(self):
+        """El `Activo` que declara esta MAC, o None si nadie lo inventarió.
+
+        Import diferido: `apps.activos` ya importa de catalogo, y traerlo arriba crearía
+        un ciclo entre monitoreo y activos.
+        """
+        from apps.activos.models import Activo
+
+        return Activo.objects.filter(farmacia=self.farmacia, mac__iexact=self.mac).first()
 
 
 class EstadoEnlaceFarmacia(models.Model):

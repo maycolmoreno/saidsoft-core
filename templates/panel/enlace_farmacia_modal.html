@@ -104,7 +104,7 @@ pedir una lectura.
                 <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Consumo actual</div>
                 {% if ultima %}
                 <div class="text-xl font-semibold num" {% if estado_bw == 'critical' %}style="color:var(--critical);"{% elif estado_bw == 'warning' %}style="color:var(--warning);"{% endif %}>
-                    {{ ultima.red_total_kbps|floatformat:0 }} KB/s
+                    {{ ultima.red_total_kbps|floatformat:0 }} kbps
                 </div>
                 <div class="text-xs text-[var(--text-faint)] mt-1">
                     ↓ {{ ultima.red_recibido_kbps|floatformat:0 }} bajada ·
@@ -118,13 +118,13 @@ pedir una lectura.
 
             {% if total_muestras > 1 %}
             <div class="card p-3 mb-3">
-                <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Últimas {{ total_muestras }} lecturas (KB/s)</div>
+                <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Últimas {{ total_muestras }} lecturas (kbps)</div>
                 {% comment %} construir_grafico devuelve los puntos ya calculados, no markup: el <svg> se arma acá. {% endcomment %}
                 <svg viewBox="0 0 {{ g_red.ancho }} {{ g_red.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
                     <polyline points="{{ g_red.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
                     <polyline points="{{ g_red.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
                 </svg>
-                <div class="text-xs text-[var(--text-faint)] mt-1">Pico {{ g_red.max_valor|floatformat:0 }} KB/s en esta ventana</div>
+                <div class="text-xs text-[var(--text-faint)] mt-1">Pico {{ g_red.max_valor|floatformat:0 }} kbps en esta ventana</div>
             </div>
             {% endif %}
 

@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from django.contrib.auth.models import Permission, User
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoConsumible
@@ -334,6 +334,10 @@ class NotificarVencimientoTests(TestCase):
         self.assertEqual(resultado['atrasados'], 0)  # el atrasado sin técnico se omite
 
 
+# `CELERY_TASK_ALWAYS_EAGER` solo está en config/settings/desarrollo.py y no se lee del
+# entorno: sin este override la prueba pasa en local y falla siempre en el contenedor,
+# que es donde CLAUDE.md pide correr la suite contra PostgreSQL.
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class GenerarMantenimientosProgramadosTaskTests(TestCase):
     """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test."""
 
@@ -385,6 +389,10 @@ class GenerarInformePdfTests(TestCase):
             self.mantenimiento.informe_pdf.delete(save=False)
 
 
+# `CELERY_TASK_ALWAYS_EAGER` solo está en config/settings/desarrollo.py y no se lee del
+# entorno: sin este override la prueba pasa en local y falla siempre en el contenedor,
+# que es donde CLAUDE.md pide correr la suite contra PostgreSQL.
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class GenerarInformePdfTaskTests(TestCase):
     """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test."""
 

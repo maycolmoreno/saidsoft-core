@@ -79,7 +79,7 @@ desde apps/monitoreo/graficos.py.
         <div class="flex items-baseline justify-between mb-2">
             <span class="text-sm font-medium text-[var(--text-dim)]">Red</span>
             <span class="text-2xl font-semibold">
-                {{ ultima.red_total_kbps|default:"—" }}{% if ultima.red_total_kbps is not None %}kb/s{% endif %}
+                {{ ultima.red_total_kbps|default:"—" }}{% if ultima.red_total_kbps is not None %} kbps{% endif %}
             </span>
         </div>
         <svg viewBox="0 0 {{ g_red.ancho }} {{ g_red.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
@@ -87,7 +87,7 @@ desde apps/monitoreo/graficos.py.
             <polyline points="{{ g_red.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
         </svg>
         <div class="text-xs text-[var(--text-faint)] mt-1">
-            Pico {{ g_red.max_valor|floatformat:0 }}kb/s · {{ ultima.red_recibido_kbps|default:"—" }} bajada / {{ ultima.red_enviado_kbps|default:"—" }} subida
+            Pico {{ g_red.max_valor|floatformat:0 }} kbps · {{ ultima.red_recibido_kbps|default:"—" }} bajada / {{ ultima.red_enviado_kbps|default:"—" }} subida
         </div>
     </div>
 </div>

@@ -51,7 +51,7 @@
             <div>
                 <div class="text-xs text-[var(--text-faint)] uppercase">Red</div>
                 <div class="text-lg font-semibold">
-                    {{ t.ultima.red_total_kbps|default:"—" }}{% if t.ultima.red_total_kbps is not None %}kb/s{% endif %}
+                    {{ t.ultima.red_total_kbps|default:"—" }}{% if t.ultima.red_total_kbps is not None %} kbps{% endif %}
                 </div>
             </div>
         </div>

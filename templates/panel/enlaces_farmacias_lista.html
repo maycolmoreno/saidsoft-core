@@ -204,7 +204,7 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
                 <td class="px-3 py-2.5 text-right num text-xs">
                     {% if fila.total_kbps is not None %}
                     <span {% if fila.estado_bw == 'critical' %}style="color:var(--critical);"{% elif fila.estado_bw == 'warning' %}style="color:var(--warning);"{% endif %}>
-                        {{ fila.total_kbps|floatformat:0 }} KB/s
+                        {{ fila.total_kbps|floatformat:0 }} kbps
                     </span>
                     {% else %}<span class="text-[var(--text-faint)]">sin SNMP</span>{% endif %}
                 </td>
