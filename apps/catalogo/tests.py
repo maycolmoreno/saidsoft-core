@@ -1536,3 +1536,126 @@ class FijarAnchoContratadoTests(TestCase):
         with self.assertRaises(CommandError) as ctx:
             self._correr('--mbps', '10', '--proveedores', 'TELCONEt SA')
         self.assertIn('TELCONET', str(ctx.exception))
+
+
+class ArmarPaqueteAgenteTests(TestCase):
+    """El zip de instalación que se publica en /media/ para bajarlo desde las estaciones.
+
+    La decisión que define este comando: **no lleva `config.txt`**. `/media/` se sirve por
+    HTTP sin autenticación —a propósito, para que los agentes descarguen— y ese archivo
+    tiene `ComandoHmacSecret` en texto plano, que es con lo que se FIRMAN los comandos a
+    las estaciones. Publicarlo permitiría fabricar un `ejecutar_script` válido para
+    cualquier equipo de la cadena.
+    """
+
+    def setUp(self):
+        import shutil
+
+        self.medios = tempfile.mkdtemp()
+        # El override tiene que cubrir tambien la creacion de la VersionAgente: si solo
+        # envolviera al comando, el ejecutable quedaria guardado bajo el MEDIA_ROOT real
+        # y `ejecutable.path` apuntaria al temporal, donde no existe.
+        medios = override_settings(MEDIA_ROOT=self.medios)
+        medios.enable()
+        self.addCleanup(medios.disable)
+        self.addCleanup(shutil.rmtree, self.medios, True)
+        self.admin = User.objects.create_superuser(username='u_paq', password='x' * 16)
+
+    def _version(self, nombre='agente-prueba-0.20'):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from apps.catalogo.models import VersionAgente
+
+        return VersionAgente.objects.create(
+            version=nombre, creado_por=self.admin,
+            ejecutable=SimpleUploadedFile('Saidsoft.Agente.exe', b'MZ' + b'\0' * 200),
+        )
+
+    def _armar(self, *args):
+        salida = io.StringIO()
+        call_command('armar_paquete_agente', *args, stdout=salida)
+        return salida.getvalue()
+
+    def _contenido(self):
+        import zipfile
+        from pathlib import Path
+
+        ruta = Path(self.medios) / 'agente-instalador' / 'agente-instalador.zip'
+        self.assertTrue(ruta.is_file(), 'no se generó el zip')
+        with zipfile.ZipFile(ruta) as paquete:
+            return paquete.namelist()
+
+    def test_arma_el_paquete_con_lo_necesario_para_instalar(self):
+        self._version()
+        self._armar()
+        nombres = self._contenido()
+        for esperado in ('Saidsoft.Agente.exe', 'instalar-servicio.ps1', 'Instalar.bat',
+                         'config.ejemplo.txt', 'cert.pem', 'LEEME.txt'):
+            self.assertIn(esperado, nombres)
+
+    def test_nunca_incluye_config_txt(self):
+        """La prueba que más importa: es la diferencia entre un instalador y una fuga."""
+        self._version()
+        self._armar()
+        self.assertNotIn('config.txt', self._contenido())
+
+    def test_incluye_el_certificado_publico_pero_no_la_clave_privada(self):
+        """`cert.pem` es lo que el agente usa para validar TLS y tiene que viajar.
+        `key.pem` es la clave privada de EMQX y no puede salir del servidor."""
+        self._version()
+        self._armar()
+        nombres = self._contenido()
+        self.assertIn('cert.pem', nombres)
+        self.assertNotIn('key.pem', nombres)
+
+    def test_usa_la_ultima_version_cargada(self):
+        self._version('agente-prueba-0.19')
+        self._version('agente-prueba-0.20')
+        texto = self._armar()
+        self.assertIn('agente-prueba-0.20', texto)
+
+    def test_se_puede_pedir_una_version_puntual(self):
+        """Para volver atrás: si el 0.20 rompiera algo, se reempaqueta el 0.19 sin
+        recompilar nada."""
+        self._version('agente-prueba-0.19')
+        self._version('agente-prueba-0.20')
+        texto = self._armar('--agente', 'agente-prueba-0.19')
+        self.assertIn('agente-prueba-0.19', texto)
+
+    def test_falla_si_la_version_pedida_no_existe(self):
+        self._version()
+        with self.assertRaises(CommandError):
+            self._armar('--agente', 'agente-prueba-9.9')
+
+    def test_falla_si_no_hay_ninguna_version_cargada(self):
+        """Mejor que armar un paquete sin ejecutable, que fallaría recién en la estación."""
+        with self.assertRaises(CommandError):
+            self._armar()
+
+    def test_el_leeme_explica_por_que_faltan_los_secretos(self):
+        """Quien abra el zip en una estación tiene que entender qué falta y por qué, o va
+        a pensar que el paquete está incompleto."""
+        import zipfile
+        from pathlib import Path
+
+        self._version()
+        self._armar()
+        ruta = Path(self.medios) / 'agente-instalador' / 'agente-instalador.zip'
+        with zipfile.ZipFile(ruta) as paquete:
+            leeme = paquete.read('LEEME.txt').decode('utf-8')
+        self.assertIn('MqttPassword', leeme)
+        self.assertIn('ComandoHmacSecret', leeme)
+        self.assertIn('FARMACIA-SUFIJO', leeme)
+        self.assertIn('PENDIENTE DE APROBACION', leeme)
+
+    def test_rearmarlo_reemplaza_el_anterior(self):
+        """Se corre después de cada build del agente: no puede ir acumulando zips."""
+        from pathlib import Path
+
+        self._version('agente-prueba-0.19')
+        self._armar()
+        self._version('agente-prueba-0.20')
+        self._armar()
+
+        carpeta = Path(self.medios) / 'agente-instalador'
+        self.assertEqual(len(list(carpeta.glob('*.zip'))), 1)

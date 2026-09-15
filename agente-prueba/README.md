@@ -32,11 +32,9 @@ completo de esa decisión.
   (ver abajo) — no se vuelve a aplicar hasta el próximo enrolamiento si cambia desde
   el panel.
 - **Enrolamiento cero-touch** (opcional, `--token-apertura` / `TokenApertura` en
-  `config.txt`) — **escrito pero todavía no redistribuido**: el `.exe` que corre hoy en
-  las estaciones del piloto NO tiene esto (sigue siendo `agente-prueba-0.17`, y esta
-  versión no se bumpeó porque no se reconstruyó). Antes de redistribuir hay que subir
-  `VERSION_AGENTE_PRUEBA` a 0.18, o la flota reporta la misma versión para dos binarios
-  distintos. Qué hace: si el equipo trae un token de apertura emitido por el panel
+  `config.txt`) — **disponible desde 0.18 y ya distribuido**: el 14-sep-2026 las ocho
+  estaciones del piloto pasaron de 0.17 a 0.18 y de ahí a 0.20. Qué hace: si el equipo
+  trae un token de apertura emitido por el panel
   (`apps.aperturas`), lo suma al payload del primer enrolamiento y el servidor crea la
   estación **ya aprobada**, con la configuración de su perfil (monitoreo, caché de
   farmacia), lanzándole los pasos de la plantilla de apertura. El token es de un solo
@@ -161,6 +159,42 @@ abajo) — pero **no** de punta a punta contra un POS real aplicando un paquete 
 todavía. Antes de confiar el rollback automático en una farmacia real, conviene un
 ensayo con un "POS" de juguete (una carpeta con un .exe cualquiera) para ver el ciclo
 cerrar cerrar→respaldar→aplicar→relanzar→verificar sin sorpresas.
+
+## Versiones y qué trae cada una
+
+La versión sale de `VERSION_AGENTE_PRUEBA` en `agente_prueba.py` y viaja en cada latido,
+así que el panel muestra qué corre realmente cada estación. **Hay que subirla en cada
+build que cambie el comportamiento**: si no, dos binarios distintos reportan lo mismo y
+el panel deja de servir para saber qué hay instalado.
+
+| Versión | Qué agregó |
+|---|---|
+| 0.17 | Última antes del trabajo del 14-sep-2026 |
+| 0.18 | Reporta reloj (`reloj_epoch`), offset UTC y zona horaria en cada latido |
+| 0.19 | Lee la zona horaria del registro en cada latido en vez de cachearla al arrancar |
+| 0.20 | Reporta la versión real del POS, leída del ejecutable |
+
+El 14-sep-2026 las ocho estaciones del piloto se actualizaron a 0.20 desde el panel, sin
+tocar ninguna: la orden va por un tópico MQTT **retenido**, así que la recibe también una
+estación que estaba apagada, en cuanto reconecta.
+
+Ese tópico valida la firma **sin** la ventana de 120 segundos, a diferencia del resto de
+los comandos. Eso lo vuelve el único canal que alcanza a una estación con el reloj
+corrido — que es justamente la que no recibe nada más (ver `VENTANA_TIMESTAMP_SEGUNDOS`).
+
+### Al compilar una versión nueva
+
+1. Subir `VERSION_AGENTE_PRUEBA`.
+2. `.uild.ps1`.
+3. Subirla como `VersionAgente` en el panel (Admin → Versiones de agente), o desde el
+   servidor con `docker compose cp` + `manage.py shell`.
+4. Distribuirla desde la ficha de cada estación. El botón **exige que esté en línea**,
+   aunque el mensaje retenido esté pensado para las apagadas — si está caída, hay que
+   reintentar cuando vuelva.
+
+Un agente anterior a que existiera el comando `actualizar_agente` (0.1) no lo entiende y
+lo ignora sin error: esas estaciones hay que actualizarlas a mano una vez, y de ahí en
+adelante ya se actualizan solas.
 
 ## Compilar
 
