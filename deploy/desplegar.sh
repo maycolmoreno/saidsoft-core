@@ -18,6 +18,16 @@
 set -e
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+# La ubicación del repo sale de dónde está ESTE archivo, así que el script tiene que
+# vivir en deploy/. Copiarlo a otro lado (p.ej. /tmp) hace que $REPO apunte a cualquier
+# cosa y el `git pull` falle con un mensaje que no explica nada.
+if [ ! -d "$REPO/.git" ]; then
+    echo "ERROR: '$REPO' no es el repositorio. Este script tiene que ejecutarse desde" >&2
+    echo "       su lugar en el repo: sh ~/Documentos/Said/saidsoft-core/deploy/desplegar.sh" >&2
+    exit 1
+fi
+
 cd "$REPO"
 
 echo "==> 1/4  git pull"
@@ -32,15 +42,25 @@ cd "$REPO/deploy"
 echo "==> 2/4  build (las cinco imágenes)"
 docker compose --env-file .env build
 
+# `|| true` a propósito: `up -d` puede fallar con "the container name ... is already in
+# use" y aun así dejar todo corriendo. Pasa porque cuatro contenedores de este servidor
+# (db, emqx, redis, meshcentral) quedaron con nombres prefijados por un hash de un
+# conflicto viejo, y Compose reintenta el renombrado en cada despliegue. Con `set -e` el
+# script abortaba ahí y nunca llegaba a la verificación — o sea que fallaba justo antes
+# del paso que podía decir si el despliegue había servido o no.
+#
+# No se ignora el problema: si de verdad quedó algo mal, la verificación del final lo
+# detecta y el script sale con error igual. Lo que cambia es QUÉ decide el resultado —
+# el estado real del servidor, no el código de salida de un comando que miente.
 echo "==> 3/4  up -d"
-docker compose --env-file .env up -d
+docker compose --env-file .env up -d || echo "   (up -d devolvió error; se sigue y lo decide la verificación del final)"
 
 # El entrypoint YA corre `migrate` al arrancar cada contenedor (ver entrypoint.sh).
 # Se repite acá solo para VER el resultado en la salida del despliegue: sin esto, que una
 # migración se aplique o no queda enterrado en los logs del contenedor. Es idempotente,
 # así que repetirlo no cuesta nada.
 echo "==> 4/4  migrate (el entrypoint ya lo corrió; esto lo deja a la vista)"
-docker compose exec -T web python manage.py migrate
+docker compose exec -T web python manage.py migrate || true
 
 # Comprobación final: que no quede ninguna migración sin aplicar. Es lo que convierte
 # este script en algo más que un atajo — si un paso no tuvo efecto, se entera acá y no
@@ -54,11 +74,37 @@ if [ "$PENDIENTES" -gt 0 ]; then
     exit 1
 fi
 
-CAIDOS=$(docker compose ps --format '{{.Name}} {{.State}}' 2>/dev/null | grep -v ' running' || true)
-if [ -n "$CAIDOS" ]; then
-    echo "AVISO: hay contenedores que no están corriendo:"
-    echo "$CAIDOS"
+# Se verifica por SERVICIO y no por nombre de contenedor: cuatro de este servidor
+# arrastran un prefijo de hash (ej. "1abca43cf424_deploy-db-1") de un conflicto viejo, y
+# buscar el nombre exacto daría falsos negativos.
+FALTAN=""
+for SERVICIO in db redis emqx nginx web worker celery_worker celery_beat meshcentral meshcentral_worker; do
+    ESTADO=$(docker compose ps --format '{{.Service}} {{.State}}' 2>/dev/null | awk -v s="$SERVICIO" '$1==s {print $2}')
+    if [ "$ESTADO" != "running" ]; then
+        FALTAN="$FALTAN $SERVICIO(${ESTADO:-ausente})"
+    fi
+done
+if [ -n "$FALTAN" ]; then
+    echo "AVISO: estos servicios no están corriendo:$FALTAN"
     exit 1
+fi
+
+# Que la web conteste es lo único que prueba que el despliegue sirvió de verdad: los
+# contenedores pueden estar "running" y la aplicación caída por un error de arranque.
+#
+# El host sale de ALLOWED_HOSTS del .env y no se escribe "localhost": Django responde
+# 400 a cualquier Host que no esté en esa lista, así que pedirle a localhost daba un
+# falso fallo en cada despliegue aunque la aplicación estuviera perfecta.
+HOST=$(grep -E '^ALLOWED_HOSTS=' .env | head -1 | cut -d= -f2- | cut -d, -f1 | tr -d ' "')
+if [ -z "$HOST" ]; then
+    echo "AVISO: no se pudo leer ALLOWED_HOSTS del .env; se omite el chequeo web."
+else
+    CODIGO=$(curl -sk -o /dev/null -w '%{http_code}' "https://$HOST:8084/login/" || echo 000)
+    if [ "$CODIGO" != "200" ]; then
+        echo "AVISO: la web no responde 200 en https://$HOST:8084/login/ (devolvió $CODIGO)."
+        exit 1
+    fi
+    echo "Web respondiendo (HTTP $CODIGO)."
 fi
 
 echo "Todo aplicado. Commit desplegado:"

@@ -418,8 +418,14 @@ def _normalizar_mac(valor) -> str:
 
     Se normaliza al mismo formato que valida `Activo.mac` para que el cruce entre lo
     descubierto y lo declarado sea una comparación de texto y no una función.
+
+    `prettyPrint()` y NO `str()`: para un OctetString de pysnmp —que es lo que llega del
+    cable— `str()` devuelve los bytes decodificados (basura binaria) y solo
+    `prettyPrint()` da la forma hexadecimal `0x…`. Con `str()` esto devolvía '' para
+    TODAS las MAC y el descubrimiento encontraba cero equipos, sin error: la primera
+    corrida en producción (15-sep-2026) leyó las 4 farmacias y registró 0 dispositivos.
     """
-    texto = str(valor).strip().lower()
+    texto = (valor.prettyPrint() if hasattr(valor, 'prettyPrint') else str(valor)).strip().lower()
     if texto.startswith('0x'):
         texto = texto[2:]
     crudo = texto.replace(':', '').replace('-', '').replace(' ', '')

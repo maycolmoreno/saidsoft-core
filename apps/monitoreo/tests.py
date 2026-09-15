@@ -1711,6 +1711,33 @@ class DescubrimientoPorArpTests(TestCase):
         self.assertEqual(_normalizar_mac('d0-ad-08-58-61-65'), 'D0:AD:08:58:61:65')
         self.assertEqual(_normalizar_mac('D0:AD:08:58:61:65'), 'D0:AD:08:58:61:65')
 
+    def test_normaliza_el_objeto_que_llega_del_cable_y_no_solo_el_texto(self):
+        """El bug que las pruebas anteriores no atraparon: le pasaban el texto ya
+        formateado, pero de SNMP llega un OctetString cuyo `str()` da los bytes
+        decodificados —basura binaria— y solo `prettyPrint()` da la forma `0x…`.
+
+        Con `str()`, TODAS las MAC daban '' y el descubrimiento registraba cero equipos
+        sin ningún error: la primera corrida en producción leyó las 4 farmacias y guardó
+        nada.
+        """
+        from apps.monitoreo.mikrotik import _normalizar_mac
+
+        class OctetStringFalso:
+            """Imita a pysnmp: str() devuelve los bytes, prettyPrint() el hexadecimal."""
+
+            def __init__(self, crudo):
+                self._crudo = crudo
+
+            def __str__(self):
+                return self._crudo.decode('latin-1')
+
+            def prettyPrint(self):
+                return '0x' + self._crudo.hex()
+
+        valor = OctetStringFalso(bytes.fromhex('d0ad08586165'))
+        self.assertNotEqual(str(valor), '0xd0ad08586165')  # el modo que fallaba
+        self.assertEqual(_normalizar_mac(valor), 'D0:AD:08:58:61:65')
+
     def test_descarta_una_mac_que_no_lo_es(self):
         """Mejor vacía que inventada: una fila con basura en la MAC rompería el cruce sin
         que nadie entienda por qué."""
