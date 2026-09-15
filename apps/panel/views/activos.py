@@ -20,6 +20,7 @@ from apps.auditoria.models import registrar_evento
 from apps.mantenimiento import services as mantenimiento_services
 from apps.mantenimiento.forms import VisitaTecnicaForm
 from apps.mantenimiento.models import Mantenimiento, VisitaTecnica
+from ..paginacion import paginar
 from apps.cuentas.services import (
     scope_opcional_por_unidad_negocio, scope_opcional_por_unidad_negocio_activa, usuario_puede_ver,
     verificar_acceso,
@@ -377,12 +378,20 @@ def activos_lista(request):
     elif ubicacion == 'administrativo':
         activos = activos.filter(farmacia__isnull=True)
 
-    return render(request, 'panel/activos_lista.html', {
+    # Se pagina con 18 filas en producción y no cuando haya 1.800: el parque son ~1.800
+    # estaciones más sus periféricos, y paginar una lista corta es barato — hacerlo sobre
+    # una tabla ya grande, no (mismo criterio con el que se paginó estaciones_lista).
+    pagina, query_filtros = paginar(
         # `estacion` va en el select_related porque la columna "Puesto / IP" usa
         # `ip_efectiva`, que para un activo vinculado lee `estacion.ip_lan`: sin esto
         # sería una consulta por fila (el mismo N+1 que la auditoría sacó de
         # monitoreo_lista).
-        'activos': activos.select_related('farmacia', 'estacion'),
+        activos.select_related('farmacia', 'estacion'), request,
+    )
+    return render(request, 'panel/activos_lista.html', {
+        'activos': pagina.object_list,
+        'pagina': pagina,
+        'query_filtros': query_filtros,
         'tipos': Activo.Tipo.choices,
         'estados': Activo.Estado.choices,
         'bodegas': scope_opcional_por_unidad_negocio(Bodega.objects.all(), request.user, 'unidad_negocio').order_by('codigo'),

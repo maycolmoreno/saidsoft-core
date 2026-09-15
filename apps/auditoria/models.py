@@ -31,7 +31,12 @@ class EventoAuditoria(models.Model):
 
     class Meta:
         db_table = 'evento_auditoria'
-        ordering = ['-timestamp']
+        # 'pk' como desempate, igual que EventoActivo: `timestamp` es auto_now_add y dos
+        # eventos del mismo tick de reloj dejan el orden indefinido. Con el `[:200]` que
+        # tenía la vista nunca había una segunda página y no se notaba; al paginar de
+        # verdad, dos filas empatadas pueden repetirse o saltearse entre páginas —
+        # justamente en la tabla que existe para poder reconstruir qué pasó.
+        ordering = ['-timestamp', '-pk']
         verbose_name = 'Evento de auditoría'
         verbose_name_plural = 'Eventos de auditoría'
 

@@ -4571,3 +4571,281 @@ class EstacionesRelojEnElPanelTests(TestCase):
         paginación no serviría de nada (mismo problema que tuvo `desactualizadas`)."""
         resp = self.client.get(reverse('panel:estaciones_lista'), {'reloj': 'incomunicado'})
         self.assertEqual(resp.context['pagina'].paginator.count, 1)
+
+
+class TendenciaFlotaConsultasTests(TestCase):
+    """Las series de `tendencia_flota` salen de 3 consultas fijas, no de 4 por semana.
+
+    Antes el bucle de 12 semanas hacía tres `.count()` y un `.aggregate()` por vuelta:
+    **48 consultas**, y crecían con la ventana — pasar a 26 semanas las habría duplicado.
+    La auditoría del 12-sep-2026 lo contó como 36 porque sumó solo los `.count()`.
+
+    Estas pruebas cuidan dos cosas distintas: que el número de consultas no dependa de
+    cuántos datos haya, y —más importante— que los valores sigan siendo **exactamente**
+    los mismos. Una optimización que cambia los números en silencio es peor que la
+    lentitud que venía a arreglar.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, monitorear_recursos=True,
+        )
+        self.usuario = User.objects.create_user(username='u_tend_q', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
+        self.client.force_login(self.usuario)
+
+        self.regla_warning = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90,
+            severidad=ReglaAlerta.Severidad.WARNING, creado_por=self.usuario,
+        )
+        self.regla_critical = ReglaAlerta.objects.create(
+            nombre='Disco lleno', metrica=Metrica.DISCO_USADO_PCT, umbral=95,
+            severidad=ReglaAlerta.Severidad.CRITICAL, creado_por=self.usuario,
+        )
+
+    def _sembrar(self, semanas_atras, cuantas=1):
+        """Alertas y métricas repartidas en varias semanas, con cantidades DISTINTAS por
+        día: si todos los días tuvieran las mismas muestras, promediar promedios diarios
+        daría igual que el promedio semanal y la prueba de equivalencia no probaría nada.
+        """
+        ahora = timezone.now()
+        for semana in range(semanas_atras):
+            momento = ahora - timedelta(weeks=semana, days=1)
+            for i in range(cuantas + semana):
+                alerta = Alerta.objects.create(
+                    regla=self.regla_warning if i % 2 else self.regla_critical,
+                    estacion=self.estacion, valor_disparador=95,
+                )
+                Alerta.objects.filter(pk=alerta.pk).update(
+                    abierta_en=momento, resuelta_en=momento if i % 3 == 0 else None,
+                )
+                muestra = MuestraMetrica.objects.create(
+                    estacion=self.estacion, cpu_carga_pct=50 + i, ram_total=8000,
+                    ram_usada=4000 + i * 100, disco_total_gb=500, disco_libre_gb=200 + i,
+                    red_recibido_kbps=1000 + i, red_enviado_kbps=200 + i,
+                )
+                MuestraMetrica.objects.filter(pk=muestra.pk).update(timestamp=momento)
+
+    def _series(self):
+        from apps.panel.views.monitoreo import _semanas_recientes, _series_semanales
+
+        return _series_semanales(
+            _semanas_recientes(12),
+            Alerta.objects.all(),
+            MuestraMetrica.objects.filter(estacion=self.estacion),
+        )
+
+    def _consultas(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get(reverse('panel:tendencia_flota'))
+        return len(ctx.captured_queries)
+
+    def test_las_consultas_no_crecen_con_los_datos(self):
+        """Lo que se fija no es el número exacto —depende de la sesión, los permisos y el
+        scoping— sino que no dependa de cuántas semanas tengan datos."""
+        self._sembrar(semanas_atras=2, cuantas=2)
+        con_dos_semanas = self._consultas()
+
+        self._sembrar(semanas_atras=10, cuantas=3)
+        self.assertEqual(self._consultas(), con_dos_semanas)
+
+    def test_los_valores_son_identicos_a_los_del_calculo_semana_por_semana(self):
+        """Compara contra una reimplementación del bucle viejo: tres `.count()` y un
+        `.aggregate()` por semana. Es la garantía de que la optimización no movió ningún
+        número."""
+        from django.db.models import Avg
+
+        from apps.panel.views.monitoreo import _semanas_recientes
+
+        self._sembrar(semanas_atras=6, cuantas=2)
+        series = self._series()
+
+        semanas = _semanas_recientes(12)
+        alertas = Alerta.objects.all()
+        metricas = MuestraMetrica.objects.filter(estacion=self.estacion)
+
+        for i, (inicio, fin) in enumerate(semanas):
+            de_la_semana = alertas.filter(abierta_en__date__gte=inicio, abierta_en__date__lt=fin)
+            self.assertEqual(
+                series['abiertas_warning'][i],
+                de_la_semana.filter(regla__severidad=ReglaAlerta.Severidad.WARNING).count(),
+                'semana %d: abiertas warning' % i,
+            )
+            self.assertEqual(
+                series['abiertas_critical'][i],
+                de_la_semana.filter(regla__severidad=ReglaAlerta.Severidad.CRITICAL).count(),
+                'semana %d: abiertas critical' % i,
+            )
+            self.assertEqual(
+                series['resueltas'][i],
+                alertas.filter(resuelta_en__date__gte=inicio, resuelta_en__date__lt=fin).count(),
+                'semana %d: resueltas' % i,
+            )
+
+            agregado = metricas.filter(timestamp__date__gte=inicio, timestamp__date__lt=fin).aggregate(
+                cpu=Avg('cpu_carga_pct'), ram_total=Avg('ram_total'), ram_usada=Avg('ram_usada'),
+                disco_total=Avg('disco_total_gb'), disco_libre=Avg('disco_libre_gb'),
+                red_recibido=Avg('red_recibido_kbps'), red_enviado=Avg('red_enviado_kbps'),
+            )
+            self._igual(series['cpu'][i], agregado['cpu'], 'semana %d: cpu' % i)
+            self._igual(
+                series['ram'][i],
+                100 * agregado['ram_usada'] / agregado['ram_total'] if agregado['ram_total'] else None,
+                'semana %d: ram' % i,
+            )
+            self._igual(
+                series['disco'][i],
+                100 * (agregado['disco_total'] - agregado['disco_libre']) / agregado['disco_total']
+                if agregado['disco_total'] else None,
+                'semana %d: disco' % i,
+            )
+
+    def _igual(self, obtenido, esperado, mensaje):
+        if esperado is None:
+            self.assertIsNone(obtenido, mensaje)
+        else:
+            self.assertAlmostEqual(obtenido, esperado, places=6, msg=mensaje)
+
+    def test_una_semana_sin_datos_sigue_dando_none_y_no_cero(self):
+        """Un hueco en la serie no es "0% de CPU": es "no hubo muestras". Confundirlos
+        dibujaría una caída a cero que nunca pasó."""
+        self.assertTrue(all(v is None for v in self._series()['cpu']))
+
+
+class AuditoriaPaginadaTests(TestCase):
+    """El listado de auditoría cortaba con `[:200]`.
+
+    No era una optimización sino una pérdida: al llegar a 257 eventos en producción
+    (14-sep-2026) había 57 que existían y no se podían ver desde ninguna parte de la
+    aplicación, sin aviso. Un registro de auditoría que esconde filas en silencio deja de
+    servir como registro, y es la única tabla que solo crece.
+    """
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_audit_pag', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='auditoria', codename='view_eventoauditoria'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _sembrar(self, cuantos):
+        EventoAuditoria.objects.bulk_create([
+            EventoAuditoria(usuario=self.usuario, accion='prueba.%d' % i, objeto_repr='obj %d' % i)
+            for i in range(cuantos)
+        ])
+        # Marcas de tiempo DISTINTAS: `timestamp` es auto_now_add y el `ordering` del
+        # modelo no desempata por `pk`, así que sembrar todo en el mismo instante deja el
+        # orden indefinido y la paginación podría repetir o saltear filas entre páginas
+        # (es lo que advierte el docstring de `paginar`). Con el slice viejo esto no se
+        # notaba porque nunca había una segunda página.
+        ahora = timezone.now()
+        for i, evento in enumerate(EventoAuditoria.objects.order_by('pk')):
+            EventoAuditoria.objects.filter(pk=evento.pk).update(
+                timestamp=ahora - timedelta(seconds=i),
+            )
+
+    def test_el_evento_numero_201_se_puede_alcanzar(self):
+        """La prueba que justifica el cambio: con el slice viejo esta fila era invisible
+        para siempre."""
+        self._sembrar(210)
+        total = EventoAuditoria.objects.count()
+        vistos = 0
+        pagina = 1
+        while True:
+            resp = self.client.get(reverse('panel:auditoria_lista'), {'pagina': pagina})
+            self.assertEqual(resp.status_code, 200)
+            vistos += len(resp.context['eventos'])
+            if not resp.context['pagina'].has_next():
+                break
+            pagina += 1
+            self.assertLess(pagina, 50, 'el paginador no termina')
+        self.assertEqual(vistos, total)
+
+    def test_una_pagina_no_trae_la_tabla_entera(self):
+        self._sembrar(60)
+        resp = self.client.get(reverse('panel:auditoria_lista'))
+        self.assertLessEqual(len(resp.context['eventos']), 25)
+        self.assertEqual(resp.context['pagina'].paginator.count, EventoAuditoria.objects.count())
+
+    def test_el_mas_reciente_sigue_primero(self):
+        """El orden importa más que en otros listados: un registro de auditoría se lee
+        de lo último hacia atrás."""
+        self._sembrar(30)
+        reciente = EventoAuditoria.objects.create(usuario=self.usuario, accion='ultima.accion')
+        resp = self.client.get(reverse('panel:auditoria_lista'))
+        self.assertEqual(resp.context['eventos'][0].pk, reciente.pk)
+
+    def test_dos_eventos_del_mismo_instante_no_se_pisan_entre_paginas(self):
+        """`timestamp` es auto_now_add y dos eventos del mismo tick dejaban el orden
+        indefinido: al paginar, una fila podía aparecer dos veces y otra ninguna. Con el
+        `[:200]` que tenía la vista nunca había segunda página y no se notaba.
+
+        Se siembra TODO en el mismo instante a propósito — es el caso que el desempate
+        por `pk` viene a resolver."""
+        from django.utils import timezone as tz
+
+        EventoAuditoria.objects.bulk_create([
+            EventoAuditoria(usuario=self.usuario, accion='mismo.tick.%d' % i) for i in range(60)
+        ])
+        instante = tz.now()
+        EventoAuditoria.objects.update(timestamp=instante)
+
+        vistos, pagina = [], 1
+        while True:
+            resp = self.client.get(reverse('panel:auditoria_lista'), {'pagina': pagina})
+            vistos += [e.pk for e in resp.context['eventos']]
+            if not resp.context['pagina'].has_next():
+                break
+            pagina += 1
+        self.assertEqual(len(vistos), len(set(vistos)), 'hay filas repetidas entre páginas')
+        self.assertEqual(len(vistos), EventoAuditoria.objects.count(), 'se perdieron filas')
+
+
+class ActivosPaginadosTests(TestCase):
+    """`activos_lista` se pagina con 18 filas en producción y no con 1.800.
+
+    El parque son ~1.800 estaciones más sus periféricos. Paginar una lista corta es
+    barato; hacerlo sobre una tabla ya grande, no — es el mismo criterio con el que se
+    paginó estaciones_lista antes del rollout del agente.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.usuario = User.objects.create_user(username='u_act_pag', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='view_activo'),
+        )
+        self.client.force_login(self.usuario)
+        Activo.objects.bulk_create([
+            Activo(codigo='CR-DSK-%04d' % i, tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg)
+            for i in range(60)
+        ])
+
+    def test_una_pagina_no_trae_todo(self):
+        resp = self.client.get(reverse('panel:activos_lista'))
+        self.assertLessEqual(len(resp.context['activos']), 25)
+        self.assertEqual(resp.context['pagina'].paginator.count, 60)
+
+    def test_el_filtro_sobrevive_al_cambio_de_pagina(self):
+        """`query_filtros` lleva los parámetros SIN `pagina`: sin eso, pasar de página
+        descarta el filtro y el operador vuelve al listado completo."""
+        resp = self.client.get(reverse('panel:activos_lista'), {'tipo': 'DSK', 'pagina': 2})
+        self.assertIn('tipo=DSK', resp.context['query_filtros'])
+        self.assertNotIn('pagina', resp.context['query_filtros'])
+
+    def test_el_conteo_respeta_el_filtro(self):
+        Activo.objects.create(codigo='CR-LAP-9001', tipo=Activo.Tipo.LAPTOP, unidad_negocio=self.sg)
+        resp = self.client.get(reverse('panel:activos_lista'), {'tipo': 'LAP'})
+        self.assertEqual(resp.context['pagina'].paginator.count, 1)
