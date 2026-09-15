@@ -658,6 +658,62 @@ class EstadoEnlaceFarmacia(models.Model):
         return f'{self.farmacia.codigo}: enlace {estado}'
 
 
+class ReinicioEquipoBorde(models.Model):
+    """Un reinicio del Mikrotik de una farmacia, detectado porque su uptime bajó.
+
+    Modelo aparte de `EventoEnlaceFarmacia` a propósito: esa tabla es la línea base de
+    disponibilidad para reclamarle a TELCONET/PUNTO NET, y un reinicio que provocamos
+    nosotros —o una falla eléctrica del local— no es una falla del proveedor. Mezclarlos
+    ensuciaría la única evidencia que hay para discutir un SLA.
+
+    Existe porque el monitoreo de enlace **no ve un reinicio corto**: exige tres fallas
+    consecutivas de ICMP (unos 6 minutos) antes de declarar una caída, y un Mikrotik
+    arranca en menos. El 15-sep-2026 se reinició GAT01 a mano y el historial siguió
+    diciendo "sin caídas registradas", que era cierto y aun así ocultaba lo que había
+    pasado.
+
+    La detección es por comparación: si el uptime leído es MENOR que el anterior, el
+    equipo arrancó de nuevo entremedio. Es más confiable que mirar "uptime chico", que
+    depende de cada cuánto se sondee.
+    """
+
+    farmacia = models.ForeignKey(Farmacia, on_delete=models.CASCADE, related_name='reinicios_equipo')
+    detectado_en = models.DateTimeField(auto_now_add=True, db_index=True)
+    arranque_estimado = models.DateTimeField(
+        help_text='Cuándo arrancó el equipo, calculado como el momento de la lectura menos su '
+                  'uptime. Es estimado porque entre el arranque real y la lectura pasa lo que '
+                  'tarde el sondeo en llegar.',
+    )
+    uptime_previo_segundos = models.BigIntegerField(
+        null=True, blank=True,
+        help_text='Cuánto llevaba encendido en la lectura anterior. Un valor alto seguido de un '
+                  'reinicio es un equipo estable que se cayó una vez; valores bajos repetidos son '
+                  'un equipo que se reinicia solo, que es el problema difícil de ver.',
+    )
+    version_routeros = models.CharField(
+        max_length=30, blank=True,
+        help_text='Versión al momento del reinicio: distingue un arranque tras una actualización '
+                  'de uno espontáneo.',
+    )
+
+    class Meta:
+        db_table = 'reinicio_equipo_borde'
+        ordering = ['-detectado_en']
+        indexes = [models.Index(fields=['farmacia', '-detectado_en'])]
+        verbose_name = 'Reinicio de equipo de borde'
+        verbose_name_plural = 'Reinicios de equipo de borde'
+
+    def __str__(self):
+        return f'{self.farmacia.codigo}: reinicio {self.arranque_estimado:%d/%m %H:%M}'
+
+    @property
+    def horas_encendido_antes(self):
+        """Cuánto llevaba andando antes de reiniciarse, o None si no se sabía."""
+        if self.uptime_previo_segundos is None:
+            return None
+        return round(self.uptime_previo_segundos / 3600, 1)
+
+
 class EventoEnlaceFarmacia(models.Model):
     """Una caída del enlace de una farmacia, con su duración. Historial, no estado.
 

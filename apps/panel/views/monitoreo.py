@@ -541,7 +541,7 @@ def _render_enlace_modal(request, farmacia):
     tráfico es algo que se hace de a una farmacia, cuando ya sospechás de esa.
     """
     from apps.monitoreo.graficos import construir_grafico
-    from apps.monitoreo.models import EventoEnlaceFarmacia, MuestraRedFarmacia
+    from apps.monitoreo.models import EventoEnlaceFarmacia, MuestraRedFarmacia, ReinicioEquipoBorde
 
     muestras = list(MuestraRedFarmacia.objects.filter(farmacia=farmacia)[:40])[::-1]
     ultima = muestras[-1] if muestras else None
@@ -582,6 +582,7 @@ def _render_enlace_modal(request, farmacia):
         ),
         'estacion_sondeadora': estacion_sondeadora,
         'caidas_recientes': EventoEnlaceFarmacia.objects.filter(farmacia=farmacia)[:5],
+        'reinicios_recientes': ReinicioEquipoBorde.objects.filter(farmacia=farmacia)[:5],
         'puede_solicitar': request.user.has_perm('catalogo.consultar_info_estacion'),
     })
 

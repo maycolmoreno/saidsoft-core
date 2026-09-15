@@ -88,3 +88,27 @@ def sondear_enlaces_farmacias_task():
             'Sin ruta desde este host; no se registró nada.'
         )
     return f'{resumen["sondeadas"]} enlace(s): {resumen["activas"]} activo(s), {resumen["caidas"]} caído(s).'
+
+
+@shared_task(name='apps.monitoreo.tasks.sondear_identidad_equipos_task')
+def sondear_identidad_equipos_task():
+    """Relee por SNMP la identidad de los Mikrotik y detecta reinicios.
+
+    Cada 15 minutos y no cada 5 como el sondeo de tráfico: el número de serie no cambia
+    nunca y la versión de RouterOS solo cuando alguien actualiza. Lo único que sí se
+    mueve es el uptime, y 15 minutos alcanzan para notar un reinicio el mismo día.
+
+    Existe porque sin esto el dato quedaba viejo sin que nadie se enterara: el 15-sep-2026
+    se reinició GAT01 y el panel siguió mostrando 722 horas de uptime durante 40 minutos,
+    porque la lectura solo ocurría cuando alguien corría el comando a mano.
+    """
+    from apps.monitoreo.mikrotik import sincronizar_identidad_equipos
+
+    import logging
+
+    resumen = sincronizar_identidad_equipos()
+    if resumen['reinicios']:
+        logging.getLogger(__name__).info(
+            'Reinicios de equipo de borde detectados: %s', '; '.join(resumen['reinicios']),
+        )
+    return {'leidos': resumen['leidos'], 'reinicios': len(resumen['reinicios'])}

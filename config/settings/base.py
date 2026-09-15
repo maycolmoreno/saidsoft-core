@@ -319,6 +319,14 @@ CELERY_BEAT_SCHEDULE = {
         # EstadoDispositivo ya se actualiza en tiempo real, esto solo evalúa el cruce.
         'schedule': 60.0 * 7,
     },
+    # Cada 15 min y no cada 5 como el tráfico: serie y modelo no cambian nunca, y la
+    # versión de RouterOS solo al actualizar. Lo que sí se mueve es el uptime, que es
+    # como se detecta un reinicio — y un reinicio corto NO lo ve el sondeo de enlace,
+    # que exige 3 fallas seguidas (~6 min) antes de declarar una caída.
+    'sondear-identidad-equipos-borde': {
+        'task': 'apps.monitoreo.tasks.sondear_identidad_equipos_task',
+        'schedule': 60.0 * 15,
+    },
     'sincronizar-meshcentral': {
         'task': 'apps.monitoreo.tasks.sincronizar_meshcentral_task',
         # Cada 15 min: red de seguridad del resync que ya hace run_meshcentral_worker

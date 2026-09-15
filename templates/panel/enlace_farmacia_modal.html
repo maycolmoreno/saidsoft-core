@@ -234,6 +234,40 @@ pedir una lectura.
                 Sin caídas registradas desde que se monitorea este enlace.
             </div>
             {% endif %}
+
+            {% comment %}
+            Los reinicios van en una tabla APARTE de las caídas, no mezclados: la de arriba
+            es la evidencia para reclamarle al proveedor, y un reinicio que hicimos nosotros
+            —o un corte de luz del local— no es una falla de TELCONET. Sumarlos ahí
+            debilitaría el único respaldo que hay para discutir un SLA.
+
+            Y existen porque el sondeo de enlace NO ve un reinicio corto: exige tres fallas
+            seguidas de ping (~6 min) y un Mikrotik arranca en menos.
+            {% endcomment %}
+            {% if reinicios_recientes %}
+            <div class="card mt-3" style="overflow:hidden;">
+                <div class="px-3 py-2 text-[var(--text-faint)] text-xs uppercase tracking-wide"
+                     style="background:var(--panel);">Reinicios del equipo</div>
+                <table class="w-full text-xs">
+                    <tbody>
+                    {% for r in reinicios_recientes %}
+                        <tr style="border-top:1px solid var(--border-soft);">
+                            <td class="px-3 py-2">{{ r.arranque_estimado|date:"d/m/Y H:i" }}</td>
+                            <td class="px-3 py-2 text-right text-[var(--text-faint)] num">
+                                {% if r.horas_encendido_antes %}
+                                    venía de {{ r.horas_encendido_antes|floatformat:0 }} h encendido
+                                {% else %}—{% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <p class="text-xs text-[var(--text-faint)] mt-2">
+                Un reinicio no cuenta como caída del proveedor. Varios seguidos con pocas horas
+                entre medio son un equipo que se reinicia solo — normalmente, un problema eléctrico.
+            </p>
+            {% endif %}
         </div>
     </div>
 </div>

@@ -24,6 +24,7 @@ uniforme que no lo era:
 """
 import asyncio
 import logging
+from datetime import timedelta
 
 from django.conf import settings
 from django.utils import timezone
@@ -356,14 +357,17 @@ def sincronizar_identidad_equipos(farmacias=None) -> dict:
     error de la corrida: puede estar apagado o sin SNMP habilitado (a 15-sep-2026, 696
     de 700 no lo tienen).
     """
-    from apps.monitoreo.models import EquipoBordeFarmacia
+    from apps.monitoreo.models import EquipoBordeFarmacia, ReinicioEquipoBorde
 
     if farmacias is None:
         from apps.catalogo.models import Farmacia
         farmacias = Farmacia.objects.exclude(ip_router__isnull=True).order_by('codigo')
 
     puerto = _puerto()
-    resumen = {'leidos': 0, 'sin_responder': 0, 'nombres_discrepantes': [], 'versiones': {}}
+    resumen = {
+        'leidos': 0, 'sin_responder': 0, 'nombres_discrepantes': [], 'versiones': {},
+        'reinicios': [],
+    }
 
     async def _todas():
         limite = asyncio.Semaphore(_MAX_SONDEOS_CONCURRENTES)
@@ -375,12 +379,37 @@ def sincronizar_identidad_equipos(farmacias=None) -> dict:
 
         return await asyncio.gather(*(_una(f) for f in farmacias))
 
+    previos = {
+        e.farmacia_id: e.uptime_segundos
+        for e in EquipoBordeFarmacia.objects.filter(farmacia__in=farmacias)
+    }
+
     for farmacia, datos in asyncio.run(_todas()):
         if datos is None:
             resumen['sin_responder'] += 1
             continue
+
+        ahora = timezone.now()
+        uptime = datos.get('uptime_segundos')
+        anterior = previos.get(farmacia.pk)
+        # Un uptime MENOR que el de la lectura anterior solo puede significar que el
+        # equipo arrancó de nuevo entremedio. Es más confiable que mirar "uptime chico":
+        # eso depende de cada cuánto se sondee, y con un intervalo largo un reinicio
+        # pasaría desapercibido.
+        if uptime is not None and anterior is not None and uptime < anterior:
+            ReinicioEquipoBorde.objects.create(
+                farmacia=farmacia,
+                arranque_estimado=ahora - timedelta(seconds=uptime),
+                uptime_previo_segundos=anterior,
+                version_routeros=datos.get('version_routeros', ''),
+            )
+            resumen['reinicios'].append(
+                '%s: arrancó hace %.0f min (venía de %.1f h encendido)'
+                % (farmacia.codigo, uptime / 60, anterior / 3600),
+            )
+
         equipo, _creado = EquipoBordeFarmacia.objects.update_or_create(
-            farmacia=farmacia, defaults={**datos, 'ultima_lectura': timezone.now()},
+            farmacia=farmacia, defaults={**datos, 'ultima_lectura': ahora},
         )
         resumen['leidos'] += 1
         if equipo.version_routeros:

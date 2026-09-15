@@ -1963,3 +1963,125 @@ class AdminMikrotikTests(TestCase):
         for ruta in ('equipobordefarmacia', 'dispositivodetectado'):
             resp = self.client.get('/admin/monitoreo/%s/add/' % ruta)
             self.assertIn(resp.status_code, (403, 302), ruta)
+
+
+class DeteccionDeReinicioTests(TestCase):
+    """Detección de reinicios del Mikrotik por caída del uptime.
+
+    El caso real: el 15-sep-2026 se reinició GAT01 a mano y el historial siguió diciendo
+    "sin caídas registradas". Era cierto —el sondeo de enlace exige tres fallas seguidas
+    de ping, unos 6 minutos, y el equipo arrancó en menos— y aun así ocultaba lo que
+    había pasado. El uptime pasó de 722 horas a 3,3 minutos y nadie lo veía porque la
+    lectura solo ocurría cuando alguien corría el comando a mano.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='GAT01', grupo=grupo, unidad_negocio=self.sg, ip_router='10.201.1.129',
+        )
+
+    def _leer(self, uptime, version='6.49.17'):
+        from apps.monitoreo.mikrotik import sincronizar_identidad_equipos
+
+        async def _falso(ip, comunidad, puerto):
+            return {
+                'modelo': 'RouterOS RB951Ui-2nD', 'uptime_segundos': uptime,
+                'nombre_sistema': 'GAT01', 'version_routeros': version,
+                'numero_serie': 'HH70A5GKB55',
+            }
+
+        with patch('apps.monitoreo.mikrotik._leer_identidad', _falso):
+            return sincronizar_identidad_equipos([self.farmacia])
+
+    def test_detecta_el_reinicio_cuando_el_uptime_baja(self):
+        from apps.monitoreo.models import ReinicioEquipoBorde
+
+        self._leer(2601839)          # 722 horas, como estaba GAT01
+        resumen = self._leer(199)    # 3,3 minutos tras el reinicio
+
+        self.assertEqual(ReinicioEquipoBorde.objects.count(), 1)
+        reinicio = ReinicioEquipoBorde.objects.get()
+        self.assertEqual(reinicio.farmacia, self.farmacia)
+        self.assertAlmostEqual(reinicio.horas_encendido_antes, 722.7, places=1)
+        self.assertEqual(len(resumen['reinicios']), 1)
+
+    def test_un_uptime_que_sigue_creciendo_no_es_un_reinicio(self):
+        from apps.monitoreo.models import ReinicioEquipoBorde
+
+        self._leer(1000)
+        self._leer(1900)
+        self._leer(2800)
+        self.assertEqual(ReinicioEquipoBorde.objects.count(), 0)
+
+    def test_la_primera_lectura_nunca_cuenta_como_reinicio(self):
+        """Sin una lectura anterior no hay contra qué comparar: dar por reiniciado a todo
+        equipo recién incorporado llenaría el historial de eventos falsos."""
+        from apps.monitoreo.models import ReinicioEquipoBorde
+
+        self._leer(199)
+        self.assertEqual(ReinicioEquipoBorde.objects.count(), 0)
+
+    def test_guarda_el_arranque_estimado_y_no_el_momento_de_la_lectura(self):
+        """Lo que importa es cuándo arrancó el equipo, no cuándo nos enteramos: entre las
+        dos cosas puede pasar todo el intervalo del sondeo."""
+        from django.utils import timezone
+
+        from apps.monitoreo.models import ReinicioEquipoBorde
+
+        self._leer(500000)
+        antes = timezone.now()
+        self._leer(600)  # arrancó hace 10 minutos
+
+        reinicio = ReinicioEquipoBorde.objects.get()
+        diferencia = (antes - reinicio.arranque_estimado).total_seconds()
+        self.assertAlmostEqual(diferencia, 600, delta=15)
+
+    def test_registra_la_version_para_distinguir_una_actualizacion(self):
+        """Un arranque después de actualizar RouterOS no es lo mismo que uno espontáneo."""
+        from apps.monitoreo.models import ReinicioEquipoBorde
+
+        self._leer(500000, version='6.47.7')
+        self._leer(120, version='6.49.17')
+        self.assertEqual(ReinicioEquipoBorde.objects.get().version_routeros, '6.49.17')
+
+    def test_dos_reinicios_generan_dos_eventos(self):
+        """Varios seguidos con pocas horas entre medio son un equipo que se reinicia solo
+        — el problema difícil de ver, porque entre reinicio y reinicio responde perfecto."""
+        from apps.monitoreo.models import ReinicioEquipoBorde
+
+        self._leer(90000)
+        self._leer(300)
+        self._leer(400)   # sigue subiendo, no es reinicio
+        self._leer(100)   # se reinició otra vez
+        self.assertEqual(ReinicioEquipoBorde.objects.count(), 2)
+
+    def test_el_reinicio_no_ensucia_las_caidas_del_proveedor(self):
+        """`EventoEnlaceFarmacia` es la evidencia para reclamarle a TELCONET: un reinicio
+        que hicimos nosotros no puede aparecer ahí."""
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        self._leer(500000)
+        self._leer(199)
+        self.assertEqual(EventoEnlaceFarmacia.objects.filter(farmacia=self.farmacia).count(), 0)
+
+    def test_el_modal_muestra_los_reinicios(self):
+        from django.urls import reverse
+
+        self._leer(2601839)
+        self._leer(199)
+
+        usuario = User.objects.create_user(username='u_reinicio', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia',
+            ),
+        )
+        self.client.force_login(usuario)
+
+        resp = self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.farmacia.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Reinicios del equipo')
+        self.assertContains(resp, 'no cuenta como caída del proveedor')
