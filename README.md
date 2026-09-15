@@ -1,4 +1,4 @@
-# SAIDSOFT — núcleo (RMM multi-cliente para CRESIO)
+# SAIDSOFT — núcleo (RMM multi-cliente para farmacia)
 
 Reemplazo de `projectDJango` (Django 1.8/Python 2.7) + `projectNodeJS` del sistema
 original (código de referencia en `C:\Proyectos\SAIDSOFT`, sin tocar), sobre
