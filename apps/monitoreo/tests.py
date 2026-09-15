@@ -1858,3 +1858,108 @@ class DescubrimientoPorArpTests(TestCase):
         texto = salida.getvalue()
         self.assertIn('Farmacias leídas: 1', texto)
         self.assertIn('SIN inventariar', texto)
+
+
+class AdminMikrotikTests(TestCase):
+    """Los dos modelos nuevos de Mikrotik en el admin.
+
+    Hicieron falta porque se estaban recolectando datos que no tenían dónde mirarse: el
+    sondeo guardaba identidad y dispositivos, y no existía ni una pantalla ni un registro
+    en el admin. Un dato que nadie puede ver no sirve para nada.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.models import DispositivoDetectado, EquipoBordeFarmacia
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='MCAR3', grupo=grupo, unidad_negocio=self.sg, ip_router='10.101.41.193',
+        )
+        EquipoBordeFarmacia.objects.create(
+            farmacia=self.farmacia, modelo='RouterOS RB951Ui-2HnD', numero_serie='HEX094EM5FZ',
+            version_routeros='6.49.17', nombre_sistema='MCAR3', uptime_segundos=6622664,
+            ultima_lectura=timezone.now(),
+        )
+        DispositivoDetectado.objects.create(
+            farmacia=self.farmacia, mac='D0:AD:08:58:61:65', ip='10.101.41.195',
+            interfaz_indice=8, visto_por_ultima_vez=timezone.now(),
+        )
+        DispositivoDetectado.objects.create(
+            farmacia=self.farmacia, mac='18:B6:F7:76:22:74', ip='10.101.41.205',
+            interfaz_indice=8, visto_por_ultima_vez=timezone.now(),
+        )
+
+        self.admin_user = User.objects.create_superuser(
+            username='u_admin_mk', password='x' * 16, email='a@b.c',
+        )
+        self.client.force_login(self.admin_user)
+
+    def test_el_listado_de_equipos_de_borde_abre(self):
+        resp = self.client.get('/admin/monitoreo/equipobordefarmacia/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'HEX094EM5FZ')
+        self.assertContains(resp, '6.49.17')
+
+    def test_el_uptime_se_muestra_en_dias(self):
+        """6622664 segundos no le dice nada a nadie; 76,7 días sí."""
+        resp = self.client.get('/admin/monitoreo/equipobordefarmacia/')
+        self.assertContains(resp, '76.7')
+
+    def test_el_listado_de_dispositivos_abre_y_cruza_con_lo_declarado(self):
+        resp = self.client.get('/admin/monitoreo/dispositivodetectado/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '10.101.41.195')
+
+    def test_el_cruce_no_hace_una_consulta_por_fila(self):
+        """Se anota con un Exists: el admin muestra 100 por página y llamar a
+        `activo_declarado` por fila serían 100 consultas por carga."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from apps.monitoreo.models import DispositivoDetectado
+
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get('/admin/monitoreo/dispositivodetectado/')
+        con_dos = len(ctx.captured_queries)
+
+        for i in range(20):
+            DispositivoDetectado.objects.create(
+                farmacia=self.farmacia, mac='AA:BB:CC:DD:EE:%02X' % i,
+                ip='10.101.41.%d' % (100 + i), visto_por_ultima_vez=timezone.now(),
+            )
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get('/admin/monitoreo/dispositivodetectado/')
+        self.assertEqual(len(ctx.captured_queries), con_dos)
+
+    def test_marca_como_declarado_el_que_tiene_un_activo_con_esa_mac(self):
+        from apps.activos.models import Activo
+        from apps.activos.services import generar_codigo_activo
+        from apps.monitoreo.models import DispositivoDetectado
+
+        Activo.objects.create(
+            codigo=generar_codigo_activo(Activo.Tipo.IMPRESORA), tipo=Activo.Tipo.IMPRESORA,
+            farmacia=self.farmacia, unidad_negocio=self.sg, mac='d0:ad:08:58:61:65',
+            estado=Activo.Estado.ASIGNADO,
+        )
+        self.client.get('/admin/monitoreo/dispositivodetectado/')
+
+        from django.db.models import Exists, OuterRef
+
+        anotados = {
+            d.mac: d.esta_declarado
+            for d in DispositivoDetectado.objects.annotate(
+                esta_declarado=Exists(Activo.objects.filter(
+                    farmacia=OuterRef('farmacia'), mac__iexact=OuterRef('mac'),
+                )),
+            )
+        }
+        self.assertTrue(anotados['D0:AD:08:58:61:65'], 'no reconoció la MAC en minúscula')
+        self.assertFalse(anotados['18:B6:F7:76:22:74'])
+
+    def test_no_se_pueden_crear_a_mano(self):
+        """Los escribe el sondeo SNMP: cargarlos a mano dejaría el panel afirmando algo
+        que el equipo nunca dijo."""
+        for ruta in ('equipobordefarmacia', 'dispositivodetectado'):
+            resp = self.client.get('/admin/monitoreo/%s/add/' % ruta)
+            self.assertIn(resp.status_code, (403, 302), ruta)

@@ -3,8 +3,9 @@ from django.contrib import admin
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_por_unidad_negocio
 
 from .models import (
-    Alerta, CanalNotificacion, EstadoDispositivo, EstadoEnlaceFarmacia, EventoEnlaceFarmacia, EventoMonitoreo,
-    MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
+    Alerta, CanalNotificacion, DispositivoDetectado, EquipoBordeFarmacia, EstadoDispositivo,
+    EstadoEnlaceFarmacia, EventoEnlaceFarmacia, EventoMonitoreo, MuestraMetrica, MuestraRedFarmacia,
+    PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
 
 
@@ -222,3 +223,96 @@ class EventoEnlaceFarmaciaAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+
+@admin.register(EquipoBordeFarmacia)
+class EquipoBordeFarmaciaAdmin(admin.ModelAdmin):
+    """Lo que el Mikrotik reporta de sí mismo. Solo lectura: lo escribe
+    `sondear_identidad_mikrotik` por SNMP, y editarlo a mano dejaría el panel afirmando
+    algo que el equipo no dijo.
+
+    El filtro por versión de RouterOS es el que muestra la brecha de parcheo: a
+    15-sep-2026, de los 4 equipos que responden SNMP, uno estaba en 6.47.7 y tres en
+    6.49.17.
+    """
+
+    list_display = (
+        'farmacia', 'modelo', 'numero_serie', 'version_routeros', 'nombre_coincide',
+        'uptime_dias', 'ultima_lectura',
+    )
+    list_filter = ('version_routeros', 'modelo', 'farmacia__unidad_negocio')
+    search_fields = ('farmacia__codigo', 'numero_serie', 'nombre_sistema', 'modelo')
+    readonly_fields = (
+        'farmacia', 'modelo', 'numero_serie', 'version_routeros', 'nombre_sistema',
+        'uptime_segundos', 'ultima_lectura',
+    )
+
+    def get_queryset(self, request):
+        # Ver el comentario de DispositivoDetectadoAdmin: `Farmacia.__str__` toca `grupo`.
+        return scope_por_unidad_negocio(
+            super().get_queryset(request).select_related('farmacia__unidad_negocio', 'farmacia__grupo'),
+            request.user, 'farmacia__unidad_negocio',
+        )
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.display(description='Nombre coincide', boolean=True)
+    def nombre_coincide(self, obj):
+        """False acá significa que la IP cargada apunta a un equipo de OTRA farmacia."""
+        return obj.nombre_coincide
+
+    @admin.display(description='Uptime (días)', ordering='uptime_segundos')
+    def uptime_dias(self, obj):
+        """En días y no en segundos: 662266400 no le dice nada a nadie; "76 días" sí, y
+        un valor chico repetido entre lecturas es un router reiniciándose solo."""
+        if obj.uptime_segundos is None:
+            return '—'
+        return '%.1f' % (obj.uptime_segundos / 86400)
+
+
+@admin.register(DispositivoDetectado)
+class DispositivoDetectadoAdmin(admin.ModelAdmin):
+    """Los equipos que el Mikrotik ve en la LAN de cada farmacia (tabla ARP).
+
+    Es la mitad verificada del inventario: `Activo` guarda lo declarado, esto lo que hay
+    realmente conectado. La columna "Declarado" cruza las dos por MAC — los que salen en
+    rojo son equipos enchufados que nadie inventarió.
+    """
+
+    list_display = ('farmacia', 'ip', 'mac', 'declarado', 'visto_por_ultima_vez', 'visto_por_primera_vez')
+    list_filter = ('farmacia__unidad_negocio', 'farmacia__grupo')
+    search_fields = ('farmacia__codigo', 'ip', 'mac')
+    readonly_fields = (
+        'farmacia', 'ip', 'mac', 'interfaz_indice', 'visto_por_primera_vez', 'visto_por_ultima_vez',
+    )
+    date_hierarchy = 'visto_por_ultima_vez'
+
+    def get_queryset(self, request):
+        # El cruce con lo declarado se anota con un Exists y NO llamando a
+        # `activo_declarado` por fila: el admin muestra 100 por página, y eso serían 100
+        # consultas por cada carga del listado.
+        from django.db.models import Exists, OuterRef
+
+        from apps.activos.models import Activo
+
+        declarado = Activo.objects.filter(
+            farmacia=OuterRef('farmacia'), mac__iexact=OuterRef('mac'),
+        )
+        # `farmacia__grupo` además de la unidad: `Farmacia.__str__` devuelve
+        # "ML001 (TRX001)", así que mostrar la farmacia en el listado toca `grupo` en
+        # CADA fila. Sin esto eran 20 consultas extra por cada 20 filas — el cruce con
+        # Exists ya estaba bien, el N+1 venía del __str__.
+        return scope_por_unidad_negocio(
+            super().get_queryset(request)
+            .select_related('farmacia__unidad_negocio', 'farmacia__grupo')
+            .annotate(esta_declarado=Exists(declarado)),
+            request.user, 'farmacia__unidad_negocio',
+        )
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.display(description='Declarado', boolean=True, ordering='esta_declarado')
+    def declarado(self, obj):
+        return obj.esta_declarado

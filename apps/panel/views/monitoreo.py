@@ -556,12 +556,26 @@ def _render_enlace_modal(request, farmacia):
         ).order_by('codigo').first()
     )
 
+    # La serie se escala al ancho CONTRATADO, no al pico de la ventana. Con autoescala,
+    # un pico de 3.481 kbps llenaba todo el alto del gráfico y se leía como saturación,
+    # cuando sobre un enlace de 10 Mbps es un 35%. El eje tiene que ser la capacidad del
+    # enlace para que la altura signifique algo.
+    #
+    # Sin ancho contratado se vuelve a la autoescala, y la plantilla lo dice: un gráfico
+    # sin eje declarado se puede mirar para ver la FORMA (picos, mesetas), pero no para
+    # juzgar cuánto se está usando.
+    escala_kbps = farmacia.ancho_contratado_mbps * 1000 if farmacia.ancho_contratado_mbps else None
+
     return render(request, 'panel/enlace_farmacia_modal.html', {
         'farmacia': farmacia,
         'estado': getattr(farmacia, 'estado_enlace', None),
         'ultima': ultima,
         'total_muestras': len(muestras),
-        'g_red': construir_grafico([m.red_total_kbps for m in muestras]),
+        'escala_kbps': escala_kbps,
+        # El pico REAL de la ventana, aparte del tope del eje: si supera lo contratado, el
+        # gráfico lo recorta arriba y hace falta decirlo con un número.
+        'pico_kbps': max((m.red_total_kbps for m in muestras if m.red_total_kbps is not None), default=None),
+        'g_red': construir_grafico([m.red_total_kbps for m in muestras], escala_fija=escala_kbps),
         'estado_bw': _clasificar(
             ultima.red_total_kbps if ultima else None,
             RED_FARMACIA_UMBRAL_WARNING_KBPS, RED_FARMACIA_UMBRAL_CRITICAL_KBPS,

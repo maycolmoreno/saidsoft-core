@@ -4853,3 +4853,87 @@ class ActivosPaginadosTests(TestCase):
         Activo.objects.create(codigo='CR-LAP-9001', tipo=Activo.Tipo.LAPTOP, unidad_negocio=self.sg)
         resp = self.client.get(reverse('panel:activos_lista'), {'tipo': 'LAP'})
         self.assertEqual(resp.context['pagina'].paginator.count, 1)
+
+
+class EscalaDelGraficoDeConsumoTests(TestCase):
+    """El gráfico de consumo se escala al ancho CONTRATADO, no al pico de la ventana.
+
+    Con autoescala, un pico de 3.481 kbps llenaba todo el alto y se leía como saturación
+    — sobre un enlace de 10 Mbps es un 35%. Reportado mirando la pantalla real el
+    15-sep-2026: "no me indica cuál es el rango que está midiendo".
+
+    Es el mismo problema que el error de unidades del mismo día: el número era correcto y
+    la presentación llevaba a la conclusión opuesta.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=self.sg, ip_router='10.1.1.1',
+        )
+        self.usuario = User.objects.create_user(username='u_escala', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia',
+            ),
+        )
+        self.client.force_login(self.usuario)
+
+    def _muestras(self, *valores):
+        from apps.monitoreo.models import MuestraRedFarmacia
+
+        for valor in valores:
+            MuestraRedFarmacia.objects.create(
+                farmacia=self.farmacia, bytes_recibidos=0, bytes_enviados=0,
+                red_recibido_kbps=valor, red_enviado_kbps=0,
+            )
+
+    def _modal(self):
+        return self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.farmacia.pk]))
+
+    def test_el_eje_es_el_ancho_contratado(self):
+        self.farmacia.ancho_contratado_mbps = 10
+        self.farmacia.save(update_fields=['ancho_contratado_mbps'])
+        self._muestras(600, 3481, 700)
+
+        resp = self._modal()
+        self.assertEqual(resp.context['escala_kbps'], 10000)
+        self.assertEqual(resp.context['g_red'].max_valor, 10000)
+
+    def test_el_pico_real_se_informa_aparte_del_eje(self):
+        """El tope del eje y el pico de la serie son cosas distintas: sin el segundo no se
+        sabe cuánto llegó a usarse de verdad."""
+        self.farmacia.ancho_contratado_mbps = 10
+        self.farmacia.save(update_fields=['ancho_contratado_mbps'])
+        self._muestras(600, 3481, 700)
+
+        resp = self._modal()
+        self.assertEqual(resp.context['pico_kbps'], 3481)
+        self.assertContains(resp, '10 Mbps contratados')
+
+    def test_sin_contratado_vuelve_a_la_autoescala_y_lo_dice(self):
+        """Un gráfico sin eje declarado sirve para ver la forma, no para juzgar el uso —
+        y la pantalla tiene que decirlo en vez de dejar que se lea mal."""
+        self._muestras(600, 3481, 700)
+
+        resp = self._modal()
+        self.assertIsNone(resp.context['escala_kbps'])
+        self.assertEqual(resp.context['g_red'].max_valor, 3481)
+        self.assertContains(resp, 'Escala automática')
+
+    def test_avisa_cuando_el_pico_supera_lo_contratado(self):
+        """El gráfico recorta arriba, así que si no se dice con un número el exceso queda
+        invisible."""
+        self.farmacia.ancho_contratado_mbps = 2
+        self.farmacia.save(update_fields=['ancho_contratado_mbps'])
+        self._muestras(500, 3481)
+
+        resp = self._modal()
+        self.assertContains(resp, 'superó lo contratado')
+
+    def test_sin_muestras_no_rompe(self):
+        resp = self._modal()
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(resp.context['pico_kbps'])

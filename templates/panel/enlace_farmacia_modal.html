@@ -143,13 +143,38 @@ pedir una lectura.
 
             {% if total_muestras > 1 %}
             <div class="card p-3 mb-3">
-                <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Últimas {{ total_muestras }} lecturas (kbps)</div>
-                {% comment %} construir_grafico devuelve los puntos ya calculados, no markup: el <svg> se arma acá. {% endcomment %}
-                <svg viewBox="0 0 {{ g_red.ancho }} {{ g_red.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-                    <polyline points="{{ g_red.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
-                    <polyline points="{{ g_red.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-                </svg>
-                <div class="text-xs text-[var(--text-faint)] mt-1">Pico {{ g_red.max_valor|floatformat:0 }} kbps en esta ventana</div>
+                <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Últimas {{ total_muestras }} lecturas</div>
+                {% comment %}
+                construir_grafico devuelve los puntos ya calculados, no markup: el <svg> se arma acá.
+                El eje Y va de 0 al ancho contratado cuando se conoce (ver la vista): así la altura
+                de la curva significa "qué parte del enlace se está usando" y no "qué parte del pico
+                de esta ventana", que es lo que mostraba antes.
+                {% endcomment %}
+                <div class="flex gap-2">
+                    <div class="flex flex-col justify-between text-xs text-[var(--text-faint)] num" style="height:64px;">
+                        <span>{% if escala_kbps %}{{ farmacia.ancho_contratado_mbps }} Mbps{% else %}{{ g_red.max_valor|floatformat:0 }}{% endif %}</span>
+                        <span>0</span>
+                    </div>
+                    <svg viewBox="0 0 {{ g_red.ancho }} {{ g_red.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
+                        {% if escala_kbps %}
+                        {% comment %} Referencias al 50% y al 90% del contratado, para ubicar la curva sin medir a ojo. {% endcomment %}
+                        <line x1="0" y1="32" x2="{{ g_red.ancho }}" y2="32" stroke="var(--border-soft)" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>
+                        <line x1="0" y1="10" x2="{{ g_red.ancho }}" y2="10" stroke="var(--warning)" stroke-width="1" stroke-dasharray="3 3" stroke-opacity="0.5" vector-effect="non-scaling-stroke"/>
+                        {% endif %}
+                        <polyline points="{{ g_red.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
+                        <polyline points="{{ g_red.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+                    </svg>
+                </div>
+                <div class="text-xs text-[var(--text-faint)] mt-1">
+                    {% if escala_kbps %}
+                        Escala 0 a {{ farmacia.ancho_contratado_mbps }} Mbps contratados · línea punteada al 50% y 90%
+                        · pico {{ pico_kbps|floatformat:0 }} kbps
+                        {% if pico_kbps > escala_kbps %}<span style="color:var(--critical);">(superó lo contratado)</span>{% endif %}
+                    {% else %}
+                        Escala automática al pico de la ventana ({{ g_red.max_valor|floatformat:0 }} kbps).
+                        Sirve para ver la forma, no cuánto del enlace se usa — para eso falta cargar el ancho contratado.
+                    {% endif %}
+                </div>
             </div>
             {% endif %}
 
