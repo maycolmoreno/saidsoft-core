@@ -4,6 +4,7 @@ from .enlaces import sondear_enlaces_farmacias
 from .mikrotik import sincronizar_ancho_banda_farmacias, solicitar_sondeo_red_farmacias_via_agente
 from .services import (
     escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
+    purgar_muestras_red_antiguas,
 )
 
 
@@ -20,6 +21,13 @@ def purgar_eventos_monitoreo_task():
     """Diaria (ver CELERY_BEAT_SCHEDULE). Mismo respaldo que purgar_metricas_task."""
     borrados = purgar_eventos_monitoreo_antiguos(dias=30)
     return f'{borrados} evento(s) de monitoreo eliminado(s).'
+
+
+@shared_task(name='apps.monitoreo.tasks.purgar_muestras_red_task')
+def purgar_muestras_red_task():
+    """Diaria (ver CELERY_BEAT_SCHEDULE). Mismo respaldo que purgar_metricas_task."""
+    borradas = purgar_muestras_red_antiguas(dias=30)
+    return f'{borradas} muestra(s) de red eliminada(s).'
 
 
 @shared_task(name='apps.monitoreo.tasks.evaluar_cruce_monitoreo_task')

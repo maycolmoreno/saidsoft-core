@@ -18,8 +18,8 @@ from django.utils import timezone
 from apps.catalogo.db import cerrar_conexiones_viejas
 
 from .models import (
-    Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, PosErrorDetectado,
-    ReglaAlerta, VentanaMantenimiento,
+    Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, MuestraRedFarmacia,
+    PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
 
 logger = logging.getLogger(__name__)
@@ -425,6 +425,23 @@ def purgar_metricas_antiguas(*, dias: int = 30) -> int:
     """
     umbral = timezone.now() - timedelta(days=dias)
     borradas, _ = MuestraMetrica.objects.filter(timestamp__lt=umbral).delete()
+    return borradas
+
+
+def purgar_muestras_red_antiguas(*, dias: int = 30) -> int:
+    """Borra MuestraRedFarmacia más viejas que `dias`.
+
+    Faltaba: `muestra_metrica` y `evento_monitoreo` tenían purga e hypertable desde el
+    principio, y esta tabla quedó sin ninguna de las dos. Hoy no se nota porque solo 4
+    Mikrotiks responden SNMP, pero se escribe una fila por farmacia cada 5 minutos —
+    con las 700 respondiendo son ~6 millones de filas por mes, y sería la tabla más
+    grande del sistema. El momento barato de arreglarlo es antes de que crezca.
+
+    Mismo criterio que las otras dos: 30 días, y en producción con TimescaleDB la
+    retención real la hace la política nativa; esto queda de respaldo y para SQLite.
+    """
+    umbral = timezone.now() - timedelta(days=dias)
+    borradas, _ = MuestraRedFarmacia.objects.filter(timestamp__lt=umbral).delete()
     return borradas
 
 

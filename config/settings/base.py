@@ -313,6 +313,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.monitoreo.tasks.purgar_eventos_monitoreo_task',
         'schedule': 60.0 * 60 * 24,  # diario
     },
+    'purgar-muestras-red-viejas': {
+        'task': 'apps.monitoreo.tasks.purgar_muestras_red_task',
+        'schedule': 60.0 * 60 * 24,  # diario
+    },
     'evaluar-cruce-monitoreo': {
         'task': 'apps.monitoreo.tasks.evaluar_cruce_monitoreo_task',
         # Cada 7 min: no hace falta más seguido que marcar-estaciones-offline (60s) —

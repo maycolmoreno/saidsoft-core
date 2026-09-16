@@ -2085,3 +2085,83 @@ class DeteccionDeReinicioTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'Reinicios del equipo')
         self.assertContains(resp, 'no cuenta como caída del proveedor')
+
+
+class PurgaMuestrasRedTests(TestCase):
+    """Retención de `MuestraRedFarmacia`.
+
+    Por qué existe: `muestra_metrica` y `evento_monitoreo` tenían purga e hypertable desde
+    el principio; esta tabla quedó sin ninguna de las dos y nadie lo notó porque hoy solo
+    4 Mikrotiks responden SNMP. Se escribe una fila por farmacia cada 5 minutos: con las
+    700 respondiendo son ~6 millones de filas por mes. El momento de arreglarlo es ahora,
+    mientras borrar es barato.
+    """
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+
+    def _muestra(self, dias_atras):
+        from apps.monitoreo.models import MuestraRedFarmacia
+
+        muestra = MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia, bytes_recibidos=1, bytes_enviados=1,
+        )
+        # `timestamp` es auto_now_add, así que no se puede fijar al crear.
+        MuestraRedFarmacia.objects.filter(pk=muestra.pk).update(
+            timestamp=timezone.now() - timedelta(days=dias_atras),
+        )
+        return muestra
+
+    def test_borra_las_mas_viejas_que_el_umbral(self):
+        from apps.monitoreo.services import purgar_muestras_red_antiguas
+
+        self._muestra(45)
+        self._muestra(31)
+        self.assertEqual(purgar_muestras_red_antiguas(dias=30), 2)
+
+    def test_no_toca_las_recientes(self):
+        from apps.monitoreo.models import MuestraRedFarmacia
+        from apps.monitoreo.services import purgar_muestras_red_antiguas
+
+        self._muestra(1)
+        self._muestra(29)
+        self._muestra(60)
+
+        purgar_muestras_red_antiguas(dias=30)
+        self.assertEqual(MuestraRedFarmacia.objects.count(), 2)
+
+    def test_el_umbral_es_configurable(self):
+        """Una farmacia con un reclamo abierto al proveedor puede necesitar más historial
+        del que guarda la política por defecto."""
+        from apps.monitoreo.models import MuestraRedFarmacia
+        from apps.monitoreo.services import purgar_muestras_red_antiguas
+
+        self._muestra(45)
+        purgar_muestras_red_antiguas(dias=90)
+        self.assertEqual(MuestraRedFarmacia.objects.count(), 1)
+
+    def test_sin_muestras_viejas_no_borra_nada(self):
+        from apps.monitoreo.services import purgar_muestras_red_antiguas
+
+        self._muestra(1)
+        self.assertEqual(purgar_muestras_red_antiguas(dias=30), 0)
+
+    def test_la_tarea_de_celery_la_invoca(self):
+        from apps.monitoreo.models import MuestraRedFarmacia
+        from apps.monitoreo.tasks import purgar_muestras_red_task
+
+        self._muestra(45)
+        resultado = purgar_muestras_red_task()
+        self.assertIn('1 muestra', resultado)
+        self.assertEqual(MuestraRedFarmacia.objects.count(), 0)
+
+    def test_esta_agendada_en_beat(self):
+        """Sin la entrada en CELERY_BEAT_SCHEDULE la función existe y no la llama nadie —
+        que es exactamente el estado del que venimos."""
+        from django.conf import settings
+
+        agendadas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
+        self.assertIn('apps.monitoreo.tasks.purgar_muestras_red_task', agendadas)
