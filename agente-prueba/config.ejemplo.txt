@@ -1,7 +1,15 @@
 CentralHost=10.111.6.20
 MqttPuerto=8081
 MqttPassword=
+# Solo hace falta para el PRIMER enrolamiento: apenas la estacion se enrola, el servidor
+# le crea su propio usuario en EMQX y se lo manda en la respuesta. De ahi en mas el agente
+# usa el propio y este no se vuelve a tocar.
 ComandoHmacSecret=
+# DEJALO VACIO en una instalacion nueva. Desde el agente 0.21 la estacion recibe su propio
+# secreto HMAC en la respuesta de enrolamiento, y el servidor firma con ese TODO lo que le
+# manda: los comandos dirigidos a ella y tambien los despliegues y el software, que desde
+# el fan-out se publican por estacion en vez de en un topico de grupo o cadena.
+# Completalo solo si la estacion corre un agente anterior a 0.21.
 # Token de apertura (opcional). Lo emite el panel para UNA estacion de UNA apertura:
 # con el, el equipo se enrola ya aprobado y con la configuracion de su perfil, sin que
 # nadie lo apruebe ni lo configure a mano. Es de un solo uso y vence. Vacio = el

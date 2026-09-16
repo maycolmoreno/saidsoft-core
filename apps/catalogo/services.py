@@ -21,7 +21,7 @@ def _topico_actualizar_agente(estacion) -> str:
     return f'/saidsof/agente/{estacion.codigo}/actualizar_agente/'
 
 
-def firmar_payload(**campos) -> str:
+def firmar_payload(_secreto=None, /, **campos) -> str:
     """HMAC-SHA256 de los valores de `campos` unidos con "|", en el orden en que se pasan.
 
     No se firma el JSON serializado (evita divergencias de canonicalización
@@ -30,9 +30,52 @@ def firmar_payload(**campos) -> str:
     reconstruir exactamente igual para verificar. Los kwargs preservan orden
     de inserción en Python 3.7+, así que el orden de las llamadas a
     `firmar_payload(...)` en este módulo ES el contrato con el agente.
+
+    `_secreto` es **posicional-only** a propósito: todo kwarg entra a la firma, así que
+    un parámetro con nombre chocaría con los campos reales — `estacion` ya es uno de
+    ellos. Vacío = el `COMANDO_HMAC_SECRET` compartido de la flota, que es el único que
+    sirve para los tópicos de difusión (un despliegue a grupo/cadena lo verifican
+    muchas estaciones con el mismo payload).
     """
     mensaje = '|'.join(str(v) for v in campos.values())
-    return hmac.new(settings.COMANDO_HMAC_SECRET.encode(), mensaje.encode(), hashlib.sha256).hexdigest()
+    secreto = _secreto or settings.COMANDO_HMAC_SECRET
+    return hmac.new(secreto.encode(), mensaje.encode(), hashlib.sha256).hexdigest()
+
+
+# Primera versión del agente que entiende el secreto HMAC propio de la estación
+# (lo guarda del enrolamiento y acepta firmas hechas con él, además del compartido).
+VERSION_AGENTE_CON_HMAC_PROPIO = (0, 21)
+
+
+def _version_agente(version: str) -> tuple:
+    """("agente-prueba-0.21") -> (0, 21). Tupla vacía si no se puede parsear.
+
+    Vacía compara menor que cualquier versión real, así que una estación con la versión
+    en blanco —nunca reportó heartbeat— o con un formato inesperado cae del lado del
+    secreto compartido. Es el lado seguro del error: firmar con el propio para un agente
+    que no lo entiende lo deja sin recibir comandos, y eso no se ve desde el panel.
+    """
+    try:
+        return tuple(int(p) for p in version.rsplit('-', 1)[-1].split('.'))
+    except (ValueError, IndexError, AttributeError):
+        return ()
+
+
+def secreto_de(estacion) -> str | None:
+    """Con qué secreto firmar un comando dirigido a `estacion`.
+
+    El propio de la estación solo si su agente sabe verificarlo; si no, el compartido
+    (None = `firmar_payload` usa `settings.COMANDO_HMAC_SECRET`). El servidor decide esto
+    solo, sin ninguna bandera que alguien tenga que acordarse de tildar: apenas la
+    estación reporta 0.21 en su heartbeat, el siguiente comando ya va firmado con el
+    suyo. Y como el agente 0.21 acepta los dos, un rollback del servidor tampoco la deja
+    incomunicada.
+    """
+    if not estacion.hmac_secret:
+        return None
+    if _version_agente(estacion.version_agente) < VERSION_AGENTE_CON_HMAC_PROPIO:
+        return None
+    return estacion.hmac_secret
 
 
 def _publicar_mqtt(topico: str, payload_str: str, *, retain: bool) -> bool:
@@ -81,7 +124,7 @@ def enviar_comando(estacion, comando: str) -> bool:
     timestamp cae fuera de una ventana corta.
     """
     timestamp = int(time.time())
-    firma = firmar_payload(comando=comando, estacion=estacion.codigo, timestamp=timestamp)
+    firma = firmar_payload(secreto_de(estacion), comando=comando, estacion=estacion.codigo, timestamp=timestamp)
     return _publicar_comando(estacion, {
         'comando': comando, 'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
     })
@@ -100,6 +143,7 @@ def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script
     """
     timestamp = int(time.time())
     firma = firmar_payload(
+        secreto_de(estacion),
         comando='ejecutar_script', ejecucion_id=ejecucion_id, resultado_id=resultado_id,
         tipo_script=tipo_script, timeout_segundos=timeout_segundos, contenido=contenido,
         estacion=estacion.codigo, timestamp=timestamp,
@@ -149,6 +193,7 @@ def enviar_configurar_nodo_pos(estacion, *, servidor: str, bdd: str, puerto: str
     # La contraseña entra a la firma como todo lo demás: si no, alguien que pudiera
     # publicar en el tópico podría cambiarla sin invalidar el HMAC.
     firma = firmar_payload(
+        secreto_de(estacion),
         comando='configurar_nodo_pos', servidor=servidor, bdd=bdd, puerto=puerto, password=password,
         estacion=estacion.codigo, timestamp=timestamp,
     )
@@ -170,6 +215,7 @@ def enviar_consultar_red_farmacia(estacion, comunidad: str) -> bool:
     """
     timestamp = int(time.time())
     firma = firmar_payload(
+        secreto_de(estacion),
         comando='consultar_red_farmacia', comunidad=comunidad, estacion=estacion.codigo, timestamp=timestamp,
     )
     return _publicar_comando(estacion, {
@@ -199,6 +245,7 @@ def enviar_actualizacion_agente(estacion, version_agente) -> bool:
     timestamp = int(time.time())
     url = settings.ARCHIVOS_BASE_URL.rstrip('/') + version_agente.ejecutable.url
     firma = firmar_payload(
+        secreto_de(estacion),
         comando='actualizar_agente', version=version_agente.version, url=url, sha256=version_agente.sha256,
         estacion=estacion.codigo, timestamp=timestamp,
     )

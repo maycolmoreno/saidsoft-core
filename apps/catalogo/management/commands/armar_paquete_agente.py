@@ -11,15 +11,20 @@ Reemplaza el copiado manual de una carpeta a cada equipo por:
 
 (`curl.exe` y `tar` vienen con Windows 10 1803+; no hace falta PowerShell.)
 
-**El paquete NO lleva `config.txt`.** Ese archivo tiene `MqttPassword` y
-`ComandoHmacSecret` en texto plano, y `/media/` se sirve por HTTP **sin autenticación**
-a propósito para que los agentes descarguen. Publicarlo ahí entregaría a cualquiera que
-alcance el servidor el secreto con el que se FIRMAN los comandos a las estaciones: con
-eso se puede fabricar un `ejecutar_script` válido para cualquier equipo de la cadena.
+**El paquete NO lleva `config.txt`.** `/media/` se sirve por HTTP **sin autenticación**
+a propósito para que los agentes descarguen, así que todo lo que entre a este zip queda
+público para cualquiera que alcance el servidor.
 
-Por eso el zip incluye `config.ejemplo.txt` y quien instala completa los dos valores en
-la estación. Es un paso manual más, y es el que evita repetir la fuga que documenta
-PLAN_MODERNIZACION §10-N.
+De los dos secretos que ese archivo llevaba, ya queda uno solo: `ComandoHmacSecret` dejó
+de hacer falta (el agente 0.21 recibe el suyo en el enrolamiento y el servidor firma con
+ese, incluidos despliegues y software desde el fan-out por estación). Falta `MqttPassword`,
+que hoy tiene ACL sobre `/saidsof/#`: publicarla dejaría leer el tráfico de toda la
+cadena, incluidos los secretos propios de cada estación. Cuando se corra
+`deploy/emqx-narrow-acl-agente.sh` y quede limitada a los tópicos de enrolamiento, el zip
+va a poder ir completo y este paso manual desaparece.
+
+Hasta entonces el zip incluye `config.ejemplo.txt` y quien instala completa ese único
+valor. Es lo que evita repetir la fuga que documenta PLAN_MODERNIZACION §10-N.
 
 El `cert.pem` sí va: es el certificado **público** de EMQX, lo que los agentes usan para
 validar TLS. El privado (`key.pem`) no se toca.
@@ -48,13 +53,18 @@ NOMBRE_ZIP = 'agente-instalador.zip'
 
 LEEME = """INSTALADOR DEL AGENTE SAIDSOFT — version {version}
 
-1. Copia config.ejemplo.txt a config.txt y completa los dos valores vacios:
-      MqttPassword        -> MQTT_PASSWORD_AGENTE del deploy/.env del servidor
-      ComandoHmacSecret   -> COMANDO_HMAC_SECRET del deploy/.env del servidor
+1. Copia config.ejemplo.txt a config.txt y completa UN solo valor:
+      MqttPassword   -> MQTT_PASSWORD_AGENTE del deploy/.env del servidor
 
-   Esos dos NO vienen en el paquete a proposito: este zip se descarga por HTTP sin
-   autenticacion, y el secreto HMAC es con el que se firman los comandos a las
-   estaciones. Publicarlo seria entregar el control de la flota.
+   ComandoHmacSecret va VACIO. Desde el agente 0.21 la estacion recibe su propio
+   secreto en el enrolamiento y el servidor firma con ese todo lo que le manda.
+
+   MqttPassword no viene en el paquete a proposito: este zip se descarga por HTTP sin
+   autenticacion, y esa credencial hoy tiene permiso de suscripcion sobre /saidsof/#
+   — con ella se puede leer el trafico de cualquier estacion de la cadena, incluidos
+   los secretos propios que viajan en las respuestas de enrolamiento. Deja de ser un
+   problema cuando se corra deploy/emqx-narrow-acl-agente.sh, que la limita a los
+   topicos de enrolamiento; recien ahi el paquete puede ir completo.
 
 2. Verifica que el nombre del equipo siga la convencion FARMACIA-SUFIJO (ej. ML016-C):
 
@@ -155,10 +165,10 @@ class Command(BaseCommand):
             ),
         )
         self.stdout.write('  tar -xf agente-instalador.zip')
-        self.stdout.write('  (copiar config.ejemplo.txt a config.txt y completar los dos valores)')
+        self.stdout.write('  (copiar config.ejemplo.txt a config.txt y completar MqttPassword)')
         self.stdout.write('  Instalar.bat')
         self.stdout.write('')
         self.stdout.write(self.style.WARNING(
-            'El paquete NO lleva config.txt: se descarga sin autenticación y ese archivo tiene '
-            'el secreto con el que se firman los comandos a las estaciones.',
+            'El paquete NO lleva config.txt: se descarga sin autenticación y ese archivo todavía '
+            'tiene MqttPassword, que hoy puede leer el tráfico de toda la cadena.',
         ))

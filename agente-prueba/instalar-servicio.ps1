@@ -39,9 +39,16 @@
     Ruta al cert.pem de EMQX (deploy/certs/cert.pem en saidsoft-core).
 
 .PARAMETER ComandoHmacSecret
-    Debe ser IDÉNTICO a COMANDO_HMAC_SECRET en deploy/.env de saidsoft-core. Sin esto
-    el agente arranca y hace heartbeat con normalidad, pero descarta en silencio los
-    comandos ejecutar_script por firma HMAC inválida.
+    Opcional desde el agente 0.21, y lo normal es dejarlo VACÍO en una instalación nueva.
+    La estación recibe su propio secreto HMAC en la respuesta de enrolamiento y el
+    servidor firma con ese todo lo que le manda. Mientras no se enrola no hay comandos
+    que verificar, así que no falta nada.
+
+    Se sigue aceptando para dos casos: una estación que todavía corre un agente anterior
+    a 0.21, y un rollback del servidor. Si se pasa, debe ser IDÉNTICO a
+    COMANDO_HMAC_SECRET en deploy/.env de saidsoft-core; un valor equivocado es peor que
+    vacío, porque el agente arranca y hace heartbeat con normalidad pero descarta en
+    silencio los comandos por firma inválida.
 
 .PARAMETER TokenApertura
     Opcional. Token de apertura emitido desde el panel (apps.aperturas) para esta estación
@@ -72,7 +79,9 @@ param(
     [Parameter(Mandatory)] [string]$CentralHost,
     [Parameter(Mandatory)] [string]$MqttPassword,
     [Parameter(Mandatory)] [string]$CaCertPath,
-    [Parameter(Mandatory)] [string]$ComandoHmacSecret,
+    # Ya no es obligatorio: ver .PARAMETER ComandoHmacSecret. Vacío es lo correcto para
+    # una instalación nueva.
+    [string]$ComandoHmacSecret = "",
 
     # Opcional: sin esto la estación se enrola como siempre (pendiente de aprobación
     # manual en el panel). Ver .PARAMETER TokenApertura.

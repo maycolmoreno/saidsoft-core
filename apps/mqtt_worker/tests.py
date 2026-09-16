@@ -429,6 +429,29 @@ class ManejarEnrolamientoTests(TestCase):
         self.assertTrue(resp['aceptado'])
         self.assertIsNone(resp['mqtt_username'])
 
+    def test_entrega_el_secreto_hmac_propio_de_la_estacion(self):
+        """Es lo que saca al `COMANDO_HMAC_SECRET` compartido del config.txt: mientras
+        haya que tipearlo a mano en cada equipo, el instalador no puede publicarse
+        completo y alguien termina copiando el secreto de la flota por WhatsApp."""
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+        estacion = Estacion.objects.get(codigo='ML001-A')
+        self.assertEqual(resp['hmac_secret'], estacion.hmac_secret)
+        self.assertEqual(len(resp['hmac_secret']), 64)
+
+    def test_cada_estacion_recibe_un_secreto_distinto(self):
+        """Si fuera el mismo para todas sería el secreto compartido con otro nombre, y
+        filtrar una estación volvería a comprometer la cadena entera."""
+        resp_a = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+        resp_b = manejar_enrolamiento({'codigo': 'ML001-B', 'hardware_id': 'HW2'})
+        self.assertNotEqual(resp_a['hmac_secret'], resp_b['hmac_secret'])
+
+    def test_el_secreto_no_cambia_al_reenrolarse(self):
+        """Un re-enrolamiento (el agente perdió identidad.json) no puede invalidar los
+        comandos en vuelo ni obligar a re-firmar nada."""
+        primero = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+        segundo = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+        self.assertEqual(primero['hmac_secret'], segundo['hmac_secret'])
+
 
 class ManejarHeartbeatTests(TestCase):
     def setUp(self):

@@ -15,9 +15,9 @@ import paho.mqtt.publish as mqtt_publish
 from django.conf import settings
 from django.utils import timezone
 
-from apps.catalogo.services import firmar_payload
+from apps.catalogo.services import firmar_payload, secreto_de
 
-from .models import DestinoTipo, EstadoSolicitud, EventoInstalacion, ResultadoInstalacion, SolicitudInstalacion
+from .models import EstadoSolicitud, EventoInstalacion, ResultadoInstalacion, SolicitudInstalacion
 
 logger = logging.getLogger(__name__)
 
@@ -28,18 +28,16 @@ class ResultadoPublicacion:
     exitoso: bool
 
 
-def _topicos_para(solicitud: SolicitudInstalacion) -> list[str]:
-    if solicitud.destino_tipo == DestinoTipo.CADENA:
-        return ['/saidsof/software/global/']
-    if solicitud.destino_tipo == DestinoTipo.GRUPOS:
-        return [f'/saidsof/software/grupo/{g.codigo}/' for g in solicitud.grupos.all()]
-    if solicitud.destino_tipo == DestinoTipo.FARMACIAS:
-        return [f'/saidsof/software/farmacia/{f.codigo}/' for f in solicitud.farmacias.all()]
-    # ESTACIONES: cada agente está suscrito a su propio tópico individual
-    return [f'/saidsof/agente/{e.codigo}/software/' for e in solicitud.estaciones.all()]
+def _topico_de(estacion) -> str:
+    """Tópico propio de la estación, siempre. Mismo fan-out y mismos motivos que
+    `apps.despliegues.services._topico_de`: publicar por estación es lo que permite
+    firmar cada copia con el secreto de su destinataria y dejar de depender del
+    `COMANDO_HMAC_SECRET` compartido de la flota.
+    """
+    return f'/saidsof/agente/{estacion.codigo}/software/'
 
 
-def _payload(solicitud: SolicitudInstalacion) -> dict:
+def _payload(solicitud: SolicitudInstalacion, estacion) -> dict:
     # SEC-1 (auditoría 22-ago-2026): mismo hueco y mismo fix que apps.despliegues.services
     # ._payload — este mensaje también le dice al agente qué instalador correr, y no
     # llevaba ninguna firma. Ver ese docstring para el razonamiento completo.
@@ -59,7 +57,9 @@ def _payload(solicitud: SolicitudInstalacion) -> dict:
         'argumentos_adicionales': va.argumentos_adicionales,
         'comando_deteccion': va.aplicacion.comando_deteccion,
     }
-    firma = firmar_payload(comando='instalar_software', **campos, timestamp=timestamp)
+    # Campos firmados sin cambios (el agente 0.20 reconstruye esta lista exacta);
+    # cambia solo el secreto. Ver apps.despliegues.services._payload.
+    firma = firmar_payload(secreto_de(estacion), comando='instalar_software', **campos, timestamp=timestamp)
     return {
         **campos,
         'timestamp': timestamp,
@@ -84,8 +84,6 @@ def publicar_solicitud(solicitud: SolicitudInstalacion) -> ResultadoPublicacion:
     ]
     ResultadoInstalacion.objects.bulk_create(resultados, ignore_conflicts=True)
 
-    payload = json.dumps(_payload(solicitud))
-    topicos = _topicos_para(solicitud)
 
     mqtt_conf = settings.MQTT_CONFIG
     auth = None
@@ -95,7 +93,11 @@ def publicar_solicitud(solicitud: SolicitudInstalacion) -> ResultadoPublicacion:
     if mqtt_conf['USE_TLS']:
         tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
 
-    mensajes = [{'topic': topico, 'payload': payload, 'retain': True} for topico in topicos]
+    # Un payload por estación, firmado con el secreto de cada una.
+    mensajes = [
+        {'topic': _topico_de(e), 'payload': json.dumps(_payload(solicitud, e)), 'retain': True}
+        for e in estaciones
+    ]
 
     try:
         mqtt_publish.multiple(
@@ -108,16 +110,16 @@ def publicar_solicitud(solicitud: SolicitudInstalacion) -> ResultadoPublicacion:
         )
     except Exception:
         logger.exception(
-            'No se pudo publicar la solicitud de instalación %s por MQTT (%d tópico(s) destino)',
-            solicitud.id, len(topicos),
+            'No se pudo publicar la solicitud de instalación %s por MQTT (%d estación(es) destino)',
+            solicitud.id, len(estaciones),
         )
         return ResultadoPublicacion(total_estaciones=len(estaciones), exitoso=False)
 
     EventoInstalacion.objects.bulk_create([
         EventoInstalacion(
-            resultado=r, paso=EventoInstalacion.Paso.PUBLICADO, detalle=f'Tópicos: {", ".join(topicos)}',
+            resultado=r, paso=EventoInstalacion.Paso.PUBLICADO, detalle=f'Tópico: {_topico_de(r.estacion)}',
         )
-        for r in ResultadoInstalacion.objects.filter(solicitud=solicitud)
+        for r in ResultadoInstalacion.objects.filter(solicitud=solicitud).select_related('estacion')
     ])
 
     solicitud.estado = EstadoSolicitud.PUBLICANDO

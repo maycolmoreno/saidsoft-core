@@ -73,6 +73,16 @@ def _respuesta_aceptado(estacion) -> dict:
     # docstring de apps.mqtt_worker.emqx_admin).
     credencial_mqtt = aprovisionar_credencial_estacion(estacion)
     mqtt_username, mqtt_password = credencial_mqtt if credencial_mqtt else (None, None)
+    # Secreto HMAC propio de la estación, por el mismo canal que la credencial MQTT. Un
+    # agente que no lo entienda lo ignora y sigue con el compartido de su config.txt; el
+    # servidor tampoco lo usa para firmar hasta que la estación reporte una versión que
+    # lo soporte, así que entregarlo acá no cambia nada por sí solo.
+    #
+    # Lo que este canal NO resuelve todavía: mientras el usuario MQTT compartido siga con
+    # ACL sobre /saidsof/#, cualquiera con esa credencial puede suscribirse al tópico de
+    # respuesta de otra estación y leer este secreto — igual que ya puede leer
+    # `mqtt_password`. El aislamiento real llega con deploy/emqx-narrow-acl-agente.sh,
+    # que espera a que las 3 estaciones apagadas migren a credencial propia.
     return {
         'aceptado': True,
         'token': estacion.token_enrolamiento,
@@ -84,6 +94,7 @@ def _respuesta_aceptado(estacion) -> dict:
         'cache_url_base': _cache_url_base_para(estacion),
         'mqtt_username': mqtt_username,
         'mqtt_password': mqtt_password,
+        'hmac_secret': estacion.hmac_secret,
     }
 
 

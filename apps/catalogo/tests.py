@@ -19,7 +19,7 @@ from apps.catalogo import crypto
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
 from apps.catalogo.services import (
     calcular_matriz_cumplimiento, enviar_actualizacion_agente, enviar_comando, enviar_script, firmar_payload,
-    generar_comando_instalacion_meshcentral, obtener_clave_bitlocker_descifrada, resolver_estaciones,
+    generar_comando_instalacion_meshcentral, obtener_clave_bitlocker_descifrada, resolver_estaciones, secreto_de,
     url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
     validar_destino_unidad_negocio,
 )
@@ -1542,10 +1542,14 @@ class ArmarPaqueteAgenteTests(TestCase):
     """El zip de instalación que se publica en /media/ para bajarlo desde las estaciones.
 
     La decisión que define este comando: **no lleva `config.txt`**. `/media/` se sirve por
-    HTTP sin autenticación —a propósito, para que los agentes descarguen— y ese archivo
-    tiene `ComandoHmacSecret` en texto plano, que es con lo que se FIRMAN los comandos a
-    las estaciones. Publicarlo permitiría fabricar un `ejecutar_script` válido para
-    cualquier equipo de la cadena.
+    HTTP sin autenticación —a propósito, para que los agentes descarguen— así que todo lo
+    que entre al zip queda público.
+
+    De los dos secretos que ese archivo llevaba ya queda uno: `ComandoHmacSecret` dejó de
+    hacer falta (el agente 0.21 recibe el suyo al enrolarse). El que falta es
+    `MqttPassword`, que hoy tiene ACL sobre `/saidsof/#` — publicarla dejaría leer el
+    tráfico de toda la cadena, incluidos los secretos propios que viajan en las respuestas
+    de enrolamiento. Se resuelve corriendo `deploy/emqx-narrow-acl-agente.sh`.
     """
 
     def setUp(self):
@@ -1644,9 +1648,13 @@ class ArmarPaqueteAgenteTests(TestCase):
         with zipfile.ZipFile(ruta) as paquete:
             leeme = paquete.read('LEEME.txt').decode('utf-8')
         self.assertIn('MqttPassword', leeme)
-        self.assertIn('ComandoHmacSecret', leeme)
         self.assertIn('FARMACIA-SUFIJO', leeme)
         self.assertIn('PENDIENTE DE APROBACION', leeme)
+        # Y que el que YA no hace falta quede dicho como tal: si el LEEME siguiera
+        # pidiendo los dos, quien instala iría a buscar al .env un valor que no va, y el
+        # riesgo ahí no es que falle — es que lo pegue y quede un secreto de flota más
+        # dando vueltas en 700 estaciones.
+        self.assertIn('ComandoHmacSecret va VACIO', leeme)
 
     def test_rearmarlo_reemplaza_el_anterior(self):
         """Se corre después de cada build del agente: no puede ir acumulando zips."""
@@ -1659,3 +1667,203 @@ class ArmarPaqueteAgenteTests(TestCase):
 
         carpeta = Path(self.medios) / 'agente-instalador'
         self.assertEqual(len(list(carpeta.glob('*.zip'))), 1)
+
+
+class SecretoHmacPorEstacionTests(TestCase):
+    """Con qué secreto se firma cada comando.
+
+    Para qué existe esto: hasta ahora el `COMANDO_HMAC_SECRET` era uno solo para las 700
+    farmacias y había que escribirlo a mano en el `config.txt` de cada equipo. Eso obliga
+    a las dos cosas que se quieren evitar — que el instalador no pueda publicarse completo
+    (§10-Z: el paquete con los secretos adentro quedó descargable sin autenticación y hubo
+    que rotar la flota entera), y que alguien termine pasando el secreto por WhatsApp para
+    no tipearlo 700 veces.
+
+    El riesgo del cambio es el opuesto: firmar con el secreto propio para un agente que no
+    sabe verificarlo deja a esa estación sin recibir comandos, y eso **no se ve desde el
+    panel** — el comando se publica bien, el agente lo descarta en silencio en su log
+    local. De ahí que todo acá esté escrito para errar hacia el compartido.
+    """
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+
+    def _estacion(self, codigo='ML001-A', version=''):
+        return Estacion.objects.create(codigo=codigo, farmacia=self.farmacia, version_agente=version)
+
+    def _firma_publicada(self, estacion):
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            enviar_comando(estacion, 'reiniciar')
+        return json.loads(mock_single.call_args.args[1])
+
+    def test_cada_estacion_nace_con_su_propio_secreto(self):
+        a, b = self._estacion('ML001-A'), self._estacion('ML001-B')
+        self.assertEqual(len(a.hmac_secret), 64)
+        self.assertNotEqual(a.hmac_secret, b.hmac_secret)
+
+    def test_un_agente_viejo_sigue_recibiendo_la_firma_compartida(self):
+        """El 0.20 solo conoce el secreto de su config.txt. Firmarle con el propio sería
+        dejarlo incomunicado sin que nadie se entere."""
+        estacion = self._estacion(version='agente-prueba-0.20')
+        payload = self._firma_publicada(estacion)
+        esperada = firmar_payload(
+            comando='reiniciar', estacion='ML001-A', timestamp=payload['timestamp'],
+        )
+        self.assertEqual(payload['firma'], esperada)
+
+    def test_un_agente_021_recibe_la_firma_con_su_secreto_propio(self):
+        estacion = self._estacion(version='agente-prueba-0.21')
+        payload = self._firma_publicada(estacion)
+        esperada = firmar_payload(
+            estacion.hmac_secret,
+            comando='reiniciar', estacion='ML001-A', timestamp=payload['timestamp'],
+        )
+        self.assertEqual(payload['firma'], esperada)
+
+    def test_el_secreto_propio_de_una_estacion_no_firma_para_otra(self):
+        """Es el punto entero del cambio: filtrar el secreto de un equipo compromete ese
+        equipo, no la cadena."""
+        a = self._estacion('ML001-A', version='agente-prueba-0.21')
+        b = self._estacion('ML001-B', version='agente-prueba-0.21')
+        payload = self._firma_publicada(a)
+        con_el_de_b = firmar_payload(
+            b.hmac_secret, comando='reiniciar', estacion='ML001-A', timestamp=payload['timestamp'],
+        )
+        self.assertNotEqual(payload['firma'], con_el_de_b)
+
+    def test_una_estacion_que_nunca_reporto_version_usa_la_compartida(self):
+        """Recién enrolada y todavía sin heartbeat: no hay evidencia de que entienda el
+        secreto propio, así que no se asume."""
+        self.assertIsNone(secreto_de(self._estacion(version='')))
+
+    def test_una_version_con_formato_raro_tambien_cae_en_la_compartida(self):
+        for rara in ('agente-prueba-beta', '0.21-rc1', 'Saidsoft.Agente'):
+            self.assertIsNone(secreto_de(self._estacion('ML001-%s' % rara[:3], version=rara)), rara)
+
+    def test_una_version_posterior_tambien_lo_soporta(self):
+        estacion = self._estacion(version='agente-prueba-0.22')
+        self.assertEqual(secreto_de(estacion), estacion.hmac_secret)
+
+    def test_un_downgrade_del_agente_vuelve_sola_a_la_compartida(self):
+        """Si hay que rollbackear el agente a 0.20, la estación reporta esa versión en el
+        siguiente heartbeat y el servidor vuelve a firmarle con la compartida sin que
+        nadie toque nada. Sin esto, un rollback la dejaría muda."""
+        estacion = self._estacion(version='agente-prueba-0.21')
+        self.assertIsNotNone(secreto_de(estacion))
+        estacion.version_agente = 'agente-prueba-0.20'
+        estacion.save(update_fields=['version_agente'])
+        self.assertIsNone(secreto_de(estacion))
+
+    def test_sin_secreto_explicito_firma_con_el_compartido(self):
+        """El fallback es lo que sostiene la convivencia: `secreto_de` devuelve None para
+        toda estación con agente anterior a 0.21, y esas tienen que seguir recibiendo
+        comandos firmados con el `COMANDO_HMAC_SECRET` de siempre."""
+        from django.conf import settings
+
+        import hashlib
+        import hmac as hmac_mod
+
+        esperada = hmac_mod.new(
+            settings.COMANDO_HMAC_SECRET.encode(), b'reiniciar', hashlib.sha256,
+        ).hexdigest()
+        self.assertEqual(firmar_payload(comando='reiniciar'), esperada)
+        self.assertEqual(firmar_payload(None, comando='reiniciar'), esperada)
+
+
+class AgenteAceptaAmbosSecretosTests(TestCase):
+    """El otro lado del contrato: qué firmas da por buenas el agente 0.21.
+
+    Se carga el módulo real del agente y se ejercita `_firma_valida`, en vez de
+    reimplementar la lógica acá — que es como se escapó el bug de `_normalizar_mac`:
+    la prueba pasaba porque le daba al código de producción una entrada ya masajeada
+    que nunca ocurre en la realidad.
+
+    Lo que tiene que ser cierto durante toda la migración: el agente acepta **tanto** el
+    secreto propio como el compartido. Si aceptara solo uno, cada rollout tendría un
+    orden obligatorio entre servidor y flota, y cualquier estación apagada en el medio
+    quedaría muda hasta que alguien fuera a la farmacia.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import importlib.util
+        from pathlib import Path
+
+        from django.conf import settings
+
+        # `agente-prueba` no es un paquete importable (el guion del nombre lo impide),
+        # así que se carga por ruta — mismo motivo que los tests que leen su fuente.
+        ruta = Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py'
+        spec = importlib.util.spec_from_file_location('agente_prueba_bajo_prueba', ruta)
+        cls.agente_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.agente_mod)
+
+    def _agente(self, *, propio=None, compartido=''):
+        from types import SimpleNamespace
+
+        # __new__ y no __init__: el constructor arma el cliente MQTT y lee config del
+        # disco, nada de lo cual hace falta para verificar una firma.
+        agente = self.agente_mod.AgentePrueba.__new__(self.agente_mod.AgentePrueba)
+        agente.identidad = {'hmac_secret': propio} if propio else {}
+        agente.args = SimpleNamespace(hmac_secret=compartido, codigo='ML001-A')
+        return agente
+
+    def _campos(self):
+        import time
+
+        return {'comando': 'reiniciar', 'estacion': 'ML001-A', 'timestamp': int(time.time())}
+
+    def _payload(self, firma, campos):
+        return {'firma': firma, 'timestamp': campos['timestamp']}
+
+    def test_acepta_la_firma_hecha_con_el_secreto_propio(self):
+        campos = self._campos()
+        firma = firmar_payload('secreto-propio-de-ml001a', **campos)
+        agente = self._agente(propio='secreto-propio-de-ml001a', compartido='el-de-la-flota')
+        self.assertTrue(agente._firma_valida('comando', self._payload(firma, campos), **campos))
+
+    def test_sigue_aceptando_la_firma_hecha_con_el_compartido(self):
+        """El servidor firma con el compartido hasta que ve la versión 0.21 reportada.
+        Entre que el agente se actualiza y llega ese heartbeat hay una ventana real."""
+        campos = self._campos()
+        firma = firmar_payload('el-de-la-flota', **campos)
+        agente = self._agente(propio='secreto-propio-de-ml001a', compartido='el-de-la-flota')
+        self.assertTrue(agente._firma_valida('comando', self._payload(firma, campos), **campos))
+
+    def test_rechaza_una_firma_hecha_con_el_secreto_de_otra_estacion(self):
+        campos = self._campos()
+        firma = firmar_payload('secreto-de-ml001b', **campos)
+        agente = self._agente(propio='secreto-propio-de-ml001a', compartido='el-de-la-flota')
+        self.assertFalse(agente._firma_valida('comando', self._payload(firma, campos), **campos))
+
+    def test_sin_ningun_secreto_rechaza_todo(self):
+        """Falla cerrado: un config.txt sin `ComandoHmacSecret` y sin enrolar todavía no
+        puede quedar aceptando cualquier cosa."""
+        campos = self._campos()
+        firma = firmar_payload('cualquiera', **campos)
+        agente = self._agente()
+        self.assertFalse(agente._firma_valida('comando', self._payload(firma, campos), **campos))
+
+    def test_un_agente_recien_instalado_funciona_solo_con_el_compartido(self):
+        """Antes del primer enrolamiento no tiene secreto propio: es exactamente el
+        arranque de toda estación nueva."""
+        campos = self._campos()
+        firma = firmar_payload('el-de-la-flota', **campos)
+        agente = self._agente(compartido='el-de-la-flota')
+        self.assertTrue(agente._firma_valida('comando', self._payload(firma, campos), **campos))
+
+    def test_la_version_del_agente_coincide_con_la_que_el_servidor_espera(self):
+        """Acoplamiento cargante: `secreto_de` decide por número de versión. Si alguien
+        sube el agente sin mover la constante del servidor (o al revés), las estaciones
+        dejan de recibir comandos y el panel no muestra nada raro."""
+        from apps.catalogo.services import VERSION_AGENTE_CON_HMAC_PROPIO, _version_agente
+
+        self.assertGreaterEqual(
+            _version_agente(self.agente_mod.VERSION_AGENTE_PRUEBA), VERSION_AGENTE_CON_HMAC_PROPIO,
+            'el agente del repo es anterior a la versión que el servidor da por capaz de '
+            'verificar el secreto propio',
+        )

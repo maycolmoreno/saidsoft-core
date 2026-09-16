@@ -37,9 +37,10 @@ class _BaseDespliegueTests(TestCase):
         defaults.update(kwargs)
         return Despliegue.objects.create(**defaults)
 
-    def _crear_estacion(self, codigo):
+    def _crear_estacion(self, codigo, version=''):
         return Estacion.objects.create(
             codigo=codigo, farmacia=self.farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            version_agente=version,
         )
 
     def _resultado(self, despliegue, estacion, estado):
@@ -366,3 +367,97 @@ class DespliegueReanudarVistaTests(_BaseDespliegueTests):
         despliegue.refresh_from_db()
         self.assertEqual(despliegue.estado, Despliegue.Estado.PAUSADO)
         self.assertFalse(despliegue.freno_omitido)
+
+
+class FanOutPorEstacionTests(_BaseDespliegueTests):
+    """Un despliegue a grupo o cadena se publica por estación, no en un tópico agregado.
+
+    El motivo no es el ruteo sino la firma: un único payload en `/saidsof/despliegue/global/`
+    lo tienen que poder verificar las 700 estaciones, y eso obliga a firmarlo con el
+    `COMANDO_HMAC_SECRET` compartido — el mismo que hay que tipear a mano en cada config.txt
+    y el que impide publicar el instalador completo (§10-Z). Publicando por estación, cada
+    copia se firma con el secreto de su destinataria.
+
+    Lo que NO puede cambiar: los campos que entran a la firma. El agente 0.20 reconstruye
+    esa lista exacta para validar; agregarle `estacion` ahí dejaría sin desplegar a toda la
+    flota que todavía no se actualizó.
+    """
+
+    def _publicar_a_la_cadena(self, estaciones):
+        despliegue = self._crear_despliegue(destino_tipo=Despliegue.DestinoTipo.CADENA)
+        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+            publicar_despliegue(despliegue)
+        return {m['topic']: json.loads(m['payload']) for m in mock_multiple.call_args.args[0]}
+
+    def test_un_despliegue_a_la_cadena_va_al_topico_de_cada_estacion(self):
+        self._crear_estacion('ML001-A')
+        self._crear_estacion('ML001-B')
+        publicado = self._publicar_a_la_cadena(None)
+        self.assertEqual(
+            set(publicado),
+            {'/saidsof/agente/ML001-A/despliegue/', '/saidsof/agente/ML001-B/despliegue/'},
+        )
+
+    def test_ya_no_se_publica_en_ningun_topico_de_difusion(self):
+        """Mientras exista un solo publish a un tópico compartido, el secreto compartido
+        sigue siendo obligatorio en todos los config.txt."""
+        self._crear_estacion('ML001-A')
+        publicado = self._publicar_a_la_cadena(None)
+        for topico in publicado:
+            self.assertNotIn('/saidsof/despliegue/global/', topico)
+            self.assertNotIn('/despliegue/grupo/', topico)
+            self.assertNotIn('/despliegue/farmacia/', topico)
+
+    def test_cada_estacion_recibe_su_propia_firma(self):
+        a = self._crear_estacion('ML001-A', version='agente-prueba-0.21')
+        b = self._crear_estacion('ML001-B', version='agente-prueba-0.21')
+        publicado = self._publicar_a_la_cadena(None)
+        firma_a = publicado['/saidsof/agente/ML001-A/despliegue/']['firma']
+        firma_b = publicado['/saidsof/agente/ML001-B/despliegue/']['firma']
+        self.assertNotEqual(firma_a, firma_b)
+        self.assertEqual(
+            firma_a,
+            firmar_payload(
+                a.hmac_secret, comando='desplegar',
+                **{k: v for k, v in publicado['/saidsof/agente/ML001-A/despliegue/'].items()
+                   if k not in ('timestamp', 'firma', 'usar_cache')},
+                timestamp=publicado['/saidsof/agente/ML001-A/despliegue/']['timestamp'],
+            ),
+        )
+        self.assertNotEqual(a.hmac_secret, b.hmac_secret)
+
+    def test_una_estacion_con_agente_viejo_recibe_la_firma_compartida(self):
+        """Convivencia: en la misma publicación, una en 0.20 y otra en 0.21. Si a la 0.20
+        le llegara la firma con el secreto propio, no desplegaría y el panel la mostraría
+        como pendiente sin ninguna pista del motivo."""
+        self._crear_estacion('ML001-VIEJA', version='agente-prueba-0.20')
+        self._crear_estacion('ML001-NUEVA', version='agente-prueba-0.21')
+        publicado = self._publicar_a_la_cadena(None)
+
+        vieja = publicado['/saidsof/agente/ML001-VIEJA/despliegue/']
+        campos = {k: v for k, v in vieja.items() if k not in ('timestamp', 'firma', 'usar_cache')}
+        self.assertEqual(
+            vieja['firma'],
+            firmar_payload(comando='desplegar', **campos, timestamp=vieja['timestamp']),
+        )
+
+    def test_los_campos_firmados_no_cambiaron(self):
+        """Blindaje del contrato con el agente 0.20: si alguien agrega un campo al payload
+        firmado, todas las estaciones sin actualizar dejan de desplegar en silencio."""
+        self._crear_estacion('ML001-A')
+        publicado = self._publicar_a_la_cadena(None)
+        payload = publicado['/saidsof/agente/ML001-A/despliegue/']
+        self.assertEqual(
+            set(payload),
+            {'despliegue_id', 'version', 'url', 'sha256', 'modo_aplicacion',
+             'ventana_fecha_hora', 'timestamp', 'usar_cache', 'firma'},
+        )
+
+    def test_se_crea_un_resultado_por_estacion_igual_que_antes(self):
+        self._crear_estacion('ML001-A')
+        self._crear_estacion('ML001-B')
+        despliegue = self._crear_despliegue(destino_tipo=Despliegue.DestinoTipo.CADENA)
+        with patch('apps.despliegues.services.mqtt_publish.multiple'):
+            resultado = publicar_despliegue(despliegue)
+        self.assertEqual(resultado.total_estaciones, 2)
+        self.assertEqual(despliegue.resultados.count(), 2)

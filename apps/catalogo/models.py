@@ -319,6 +319,15 @@ class Estacion(models.Model):
     estado_aprobacion = models.CharField(
         max_length=20, choices=EstadoAprobacion.choices, default=EstadoAprobacion.PENDIENTE,
     )
+    hmac_secret = models.CharField(
+        max_length=64, blank=True, editable=False,
+        help_text='Secreto con el que se firman los comandos dirigidos SOLO a esta estación. '
+                  'Se entrega en la respuesta de enrolamiento, por el mismo canal que la '
+                  'credencial MQTT propia. Reemplaza al COMANDO_HMAC_SECRET compartido de la '
+                  'flota, que hoy hay que escribir a mano en el config.txt de cada equipo y '
+                  'que, filtrado, permite fabricar un ejecutar_script válido para cualquiera '
+                  'de las 700 farmacias (§10-Z).',
+    )
 
     # Monitoreo: solo las estaciones marcadas (típicamente los servidores de farmacia/matriz)
     # reportan métricas de recursos, para controlar el volumen. En el sistema viejo esto lo
@@ -422,9 +431,11 @@ class Estacion(models.Model):
         return self.codigo
 
     def save(self, *args, **kwargs):
+        import secrets
         if not self.token_enrolamiento:
-            import secrets
             self.token_enrolamiento = secrets.token_hex(32)
+        if not self.hmac_secret:
+            self.hmac_secret = secrets.token_hex(32)
         super().save(*args, **kwargs)
 
     @property

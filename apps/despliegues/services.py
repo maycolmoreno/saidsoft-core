@@ -14,7 +14,7 @@ import paho.mqtt.publish as mqtt_publish
 from django.conf import settings
 from django.utils import timezone
 
-from apps.catalogo.services import firmar_payload
+from apps.catalogo.services import firmar_payload, secreto_de
 
 from .models import Despliegue, EventoDespliegue, ResultadoDespliegue
 
@@ -27,27 +27,40 @@ class ResultadoPublicacion:
     exitoso: bool
 
 
-def _topicos_para(despliegue: Despliegue) -> list[str]:
-    if despliegue.destino_tipo == Despliegue.DestinoTipo.CADENA:
-        return ['/saidsof/despliegue/global/']
-    if despliegue.destino_tipo == Despliegue.DestinoTipo.GRUPOS:
-        return [f'/saidsof/despliegue/grupo/{g.codigo}/' for g in despliegue.grupos.all()]
-    if despliegue.destino_tipo == Despliegue.DestinoTipo.FARMACIAS:
-        return [f'/saidsof/despliegue/farmacia/{f.codigo}/' for f in despliegue.farmacias.all()]
-    # ESTACIONES: cada agente está suscrito a su propio tópico individual
-    return [f'/saidsof/agente/{e.codigo}/despliegue/' for e in despliegue.estaciones.all()]
+def _topico_de(estacion) -> str:
+    """Tópico propio de la estación, siempre — también para un despliegue a grupo o cadena.
+
+    Antes se publicaba un único mensaje en `/saidsof/despliegue/global/` (o el del grupo o
+    el de la farmacia) y lo recibían todas las estaciones suscritas. Eso obligaba a firmar
+    con el `COMANDO_HMAC_SECRET` compartido de la flota: un mismo payload lo tiene que
+    poder verificar cualquiera de las 700. Y ese secreto compartido es el que hay que
+    tipear a mano en el config.txt de cada equipo, y el que impide publicar el instalador
+    completo (§10-Z).
+
+    Publicando por estación, cada copia se firma con el secreto de su destinataria y el
+    compartido deja de ser necesario. Cuesta un mensaje por estación en vez de uno por
+    grupo — a escala de la cadena, ~2100 publicaciones en una sola conexión MQTT.
+
+    Efecto lateral que se gana: los mensajes van retenidos, y un retenido en el tópico de
+    un grupo se le entrega a CUALQUIER estación que se suscriba después — una caja nueva
+    recibía el despliegue viejo de su grupo al conectarse por primera vez. Con un tópico
+    por estación, el retenido de cada una es solo el último que le tocó a ella.
+    """
+    return f'/saidsof/agente/{estacion.codigo}/despliegue/'
 
 
-def _payload(despliegue: Despliegue) -> dict:
+def _payload(despliegue: Despliegue, estacion) -> dict:
     # SEC-1 (auditoría 22-ago-2026): este mensaje le dice al agente qué paquete
     # descargar e instalar sobre el POS — antes no llevaba ninguna firma, así que
     # cualquiera con permiso de publish en el tópico (o que capturara/reenviara un
     # mensaje viejo) podía forzar la instalación de un paquete arbitrario, con el
     # `sha256` puesto por el propio emisor del mensaje (no sirve como prueba de
-    # autenticidad, solo detecta corrupción de transporte). No lleva `estacion`
-    # porque este mismo payload puede ir a un tópico de grupo/farmacia/cadena
-    # (varias estaciones a la vez) — el `timestamp` sí entra a la firma para acotar
-    # el reenvío de un despliegue viejo (p.ej. un downgrade a una versión vulnerable).
+    # autenticidad, solo detecta corrupción de transporte). No lleva `estacion` como
+    # campo: se firmaba un payload único para varias estaciones, y agregarlo ahora
+    # rompería la validación de todo agente 0.20 (reconstruye esta lista exacta). Desde
+    # el fan-out el vínculo con la estación lo da la firma misma, hecha con su secreto
+    # propio. El `timestamp` sí entra para acotar el reenvío de un despliegue viejo
+    # (p.ej. un downgrade a una versión vulnerable).
     ventana_fecha_hora = (
         despliegue.ventana_fecha_hora.isoformat() if despliegue.ventana_fecha_hora else None
     )
@@ -64,7 +77,11 @@ def _payload(despliegue: Despliegue) -> dict:
         'modo_aplicacion': despliegue.modo_aplicacion,
         'ventana_fecha_hora': ventana_fecha_hora,
     }
-    firma = firmar_payload(comando='desplegar', **campos, timestamp=timestamp)
+    # Los campos firmados NO cambian: el agente 0.20 reconstruye exactamente esta lista y
+    # tiene que seguir validando. Lo único que cambia es CON QUÉ se firma — el secreto de
+    # `estacion` si su agente lo entiende, el compartido si no. Por eso el fan-out no
+    # necesita una versión nueva del agente ni un orden de despliegue obligatorio.
+    firma = firmar_payload(secreto_de(estacion), comando='desplegar', **campos, timestamp=timestamp)
     return {
         **campos,
         'timestamp': timestamp,
@@ -92,8 +109,6 @@ def publicar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     ]
     ResultadoDespliegue.objects.bulk_create(resultados, ignore_conflicts=True)
 
-    payload = json.dumps(_payload(despliegue))
-    topicos = _topicos_para(despliegue)
 
     mqtt_conf = settings.MQTT_CONFIG
     auth = None
@@ -105,7 +120,11 @@ def publicar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
         # se conecta en plano y el broker cierra la conexión.
         tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
 
-    mensajes = [{'topic': topico, 'payload': payload, 'retain': True} for topico in topicos]
+    # Un payload por estación: cada uno firmado con el secreto de su destinataria.
+    mensajes = [
+        {'topic': _topico_de(e), 'payload': json.dumps(_payload(despliegue, e)), 'retain': True}
+        for e in estaciones
+    ]
 
     try:
         # Una sola conexión para todos los tópicos del destino (antes: connect+disconnect
@@ -121,13 +140,13 @@ def publicar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
         )
     except Exception:
         logger.exception(
-            'No se pudo publicar el despliegue %s por MQTT (%d tópico(s) destino)', despliegue.id, len(topicos),
+            'No se pudo publicar el despliegue %s por MQTT (%d estación(es) destino)', despliegue.id, len(estaciones),
         )
         return ResultadoPublicacion(total_estaciones=len(estaciones), exitoso=False)
 
     EventoDespliegue.objects.bulk_create([
-        EventoDespliegue(resultado=r, paso=EventoDespliegue.Paso.PUBLICADO, detalle=f'Tópicos: {", ".join(topicos)}')
-        for r in ResultadoDespliegue.objects.filter(despliegue=despliegue)
+        EventoDespliegue(resultado=r, paso=EventoDespliegue.Paso.PUBLICADO, detalle=f'Tópico: {_topico_de(r.estacion)}')
+        for r in ResultadoDespliegue.objects.filter(despliegue=despliegue).select_related('estacion')
     ])
 
     despliegue.estado = Despliegue.Estado.PUBLICANDO
@@ -145,13 +164,11 @@ def reintentar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     que en realidad nunca reintentaba (encontrado en el primer despliegue real del
     piloto, ML016-A, 6-ago-2026).
 
-    A propósito NO reutiliza `publicar_despliegue` con los tópicos agregados
-    (`_topicos_para`, grupo/farmacia/cadena): eso reenviaría el paquete también a
-    las estaciones que ya lo aplicaron con éxito, disparando ahí un cierre y
-    reinstalación del POS innecesarios. En cambio publica al tópico individual de
-    cada estación pendiente (`/saidsof/agente/{codigo}/despliegue/`) — el mismo que
-    usa el destino ESTACIONES, al que todo agente está suscrito sin importar cómo
-    se publicó el despliegue originalmente.
+    A propósito NO reutiliza `publicar_despliegue`: ese resuelve el destino entero y
+    reenviaría el paquete también a las estaciones que ya lo aplicaron con éxito,
+    disparando ahí un cierre y reinstalación del POS innecesarios. Acá el destino son
+    solo las pendientes. El tópico es el mismo en los dos casos desde el fan-out
+    (`_topico_de`), así que la diferencia quedó únicamente en a quiénes se les manda.
     """
     pendientes = list(
         despliegue.resultados.exclude(estado=ResultadoDespliegue.Estado.APLICADO).select_related('estacion'),
@@ -159,9 +176,8 @@ def reintentar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     if not pendientes:
         return ResultadoPublicacion(total_estaciones=0, exitoso=True)
 
-    payload = json.dumps(_payload(despliegue))
     mensajes = [
-        {'topic': f'/saidsof/agente/{r.estacion.codigo}/despliegue/', 'payload': payload, 'retain': True}
+        {'topic': _topico_de(r.estacion), 'payload': json.dumps(_payload(despliegue, r.estacion)), 'retain': True}
         for r in pendientes
     ]
 

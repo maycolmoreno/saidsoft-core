@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.20'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.21'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -239,8 +239,17 @@ class AgentePrueba:
         horas o días hasta que la estación se prenda y se reconecte -- exigirle los
         mismos 120s que a un comando en vivo lo descartaría siempre. El SHA-256 del
         ejecutable sigue siendo la garantía de integridad real, independiente de esto."""
-        firma_esperada = firmar(self.args.hmac_secret, **campos)
-        if not hmac.compare_digest(firma_esperada, payload.get('firma', '')):
+        # Se aceptan dos secretos a propósito, y el orden importa poco porque se
+        # prueban ambos: el propio de la estación (que llega en el enrolamiento) y el
+        # compartido del config.txt. Durante la migración conviven — el servidor firma
+        # con el compartido hasta que la estación reporta una versión que entiende el
+        # propio, y los tópicos de difusión (despliegue/software a grupo o cadena) van
+        # a seguir firmados con el compartido, porque un mismo payload lo verifican
+        # muchas estaciones. Probar los dos cuesta un HMAC de más y evita que una
+        # estación quede incomunicada a mitad del rollout.
+        firma_recibida = payload.get('firma', '')
+        secretos = [s for s in (self.identidad.get('hmac_secret'), self.args.hmac_secret) if s]
+        if not any(hmac.compare_digest(firmar(s, **campos), firma_recibida) for s in secretos):
             logging.error('Firma HMAC inválida en %s — se ignora (posible suplantación).', tipo_mensaje)
             return False
         if 'estacion' in campos and campos['estacion'] != self.args.codigo:
@@ -374,6 +383,15 @@ class AgentePrueba:
         # apps.mqtt_worker.emqx_admin del lado servidor). None si el servidor no tiene
         # EMQX_ADMIN_CONFIG configurado o falló: en ese caso se sigue usando la
         # compartida, igual que antes de que existiera este mecanismo.
+        # Secreto HMAC propio de esta estación. Reemplaza al COMANDO_HMAC_SECRET
+        # compartido de la flota, que hasta ahora había que tipear a mano en el
+        # config.txt de cada equipo — y que, por ser el mismo para las 700 farmacias,
+        # obligaba a que el instalador NO pudiera publicarse completo (§10-Z).
+        # Se guarda, pero el compartido se sigue aceptando: ver _firma_valida.
+        hmac_propio = payload.get('hmac_secret')
+        if hmac_propio:
+            self.identidad['hmac_secret'] = hmac_propio
+
         mqtt_username = payload.get('mqtt_username')
         mqtt_password = payload.get('mqtt_password')
         credencial_nueva = bool(mqtt_username) and mqtt_username != self.identidad.get('mqtt_username')

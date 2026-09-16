@@ -35,9 +35,10 @@ class _BaseSoftwareTests(TestCase):
             comando_instalacion_silenciosa='msiexec /i "{archivo}" /qn',
         )
 
-    def _crear_estacion(self, codigo):
+    def _crear_estacion(self, codigo, version=''):
         return Estacion.objects.create(
             codigo=codigo, farmacia=self.farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            version_agente=version,
         )
 
     def _crear_solicitud(self, **kwargs):
@@ -282,3 +283,51 @@ class GenerarEscaneoProgramadoTests(_BaseSoftwareTests):
             total = generar_escaneos_vencidos()
         self.assertEqual(total, 0)
         mock_enviar.assert_not_called()
+
+
+class FanOutSoftwarePorEstacionTests(_BaseSoftwareTests):
+    """Mismo fan-out que en despliegues, por el mismo motivo: firmar cada copia con el
+    secreto de su destinataria en vez del compartido de la flota.
+
+    Ver `apps.despliegues.tests.FanOutPorEstacionTests` para el razonamiento completo.
+    """
+
+    def _publicar_a_la_cadena(self):
+        solicitud = self._crear_solicitud(destino_tipo=DestinoTipo.CADENA)
+        with patch('apps.software.services.mqtt_publish.multiple') as mock_multiple:
+            publicar_solicitud(solicitud)
+        return {m['topic']: json.loads(m['payload']) for m in mock_multiple.call_args.args[0]}
+
+    def test_una_solicitud_a_la_cadena_va_al_topico_de_cada_estacion(self):
+        self._crear_estacion('ML001-A')
+        self._crear_estacion('ML001-B')
+        publicado = self._publicar_a_la_cadena()
+        self.assertEqual(
+            set(publicado),
+            {'/saidsof/agente/ML001-A/software/', '/saidsof/agente/ML001-B/software/'},
+        )
+
+    def test_ya_no_se_publica_en_ningun_topico_de_difusion(self):
+        self._crear_estacion('ML001-A')
+        for topico in self._publicar_a_la_cadena():
+            self.assertNotIn('/saidsof/software/global/', topico)
+            self.assertNotIn('/software/grupo/', topico)
+            self.assertNotIn('/software/farmacia/', topico)
+
+    def test_cada_estacion_recibe_su_propia_firma(self):
+        self._crear_estacion('ML001-A', version='agente-prueba-0.21')
+        self._crear_estacion('ML001-B', version='agente-prueba-0.21')
+        publicado = self._publicar_a_la_cadena()
+        self.assertNotEqual(
+            publicado['/saidsof/agente/ML001-A/software/']['firma'],
+            publicado['/saidsof/agente/ML001-B/software/']['firma'],
+        )
+
+    def test_una_estacion_con_agente_viejo_recibe_la_firma_compartida(self):
+        self._crear_estacion('ML001-VIEJA', version='agente-prueba-0.20')
+        payload = self._publicar_a_la_cadena()['/saidsof/agente/ML001-VIEJA/software/']
+        campos = {k: v for k, v in payload.items() if k not in ('timestamp', 'firma', 'usar_cache')}
+        self.assertEqual(
+            payload['firma'],
+            firmar_payload(comando='instalar_software', **campos, timestamp=payload['timestamp']),
+        )
