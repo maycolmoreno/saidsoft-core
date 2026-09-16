@@ -1,5 +1,6 @@
 from django.contrib import admin
 
+from apps.activos.services import generar_codigo_activo
 from apps.cuentas.services import scope_opcional_por_unidad_negocio
 
 from .models import (
@@ -186,6 +187,19 @@ class ActivoAdmin(admin.ModelAdmin):
         if obj is None or not obj.estacion_id:
             return '—'
         return obj.estacion.ip_lan or f'{obj.estacion.codigo}: todavía no la reportó'
+
+    def save_model(self, request, obj, form, change):
+        """Genera el código en el alta.
+
+        Hacía falta porque `codigo` es `readonly_fields` —para que nadie lo invente a
+        mano y se salte la numeración— y el modelo no lo genera solo: lo genera
+        `apps.activos.services.registrar_ingreso`, que es el camino del panel. Por el
+        admin no pasaba nadie, así que el alta insertaba `codigo=''` y, de la segunda en
+        adelante, rompía contra el índice único con un 500 sin explicación.
+        """
+        if not change and not obj.codigo:
+            obj.codigo = generar_codigo_activo(obj.tipo)
+        super().save_model(request, obj, form, change)
 
     def get_readonly_fields(self, request, obj=None):
         """`ip` y `mac` quedan bloqueados cuando el activo tiene estación vinculada.

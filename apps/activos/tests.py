@@ -1806,3 +1806,88 @@ class CajasDeclaradasTests(TestCase):
         self.assertEqual(str(Activo.objects.get(slot='impresora_C').ip), '10.201.7.235')
         self.assertEqual(str(Activo.objects.get(slot='medianet_ADM').ip), '10.201.7.237')
         self.assertEqual(str(Activo.objects.get(slot='mikrotik').ip), '10.201.7.225')
+
+
+class AdminAltaDeActivoTests(TestCase):
+    """Alta de un Activo desde el admin de Django.
+
+    El caso real (16-sep-2026): `/admin/activos/activo/add/` devolvía 500 al guardar.
+    `codigo` está en `readonly_fields` —para que nadie invente uno a mano y se saltee la
+    numeración— y nadie lo generaba en ese camino: lo genera `registrar_ingreso`, que es
+    el del panel. Así que el alta insertaba `codigo=''`, y de la segunda en adelante
+    chocaba contra el índice único con un error que en producción (DEBUG=False) no dice
+    absolutamente nada.
+
+    No había ninguna prueba que hiciera un POST al admin: las que existían abrían páginas
+    y verificaban permisos. Una página que abre no prueba que guardar funcione.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(
+            username='u_admin_alta', password='x' * 16, email='a@b.c',
+        )
+        self.client.force_login(self.admin)
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+
+    def _alta(self, **extra):
+        datos = {
+            'tipo': Activo.Tipo.IMPRESORA,
+            'estado': Activo.Estado.EN_BODEGA,
+            'unidad_negocio': self.sg.pk,
+            'modelo': 'L3250',
+            'eventos-TOTAL_FORMS': '0',
+            'eventos-INITIAL_FORMS': '0',
+        }
+        datos.update(extra)
+        return self.client.post('/admin/activos/activo/add/', datos)
+
+    def test_el_formulario_de_alta_abre(self):
+        self.assertEqual(self.client.get('/admin/activos/activo/add/').status_code, 200)
+
+    def test_guardar_genera_el_codigo(self):
+        self._alta()
+        activo = Activo.objects.get(modelo='L3250')
+        self.assertEqual(activo.codigo, 'CR-IMP-0001')
+
+    def test_dos_altas_seguidas_no_chocan(self):
+        """El 500 real: la primera pasaba con codigo='' y la segunda reventaba contra el
+        índice único."""
+        self._alta(modelo='L3250')
+        self._alta(modelo='L3210')
+        self.assertEqual(
+            sorted(Activo.objects.values_list('codigo', flat=True)),
+            ['CR-IMP-0001', 'CR-IMP-0002'],
+        )
+
+    def test_la_numeracion_sigue_a_la_existente_por_tipo(self):
+        """No reinicia ni pisa: continúa desde el último del mismo tipo, venga del panel
+        o del admin."""
+        Activo.objects.create(
+            codigo='CR-IMP-0007', tipo=Activo.Tipo.IMPRESORA, unidad_negocio=self.sg,
+        )
+        self._alta()
+        self.assertTrue(Activo.objects.filter(codigo='CR-IMP-0008').exists())
+
+    def test_cada_tipo_lleva_su_propia_serie(self):
+        self._alta(tipo=Activo.Tipo.IMPRESORA, modelo='L3250')
+        self._alta(tipo=Activo.Tipo.PINPAD, modelo='Verifone')
+        self.assertTrue(Activo.objects.filter(codigo='CR-IMP-0001').exists())
+        self.assertTrue(Activo.objects.filter(codigo='CR-PIN-0001').exists())
+
+    def test_editar_uno_existente_no_le_cambia_el_codigo(self):
+        """El código es la etiqueta física pegada al equipo: si cambiara al editar,
+        el inventario dejaría de corresponderse con lo que dice el adhesivo."""
+        activo = Activo.objects.create(
+            codigo='CR-IMP-0003', tipo=Activo.Tipo.IMPRESORA, unidad_negocio=self.sg,
+        )
+        self.client.post(f'/admin/activos/activo/{activo.pk}/change/', {
+            'tipo': Activo.Tipo.IMPRESORA,
+            'estado': Activo.Estado.EN_BODEGA,
+            'unidad_negocio': self.sg.pk,
+            'modelo': 'cambiado',
+            'eventos-TOTAL_FORMS': '0',
+            'eventos-INITIAL_FORMS': '0',
+        })
+        activo.refresh_from_db()
+        self.assertEqual(activo.codigo, 'CR-IMP-0003')
+        self.assertEqual(activo.modelo, 'cambiado')
