@@ -225,5 +225,9 @@ Get-Service -Name $NombreServicio | Format-Table -AutoSize
 
 Write-Host ""
 Write-Host "Listo. Revisa el Visor de eventos (Application, origen 'SaidsoftAgente') o" -ForegroundColor Green
-Write-Host "$InstallPath\agente_prueba.log para confirmar el enrolamiento, y aprueba" -ForegroundColor Green
+# El log NO queda junto al ejecutable: servicio_windows.py hace chdir a ProgramData
+# antes de configurar el logging, porque "C:\Program Files" no es escribible por un
+# servicio sin privilegios. Este mensaje apuntaba al lugar viejo y mandaba a mirar una
+# ruta que nunca va a existir.
+Write-Host "C:\ProgramData\Saidsoft\agente_prueba.log para confirmar el enrolamiento, y aprueba" -ForegroundColor Green
 Write-Host "la estación en el panel (/estaciones/) cuando aparezca como pendiente." -ForegroundColor Green

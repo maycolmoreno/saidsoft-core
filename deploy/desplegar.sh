@@ -99,9 +99,23 @@ HOST=$(grep -E '^ALLOWED_HOSTS=' .env | head -1 | cut -d= -f2- | cut -d, -f1 | t
 if [ -z "$HOST" ]; then
     echo "AVISO: no se pudo leer ALLOWED_HOSTS del .env; se omite el chequeo web."
 else
-    CODIGO=$(curl -sk -o /dev/null -w '%{http_code}' "https://$HOST:8084/login/" || echo 000)
+    # Con reintentos: el contenedor recién recreado tarda en levantar gunicorn, y
+    # mientras tanto nginx contesta 502. Una sola consulta inmediata daba "la web no
+    # responde" sobre un despliegue perfectamente sano (16-sep-2026) — un falso fallo que
+    # cuesta caro, porque enseña a desconfiar de la verificación y entonces deja de
+    # servir para detectar una caída real.
+    CODIGO=000
+    for INTENTO in 1 2 3 4 5 6 7 8 9 10; do
+        CODIGO=$(curl -sk -o /dev/null -w '%{http_code}' "https://$HOST:8084/login/" || echo 000)
+        if [ "$CODIGO" = "200" ]; then
+            break
+        fi
+        echo "   esperando a que la web levante (intento $INTENTO/10, HTTP $CODIGO)..."
+        sleep 3
+    done
     if [ "$CODIGO" != "200" ]; then
-        echo "AVISO: la web no responde 200 en https://$HOST:8084/login/ (devolvió $CODIGO)."
+        echo "AVISO: la web no responde 200 en https://$HOST:8084/login/ tras 30s (devolvió $CODIGO)."
+        echo "       Revisar: docker compose logs --tail 60 web"
         exit 1
     fi
     echo "Web respondiendo (HTTP $CODIGO)."
