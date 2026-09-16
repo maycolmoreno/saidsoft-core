@@ -1760,6 +1760,69 @@ class ActivoUbicarFarmaciaViewTests(TestCase):
         self.assertContains(resp, 'CR-DSK-0055')
         self.assertNotContains(resp, 'CR-IMP-0001')
 
+    def test_lista_filtra_por_farmacia(self):
+        """El filtro que faltaba. "Solo farmacia (PDV)" separa PDV de administrativo, pero
+        con 700 farmacias no servía para la pregunta que uno hace de verdad: qué tiene
+        ESTA farmacia. Era el caso de la carga de topología — mirar los activos de ML016
+        obligaba a pasar páginas."""
+        otra = Farmacia.objects.create(
+            codigo='ML099', grupo=self.farmacia.grupo, unidad_negocio=self.sg,
+        )
+        self.activo.farmacia = self.farmacia
+        self.activo.save(update_fields=['farmacia'])
+        Activo.objects.create(
+            codigo='CR-DSK-0077', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg, farmacia=otra,
+        )
+
+        resp = self.client.get(reverse('panel:activos_lista'), {'farmacia': self.farmacia.codigo})
+        self.assertContains(resp, 'CR-IMP-0001')
+        self.assertNotContains(resp, 'CR-DSK-0077')
+
+    def test_el_filtro_de_farmacia_tambien_busca_por_nombre(self):
+        """Nadie recuerda 700 códigos: buscar "machala" tiene que encontrar MMAC1."""
+        machala = Farmacia.objects.create(
+            codigo='MMAC1', grupo=self.farmacia.grupo, unidad_negocio=self.sg,
+            nombre='Machala Centro',
+        )
+        Activo.objects.create(
+            codigo='CR-DSK-0088', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg, farmacia=machala,
+        )
+        resp = self.client.get(reverse('panel:activos_lista'), {'farmacia': 'machala'})
+        self.assertContains(resp, 'CR-DSK-0088')
+
+    def test_el_filtro_de_farmacia_no_rompe_el_aislamiento_entre_clientes(self):
+        """Lo que no puede pasar nunca: que un filtro de texto sea una forma de llegar a
+        activos de otra unidad de negocio. El scope se aplica antes que el filtro, así que
+        buscar el código exacto de una farmacia ajena no devuelve nada.
+
+        Hace falta un usuario ACOTADO: el del resto de la clase tiene
+        `acceso_todas_unidades`, y con ese la prueba pasaría por el motivo equivocado.
+        """
+        mia = UnidadNegocio.objects.get(codigo='MIA')  # sembrada por migración, igual que SG
+        farmacia_ajena = Farmacia.objects.create(
+            codigo='XX001', grupo=Grupo.objects.create(codigo='TRX999'), unidad_negocio=mia,
+        )
+        Activo.objects.create(
+            codigo='CR-DSK-0099', tipo=Activo.Tipo.DESKTOP, unidad_negocio=mia,
+            farmacia=farmacia_ajena,
+        )
+
+        acotado = User.objects.create_user(username='u_solo_sg', password='x')
+        PerfilUsuario.objects.create(usuario=acotado).unidades_negocio.add(self.sg)
+        acotado.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='view_activo'),
+        )
+        self.client.force_login(acotado)
+
+        resp = self.client.get(reverse('panel:activos_lista'), {'farmacia': 'XX001'})
+        self.assertNotContains(resp, 'CR-DSK-0099')
+
+    def test_sin_filtro_de_farmacia_se_ven_todos(self):
+        self.activo.farmacia = self.farmacia
+        self.activo.save(update_fields=['farmacia'])
+        resp = self.client.get(reverse('panel:activos_lista'), {'farmacia': ''})
+        self.assertContains(resp, 'CR-IMP-0001')
+
 
 class BodegaAjusteStockViewTests(TestCase):
     """BUG-3 de la auditoría de gobernanza (22-ago-2026): botón nuevo para

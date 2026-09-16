@@ -367,6 +367,10 @@ def activos_lista(request):
     estado = request.GET.get('estado')
     bodega = request.GET.get('bodega')
     ubicacion = request.GET.get('ubicacion')
+    # Texto libre y no un desplegable: son ~700 farmacias, y un <select> con 700 opciones
+    # es peor que no tener filtro. Busca por código y también por nombre, porque no todo
+    # el mundo se acuerda del código (busca "machala" y encuentra MMAC1).
+    farmacia = (request.GET.get('farmacia') or '').strip()
     if tipo:
         activos = activos.filter(tipo=tipo)
     if estado:
@@ -377,6 +381,10 @@ def activos_lista(request):
         activos = activos.filter(farmacia__isnull=False)
     elif ubicacion == 'administrativo':
         activos = activos.filter(farmacia__isnull=True)
+    if farmacia:
+        activos = activos.filter(
+            Q(farmacia__codigo__icontains=farmacia) | Q(farmacia__nombre__icontains=farmacia),
+        )
 
     # Se pagina con 18 filas en producción y no cuando haya 1.800: el parque son ~1.800
     # estaciones más sus periféricos, y paginar una lista corta es barato — hacerlo sobre
@@ -396,7 +404,7 @@ def activos_lista(request):
         'estados': Activo.Estado.choices,
         'bodegas': scope_opcional_por_unidad_negocio(Bodega.objects.all(), request.user, 'unidad_negocio').order_by('codigo'),
         'filtro_tipo': tipo or '', 'filtro_estado': estado or '', 'filtro_bodega': bodega or '',
-        'filtro_ubicacion': ubicacion or '',
+        'filtro_ubicacion': ubicacion or '', 'filtro_farmacia': farmacia,
     })
 
 

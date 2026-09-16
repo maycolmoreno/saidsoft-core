@@ -419,9 +419,18 @@ def purgar_metricas_antiguas(*, dias: int = 30) -> int:
     """Borra MuestraMetrica más viejas que `dias`. Reemplaza el `vaciar_logs` del sistema
     viejo (que borraba TODO cada domingo) — retención por antigüedad, no total.
 
-    En producción con TimescaleDB esto lo haría una política de retención nativa; esta
-    función queda como respaldo y para el entorno SQLite de desarrollo. La llaman tanto
-    el comando manual (`purgar_metricas`) como la tarea periódica de Celery.
+    En producción NO hay ninguna política de retención nativa: verificado el 16-sep-2026,
+    `timescaledb_information.hypertables` devuelve cero filas. Las tres migraciones que
+    intentan `create_hypertable` (monitoreo 0002, 0006 y 0021) fallan siempre con
+    "cannot create a unique index without the column timestamp" — el PK `id` que Django
+    crea solo no incluye la columna de particionado. Fallan sin abortar, así que el
+    despliegue pasa y nadie se entera.
+
+    O sea: esta función es lo ÚNICO que controla el crecimiento de la tabla. Desactivarla
+    creyendo que TimescaleDB se hace cargo dejaría la base creciendo sin límite.
+
+    La llaman tanto el comando manual (`purgar_metricas`) como la tarea periódica de
+    Celery.
     """
     umbral = timezone.now() - timedelta(days=dias)
     borradas, _ = MuestraMetrica.objects.filter(timestamp__lt=umbral).delete()
@@ -437,8 +446,14 @@ def purgar_muestras_red_antiguas(*, dias: int = 30) -> int:
     con las 700 respondiendo son ~6 millones de filas por mes, y sería la tabla más
     grande del sistema. El momento barato de arreglarlo es antes de que crezca.
 
-    Mismo criterio que las otras dos: 30 días, y en producción con TimescaleDB la
-    retención real la hace la política nativa; esto queda de respaldo y para SQLite.
+    Mismo criterio de retención que las otras dos: 30 días. Y la misma advertencia — ver
+    `purgar_metricas_antiguas`: no hay política nativa de TimescaleDB detrás, esto es lo
+    único que acota el crecimiento.
+
+    Dimensión, con los números medidos el 16-sep-2026 (~200 bytes por fila): con las 700
+    farmacias reportando cada 5 minutos son ~200.000 filas por día, y con 30 días de
+    retención el régimen estable queda en ~1,2 GB. PostgreSQL sin hypertable lo sostiene
+    de sobra con el índice (farmacia, -timestamp) que ya existe.
     """
     umbral = timezone.now() - timedelta(days=dias)
     borradas, _ = MuestraRedFarmacia.objects.filter(timestamp__lt=umbral).delete()

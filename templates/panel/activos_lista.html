@@ -33,6 +33,14 @@
         <option value="farmacia" {% if filtro_ubicacion == 'farmacia' %}selected{% endif %}>Solo farmacia (PDV)</option>
         <option value="administrativo" {% if filtro_ubicacion == 'administrativo' %}selected{% endif %}>Solo administrativo</option>
     </select>
+    {# Texto libre: 700 farmacias no entran en un desplegable usable. #}
+    <input type="search" name="farmacia" value="{{ filtro_farmacia }}" placeholder="Farmacia (código o nombre)"
+           class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+    <button type="submit" class="btn secondary">Filtrar</button>
+    {% if filtro_farmacia %}
+    <a href="?{% if filtro_tipo %}tipo={{ filtro_tipo }}&{% endif %}{% if filtro_estado %}estado={{ filtro_estado }}&{% endif %}{% if filtro_bodega %}bodega={{ filtro_bodega }}&{% endif %}{% if filtro_ubicacion %}ubicacion={{ filtro_ubicacion }}{% endif %}"
+       class="text-sm" style="color:var(--text-faint);">Limpiar</a>
+    {% endif %}
 </form>
 
 <div class="card" style="overflow:hidden;">

@@ -10,22 +10,25 @@ from .services import (
 
 @shared_task(name='apps.monitoreo.tasks.purgar_metricas_task')
 def purgar_metricas_task():
-    """Diaria (ver CELERY_BEAT_SCHEDULE). Sin efecto real en producción con TimescaleDB
-    (ahí la retención la maneja una política nativa) — respaldo y para SQLite en dev."""
+    """Diaria (ver CELERY_BEAT_SCHEDULE). NO es un respaldo: es la única retención que
+    existe. Los hypertables de TimescaleDB nunca se crearon (ver
+    `apps.monitoreo.services.purgar_metricas_antiguas`)."""
     borradas = purgar_metricas_antiguas(dias=30)
     return f'{borradas} muestra(s) de métricas eliminada(s).'
 
 
 @shared_task(name='apps.monitoreo.tasks.purgar_eventos_monitoreo_task')
 def purgar_eventos_monitoreo_task():
-    """Diaria (ver CELERY_BEAT_SCHEDULE). Mismo respaldo que purgar_metricas_task."""
+    """Diaria (ver CELERY_BEAT_SCHEDULE). Misma advertencia que purgar_metricas_task:
+    no hay retención nativa detrás, esto es lo único que borra."""
     borrados = purgar_eventos_monitoreo_antiguos(dias=30)
     return f'{borrados} evento(s) de monitoreo eliminado(s).'
 
 
 @shared_task(name='apps.monitoreo.tasks.purgar_muestras_red_task')
 def purgar_muestras_red_task():
-    """Diaria (ver CELERY_BEAT_SCHEDULE). Mismo respaldo que purgar_metricas_task."""
+    """Diaria (ver CELERY_BEAT_SCHEDULE). Misma advertencia que purgar_metricas_task:
+    no hay retención nativa detrás, esto es lo único que borra."""
     borradas = purgar_muestras_red_antiguas(dias=30)
     return f'{borradas} muestra(s) de red eliminada(s).'
 
