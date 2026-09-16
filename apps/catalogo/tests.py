@@ -1650,11 +1650,32 @@ class ArmarPaqueteAgenteTests(TestCase):
         self.assertIn('MqttPassword', leeme)
         self.assertIn('FARMACIA-SUFIJO', leeme)
         self.assertIn('PENDIENTE DE APROBACION', leeme)
-        # Y que el que YA no hace falta quede dicho como tal: si el LEEME siguiera
-        # pidiendo los dos, quien instala iría a buscar al .env un valor que no va, y el
-        # riesgo ahí no es que falle — es que lo pegue y quede un secreto de flota más
-        # dando vueltas en 700 estaciones.
+
+    def _leeme(self, version):
+        import zipfile
+        from pathlib import Path
+
+        self._version(version)
+        self._armar('--agente', version)
+        ruta = Path(self.medios) / 'agente-instalador' / 'agente-instalador.zip'
+        with zipfile.ZipFile(ruta) as paquete:
+            return paquete.read('LEEME.txt').decode('utf-8')
+
+    def test_con_un_agente_021_el_leeme_pide_un_solo_valor(self):
+        leeme = self._leeme('agente-prueba-0.21')
         self.assertIn('ComandoHmacSecret va VACIO', leeme)
+        self.assertNotIn('COMANDO_HMAC_SECRET del deploy', leeme)
+
+    def test_con_un_agente_viejo_el_leeme_pide_los_dos(self):
+        """El caso que motivó esto: el paquete quedó con binario 0.20 y un LEEME escrito
+        para 0.21. Quien instalara habría dejado ComandoHmacSecret vacío, la instalación
+        habría salido bien, y esa estación habría descartado en silencio todo comando —
+        sin nada visible en el panel. La instrucción tiene que seguir al binario, no a la
+        última idea que tuvimos."""
+        leeme = self._leeme('agente-prueba-0.20')
+        self.assertIn('COMANDO_HMAC_SECRET del deploy', leeme)
+        self.assertNotIn('ComandoHmacSecret va VACIO', leeme)
+        self.assertIn('descarta en silencio', leeme)
 
     def test_rearmarlo_reemplaza_el_anterior(self):
         """Se corre después de cada build del agente: no puede ir acumulando zips."""

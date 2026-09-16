@@ -39,6 +39,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.catalogo.models import VersionAgente
+from apps.catalogo.services import VERSION_AGENTE_CON_HMAC_PROPIO, _version_agente
 
 # Lo que va adentro: (ruta en el repo, nombre dentro del zip).
 ARCHIVOS_DEL_REPO = [
@@ -51,13 +52,30 @@ ARCHIVOS_DEL_REPO = [
 CARPETA_PUBLICADA = 'agente-instalador'
 NOMBRE_ZIP = 'agente-instalador.zip'
 
-LEEME = """INSTALADOR DEL AGENTE SAIDSOFT — version {version}
-
-1. Copia config.ejemplo.txt a config.txt y completa UN solo valor:
+# Lo que hay que completar depende del binario que se empaqueta, no de la ultima idea
+# que tuvimos: un agente anterior a 0.21 no entiende el secreto propio y necesita el
+# compartido si o si. Decirle a quien instala que lo deje vacio con un binario viejo
+# produce el peor resultado posible — la instalacion sale bien y la estacion descarta
+# todos los comandos en silencio, sin nada visible en el panel.
+PASO_1_CON_HMAC_PROPIO = """1. Copia config.ejemplo.txt a config.txt y completa UN solo valor:
       MqttPassword   -> MQTT_PASSWORD_AGENTE del deploy/.env del servidor
 
    ComandoHmacSecret va VACIO. Desde el agente 0.21 la estacion recibe su propio
    secreto en el enrolamiento y el servidor firma con ese todo lo que le manda.
+"""
+
+PASO_1_CON_HMAC_COMPARTIDO = """1. Copia config.ejemplo.txt a config.txt y completa LOS DOS valores:
+      MqttPassword        -> MQTT_PASSWORD_AGENTE del deploy/.env del servidor
+      ComandoHmacSecret   -> COMANDO_HMAC_SECRET del deploy/.env del servidor
+
+   Este paquete lleva un agente anterior a 0.21, que NO recibe un secreto propio: sin
+   ComandoHmacSecret la estacion se enrola y hace heartbeat con normalidad, pero
+   descarta en silencio todo comando y script, y el panel no muestra nada raro.
+"""
+
+LEEME = """INSTALADOR DEL AGENTE SAIDSOFT — version {version}
+
+{paso_1}
 
    MqttPassword no viene en el paquete a proposito: este zip se descarga por HTTP sin
    autenticacion, y esa credencial hoy tiene permiso de suscripcion sobre /saidsof/#
@@ -121,6 +139,8 @@ class Command(BaseCommand):
                     '(Admin → Versiones de agente).',
                 )
 
+        hmac_propio = _version_agente(version.version) >= VERSION_AGENTE_CON_HMAC_PROPIO
+
         base = Path(settings.BASE_DIR)
         faltantes = [ruta for ruta, _ in ARCHIVOS_DEL_REPO if not (base / ruta).is_file()]
         if faltantes:
@@ -138,7 +158,10 @@ class Command(BaseCommand):
             paquete.write(exe, 'Saidsoft.Agente.exe')
             for ruta, nombre in ARCHIVOS_DEL_REPO:
                 paquete.write(base / ruta, nombre)
-            paquete.writestr('LEEME.txt', LEEME.format(version=version.version))
+            paquete.writestr('LEEME.txt', LEEME.format(
+                version=version.version,
+                paso_1=PASO_1_CON_HMAC_PROPIO if hmac_propio else PASO_1_CON_HMAC_COMPARTIDO,
+            ))
 
         # Comprobación explícita: si alguna vez alguien agrega config.txt a la lista, este
         # chequeo falla antes de publicar en vez de exponer los secretos en silencio.
@@ -165,10 +188,18 @@ class Command(BaseCommand):
             ),
         )
         self.stdout.write('  tar -xf agente-instalador.zip')
-        self.stdout.write('  (copiar config.ejemplo.txt a config.txt y completar MqttPassword)')
+        self.stdout.write(
+            '  (copiar config.ejemplo.txt a config.txt y completar %s)'
+            % ('MqttPassword' if hmac_propio else 'MqttPassword Y ComandoHmacSecret'),
+        )
         self.stdout.write('  Instalar.bat')
         self.stdout.write('')
         self.stdout.write(self.style.WARNING(
             'El paquete NO lleva config.txt: se descarga sin autenticación y ese archivo todavía '
             'tiene MqttPassword, que hoy puede leer el tráfico de toda la cadena.',
         ))
+        if not hmac_propio:
+            self.stdout.write(self.style.WARNING(
+                '%s es anterior a 0.21: quien instale TIENE que completar también '
+                'ComandoHmacSecret. El LEEME del paquete ya lo dice así.' % version.version,
+            ))
