@@ -80,12 +80,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\instalar-servicio.ps1" ^
     -TokenApertura "%TOKEN_APERTURA%"
 
 echo.
+rem Los parentesis de "/estaciones/" van escapados con ^ en el echo de abajo.
+rem Sin eso, el parentesis de cierre termina el bloque del else antes de tiempo y
+rem cmd ejecuta el resto de la linea como si fuera un comando, imprimiendo
+rem "No se esperaba que en este momento" despues de una instalacion exitosa.
+rem Por el mismo motivo este comentario va afuera del bloque: un rem con un
+rem parentesis adentro de uno lo cierra igual.
 if not "%TOKEN_APERTURA%"=="" (
     echo Listo. Revisa arriba si dijo "Running" el servicio. Con token de apertura,
     echo %COMPUTERNAME% debe aparecer en el panel ya APROBADA, dentro de la apertura
     echo de su farmacia, con sus pasos en marcha.
 ) else (
     echo Listo. Revisa arriba si dijo "Running" el servicio, y confirma en el panel
-    echo (/estaciones/) que %COMPUTERNAME% aparece como pendiente de aprobacion.
+    echo ^(/estaciones/^) que %COMPUTERNAME% aparece como pendiente de aprobacion.
 )
 pause
