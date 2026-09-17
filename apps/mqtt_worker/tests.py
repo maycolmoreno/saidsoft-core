@@ -1385,3 +1385,39 @@ class ConfirmacionAlEnrolarTests(TestCase):
         antes = estacion.hmac_secret
         _, estacion = self._enrolar('agente-prueba-0.23')
         self.assertEqual(estacion.hmac_secret, antes)
+
+
+class AclDelWorkerCubreSusTopicosTests(TestCase):
+    """Cada topico que el worker se suscribe tiene que estar permitido en la ACL de EMQX.
+
+    El 17-sep-2026 se descubrio que dos features estaban muertas en produccion sin que
+    nada fallara: el sondeo por ping de activos y el chequeo de servicios del POS. El
+    codigo estaba bien, los agentes publicaban, y el worker pedia la suscripcion — pero
+    la ACL del usuario `saidsof_worker` es una lista blanca explicita y esos dos topicos
+    no estaban en ella. EMQX deniega la suscripcion y no lanza nada: `client.subscribe()`
+    devuelve normal, el worker sigue corriendo, y los mensajes simplemente no llegan.
+
+    Agregar un topico nuevo son DOS lugares, no uno. Esta prueba los ata.
+    """
+
+    def test_cada_topico_suscrito_esta_en_la_acl_del_bootstrap(self):
+        import re
+        from pathlib import Path
+
+        from django.conf import settings
+
+        from apps.mqtt_worker.management.commands import run_mqtt_worker as worker
+
+        suscritos = {
+            valor for nombre, valor in vars(worker).items()
+            if nombre.startswith('TOPICO_') and isinstance(valor, str)
+        }
+        acl = (Path(settings.BASE_DIR) / 'deploy' / 'bootstrap-emqx.sh').read_text(encoding='utf-8')
+        permitidos = set(re.findall(r'"topic":\s*"([^"]+)"', acl))
+
+        faltan = sorted(t for t in suscritos if t not in permitidos)
+        self.assertEqual(
+            faltan, [],
+            'estos topicos los suscribe el worker pero la ACL de EMQX no los permite, '
+            'asi que en produccion la suscripcion se deniega en silencio: %s' % ', '.join(faltan),
+        )
