@@ -89,6 +89,42 @@ if [ -n "$FALTAN" ]; then
     exit 1
 fi
 
+# "running" no es lo mismo que "sano". El 16-sep-2026 este script dijo "Todo aplicado"
+# con `web` y `nginx` en unhealthy: los contenedores estaban levantados y sus chequeos
+# fallaban. Si la falla hubiera sido real en vez de una prueba mal escrita, el despliegue
+# igual habría reportado éxito.
+#
+# Se espera antes de juzgar: un contenedor recién recreado arranca en "starting" y tarda
+# hasta su `start_period` en dar su primer veredicto. Mirar de inmediato daría un fallo
+# que se arregla solo en 60 segundos.
+echo "   esperando el veredicto de los health checks..."
+ENFERMOS=""
+for INTENTO in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    ENFERMOS=""
+    ARRANCANDO=""
+    for SERVICIO in db redis emqx nginx web worker celery_worker celery_beat meshcentral_worker; do
+        SALUD=$(docker compose ps --format '{{.Service}} {{.Health}}' 2>/dev/null | awk -v s="$SERVICIO" '$1==s {print $2}')
+        case "$SALUD" in
+            healthy|'') ;;                       # vacío = el servicio no define chequeo
+            starting) ARRANCANDO="$ARRANCANDO $SERVICIO" ;;
+            *) ENFERMOS="$ENFERMOS $SERVICIO($SALUD)" ;;
+        esac
+    done
+    if [ -z "$ARRANCANDO" ]; then
+        break
+    fi
+    sleep 10
+done
+if [ -n "$ENFERMOS" ]; then
+    echo "AVISO: estos servicios están corriendo pero su health check falla:$ENFERMOS"
+    echo "       Ver por qué: docker inspect <contenedor> --format '{{json .State.Health.Log}}'"
+    exit 1
+fi
+if [ -n "$ARRANCANDO" ]; then
+    echo "AVISO: estos servicios siguen en 'starting' tras 2 minutos:$ARRANCANDO"
+    exit 1
+fi
+
 # Que la web conteste es lo único que prueba que el despliegue sirvió de verdad: los
 # contenedores pueden estar "running" y la aplicación caída por un error de arranque.
 #
