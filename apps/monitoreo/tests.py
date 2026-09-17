@@ -2849,6 +2849,53 @@ class ServiciosPosTests(TestCase):
         self._registrar(self._resultado('pg_local', disponible=True))
         self.assertFalse(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).exists())
 
+    def test_un_servicio_que_vuelve_no_resuelve_la_alerta_si_otro_sigue_caido(self):
+        """Visto en produccion el 17-sep-2026: Odoo sin responder en ML017-B y la alerta
+        figurando RESUELTA, porque pg_central habia contestado despues y comparte regla
+        con el.
+
+        La alerta es por (regla, estacion) y los tres servicios no criticos comparten
+        regla. Resolver por el que acaba de volver deja la alerta cerrada con otro todavia
+        caido — que es peor que no tener alerta: afirma que se arreglo algo que sigue mal.
+        """
+        from apps.monitoreo.models import Alerta, ReglaAlerta
+
+        self._regla(ReglaAlerta.Severidad.WARNING)
+        self._registrar(
+            self._resultado('odoo', disponible=False, critico=False),
+            self._resultado('pg_central', disponible=False, critico=False),
+        )
+        self.assertTrue(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).exists())
+
+        # Vuelve uno solo: la alerta tiene que seguir abierta.
+        self._registrar(self._resultado('pg_central', disponible=True, critico=False))
+        self.assertTrue(
+            Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).exists(),
+            'Odoo sigue caido: la alerta no puede darse por resuelta',
+        )
+
+        # Vuelven todos: recien ahi se resuelve.
+        self._registrar(self._resultado('odoo', disponible=True, critico=False))
+        self.assertFalse(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).exists())
+
+    def test_un_no_critico_caido_no_deja_abierta_la_alerta_critica(self):
+        """Las dos familias se evaluan por separado: que Odoo este caido no puede sostener
+        abierta la alerta de la base local."""
+        from apps.monitoreo.models import Alerta, ReglaAlerta
+
+        self._regla(ReglaAlerta.Severidad.CRITICAL)
+        self._regla(ReglaAlerta.Severidad.WARNING)
+        self._registrar(
+            self._resultado('pg_local', disponible=False),
+            self._resultado('odoo', disponible=False, critico=False),
+        )
+        self.assertEqual(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).count(), 2)
+
+        self._registrar(self._resultado('pg_local', disponible=True))
+        abiertas = Alerta.objects.filter(estado=Alerta.Estado.ABIERTA)
+        self.assertEqual(abiertas.count(), 1)
+        self.assertEqual(abiertas.get().regla.severidad, ReglaAlerta.Severidad.WARNING)
+
     def test_dos_chequeos_caidos_seguidos_no_abren_dos_alertas(self):
         """La alerta es por condicion, no por evento: si no, un servicio caido una hora
         generaria doce alertas identicas."""

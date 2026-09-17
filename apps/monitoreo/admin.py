@@ -4,6 +4,7 @@ from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_por_u
 
 from .models import (
     Alerta, CanalNotificacion, DispositivoDetectado, EquipoBordeFarmacia, EstadoDispositivo,
+    EstadoServicioPos,
     EstadoEnlaceFarmacia, EventoEnlaceFarmacia, EventoMonitoreo, MuestraMetrica, MuestraRedFarmacia,
     PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
@@ -316,3 +317,31 @@ class DispositivoDetectadoAdmin(admin.ModelAdmin):
     @admin.display(description='Declarado', boolean=True, ordering='esta_declarado')
     def declarado(self, obj):
         return obj.esta_declarado
+
+
+@admin.register(EstadoServicioPos)
+class EstadoServicioPosAdmin(admin.ModelAdmin):
+    """Los escribe el agente en cada chequeo; acá solo se miran.
+
+    Registrado porque la ficha de /monitoreo/<pk>/ exige `monitorear_recursos`, que en
+    producción tienen 2 de 10 estaciones. Un dato que solo se ve en una pantalla que casi
+    nadie abre es un dato que no se ve.
+    """
+
+    list_display = (
+        'estacion', 'servicio', 'disponible', 'critico', 'latencia_ms', 'endpoint',
+        'ultima_verificacion',
+    )
+    list_filter = ('servicio', 'disponible', 'critico')
+    search_fields = ('estacion__codigo', 'endpoint', 'mensaje')
+    readonly_fields = [f.name for f in EstadoServicioPos._meta.fields]
+
+    def get_queryset(self, request):
+        # `Estacion.__str__` toca farmacia; sin esto son dos consultas por fila.
+        return super().get_queryset(request).select_related('estacion__farmacia__grupo')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

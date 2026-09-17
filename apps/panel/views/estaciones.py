@@ -27,6 +27,10 @@ def _render_info_modal(request, estacion, **extra):
     contexto = {
         'estacion': estacion, 'ventana_mantenimiento': ventana_mantenimiento_activa(estacion),
         'ultima_version_agente': ultima_version_agente, 'agente_desactualizado': agente_desactualizado,
+        # Los servicios del POS se ven acá y no solo en /monitoreo/<pk>/: esa pantalla
+        # exige `monitorear_recursos`, que en producción tienen 2 de 10 estaciones — y
+        # ninguna de ellas es la que reporta servicios. Esta ficha cubre todas.
+        'servicios_pos': estacion.servicios_pos.all(),
         **extra,
     }
     return render(request, 'panel/estacion_info_modal.html', contexto)

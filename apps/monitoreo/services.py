@@ -652,17 +652,26 @@ def evaluar_regla_servicio_pos(estacion, estado) -> None:
     corresponde. Así "si cae un servicio crítico, alerta crítica" se expresa con las dos
     reglas que ya existen en el modelo, sin inventar un concepto nuevo de severidad.
     """
-    from .models import Metrica, ReglaAlerta
+    from .models import EstadoServicioPos, Metrica, ReglaAlerta
 
     unidad = estacion.farmacia.unidad_negocio
     severidad = ReglaAlerta.Severidad.CRITICAL if estado.critico else ReglaAlerta.Severidad.WARNING
 
+    # Se mira el conjunto de servicios de esa criticidad, no solo el que acaba de
+    # reportar. La alerta es por (regla, estación) y las tres no críticas comparten
+    # regla: resolver por el servicio que acaba de volver dejaría la alerta cerrada con
+    # otro todavía caído. Visto en producción el 17-sep-2026 — Odoo sin responder en
+    # ML017-B y la alerta figurando resuelta porque pg_central habia contestado despues.
+    hay_caido = EstadoServicioPos.objects.filter(
+        estacion=estacion, critico=estado.critico, disponible=False,
+    ).exists()
+
     for regla in reglas_aplicables_a(unidad, metrica=Metrica.SERVICIO_POS_CAIDO):
         if regla.severidad != severidad:
             continue
-        if estado.disponible:
-            resolver_condicion(regla, estacion)
-        else:
+        if hay_caido:
             # valor_disparador es obligatorio y no hay número natural para "no responde";
             # 0 es el marcador, mismo criterio que evaluar_regla_bitlocker.
             abrir_o_mantener_alerta(regla, estacion, valor=0)
+        else:
+            resolver_condicion(regla, estacion)

@@ -5192,3 +5192,78 @@ class ServiciosPosEnElPanelTests(TestCase):
         with CaptureQueriesContext(connection) as ctx:
             self.client.get(reverse('panel:monitoreo_lista'))
         self.assertEqual(len(ctx.captured_queries), con_una)
+
+
+class ServiciosPosEnLaFichaDeEstacionTests(TestCase):
+    """Los servicios del POS en /estaciones/, que es la ficha que cubre TODAS.
+
+    La primera tarjeta se puso en /monitoreo/<pk>/, que exige `monitorear_recursos`: en
+    produccion lo tienen 2 de 10 estaciones, y ninguna de ellas es la que reporta
+    servicios. El dato se recolectaba y no se veia — el mismo patron que la auditoria
+    marco como deuda.
+    """
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        # Sin monitorear_recursos a proposito: es el caso que no se veia.
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, monitorear_recursos=False,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_ficha_svc', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='catalogo', codename='view_estacion',
+            ),
+        )
+        self.client.force_login(self.usuario)
+
+    def _estado(self, servicio, disponible, critico):
+        from apps.monitoreo.models import EstadoServicioPos
+
+        return EstadoServicioPos.objects.create(
+            estacion=self.estacion, servicio=servicio, disponible=disponible, critico=critico,
+            latencia_ms=42 if disponible else None,
+            mensaje='PostgreSQL 160014' if disponible else 'urlopen error timed out',
+            endpoint='192.168.111.6:5433/hub_111_6',
+            ultima_verificacion=timezone.now(),
+            ultima_respuesta=timezone.now() if disponible else None,
+        )
+
+    def _ficha(self):
+        from django.urls import reverse
+
+        return self.client.get(reverse('panel:estacion_info_modal', args=[self.estacion.pk]))
+
+    def test_una_estacion_sin_monitorear_recursos_igual_muestra_sus_servicios(self):
+        """El caso real: ML017-B reporta servicios y no tiene el flag."""
+        self._estado('pg_local', True, True)
+        resp = self._ficha()
+        self.assertContains(resp, 'PostgreSQL local')
+        self.assertContains(resp, '42 ms')
+
+    def test_muestra_el_servicio_caido_con_su_mensaje(self):
+        self._estado('odoo', False, False)
+        resp = self._ficha()
+        self.assertContains(resp, 'Odoo')
+        self.assertContains(resp, 'urlopen error timed out')
+
+    def test_distingue_critico_de_no_critico(self):
+        self._estado('pg_local', False, True)
+        self._estado('odoo', False, False)
+        resp = self._ficha()
+        self.assertContains(resp, 'crítico')
+
+    def test_sin_servicios_reportados_no_aparece_la_seccion(self):
+        """Una estacion con un agente viejo no muestra una seccion vacia."""
+        resp = self._ficha()
+        self.assertNotContains(resp, 'Servicios que consume el POS')
+
+    def test_la_ficha_no_filtra_credenciales(self):
+        self._estado('pg_local', True, True)
+        resp = self._ficha()
+        self.assertNotContains(resp, 'Contrasena')
+        self.assertNotContains(resp, 'password')

@@ -145,6 +145,49 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
     </div>
     {% endif %}
 
+
+    {% comment %}
+    Servicios externos de los que depende el POS para vender. Contesta la pregunta que se
+    hace cuando una caja no puede vender: donde se corta la cadena.
+
+    "sin verificar" no es lo mismo que "caido": si la estacion se apago, el ultimo chequeo
+    queda congelado, y leerlo como actual mandaria a alguien a revisar algo que nadie midio.
+    {% endcomment %}
+    {% if servicios_pos %}
+    <div class="section-divider">
+        <div class="section-head">
+            <h3>Servicios que consume el POS</h3>
+        </div>
+        {% for s in servicios_pos %}
+        <div class="security-block {% if not s.verificacion_vigente %}{% elif s.disponible %}tone-good{% elif s.critico %}tone-critical{% else %}tone-warning{% endif %}">
+            <div class="field-body">
+                <div class="field-label">{{ s.get_servicio_display }}{% if s.critico %} · crítico{% endif %}</div>
+                <div class="field-value">
+                    {% if not s.verificacion_vigente %}
+                        <span class="pill neutral">sin verificar</span>
+                    {% elif s.disponible %}
+                        <span class="pill good">responde{% if s.latencia_ms %} · {{ s.latencia_ms }} ms{% endif %}</span>
+                    {% elif s.critico %}
+                        <span class="pill critical">sin respuesta</span>
+                    {% else %}
+                        <span class="pill warning">sin respuesta</span>
+                    {% endif %}
+                </div>
+                <div class="mono text-xs text-[var(--text-faint)]">{{ s.endpoint|default:"—" }}</div>
+                {% if s.mensaje %}<div class="text-xs text-[var(--text-dim)]">{{ s.mensaje }}</div>{% endif %}
+                {% if not s.disponible and s.verificacion_vigente %}
+                    {% if s.horas_sin_responder %}
+                        <div class="text-xs text-[var(--text-faint)]">sin responder hace {{ s.horas_sin_responder }} h</div>
+                    {% else %}
+                        <div class="text-xs text-[var(--text-faint)]">nunca respondió desde que se monitorea</div>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
     <div class="section-divider">
         <div class="section-head">
             <span class="label">
