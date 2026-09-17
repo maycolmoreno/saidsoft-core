@@ -58,6 +58,11 @@ todo y solo se lee una vez.
         <div class="text-2xl font-semibold num" {% if caidas %}style="color:var(--critical);"{% endif %}>{{ caidas }}</div>
         <div class="text-xs text-[var(--text-faint)]">{% widthratio caidas total 100 %}% del total</div>
     </div>
+    <div class="card p-4" {% if nunca_respondieron %}style="border-left:3px solid var(--warning);"{% endif %}>
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Nunca respondieron</div>
+        <div class="text-2xl font-semibold num" {% if nunca_respondieron %}style="color:var(--warning);"{% endif %}>{{ nunca_respondieron }}</div>
+        <div class="text-xs text-[var(--text-faint)]">no son caídas: revisar ruta o IP</div>
+    </div>
     <div class="card p-4">
         <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Sin sondear</div>
         <div class="text-2xl font-semibold num">{{ sin_sondear }}</div>
@@ -129,6 +134,7 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
                 <option value="">Todos</option>
                 <option value="caidos" {% if filtros.estado == 'caidos' %}selected{% endif %}>Caídos</option>
                 <option value="activos" {% if filtros.estado == 'activos' %}selected{% endif %}>Activos</option>
+                <option value="nunca" {% if filtros.estado == 'nunca' %}selected{% endif %}>Nunca respondieron</option>
                 <option value="sin_sondear" {% if filtros.estado == 'sin_sondear' %}selected{% endif %}>Sin sondear</option>
             </select>
         </div>
@@ -191,6 +197,9 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
                     <span class="pill neutral">Sin sondear</span>
                     {% elif fila.alcanzable %}
                     <span class="pill good">Activo</span>
+                    {% elif fila.nunca_respondio %}
+                    <span class="pill warning">Nunca respondió</span>
+                    <div class="text-[var(--text-faint)]" style="font-size:11px;">revisar ruta o IP cargada</div>
                     {% else %}
                     <span class="pill critical">Caído</span>
                     {% if fila.estado.ultimo_cambio_estado %}

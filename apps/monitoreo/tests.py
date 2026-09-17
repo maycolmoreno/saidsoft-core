@@ -3043,3 +3043,253 @@ class ComposeMeshCentralTests(TestCase):
         entorno = self._entorno_del_servicio('meshcentral_worker')
         for variable in self.VARIABLES:
             self.assertIn(variable, entorno)
+
+
+@override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'])
+class NotificarCambiosEnlacesTests(TestCase):
+    """El aviso proactivo de enlaces caidos/recuperados (lo que se reporta al proveedor)."""
+
+    def setUp(self):
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        # Misma cadena de fixtures que el resto del archivo: la unidad 'SG' la crea una
+        # migracion de datos, el grupo no cuelga de la unidad y la farmacia si.
+        self.unidad = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX901')
+        self.f1 = Farmacia.objects.create(
+            codigo='TSTE01', grupo=self.grupo, unidad_negocio=self.unidad, ip_router='192.168.61.1',
+            circuito_proveedor='telconet61-avejoseurbina',
+        )
+        self.f2 = Farmacia.objects.create(
+            codigo='TSTE02', grupo=self.grupo, unidad_negocio=self.unidad, ip_router='192.169.185.1',
+            circuito_proveedor='puntonet-colimes',
+        )
+        self.Evento = EventoEnlaceFarmacia
+        mail.outbox = []
+
+    def _caida(self, farmacia, *, minutos_atras=10, fin=None, **kwargs):
+        return self.Evento.objects.create(
+            farmacia=farmacia,
+            inicio=timezone.now() - timedelta(minutes=minutos_atras),
+            fin=fin,
+            circuito_proveedor=farmacia.circuito_proveedor,
+            **kwargs,
+        )
+
+    def test_una_caida_nueva_manda_un_correo_y_marca_el_evento(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        evento = self._caida(self.f1)
+        resumen = notificar_cambios_enlaces()
+
+        self.assertEqual(resumen['caidos'], 1)
+        self.assertTrue(resumen['enviado'])
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('TSTE01', mail.outbox[0].body)
+        evento.refresh_from_db()
+        self.assertIsNotNone(evento.notificado_en)
+
+    def test_no_se_avisa_dos_veces_de_la_misma_caida(self):
+        """Lo que hace usable el aviso: sin esto, cada corrida (cada 5 min) repetiria
+        las 162 caidas abiertas hasta que alguien las arregle."""
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caida(self.f1)
+        notificar_cambios_enlaces()
+        mail.outbox = []
+
+        resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['caidos'], 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_varias_caidas_van_en_un_solo_correo_agrupadas_por_proveedor(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caida(self.f1)
+        self._caida(self.f2)
+        notificar_cambios_enlaces()
+
+        self.assertEqual(len(mail.outbox), 1, 'un correo por caida no escala a 196 caidas diarias')
+        cuerpo = mail.outbox[0].body
+        self.assertIn('telconet61', cuerpo)
+        self.assertIn('puntonet', cuerpo)
+        self.assertIn('TSTE01', cuerpo)
+        self.assertIn('TSTE02', cuerpo)
+
+    def test_la_recuperacion_tambien_avisa_y_dice_cuanto_duro(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        evento = self._caida(self.f1, minutos_atras=45, notificado_en=timezone.now())
+        evento.fin = timezone.now()
+        evento.save(update_fields=['fin'])
+
+        resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['recuperados'], 1)
+        self.assertIn('RECUPERADOS', mail.outbox[0].body)
+        self.assertIn('45 min', mail.outbox[0].body)
+        evento.refresh_from_db()
+        self.assertIsNotNone(evento.recuperacion_notificada_en)
+
+    def test_sin_novedades_no_manda_correo(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caida(self.f1, notificado_en=timezone.now())
+        resumen = notificar_cambios_enlaces()
+
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertFalse(resumen['enviado'])
+
+    @override_settings(ENLACES_NOTIFICAR_A=[])
+    def test_sin_destinatarios_no_manda_nada_ni_marca_el_evento(self):
+        """Que no haya a quien avisarle no debe consumir el aviso: cuando se configure
+        el destinatario, la caida que sigue abierta tiene que poder avisarse."""
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        evento = self._caida(self.f1)
+        resumen = notificar_cambios_enlaces()
+
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertFalse(resumen['enviado'])
+        evento.refresh_from_db()
+        self.assertIsNone(evento.notificado_en, 'el evento tiene que quedar pendiente de aviso')
+
+    def test_la_tarea_esta_programada(self):
+        from django.conf import settings
+
+        tareas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
+        self.assertIn('apps.monitoreo.tasks.notificar_cambios_enlaces_task', tareas)
+
+
+class NuncaRespondioTests(TestCase):
+    """Separar "nunca respondio" de "se cayo".
+
+    El panel decia 162 caidos cuando lo accionable eran 28: 133 farmacias nunca habian
+    respondido un sondeo, todas desde el instante en que arranco el monitoreo. Eso no es
+    una caida que reportar -- el proveedor responde que su enlace esta arriba.
+    """
+
+    def setUp(self):
+        self.unidad = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX902')
+        self.farmacia = Farmacia.objects.create(
+            codigo='TSTN01', grupo=self.grupo, unidad_negocio=self.unidad, ip_router='10.0.0.9',
+        )
+
+    def test_una_farmacia_que_nunca_respondio_no_cuenta_como_caida(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(self.farmacia, False, None)
+
+        estado = EstadoEnlaceFarmacia.objects.get(farmacia=self.farmacia)
+        self.assertFalse(estado.alcanzable)
+        self.assertFalse(estado.respondio_alguna_vez)
+        self.assertTrue(estado.nunca_respondio)
+
+    def test_si_respondio_una_vez_una_caida_posterior_si_es_caida(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        registrar_sondeo(self.farmacia, True, 12.0)
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(self.farmacia, False, None)
+
+        estado = EstadoEnlaceFarmacia.objects.get(farmacia=self.farmacia)
+        self.assertFalse(estado.alcanzable)
+        self.assertTrue(estado.respondio_alguna_vez)
+        self.assertFalse(estado.nunca_respondio, 'respondio antes: esto SI es una caida')
+
+    @override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'])
+    def test_no_se_le_reporta_al_proveedor_un_enlace_que_nunca_estuvo_arriba(self):
+        """El punto entero del cambio."""
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces, registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        mail.outbox = []
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(self.farmacia, False, None)
+        self.assertTrue(EventoEnlaceFarmacia.objects.filter(farmacia=self.farmacia).exists(),
+                        'el evento se registra igual: el historico no se pierde')
+
+        resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['caidos'], 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'])
+    def test_una_caida_real_si_se_avisa(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces, registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        mail.outbox = []
+        registrar_sondeo(self.farmacia, True, 12.0)
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(self.farmacia, False, None)
+
+        resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['caidos'], 1)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('TSTN01', mail.outbox[0].body)
+
+    def test_el_panel_las_cuenta_aparte_y_no_como_caidas(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        otra = Farmacia.objects.create(
+            codigo='TSTN02', grupo=self.grupo, unidad_negocio=self.unidad, ip_router='10.0.0.10',
+        )
+        registrar_sondeo(otra, True, 10.0)  # esta si respondio alguna vez
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(self.farmacia, False, None)
+            registrar_sondeo(otra, False, None)
+
+        usuario = User.objects.create_user(username='panel_enlaces', password='x', is_superuser=True,
+                                           is_staff=True)
+        self.client.force_login(usuario)
+        respuesta = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta.context['caidas'], 1, 'solo la que alguna vez respondio')
+        self.assertEqual(respuesta.context['nunca_respondieron'], 1)
+        self.assertContains(respuesta, 'Nunca respondió')
+
+
+class ComposeCorreoTests(ComposeMeshCentralTests):
+    """Los servicios que mandan correo tienen que recibir la config de SMTP.
+
+    Mismo fallo que ComposeMeshCentralTests documenta, repetido: verificado en el
+    servidor el 17-sep-2026, las EMAIL_* no estaban en NINGUN servicio del compose ni
+    en el .env. `send_mail` intentaba autenticarse contra smtp.gmail.com con usuario y
+    clave vacios y fallaba; como todo el proyecto usa fail_silently=True (para que un
+    SMTP caido no tumbe la ingesta de metricas), no quedaba ni un rastro. Ninguna
+    notificacion por correo habia salido nunca, y la alerta se veia igual de bien en el
+    panel.
+
+    Hereda el parser de ComposeMeshCentralTests a proposito: si el formato del compose
+    cambia, un solo lugar que arreglar.
+    """
+
+    # web: notificar_alerta desde una vista. worker: desde la ingesta MQTT.
+    # celery_worker: las tareas periodicas (escalar_alertas_abiertas, enlaces).
+    SERVICIOS_QUE_MANDAN_CORREO = ('web', 'worker', 'celery_worker')
+    VARIABLES_SMTP = ('EMAIL_HOST', 'EMAIL_HOST_USER', 'EMAIL_HOST_PASSWORD')
+
+    def test_los_tres_servicios_que_mandan_correo_tienen_smtp(self):
+        for servicio in self.SERVICIOS_QUE_MANDAN_CORREO:
+            entorno = self._entorno_del_servicio(servicio)
+            for variable in self.VARIABLES_SMTP:
+                self.assertIn(
+                    variable, entorno,
+                    f'{variable} falta en {servicio}: send_mail fallaria en silencio',
+                )
+
+    def test_celery_worker_recibe_a_quien_avisarle_de_enlaces(self):
+        """notificar_cambios_enlaces_task corre ahi; sin esto no manda nada y lo unico
+        que queda es una linea de log."""
+        self.assertIn('ENLACES_NOTIFICAR_A', self._entorno_del_servicio('celery_worker'))
+
+    def test_la_tarea_de_enlaces_esta_programada(self):
+        from django.conf import settings
+
+        tareas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
+        self.assertIn('apps.monitoreo.tasks.notificar_cambios_enlaces_task', tareas)

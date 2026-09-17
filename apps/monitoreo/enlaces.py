@@ -150,6 +150,7 @@ def registrar_sondeo(farmacia, alcanzable: bool, latencia_ms: float | None):
     if alcanzable:
         estado.fallas_consecutivas = 0
         estado.latencia_ms = latencia_ms
+        estado.respondio_alguna_vez = True
         nuevo_alcanzable = True
     else:
         estado.fallas_consecutivas += 1
@@ -234,4 +235,112 @@ def sondear_enlaces_farmacias(farmacias=None) -> dict:
         registrar_sondeo(farmacia, alcanzable, latencia_ms)
         resumen['sondeadas'] += 1
         resumen['activas' if alcanzable else 'caidas'] += 1
+    return resumen
+
+
+def _agrupar_por_proveedor(eventos):
+    """Agrupa por circuito para que el correo se lea como se reporta: un bloque por
+    proveedor. El circuito trae el sitio pegado al proveedor ("sangregorio61-avejose"),
+    así que se corta en el primer guion — es lo que distingue TELCONET de PUNTO NET sin
+    pedir un campo nuevo que hoy nadie llena."""
+    grupos: dict[str, list] = {}
+    for evento in eventos:
+        proveedor = (evento.circuito_proveedor or '').split('-')[0].strip() or '(sin circuito)'
+        grupos.setdefault(proveedor, []).append(evento)
+    return dict(sorted(grupos.items()))
+
+
+def notificar_cambios_enlaces() -> dict:
+    """Manda UN correo con los enlaces que se cayeron y los que volvieron desde el
+    último aviso. Devuelve cuántos de cada uno.
+
+    Un correo agrupado y no uno por evento: se midieron 196 caídas en 24 horas sobre
+    700 sitios (17-sep-2026). Un correo por caída, con los 10 destinatarios que hoy
+    reciben las alertas de estación, serían ~2.000 envíos diarios — Gmail los corta y
+    nadie los lee. Agrupado por proveedor, que es como se abre el ticket.
+
+    No decide nada sobre cuándo una caída es real: eso ya lo resolvió `registrar_sondeo`
+    exigiendo UMBRAL_FALLAS_CONSECUTIVAS sondeos fallidos seguidos antes de abrir el
+    EventoEnlaceFarmacia. Acá solo se avisa de lo que ya está confirmado, y cada evento
+    se avisa una sola vez (`notificado_en` / `recuperacion_notificada_en`).
+
+    Sin ENLACES_NOTIFICAR_A configurado no manda nada y lo dice en el log: el evento ya
+    quedó guardado igual, y una instalación nueva no debe empezar a escribirle a nadie.
+    """
+    from django.conf import settings
+    from django.core.mail import send_mail
+
+    from .models import EventoEnlaceFarmacia
+
+    # Se excluye lo que nunca respondio: un sitio que jamas contesto no tiene una
+    # caida que reportarle al proveedor -- el proveedor va a responder que su enlace
+    # esta arriba, y va a tener razon. Eso se revisa por el panel (ruta, IP, si el
+    # sitio sigue activo), no por un correo de incidente.
+    caidos = list(
+        EventoEnlaceFarmacia.objects
+        .filter(fin__isnull=True, notificado_en__isnull=True)
+        .exclude(farmacia__estado_enlace__respondio_alguna_vez=False)
+        .select_related('farmacia').order_by('inicio')
+    )
+    recuperados = list(
+        EventoEnlaceFarmacia.objects
+        .filter(fin__isnull=False, recuperacion_notificada_en__isnull=True)
+        .select_related('farmacia').order_by('fin')
+    )
+    resumen = {'caidos': len(caidos), 'recuperados': len(recuperados), 'enviado': False}
+    if not caidos and not recuperados:
+        return resumen
+
+    destinatarios = list(getattr(settings, 'ENLACES_NOTIFICAR_A', []) or [])
+    if not destinatarios:
+        logger.info(
+            'Enlaces: %d caída(s) y %d recuperación(es) sin avisar — ENLACES_NOTIFICAR_A está vacío.',
+            len(caidos), len(recuperados),
+        )
+        return resumen
+
+    ahora = timezone.now()
+    lineas = []
+    if caidos:
+        lineas.append(f'ENLACES CAÍDOS ({len(caidos)})')
+        for proveedor, eventos in _agrupar_por_proveedor(caidos).items():
+            lineas.append(f'\n  {proveedor}')
+            for e in eventos:
+                lineas.append(
+                    f'    {e.farmacia.codigo:<10} {e.farmacia.ip_router}  '
+                    f'desde {timezone.localtime(e.inicio):%H:%M}  circuito: {e.circuito_proveedor or "-"}'
+                )
+    if recuperados:
+        if lineas:
+            lineas.append('')
+        lineas.append(f'ENLACES RECUPERADOS ({len(recuperados)})')
+        for proveedor, eventos in _agrupar_por_proveedor(recuperados).items():
+            lineas.append(f'\n  {proveedor}')
+            for e in eventos:
+                lineas.append(
+                    f'    {e.farmacia.codigo:<10} {e.farmacia.ip_router}  '
+                    f'estuvo caído {e.duracion_minutos} min'
+                )
+
+    partes_asunto = []
+    if caidos:
+        partes_asunto.append(f'{len(caidos)} caído(s)')
+    if recuperados:
+        partes_asunto.append(f'{len(recuperados)} recuperado(s)')
+    asunto = '[Enlaces] ' + ', '.join(partes_asunto)
+
+    # fail_silently: un SMTP caído no debe tumbar el sondeo. El evento ya está en la BD y
+    # el panel lo muestra igual -- mismo criterio que notificar_alerta.
+    send_mail(asunto, '\n'.join(lineas), None, destinatarios, fail_silently=True)
+
+    # Se marcan DESPUÉS del envío, y con fail_silently arriba eso significa que un SMTP
+    # caído marca igual el evento como avisado: el correo se pierde. Es deliberado --
+    # la alternativa (reintentar) acumularía el backlog entero y lo mandaría de golpe
+    # cuando el SMTP vuelva, que es justo el correo ilegible que este diseño evita.
+    EventoEnlaceFarmacia.objects.filter(pk__in=[e.pk for e in caidos]).update(notificado_en=ahora)
+    EventoEnlaceFarmacia.objects.filter(pk__in=[e.pk for e in recuperados]).update(
+        recuperacion_notificada_en=ahora,
+    )
+    resumen['enviado'] = True
+    logger.info('Enlaces: avisadas %d caída(s) y %d recuperación(es).', len(caidos), len(recuperados))
     return resumen

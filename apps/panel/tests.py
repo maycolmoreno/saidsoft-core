@@ -3806,6 +3806,19 @@ class EnlacesFarmaciasPanelTests(TestCase):
         for _ in range(veces):
             registrar_sondeo(farmacia, alcanzable, latencia)
 
+    def _caer(self, farmacia):
+        """Deja la farmacia CAÍDA de verdad: primero responde, después deja de hacerlo.
+
+        El sondeo exitoso inicial no es decorativo. Desde que el estado distingue
+        "nunca respondió" de "se cayó" (ver EstadoEnlaceFarmacia.nunca_respondio), una
+        farmacia que solo acumula fallos sin haber respondido jamás NO cuenta como
+        caída: es un sitio que el monitoreo no alcanza, y el panel lo separa a propósito.
+        """
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self._sondear(farmacia, True, latencia=20.0)
+        self._sondear(farmacia, False, veces=EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS)
+
     def test_exige_permiso(self):
         sin_permiso = User.objects.create_user(username='sin_enlaces', password='x')
         PerfilUsuario.objects.create(usuario=sin_permiso, acceso_todas_unidades=True)
@@ -3816,7 +3829,7 @@ class EnlacesFarmaciasPanelTests(TestCase):
         from apps.monitoreo.models import EstadoEnlaceFarmacia
 
         self._sondear(self.viva, True, latencia=21.0)
-        self._sondear(self.caida, False, veces=EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS)
+        self._caer(self.caida)
 
         self.client.force_login(self.usuario)
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
@@ -3832,7 +3845,7 @@ class EnlacesFarmaciasPanelTests(TestCase):
         from apps.monitoreo.models import EstadoEnlaceFarmacia
 
         self._sondear(self.viva, True, latencia=21.0)
-        self._sondear(self.caida, False, veces=EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS)
+        self._caer(self.caida)
 
         self.client.force_login(self.usuario)
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
@@ -3852,7 +3865,7 @@ class EnlacesFarmaciasPanelTests(TestCase):
         evita ir a buscarlo a una planilla mientras la farmacia está sin vender."""
         from apps.monitoreo.models import EstadoEnlaceFarmacia
 
-        self._sondear(self.caida, False, veces=EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS)
+        self._caer(self.caida)
         self.client.force_login(self.usuario)
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertEqual([e.farmacia for e in resp.context['en_curso']], [self.caida])
@@ -4037,6 +4050,10 @@ class EnlacesListaFiltrosYPaginacionTests(TestCase):
         Farmacia.objects.create(codigo='ML999', grupo=self.g1, unidad_negocio=self.sg)
 
         registrar_sondeo(self.farmacias[0], True, 15.0)   # ML001 activa
+        # ML002 responde primero y DESPUÉS se cae: una caída real implica que alguna vez
+        # estuvo arriba. Sin ese primer sondeo exitoso el estado sería "nunca respondió",
+        # que el panel cuenta aparte (ver EstadoEnlaceFarmacia.nunca_respondio).
+        registrar_sondeo(self.farmacias[1], True, 18.0)
         for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
             registrar_sondeo(self.farmacias[1], False, None)  # ML002 caída
         MuestraRedFarmacia.objects.create(

@@ -1,6 +1,6 @@
 from celery import shared_task
 
-from .enlaces import sondear_enlaces_farmacias
+from .enlaces import notificar_cambios_enlaces, sondear_enlaces_farmacias
 from .mikrotik import sincronizar_ancho_banda_farmacias, solicitar_sondeo_red_farmacias_via_agente
 from .services import (
     escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
@@ -111,6 +111,25 @@ def sondear_enlaces_farmacias_task():
             'Sin ruta desde este host; no se registró nada.'
         )
     return f'{resumen["sondeadas"]} enlace(s): {resumen["activas"]} activo(s), {resumen["caidas"]} caído(s).'
+
+
+@shared_task(name='apps.monitoreo.tasks.notificar_cambios_enlaces_task')
+def notificar_cambios_enlaces_task():
+    """Cada 5 min (ver CELERY_BEAT_SCHEDULE): un correo con los enlaces que se cayeron
+    y los que volvieron desde el aviso anterior.
+
+    Separada de sondear_enlaces_farmacias_task y no encadenada al final de ella a
+    proposito: el sondeo corre cada 2 min y notificar en cada barrido partiria una
+    misma tanda de caidas en tres correos. Esperar a que se acumulen 5 minutos las
+    junta en uno solo, que es como se lee y como se reporta al proveedor.
+
+    Tampoco va dentro de registrar_sondeo: eso lo llaman tambien el comando manual y la
+    API de ingesta, y ninguno de los dos deberia mandar correo por su cuenta."""
+    resumen = notificar_cambios_enlaces()
+    if not resumen['caidos'] and not resumen['recuperados']:
+        return 'Sin novedades de enlaces.'
+    estado = 'avisado' if resumen['enviado'] else 'SIN avisar (revisar ENLACES_NOTIFICAR_A)'
+    return f'{resumen["caidos"]} caido(s), {resumen["recuperados"]} recuperado(s) — {estado}.'
 
 
 @shared_task(name='apps.monitoreo.tasks.sondear_identidad_equipos_task')

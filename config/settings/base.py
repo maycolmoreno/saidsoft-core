@@ -262,6 +262,18 @@ MESHCENTRAL_API_CONFIG = {
     'VERIFICAR_TLS': env.bool('MESHCENTRAL_API_VERIFICAR_TLS', default=True),
 }
 
+# A quién avisar por correo cuando el enlace de una farmacia se cae o vuelve (ver
+# apps.monitoreo.enlaces.notificar_cambios_enlaces). Lista explícita y NO los
+# destinatarios de `notificar_alerta`: esos son las alertas de estación, que hoy llegan
+# a 10 personas, y el volumen de enlaces es otro orden de magnitud — 196 caídas en 24
+# horas medidas el 17-sep-2026 sobre 700 sitios. Empieza acotado a una persona por
+# decisión del usuario, para afinar el umbral con datos reales antes de abrirlo.
+#
+# Vacío = no se manda nada (el evento igual queda registrado en EventoEnlaceFarmacia).
+# Es el default a propósito: una instalación nueva no debe empezar a mandar correo a
+# nadie sin que alguien lo configure.
+ENLACES_NOTIFICAR_A = env.list('ENLACES_NOTIFICAR_A', default=[])
+
 # Sondeo SNMP a los Mikrotik de cada farmacia (ver apps.monitoreo.mikrotik) — solo
 # consumo total del enlace por sitio, el router no reparte tráfico por estación (sin
 # Queues por IP/MAC). Nada de esto se configura por sitio más allá de
@@ -382,6 +394,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.monitoreo.tasks.solicitar_sondeo_red_farmacias_via_agente_task',
         # Cada 5 min, mismo intervalo que el sondeo directo que reemplaza en la
         # práctica -- ver docstring de solicitar_sondeo_red_farmacias_via_agente.
+        'schedule': 60.0 * 5,
+    },
+    'notificar-cambios-enlaces': {
+        'task': 'apps.monitoreo.tasks.notificar_cambios_enlaces_task',
+        # Cada 5 min y no cada 2 como el sondeo: junta en un solo correo la tanda de
+        # caídas que el barrido va detectando, en vez de partirla en tres.
         'schedule': 60.0 * 5,
     },
     'sondear-enlaces-farmacias': {

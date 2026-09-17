@@ -80,9 +80,14 @@ def enlaces_farmacias_lista(request):
     sin_dato = Q(estado_enlace__isnull=True) | Q(estado_enlace__alcanzable__isnull=True)
 
     # KPI sobre el conjunto completo. Cuentas en la base, no recorriendo 700 objetos.
+    # "Caidas" son solo las que alguna vez respondieron: lo demas no es una caida sino
+    # un sitio que el monitoreo no alcanza, y mezclarlos hacia que el KPI dijera 162
+    # cuando lo accionable eran 28 (medido el 17-sep-2026).
+    nunca = Q(estado_enlace__alcanzable=False, estado_enlace__respondio_alguna_vez=False)
     total = base.count()
     activas = base.filter(estado_enlace__alcanzable=True).count()
-    caidas = base.filter(estado_enlace__alcanzable=False).count()
+    caidas = base.filter(estado_enlace__alcanzable=False).exclude(nunca).count()
+    nunca_respondieron = base.filter(nunca).count()
     sin_sondear = base.filter(sin_dato).count()
     con_ancho_banda = base.filter(con_trafico).count()
 
@@ -106,7 +111,9 @@ def enlaces_farmacias_lista(request):
     if filtros['estado'] == 'activos':
         listado = listado.filter(estado_enlace__alcanzable=True)
     elif filtros['estado'] == 'caidos':
-        listado = listado.filter(estado_enlace__alcanzable=False)
+        listado = listado.filter(estado_enlace__alcanzable=False).exclude(nunca)
+    elif filtros['estado'] == 'nunca':
+        listado = listado.filter(nunca)
     elif filtros['estado'] == 'sin_sondear':
         listado = listado.filter(sin_dato)
     if filtros['grupo']:
@@ -121,6 +128,9 @@ def enlaces_farmacias_lista(request):
     # `sorted()` en Python solo ordenaría las 25 filas de la página.
     listado = listado.annotate(
         orden_estado=Case(
+            # Las caidas reales primero; las que nunca respondieron despues de las
+            # activas, porque no son trabajo de hoy sino de revisar la carga de datos.
+            When(nunca, then=3),
             When(estado_enlace__alcanzable=False, then=0),
             When(estado_enlace__alcanzable=True, then=1),
             default=2,
@@ -140,6 +150,10 @@ def enlaces_farmacias_lista(request):
             'farmacia': farmacia,
             'estado': estado,
             'alcanzable': estado.alcanzable if estado else None,
+            # La fila tiene que decir lo mismo que el KPI: marcar "Caído" un sitio que
+            # nunca respondió manda a alguien a abrir un ticket con el proveedor por un
+            # enlace que nunca estuvo arriba.
+            'nunca_respondio': bool(estado and estado.nunca_respondio),
             'total_kbps': total_kbps,
             'estado_bw': clasificar(total_kbps, RED_FARMACIA_UMBRAL_WARNING_KBPS,
                                      RED_FARMACIA_UMBRAL_CRITICAL_KBPS),
@@ -156,6 +170,7 @@ def enlaces_farmacias_lista(request):
         'filas': filas,
         'activas': activas,
         'caidas': caidas,
+        'nunca_respondieron': nunca_respondieron,
         'sin_sondear': sin_sondear,
         'total': total,
         'con_ancho_banda': con_ancho_banda,

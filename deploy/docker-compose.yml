@@ -176,6 +176,16 @@ services:
       # Fundación async (Fase 1 del roadmap) — sin esto, Django usa el default
       # (redis://localhost:6379/0, no existe acá) y cualquier llamada a una tarea Celery
       # colgaría intentando conectar a un Redis que no está.
+      # Correo saliente. Sin estas variables `send_mail` intenta autenticarse contra
+      # smtp.gmail.com con usuario y clave vacios, falla, y como TODO el proyecto usa
+      # fail_silently=True (para que un SMTP caido no tumbe la ingesta de metricas) el
+      # fallo no deja rastro: la alerta queda guardada y el correo simplemente nunca
+      # sale. Verificado en el servidor real el 17-sep-2026: no estaban en NINGUN
+      # servicio, asi que ninguna notificacion por correo habia salido nunca.
+      EMAIL_HOST: ${EMAIL_HOST:-smtp.gmail.com}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
@@ -262,6 +272,16 @@ services:
       EMQX_API_URL: ${EMQX_API_URL:-}
       EMQX_API_KEY: ${EMQX_API_KEY:-}
       EMQX_API_SECRET: ${EMQX_API_SECRET:-}
+      # Correo saliente. Sin estas variables `send_mail` intenta autenticarse contra
+      # smtp.gmail.com con usuario y clave vacios, falla, y como TODO el proyecto usa
+      # fail_silently=True (para que un SMTP caido no tumbe la ingesta de metricas) el
+      # fallo no deja rastro: la alerta queda guardada y el correo simplemente nunca
+      # sale. Verificado en el servidor real el 17-sep-2026: no estaban en NINGUN
+      # servicio, asi que ninguna notificacion por correo habia salido nunca.
+      EMAIL_HOST: ${EMAIL_HOST:-smtp.gmail.com}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
@@ -378,6 +398,19 @@ services:
       MESHCENTRAL_API_PASSWORD: ${MESHCENTRAL_API_PASSWORD}
       MESHCENTRAL_API_CA_CERT: ${MESHCENTRAL_API_CA_CERT}
       MESHCENTRAL_API_VERIFICAR_TLS: ${MESHCENTRAL_API_VERIFICAR_TLS:-True}
+      # Correo saliente. Sin estas variables `send_mail` intenta autenticarse contra
+      # smtp.gmail.com con usuario y clave vacios, falla, y como TODO el proyecto usa
+      # fail_silently=True (para que un SMTP caido no tumbe la ingesta de metricas) el
+      # fallo no deja rastro: la alerta queda guardada y el correo simplemente nunca
+      # sale. Verificado en el servidor real el 17-sep-2026: no estaban en NINGUN
+      # servicio, asi que ninguna notificacion por correo habia salido nunca.
+      EMAIL_HOST: ${EMAIL_HOST:-smtp.gmail.com}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      # A quien avisarle de enlaces caidos/recuperados (lista separada por comas). La
+      # lee notificar_cambios_enlaces_task, que corre en ESTE servicio.
+      ENLACES_NOTIFICAR_A: ${ENLACES_NOTIFICAR_A:-}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:

@@ -587,8 +587,15 @@ que tenía `Cresio_enlaces`, el sistema anterior (ver `docs/evaluacion-cresio-en
   una librería ICMP: evita necesitar root/CAP_NET_RAW) y `registrar_sondeo()`, que es el
   punto de entrada para cualquier origen del dato (el comando, un agente, o un probe externo
   por API el día que exista).
-- **`EstadoEnlaceFarmacia`** — estado actual por farmacia. `alcanzable=None` significa
-  "nunca se sondeó", que no es lo mismo que caída.
+- **`EstadoEnlaceFarmacia`** — estado actual por farmacia. Tres estados, no dos:
+  `alcanzable=None` es "nunca se sondeó"; `alcanzable=False` con
+  `respondio_alguna_vez=False` (la propiedad `nunca_respondio`) es "se sondea y jamás
+  contestó"; y solo el resto es una caída real. La tercera categoría se agregó el
+  17-sep-2026 porque el panel decía **162 caídos cuando lo accionable eran 28**: 133
+  farmacias nunca habían respondido un sondeo, todas desde el mismo instante en que
+  arrancó el monitoreo (11-sep 22:00). Eso no son enlaces rotos — es falta de ruta
+  desde el servidor, IP mal cargada o sitios de baja, y reportárselo al proveedor
+  como una caída hace que responda, con razón, que su enlace está arriba.
 - **`EventoEnlaceFarmacia`** — historial de caídas con su duración y el circuito del
   proveedor copiado al momento. Es la línea base de disponibilidad real por sitio para
   discutir un SLA, y es el dato que no se puede reconstruir después.
@@ -601,6 +608,34 @@ que tenía `Cresio_enlaces`, el sistema anterior (ver `docs/evaluacion-cresio-en
   circuito a la vista (es lo que el proveedor pide al abrir el ticket), y las caídas primero en
   la tabla. Si nadie sondeó todavía, lo dice y explica qué comando falta correr, en vez de
   mostrar una tabla vacía que parece una pantalla rota.
+
+### Aviso por correo de caída y recuperación
+
+`notificar_cambios_enlaces()` manda **un** correo con los enlaces que se cayeron y los que
+volvieron desde el aviso anterior (Celery Beat cada 5 min,
+`notificar_cambios_enlaces_task`). Agrupado por proveedor, que es como se abre el ticket.
+
+Por qué agrupado y no un correo por evento: se midieron **196 caídas en 24 horas** sobre 700
+sitios (17-sep-2026). Un correo por caída, con los 10 destinatarios que hoy reciben las
+alertas de estación, serían ~2.000 envíos diarios — Gmail los corta y nadie los lee.
+
+- **No avisa de lo que nunca respondió.** Un sitio que jamás contestó no tiene una
+  caída que reportar; se revisa por el panel (filtro "Nunca respondieron"), no por
+  correo. El evento igual queda registrado en `EventoEnlaceFarmacia`.
+- **No decide cuándo una caída es real.** Eso ya lo resolvió `registrar_sondeo()` exigiendo
+  `UMBRAL_FALLAS_CONSECUTIVAS` (3) sondeos fallidos seguidos: con el barrido cada 2 min, una
+  caída se declara a los ~6 minutos. El aviso solo reporta lo ya confirmado.
+- **Cada evento se avisa una sola vez** (`notificado_en` / `recuperacion_notificada_en`). Sin
+  eso, cada corrida repetiría las 162 caídas abiertas hasta que alguien las arreglara.
+- **El histórico arranca marcado como avisado** (backfill en la migración `0024`): al
+  desplegar había 162 caídas abiertas, 134 de ellas de más de 24 horas. Esas son sitios
+  crónicamente inalcanzables, no novedad; se revisan por el panel, no por correo.
+- **`ENLACES_NOTIFICAR_A`** (lista, vacía por defecto) es a quién se le avisa. Lista propia y
+  **no** los destinatarios de `notificar_alerta`: el volumen es otro orden de magnitud.
+  Vacía = no se manda nada y el evento igual queda registrado.
+- Si el SMTP falla, el evento **se marca igual** como avisado y ese correo se pierde. Es
+  deliberado: reintentar acumularía el backlog y lo mandaría de golpe al volver el SMTP, que
+  es justo el correo ilegible que este diseño evita.
 
 **Si el host con ruta no alcanza la base de datos**, hay una segunda vía: una sonda liviana
 mide y reporta por HTTP, y el servidor persiste con el mismo `registrar_sondeo()`.

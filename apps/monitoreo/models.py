@@ -636,12 +636,34 @@ class EstadoEnlaceFarmacia(models.Model):
         null=True, blank=True, help_text='Latencia del último sondeo exitoso. null = el último falló.',
     )
     fallas_consecutivas = models.PositiveIntegerField(default=0)
+    # Tercera categoria, que faltaba: `alcanzable` distingue "responde" de "caido" y
+    # null de "nunca se sondeo", pero no habia forma de ver "se sondea y nunca
+    # respondio". Medido el 17-sep-2026: de 162 farmacias en False, 133 nunca habian
+    # respondido un solo sondeo -- todas desde el mismo instante en que arranco el
+    # monitoreo (11-sep 22:00). Eso no son caidas: es que el servidor no tiene ruta a
+    # esos segmentos, o la IP esta mal cargada, o el sitio es de baja.
+    #
+    # Importa para dos cosas: el panel decia "162 caidos" cuando los accionables eran
+    # 28, y el aviso por correo (ver enlaces.notificar_cambios_enlaces) reportaria al
+    # proveedor un enlace que nunca estuvo arriba -- el proveedor responde que su
+    # enlace esta bien, y tiene razon.
+    respondio_alguna_vez = models.BooleanField(
+        default=False,
+        help_text='False y alcanzable=False = nunca respondio desde que se lo sondea, que no es '
+                  'una caida: revisar ruta, IP cargada o si el sitio sigue activo.',
+    )
     ultima_verificacion = models.DateTimeField(null=True, blank=True)
     ultimo_cambio_estado = models.DateTimeField(
         null=True, blank=True,
         help_text='Cuándo pasó de alcanzable a caído o viceversa. Sirve para "lleva N horas caída" '
                   'sin tener que recorrer los eventos.',
     )
+
+    @property
+    def nunca_respondio(self) -> bool:
+        """Se lo sondea y jamas contesto. Distinto de `alcanzable is None` (nunca se
+        sondeo) y de una caida real (respondio antes y ahora no)."""
+        return self.alcanzable is False and not self.respondio_alguna_vez
 
     class Meta:
         db_table = 'estado_enlace_farmacia'
@@ -740,6 +762,23 @@ class EventoEnlaceFarmacia(models.Model):
         help_text='Copia del circuito al momento de la caída. Es lo que el proveedor pide al abrir '
                   'el ticket, y se guarda acá para que el evento siga siendo útil aunque la farmacia '
                   'cambie de circuito después.',
+    )
+    # Dos marcas y no un booleano: el aviso de caída y el de recuperación son dos
+    # correos distintos, separados por horas, y hace falta saber cuál de los dos ya
+    # salió. Guardar CUÁNDO además permite auditar el retraso real entre la caída y el
+    # aviso sin cruzar con los logs.
+    #
+    # Se marcan solas en el backfill de la migración que las crea: sin eso, la primera
+    # corrida habría mandado un correo con las 162 caídas abiertas de ese momento (134
+    # de ellas de más de 24 horas, crónicas, que no son novedad de nadie). El sistema
+    # arranca avisando solo de lo que pase de ahí en adelante.
+    notificado_en = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Cuándo se avisó por correo de esta caída. Vacío = todavía no se avisó.',
+    )
+    recuperacion_notificada_en = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Cuándo se avisó de que el enlace volvió. Vacío = todavía no se avisó.',
     )
 
     class Meta:
