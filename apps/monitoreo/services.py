@@ -583,3 +583,86 @@ def registrar_estado_red_activos(*, estacion, resultados: list) -> int:
         estado.save()
         guardados += 1
     return guardados
+
+
+# --- servicios externos que consume el POS (ver models.EstadoServicioPos) ---
+
+
+def registrar_servicios_pos(*, estacion, resultados: list) -> int:
+    """Guarda lo que reportó el agente y evalúa la regla de alerta por cada servicio.
+
+    `ultima_respuesta` solo avanza cuando el servicio contestó: es el "último visto", y
+    pisarlo en cada chequeo borraría el dato que dice hace cuánto está caído.
+
+    La muestra de latencia se guarda solo si respondió. Una latencia nula no es un punto
+    en la curva, y graficarla como cero diría que contestó instantáneamente.
+    """
+    from .models import EstadoServicioPos, MuestraServicioPos, ServicioPos
+
+    validos = {v for v, _ in ServicioPos.choices}
+    ahora = timezone.now()
+    guardados = 0
+
+    for fila in resultados:
+        servicio = fila.get('servicio')
+        if servicio not in validos:
+            logger.warning(
+                '%s reportó el servicio desconocido %r — se ignora.', estacion.codigo, servicio,
+            )
+            continue
+
+        disponible = bool(fila.get('disponible'))
+        latencia = fila.get('latencia_ms') if disponible else None
+
+        estado, _ = EstadoServicioPos.objects.get_or_create(
+            estacion=estacion, servicio=servicio,
+            defaults={'ultima_verificacion': ahora},
+        )
+        estado.disponible = disponible
+        estado.latencia_ms = latencia
+        estado.mensaje = (fila.get('mensaje') or '')[:300]
+        estado.endpoint = (fila.get('endpoint') or '')[:200]
+        estado.critico = bool(fila.get('critico', True))
+        estado.ultima_verificacion = ahora
+        if disponible:
+            estado.ultima_respuesta = ahora
+        estado.save()
+        guardados += 1
+
+        if disponible and isinstance(latencia, int):
+            MuestraServicioPos.objects.create(
+                estacion=estacion, servicio=servicio, latencia_ms=latencia,
+            )
+
+        evaluar_regla_servicio_pos(estacion, estado)
+
+    return guardados
+
+
+def evaluar_regla_servicio_pos(estacion, estado) -> None:
+    """Abre o resuelve la alerta de un servicio del POS.
+
+    De la familia de `evaluar_regla_bitlocker`/`evaluar_regla_pos_errores`: es un estado
+    binario reportado puntualmente, no una serie de tiempo, así que no hay condición
+    sostenida que esperar.
+
+    La severidad NO la decide esta función: la toma de la `ReglaAlerta` que el operador
+    configuró. Lo que sí hace es respetar el campo `critico` del servicio — sin la base
+    local la caja no vende, sin Odoo sí — aplicando solo las reglas cuya severidad
+    corresponde. Así "si cae un servicio crítico, alerta crítica" se expresa con las dos
+    reglas que ya existen en el modelo, sin inventar un concepto nuevo de severidad.
+    """
+    from .models import Metrica, ReglaAlerta
+
+    unidad = estacion.farmacia.unidad_negocio
+    severidad = ReglaAlerta.Severidad.CRITICAL if estado.critico else ReglaAlerta.Severidad.WARNING
+
+    for regla in reglas_aplicables_a(unidad, metrica=Metrica.SERVICIO_POS_CAIDO):
+        if regla.severidad != severidad:
+            continue
+        if estado.disponible:
+            resolver_condicion(regla, estacion)
+        else:
+            # valor_disparador es obligatorio y no hay número natural para "no responde";
+            # 0 es el marcador, mismo criterio que evaluar_regla_bitlocker.
+            abrir_o_mantener_alerta(regla, estacion, valor=0)

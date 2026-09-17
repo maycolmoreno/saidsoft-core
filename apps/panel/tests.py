@@ -5056,3 +5056,139 @@ class DivisionDeVistasTests(TestCase):
             'monitoreo_lista', 'tendencia_flota', 'enlaces_farmacias_lista',
         ):
             self.assertTrue(hasattr(views, nombre), 'falta %s en apps.panel.views' % nombre)
+
+
+class ServiciosPosEnElPanelTests(TestCase):
+    """La tarjeta de servicios del POS en la ficha de la estacion y el indicador de flota.
+
+    La ficha ya se refresca sola por HTMX cada 10s, asi que la tarjeta se actualiza sin
+    codigo nuevo: alcanza con que el partial la incluya.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, monitorear_recursos=True,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_panel_svc', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='monitoreo', codename='view_muestrametrica',
+            ),
+        )
+        self.client.force_login(self.usuario)
+
+    def _estado(self, servicio='pg_local', disponible=True, critico=True, **extra):
+        from apps.monitoreo.models import EstadoServicioPos
+
+        campos = {
+            'disponible': disponible, 'critico': critico,
+            'latencia_ms': 42 if disponible else None,
+            'mensaje': 'PostgreSQL 160006' if disponible else 'connection refused',
+            'endpoint': '10.0.0.5:5432/pos',
+            'ultima_verificacion': timezone.now(),
+            'ultima_respuesta': timezone.now() if disponible else None,
+        }
+        campos.update(extra)
+        return EstadoServicioPos.objects.create(
+            estacion=self.estacion, servicio=servicio, **campos,
+        )
+
+    def _ficha(self):
+        from django.urls import reverse
+
+        return self.client.get(
+            reverse('panel:monitoreo_detalle_partial', args=[self.estacion.pk]),
+        )
+
+    def test_la_ficha_muestra_el_servicio_que_responde(self):
+        self._estado('pg_local')
+        resp = self._ficha()
+        self.assertContains(resp, 'PostgreSQL local')
+        self.assertContains(resp, '42 ms')
+        self.assertContains(resp, '10.0.0.5:5432/pos')
+
+    def test_la_ficha_muestra_el_servicio_caido_con_su_mensaje(self):
+        """El mensaje crudo ES el diagnostico: distingue "no hay ruta" de "clave
+        rechazada", que llevan a lugares distintos."""
+        self._estado('pg_central', disponible=False, critico=False)
+        resp = self._ficha()
+        self.assertContains(resp, 'PostgreSQL central')
+        self.assertContains(resp, 'connection refused')
+
+    def test_un_chequeo_viejo_se_muestra_como_sin_verificar_y_no_como_caido(self):
+        """Si la estacion se apago, nadie esta midiendo. Pintarlo de rojo mandaria a
+        alguien a revisar algo que nadie comprobo."""
+        from apps.monitoreo.models import EstadoServicioPos
+
+        estado = self._estado('pg_local', disponible=False)
+        EstadoServicioPos.objects.filter(pk=estado.pk).update(
+            ultima_verificacion=timezone.now() - timedelta(hours=5),
+        )
+        resp = self._ficha()
+        self.assertContains(resp, 'sin verificar')
+
+    def test_una_estacion_sin_muestras_de_recursos_igual_muestra_sus_servicios(self):
+        """Son dos chequeos con su propio intervalo: la tarjeta va fuera del bloque que
+        depende de que exista una MuestraMetrica."""
+        self._estado('odoo', critico=False)
+        resp = self._ficha()
+        self.assertContains(resp, 'Odoo')
+
+    def test_la_ficha_no_filtra_credenciales(self):
+        self._estado('pg_local', endpoint='10.0.0.5:5432/pos')
+        resp = self._ficha()
+        self.assertNotContains(resp, 'Contrasena')
+        self.assertNotContains(resp, 'password')
+
+    def test_el_listado_de_flota_avisa_cuantos_servicios_estan_caidos(self):
+        from django.urls import reverse
+
+        self._estado('pg_local', disponible=False)
+        self._estado('odoo', disponible=False, critico=False)
+        resp = self.client.get(reverse('panel:monitoreo_lista'))
+        self.assertContains(resp, '2 sin responder')
+
+    def test_el_listado_ignora_los_chequeos_viejos(self):
+        """Una estacion apagada no genera un rojo en la vista de flota."""
+        from django.urls import reverse
+
+        from apps.monitoreo.models import EstadoServicioPos
+
+        estado = self._estado('pg_local', disponible=False)
+        EstadoServicioPos.objects.filter(pk=estado.pk).update(
+            ultima_verificacion=timezone.now() - timedelta(hours=5),
+        )
+        resp = self.client.get(reverse('panel:monitoreo_lista'))
+        self.assertNotContains(resp, 'sin responder')
+
+    def test_el_listado_no_consulta_una_vez_por_estacion(self):
+        """N+1: la vista de flota muestra todas las estaciones monitoreadas, y una
+        consulta por tarjeta es el mismo problema que la auditoria ya saco de esta
+        pantalla."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from django.urls import reverse
+
+        self._estado('pg_local', disponible=False)
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get(reverse('panel:monitoreo_lista'))
+        con_una = len(ctx.captured_queries)
+
+        for i in range(5):
+            otra = Estacion.objects.create(
+                codigo='ML001-X%d' % i, farmacia=self.farmacia, monitorear_recursos=True,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            )
+            from apps.monitoreo.models import EstadoServicioPos
+            EstadoServicioPos.objects.create(
+                estacion=otra, servicio='pg_local', disponible=False, critico=True,
+                ultima_verificacion=timezone.now(),
+            )
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get(reverse('panel:monitoreo_lista'))
+        self.assertEqual(len(ctx.captured_queries), con_una)

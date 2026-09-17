@@ -157,6 +157,10 @@ class Metrica(models.TextChoices):
     BITLOCKER_DESHABILITADO = 'bitlocker_deshabilitado', 'BitLocker deshabilitado'
     AGENTE_CAIDO_RED_VIVA = 'agente_caido_red_viva', 'Agente sin reportar (con red viva)'
     POS_ERRORES = 'pos_errores', 'Errores del POS (por ventana de reporte)'
+    # Una sola métrica para los cuatro servicios: cuál cayó lo dice la Alerta, no la
+    # regla. Cuatro métricas obligarían a crear cuatro reglas por unidad de negocio para
+    # expresar la misma intención — "avisame si el POS pierde una dependencia".
+    SERVICIO_POS_CAIDO = 'servicio_pos_caido', 'Servicio del POS sin responder'
 
 
 class EstadoDispositivo(models.Model):
@@ -838,3 +842,141 @@ class EstadoRedActivo(models.Model):
         if self.ultima_respuesta is None:
             return None
         return round((timezone.now() - self.ultima_respuesta).total_seconds() / 3600, 1)
+
+
+class ServicioPos(models.TextChoices):
+    """Los servicios externos de los que depende el punto de venta para vender.
+
+    Salen del `.exe.Config` real del POS: los dos Postgres y `OdooServerUrl` viven en
+    `<appSettings>`, y el web service de recargas en `<applicationSettings>`. El agente
+    los descubre leyendo ese archivo, no de una lista que alguien mantenga acá.
+    """
+
+    PG_LOCAL = 'pg_local', 'PostgreSQL local'
+    PG_CENTRAL = 'pg_central', 'PostgreSQL central'
+    ODOO = 'odoo', 'Odoo'
+    RECARGAS_SOAP = 'recargas_soap', 'Web service de recargas'
+
+
+class EstadoServicioPos(models.Model):
+    """Si un servicio del que depende el POS responde, visto desde la estación.
+
+    Por qué existe: cuando una caja no puede vender, la pregunta es dónde se corta la
+    cadena — ¿la base local, el nodo central, Odoo, el web service de recargas? Hasta
+    ahora eso se averiguaba entrando al equipo. Este chequeo lo pregunta desde adentro,
+    cada pocos minutos, y deja el resultado a la vista.
+
+    Se mide desde la ESTACIÓN y no desde el servidor a propósito: lo que importa no es si
+    el servicio está vivo en abstracto, sino si esa caja puede alcanzarlo. Una base
+    central sana con la ruta rota desde una farmacia es, para esa farmacia, una base
+    caída — y desde el servidor central se vería perfecta.
+
+    Una fila por estación y servicio, sobrescrita en cada chequeo: es el estado actual, no
+    un historial. La serie temporal de latencia vive aparte en `MuestraServicioPos`, mismo
+    criterio de modelos paralelos por granularidad que `EstadoEnlaceFarmacia` con
+    `MuestraRedFarmacia`.
+
+    El agente reporta datos crudos —alcanzable, latencia, mensaje— y NO decide si eso es
+    bueno o malo. Esa decisión vive en `ReglaAlerta`, configurable por unidad de negocio
+    desde el panel. Si el umbral estuviera en el agente, cambiarlo exigiría redistribuir
+    el ejecutable a ~1.800 estaciones en vez de editar una fila.
+    """
+
+    # Mismo umbral que EstadoRedActivo, y por el mismo motivo: un estado viejo leído como
+    # actual es peor que no tener dato. Si la estación se apaga, su último chequeo queda
+    # congelado y diría "todo bien" indefinidamente.
+    HORAS_VERIFICACION_VIGENTE = EstadoRedActivo.HORAS_VERIFICACION_VIGENTE
+
+    estacion = models.ForeignKey(
+        Estacion, on_delete=models.CASCADE, related_name='servicios_pos',
+    )
+    servicio = models.CharField(max_length=20, choices=ServicioPos.choices)
+
+    disponible = models.BooleanField(default=False)
+    latencia_ms = models.PositiveIntegerField(null=True, blank=True)
+    mensaje = models.CharField(
+        max_length=300, blank=True,
+        help_text='Lo que contestó el servicio: la versión de PostgreSQL, el código HTTP, '
+                  'o el error tal cual. Crudo, para poder diagnosticar sin entrar al equipo.',
+    )
+    endpoint = models.CharField(
+        max_length=200, blank=True,
+        help_text='A qué se apuntó (host:puerto/base o URL). NUNCA lleva credenciales: '
+                  'mismo criterio que EstadoRedActivo, que guarda la IP sondeada y nada más.',
+    )
+    critico = models.BooleanField(
+        default=True,
+        help_text='Si sin este servicio la caja no puede vender. Decide si la regla de '
+                  'alerta que se dispara es crítica o una advertencia.',
+    )
+
+    ultima_verificacion = models.DateTimeField()
+    ultima_respuesta = models.DateTimeField(
+        null=True, blank=True,
+        help_text='La última vez que contestó. Vacío = nunca contestó desde que se lo '
+                  'monitorea, que no es lo mismo que "se cayó recién".',
+    )
+
+    class Meta:
+        db_table = 'estado_servicio_pos'
+        ordering = ['estacion__codigo', 'servicio']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['estacion', 'servicio'], name='un_estado_por_estacion_y_servicio',
+            ),
+        ]
+        verbose_name = 'Estado de un servicio del POS'
+        verbose_name_plural = 'Estados de los servicios del POS'
+
+    def __str__(self):
+        return '%s / %s: %s' % (
+            self.estacion.codigo, self.get_servicio_display(),
+            'responde' if self.disponible else 'sin respuesta',
+        )
+
+    @property
+    def verificacion_vigente(self) -> bool:
+        return (timezone.now() - self.ultima_verificacion) <= timedelta(
+            hours=self.HORAS_VERIFICACION_VIGENTE,
+        )
+
+    @property
+    def horas_sin_responder(self):
+        """Horas desde la última respuesta, o None si nunca respondió.
+
+        Distingue "se cayó recién" de "hace una semana que no anda", que son dos
+        incidentes distintos aunque se vean igual en una lista.
+        """
+        if self.ultima_respuesta is None:
+            return None
+        return round((timezone.now() - self.ultima_respuesta).total_seconds() / 3600, 1)
+
+
+class MuestraServicioPos(models.Model):
+    """Latencia de un servicio del POS en un instante, para poder graficar la tendencia.
+
+    Separada de `EstadoServicioPos` siguiendo el precedente explícito del proyecto
+    (`EstadoEnlaceFarmacia` + `MuestraRedFarmacia`): el estado actual se sobrescribe y se
+    consulta a cada rato; la serie crece sin parar y se purga. Mezclarlas obligaría a
+    elegir entre perder el historial o leer una tabla enorme para pintar un semáforo.
+
+    Solo se guarda cuando el servicio RESPONDE: una latencia nula no es un punto en la
+    curva, y graficarla como cero diría que contestó instantáneamente.
+    """
+
+    estacion = models.ForeignKey(
+        Estacion, on_delete=models.CASCADE, related_name='muestras_servicios_pos',
+    )
+    servicio = models.CharField(max_length=20, choices=ServicioPos.choices)
+    latencia_ms = models.PositiveIntegerField()
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'muestra_servicio_pos'
+        ordering = ['-timestamp', '-id']
+        indexes = [models.Index(fields=['estacion', 'servicio', '-timestamp'])]
+        verbose_name = 'Muestra de un servicio del POS'
+        verbose_name_plural = 'Muestras de los servicios del POS'
+
+    def __str__(self):
+        return '%s / %s: %d ms' % (self.estacion.codigo, self.servicio, self.latencia_ms)

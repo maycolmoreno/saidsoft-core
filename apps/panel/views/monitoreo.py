@@ -1,8 +1,11 @@
+from datetime import timedelta
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
 from django.db.models import Max
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion
 from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
@@ -73,12 +76,31 @@ def monitoreo_lista(request):
         if (m.estacion_id, m.timestamp) in pares
     }
 
+    # Servicios del POS caidos, contados de una sola consulta para toda la lista: hacerlo
+    # por tarjeta serian N consultas por carga, el mismo N+1 que la auditoria saco de esta
+    # misma pantalla.
+    #
+    # Solo cuentan los chequeos VIGENTES: una estacion apagada deja su ultimo resultado
+    # congelado, y contarlo como caida seria inventar una incidencia sobre un equipo que
+    # nadie esta midiendo.
+    from apps.monitoreo.models import EstadoServicioPos
+
+    vigente_desde = timezone.now() - timedelta(hours=EstadoServicioPos.HORAS_VERIFICACION_VIGENTE)
+    caidos = {}
+    for estado in EstadoServicioPos.objects.filter(
+        estacion_id__in=ids, disponible=False, ultima_verificacion__gte=vigente_desde,
+    ):
+        marca = caidos.setdefault(estado.estacion_id, {'total': 0, 'criticos': 0})
+        marca['total'] += 1
+        marca['criticos'] += 1 if estado.critico else 0
+
     tarjetas = []
     for estacion in servidores:
         ultima = por_estacion.get(estacion.pk)
         tarjetas.append({
             'estacion': estacion,
             'ultima': ultima,
+            'servicios_caidos': caidos.get(estacion.pk),
             **estados_de_recursos(ultima),
         })
     return render(request, 'panel/monitoreo_lista.html', {'tarjetas': tarjetas})
@@ -114,6 +136,9 @@ def monitoreo_detalle_partial(request, pk):
     ultima = muestras[-1] if muestras else None
     return render(request, 'panel/monitoreo_detalle_partial.html', {
         'estacion': estacion,
+        # Fuera del `if ultima` del template: una estación sin muestras de recursos puede
+        # igual estar reportando sus servicios, y viceversa.
+        'servicios_pos': estacion.servicios_pos.all(),
         'ultima': ultima,
         'total_muestras': len(muestras),
         'g_cpu': construir_grafico(cpu, escala_fija=100),

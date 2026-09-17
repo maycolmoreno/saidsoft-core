@@ -3,7 +3,7 @@ repo aparte cuyo código fuente no se pudo recuperar; ver PLAN_MODERNIZACION.md 
 
 Empezó como "agente de prueba" (implementación de referencia liviana del protocolo
 MQTT) pensado para copiarse a una estación Windows real (como .exe standalone, ver
-build.ps1) y validar el flujo servidor↔agente sin depender del simulador Django. El
+build.ps1) y validar el flujo servidor<->agente sin depender del simulador Django. El
 10-ago-2026, al no poder ubicarse la máquina de build del agente C# original para
 corregirle un bug (comparación de SHA-256 sensible a mayúsculas/minúsculas que hacía
 fallar todo despliegue de POS), se decidió promoverlo a agente de producción del
@@ -656,6 +656,197 @@ class AgentePrueba:
         self._cache_config_pos = (mtime, datos)
         logging.info('Configuración del POS leída: %s', datos)
         return datos
+
+    # --- servicios externos de los que depende el POS ---
+    #
+    # Cuando una caja no puede vender, la pregunta es donde se corta la cadena: la base
+    # local, el nodo central, Odoo o el web service de recargas. Averiguarlo exigia entrar
+    # al equipo. Esto lo pregunta desde adentro cada pocos minutos.
+    #
+    # Se chequea desde la ESTACION y no desde el servidor central a proposito: lo que
+    # importa no es si el servicio esta vivo en abstracto, sino si ESTA caja lo alcanza.
+    # Una base central sana con la ruta rota desde una farmacia es, para esa farmacia, una
+    # base caida — y desde el servidor se veria perfecta.
+
+    def _leer_servicios_pos(self) -> list:
+        """Los servicios a chequear, leidos del .exe.Config real del POS.
+
+        Hermano de _leer_config_pos y cacheado por mtime igual que el: el archivo no
+        cambia entre chequeos y parsear XML cada cinco minutos seria trabajo por nada.
+
+        La contrasena viaja SOLO dentro de este proceso, para poder conectarse; nunca sale
+        en el reporte que se publica.
+        """
+        ruta = f'{self.args.pos_comando_iniciar}.Config'
+        try:
+            mtime = os.path.getmtime(ruta)
+        except OSError:
+            return []
+
+        cacheado = getattr(self, '_cache_servicios_pos', None)
+        if cacheado and cacheado[0] == mtime:
+            return cacheado[1]
+
+        try:
+            import xml.etree.ElementTree as ET
+            raiz = ET.parse(ruta).getroot()
+        except Exception:
+            logging.exception('No se pudo leer la configuracion del POS en %s', ruta)
+            return []
+
+        ajustes = {
+            (el.get('key') or '').strip().lower(): (el.get('value') or '').strip()
+            for el in raiz.iter('add')
+        }
+
+        servicios = []
+        # Los dos Postgres: el central usa las mismas claves con sufijo "Central".
+        for nombre, sufijo in (('pg_local', ''), ('pg_central', 'central')):
+            host = ajustes.get('servidor' + sufijo, '')
+            bdd = ajustes.get('bdd' + sufijo, '')
+            if not host or not bdd:
+                continue
+            servicios.append({
+                'servicio': nombre,
+                'tipo': 'postgres',
+                'host': host,
+                'puerto': ajustes.get('puerto' + sufijo, '5432'),
+                'bdd': bdd,
+                'usuario': ajustes.get('usuario' + sufijo, ''),
+                'clave': ajustes.get('contrasena' + sufijo, ''),
+                # Sin la base local la caja no vende; sin la central sigue vendiendo y
+                # sincroniza despues. Esa diferencia decide si la alerta es critica.
+                'critico': nombre == 'pg_local',
+            })
+
+        url_odoo = ajustes.get('odooserverurl', '')
+        if url_odoo:
+            servicios.append({
+                'servicio': 'odoo', 'tipo': 'http', 'url': url_odoo, 'critico': False,
+            })
+
+        # El de recargas vive en applicationSettings, con otra forma: un setting con un
+        # value adentro. Se busca por coincidencia y no por nombre exacto porque el nombre
+        # completo incluye el namespace de .NET y cambia entre versiones del POS.
+        for setting in raiz.iter('setting'):
+            if 'recargas' not in (setting.get('name') or '').lower():
+                continue
+            valor = setting.find('value')
+            url = (valor.text or '').strip() if valor is not None else ''
+            if url:
+                servicios.append({
+                    'servicio': 'recargas_soap', 'tipo': 'http', 'url': url, 'critico': False,
+                })
+            break
+
+        self._cache_servicios_pos = (mtime, servicios)
+        logging.info(
+            'Servicios del POS detectados: %s',
+            ', '.join('%s -> %s' % (s['servicio'], s.get('url') or s.get('host')) for s in servicios),
+        )
+        return servicios
+
+    def _chequear_postgres(self, servicio: dict):
+        """(disponible, latencia_ms, mensaje). Nunca lanza.
+
+        Un SELECT 1 real y no solo el puerto TCP: Postgres acepta la conexion mucho antes
+        de poder atender consultas —arrancando, en recuperacion, sin conexiones libres— y
+        en todos esos casos el puerto abierto diria "sano" mientras la caja no vende.
+        """
+        inicio = time.monotonic()
+        try:
+            import psycopg2
+
+            conn = psycopg2.connect(
+                host=servicio['host'], port=int(servicio['puerto'] or 5432),
+                dbname=servicio['bdd'], user=servicio['usuario'], password=servicio['clave'],
+                connect_timeout=5,
+            )
+            try:
+                with conn.cursor() as cur:
+                    cur.execute('SELECT 1')
+                    cur.fetchone()
+                version = conn.server_version
+            finally:
+                conn.close()
+            return True, int((time.monotonic() - inicio) * 1000), 'PostgreSQL %s' % version
+        except Exception as exc:
+            # El texto del error ES el diagnostico: distingue "no hay ruta" de "clave
+            # rechazada" de "la base no existe", que llevan a lugares muy distintos.
+            texto = str(exc).strip()
+            return False, None, (texto.splitlines()[0][:280] if texto else type(exc).__name__)
+
+    def _chequear_http(self, servicio: dict):
+        """(disponible, latencia_ms, mensaje). Nunca lanza.
+
+        urllib de la biblioteca estandar y no requests: el agente no la trae, y sumar una
+        dependencia por tres peticiones agranda el ejecutable que despues hay que
+        distribuir a ~1.800 estaciones.
+
+        Todo lo menor a 500 cuenta como vivo. Un 404 o un 401 significan que el servicio
+        esta atendiendo; que la ruta exacta no exista es otro problema. Solo los 5xx y los
+        errores de red son "caido".
+        """
+        inicio = time.monotonic()
+        try:
+            req = urllib.request.Request(servicio['url'], method='GET')
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                codigo = resp.status
+        except urllib.error.HTTPError as exc:
+            codigo = exc.code
+        except Exception as exc:
+            texto = str(exc).strip()
+            return False, None, (texto[:280] if texto else type(exc).__name__)
+        return codigo < 500, int((time.monotonic() - inicio) * 1000), 'HTTP %d' % codigo
+
+    def _endpoint_visible(self, servicio: dict) -> str:
+        """A que se apunto, SIN credenciales. Es lo unico de la conexion que sale del
+        equipo: mismo criterio que EstadoRedActivo, que guarda la IP sondeada y nada mas.
+        """
+        if servicio['tipo'] == 'postgres':
+            return '%s:%s/%s' % (servicio['host'], servicio['puerto'] or '5432', servicio['bdd'])
+        return servicio['url'][:200]
+
+    def bucle_servicios_pos(self):
+        """Calco de bucle_log_pos, con su propio intervalo. Solo corre si el agente sabe
+        donde esta el POS: sin eso no hay .exe.Config que leer."""
+        while True:
+            time.sleep(self.args.intervalo_servicios_pos)
+            if not self._token() or not self.args.pos_carpeta_instalacion:
+                continue
+            try:
+                self._reportar_servicios_pos()
+            except Exception:
+                logging.exception('No se pudieron chequear los servicios del POS')
+
+    def _reportar_servicios_pos(self):
+        servicios = self._leer_servicios_pos()
+        if not servicios:
+            return
+        resultados = []
+        for servicio in servicios:
+            if servicio['tipo'] == 'postgres':
+                disponible, ms, mensaje = self._chequear_postgres(servicio)
+            else:
+                disponible, ms, mensaje = self._chequear_http(servicio)
+            resultados.append({
+                'servicio': servicio['servicio'],
+                'disponible': disponible,
+                'latencia_ms': ms,
+                'mensaje': mensaje,
+                'endpoint': self._endpoint_visible(servicio),
+                'critico': servicio['critico'],
+            })
+        # Datos crudos. Decidir si 800 ms es "lento" vive en ReglaAlerta, del lado del
+        # panel: un umbral aca obligaria a redistribuir el agente para cambiarlo.
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/servicios_pos/', {
+            'token': self._token(), 'resultados': resultados,
+        })
+        logging.info(
+            'Servicios del POS: %s',
+            ', '.join('%s=%s' % (r['servicio'], 'ok' if r['disponible'] else 'caido')
+                      for r in resultados),
+        )
 
     # --- heartbeat ---
     def bucle_heartbeat(self):
@@ -1871,6 +2062,7 @@ del "%~f0"
         threading.Thread(target=self.bucle_heartbeat, daemon=True).start()
         threading.Thread(target=self.bucle_metricas, daemon=True).start()
         threading.Thread(target=self.bucle_log_pos, daemon=True).start()
+        threading.Thread(target=self.bucle_servicios_pos, daemon=True).start()
         self.client.loop_forever(retry_first_connection=True)
 
     def detener(self):
@@ -1898,6 +2090,7 @@ CAMPOS_CONFIG = [
     ('intervalo_heartbeat', 60),
     ('intervalo_metricas', 300),
     ('intervalo_log_pos', 300),
+    ('intervalo_servicios_pos', 300),
     ('pos_log_relativo', os.path.join('Logs', 'GeneraXML.txt')),
     ('pos_carpeta_instalacion', ''),
     ('pos_nombre_proceso', ''),
@@ -1942,6 +2135,12 @@ def main():
         '--intervalo-log-pos', type=int, default=300,
         help='Segundos entre revisiones del log de errores del POS (default 300 = 5min). '
              'Solo corre si --pos-carpeta-instalacion está configurado.',
+    )
+    parser.add_argument(
+        '--intervalo-servicios-pos', type=int, default=300,
+        help='Segundos entre chequeos de los servicios externos que consume el POS '
+             '(Postgres local y central, Odoo, web service de recargas). Default 300 = '
+             '5min. Solo corre si --pos-carpeta-instalacion está configurado.',
     )
     parser.add_argument(
         '--pos-log-relativo', default=os.path.join('Logs', 'GeneraXML.txt'),

@@ -557,6 +557,40 @@ def manejar_perifericos(codigo_estacion: str, payload: dict) -> None:
     estacion.save(update_fields=['perifericos_ultima_verificacion'])
 
 
+def manejar_servicios_pos(codigo_estacion: str, payload: dict) -> None:
+    """Guarda el chequeo de los servicios externos que consume el POS de esta estación.
+
+    El agente reporta datos crudos —alcanzable, latencia, el mensaje real— y no decide si
+    eso es bueno o malo. Esa decisión vive en `ReglaAlerta`, configurable desde el panel:
+    un umbral en el agente obligaría a redistribuir el ejecutable a ~1.800 estaciones para
+    cambiarlo.
+
+    Un reporte sin resultados no se guarda: significa que el agente no pudo leer el
+    `.exe.Config` del POS, y marcar los cuatro servicios como caídos por eso convertiría
+    un problema de lectura en una falla aparente de toda la infraestructura.
+    """
+    cerrar_conexiones_viejas()
+    try:
+        estacion = Estacion.objects.select_related('farmacia__unidad_negocio').get(
+            codigo=codigo_estacion, token_enrolamiento=payload.get('token'),
+        )
+    except Estacion.DoesNotExist:
+        logger.warning('Reporte de servicios del POS con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    resultados = payload.get('resultados')
+    if not isinstance(resultados, list) or not resultados:
+        logger.info('%s: reporte de servicios del POS sin resultados', codigo_estacion)
+        return
+
+    from apps.monitoreo.services import registrar_servicios_pos
+
+    guardados = registrar_servicios_pos(estacion=estacion, resultados=resultados)
+    logger.info('%s: %d servicio(s) del POS actualizados', codigo_estacion, guardados)
+
+
 def manejar_activos_farmacia(codigo_estacion: str, payload: dict) -> None:
     """Guarda el resultado del ping a los activos sin agente de la farmacia (ver
     apps.monitoreo.models.EstadoRedActivo).

@@ -18,9 +18,22 @@
                 <div class="font-medium">{{ t.estacion.codigo }}</div>
                 <div class="text-xs text-[var(--text-faint)]">{{ t.estacion.farmacia.codigo }} · {{ t.estacion.farmacia.grupo.codigo }}</div>
             </div>
-            <span class="pill {% if t.estacion.estado_conexion == 'online' %}good{% else %}neutral{% endif %}">
-                {{ t.estacion.get_estado_conexion_display }}
-            </span>
+            <div class="flex items-center gap-2">
+                {% comment %}
+                Servicios del POS caidos, de un vistazo a nivel flota. Solo se muestran los
+                chequeos vigentes: una estacion apagada deja su ultimo resultado congelado
+                y pintarlo de rojo seria inventar una incidencia.
+                {% endcomment %}
+                {% if t.servicios_caidos %}
+                <span class="pill {% if t.servicios_caidos.criticos %}critical{% else %}warning{% endif %}"
+                      title="Servicios que consume el POS y no responden">
+                    POS: {{ t.servicios_caidos.total }} sin responder
+                </span>
+                {% endif %}
+                <span class="pill {% if t.estacion.estado_conexion == 'online' %}good{% else %}neutral{% endif %}">
+                    {{ t.estacion.get_estado_conexion_display }}
+                </span>
+            </div>
         </div>
         {% if t.ultima %}
         <div class="grid grid-cols-5 gap-2 text-center">

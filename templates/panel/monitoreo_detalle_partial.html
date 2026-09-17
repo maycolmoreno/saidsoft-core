@@ -103,3 +103,42 @@ desde apps/monitoreo/graficos.py.
     </div>
 </div>
 {% endif %}
+
+{% comment %}
+Servicios externos de los que depende el POS. Va DESPUÉS del bloque de métricas y fuera
+de su `{% if ultima %}`: una estación puede no tener muestras de recursos y aun así
+reportar sus servicios, y al revés — son dos chequeos con su propio intervalo.
+
+"sin verificar" no es lo mismo que "caído": si la estación se apagó, el último chequeo
+queda congelado y leerlo como actual mandaría a alguien a revisar algo que nadie midió.
+{% endcomment %}
+{% if servicios_pos %}
+<div class="card mt-4 p-4">
+    <div class="text-sm font-medium text-[var(--text-dim)] mb-3">Servicios que consume el POS</div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+        {% for s in servicios_pos %}
+        <div class="rounded-md p-3" style="border:1px solid var(--border-soft);">
+            <div class="flex items-center justify-between gap-2">
+                <span class="font-medium">{{ s.get_servicio_display }}</span>
+                {% if not s.verificacion_vigente %}
+                    <span class="pill neutral">sin verificar</span>
+                {% elif s.disponible %}
+                    <span class="pill good">responde{% if s.latencia_ms %} · {{ s.latencia_ms }} ms{% endif %}</span>
+                {% elif s.critico %}
+                    <span class="pill critical">sin respuesta</span>
+                {% else %}
+                    <span class="pill warning">sin respuesta</span>
+                {% endif %}
+            </div>
+            <div class="mono text-xs text-[var(--text-faint)] mt-1">{{ s.endpoint|default:"—" }}</div>
+            {% if s.mensaje %}<div class="text-xs text-[var(--text-dim)] mt-1">{{ s.mensaje }}</div>{% endif %}
+            {% if not s.disponible and s.horas_sin_responder %}
+                <div class="text-xs text-[var(--text-faint)] mt-1">sin responder hace {{ s.horas_sin_responder }} h</div>
+            {% elif not s.disponible and s.verificacion_vigente %}
+                <div class="text-xs text-[var(--text-faint)] mt-1">nunca respondió desde que se monitorea</div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}

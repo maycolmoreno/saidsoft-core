@@ -2,3 +2,7 @@ paho-mqtt>=2.1
 pyinstaller>=6.0
 pywin32>=306
 pysnmp>=7.1
+# Para el SELECT 1 real contra los Postgres del POS (bucle_servicios_pos). Se eligio la
+# variante -binary: trae la libpq compilada adentro, asi PyInstaller la empaqueta sin que
+# haga falta tener Postgres instalado en la estacion ni en la maquina que compila.
+psycopg2-binary>=2.9

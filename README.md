@@ -22,7 +22,8 @@ config/                  settings (base/desarrollo/produccion), urls, wsgi/asgi
 apps/catalogo/           UnidadNegocio (tenant), Grupo (TRX), Farmacia, Estación
 apps/despliegues/        Despliegue, ResultadoDespliegue, EventoDespliegue (línea de tiempo inmutable)
 apps/scripts/            Script (biblioteca RMM), EjecucionScript, ScriptProgramado (recurrente)
-apps/monitoreo/          MuestraMetrica (RAM/CPU/swap/latencia), ReglaAlerta, Alerta
+apps/monitoreo/          MuestraMetrica (RAM/CPU/swap/latencia), ReglaAlerta, Alerta,
+                          EstadoServicioPos (servicios externos que consume el POS)
 apps/auditoria/          EventoAuditoria (acciones del panel) + registrar_evento()
 apps/mqtt_worker/        worker MQTT (reemplaza projectNodeJS/index.js) + simulador de agente
 apps/activos/            inventario de activos CRESIO: Bodega, Colaborador, OrdenCompra,
@@ -741,6 +742,58 @@ enterara). El agente ahora lo monitorea:
   neutral en vez de crítico), pero no abren alerta. Se reclasifica en cada reporte, no
   solo al crear la fila: si la lista gana un prefijo nuevo más adelante, las filas
   viejas se ponen al día solas.
+
+## Monitoreo de los servicios externos que consume el POS
+
+El log del POS (sección de arriba) dice que algo falló. Esto dice **dónde se corta la
+cadena**: la base local, el nodo central, Odoo o el web service de recargas. Cuando una
+caja no puede vender, esa es la primera pregunta, y hasta ahora se respondía entrando al
+equipo.
+
+**Se mide desde la estación, no desde el servidor central.** Lo que importa no es si el
+servicio está vivo en abstracto, sino si *esa caja* lo alcanza. Una base central sana con
+la ruta rota desde una farmacia es, para esa farmacia, una base caída — y desde el
+servidor central se vería perfecta.
+
+- **Qué se chequea** lo descubre el agente leyendo el `.exe.Config` real del POS, no una
+  lista que alguien mantenga: los dos PostgreSQL (local y central, con sufijo `Central`
+  en las claves) y `OdooServerUrl` salen de `<appSettings>`; el web service de recargas
+  vive en `<applicationSettings>` y se busca **por coincidencia** de "recargas" en el
+  nombre del `<setting>`, porque el nombre completo incluye el namespace de .NET y cambia
+  entre versiones del POS.
+- **PostgreSQL se chequea con un `SELECT 1` real**, no con el puerto TCP: Postgres acepta
+  la conexión mucho antes de poder atender consultas —arrancando, en recuperación, sin
+  conexiones libres— y en todos esos casos un puerto abierto diría "sano" mientras la caja
+  no vende. Requiere `psycopg2-binary` (la variante con la libpq compilada adentro, para
+  que PyInstaller la empaquete sin Postgres instalado en la estación).
+- **Odoo y el SOAP de recargas** van con `urllib` de la biblioteca estándar, sin sumar
+  `requests` al ejecutable que hay que distribuir a ~1.800 estaciones. Todo lo menor a 500
+  cuenta como vivo: un 404 o un 401 significan que el servicio está atendiendo.
+- **El agente reporta datos crudos** —alcanzable, latencia, el mensaje real (versión de
+  PostgreSQL, código HTTP, o el error tal cual)— y **no decide** si eso es bueno o malo.
+  Esa decisión vive en `ReglaAlerta`, configurable por unidad de negocio desde el panel.
+  Un umbral escrito en el agente exigiría redistribuir el ejecutable a 1.800 equipos para
+  cambiar un número.
+- **La contraseña de PostgreSQL nunca sale del proceso del agente.** Se usa para
+  conectarse y no entra al payload: lo que viaja es `host:puerto/base`, mismo criterio que
+  `EstadoRedActivo`, que guarda la IP sondeada y ninguna credencial. `EstadoServicioPos`
+  directamente no tiene ningún campo donde guardarla.
+
+Modelos (`apps/monitoreo`): `EstadoServicioPos` es el último estado por estación y
+servicio —sobrescrito en cada chequeo, con `verificacion_vigente` para no leer un dato
+viejo como actual— y `MuestraServicioPos` la serie de latencia, separada siguiendo el
+precedente `EstadoEnlaceFarmacia` + `MuestraRedFarmacia`.
+
+La alerta la abre `evaluar_regla_servicio_pos`, de la familia de
+`evaluar_regla_bitlocker`/`evaluar_regla_pos_errores` (estado binario, sin condición
+sostenida). El campo `critico` del servicio decide **cuál** regla aplica: sin la base
+local la caja no vende (crítica), sin Odoo sigue vendiendo y sincroniza después
+(advertencia). Así "si cae un servicio crítico, alerta crítica" se expresa con las
+severidades que `ReglaAlerta` ya tiene, sin inventar un concepto nuevo.
+
+Se ve en la ficha de la estación (`/monitoreo/<pk>/`, que ya se refresca sola por HTMX) y
+como indicador de flota en `/monitoreo/`. Se distribuye con la auto-actualización de
+agente que ya existe: no hay instalador ni tarea programada nueva.
 
 ## Scripts RMM y parcheo
 

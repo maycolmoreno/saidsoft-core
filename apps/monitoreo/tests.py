@@ -2654,3 +2654,236 @@ class SeedReglasAlertaTests(TestCase):
                 '"%s" usa la metrica %s, que MuestraMetrica no expone: el motor la '
                 'saltearia en silencio' % (regla.nombre, regla.metrica),
             )
+
+
+class ServiciosPosTests(TestCase):
+    """Los servicios externos de los que depende el POS para vender.
+
+    Cuando una caja no puede vender, la pregunta es donde se corta la cadena: la base
+    local, el nodo central, Odoo o el web service de recargas. Averiguarlo exigia entrar
+    al equipo. Esto lo pregunta desde la propia estacion cada pocos minutos.
+
+    Se mide desde la ESTACION y no desde el servidor central a proposito: lo que importa
+    no es si el servicio esta vivo en abstracto, sino si ESA caja lo alcanza. Una base
+    central sana con la ruta rota desde una farmacia es, para esa farmacia, una base
+    caida, y desde el servidor se veria perfecta.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=self.sg,
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.admin = User.objects.create_superuser(username='u_svc_pos', password='x' * 16)
+
+    def _resultado(self, servicio='pg_local', disponible=True, **extra):
+        base = {
+            'servicio': servicio,
+            'disponible': disponible,
+            'latencia_ms': 42 if disponible else None,
+            'mensaje': 'PostgreSQL 160006' if disponible else 'connection refused',
+            'endpoint': '10.0.0.5:5432/pos',
+            'critico': servicio == 'pg_local',
+        }
+        base.update(extra)
+        return base
+
+    def _registrar(self, *resultados):
+        from apps.monitoreo.services import registrar_servicios_pos
+
+        return registrar_servicios_pos(estacion=self.estacion, resultados=list(resultados))
+
+    def _regla(self, severidad):
+        from apps.monitoreo.models import Metrica, ReglaAlerta
+
+        return ReglaAlerta.objects.create(
+            nombre='Servicio del POS caido (%s)' % severidad,
+            metrica=Metrica.SERVICIO_POS_CAIDO, severidad=severidad,
+            umbral=0, duracion_minutos=0, creado_por=self.admin,
+        )
+
+    # --- lo que se guarda ---
+
+    def test_guarda_un_estado_por_servicio(self):
+        from apps.monitoreo.models import EstadoServicioPos
+
+        self.assertEqual(
+            self._registrar(self._resultado('pg_local'), self._resultado('odoo')), 2,
+        )
+        self.assertEqual(EstadoServicioPos.objects.count(), 2)
+
+    def test_el_segundo_reporte_sobrescribe_y_no_acumula(self):
+        """Es estado actual, no historial: el historial de latencia vive en
+        MuestraServicioPos."""
+        from apps.monitoreo.models import EstadoServicioPos
+
+        self._registrar(self._resultado('pg_local'))
+        self._registrar(self._resultado('pg_local', latencia_ms=99))
+        self.assertEqual(EstadoServicioPos.objects.count(), 1)
+        self.assertEqual(EstadoServicioPos.objects.get().latencia_ms, 99)
+
+    def test_una_caida_no_borra_el_ultimo_visto(self):
+        """El dato que decide si hay que ir a la farmacia: hace cuanto esta caido."""
+        from apps.monitoreo.models import EstadoServicioPos
+
+        self._registrar(self._resultado('pg_local'))
+        visto = EstadoServicioPos.objects.get().ultima_respuesta
+
+        self._registrar(self._resultado('pg_local', disponible=False))
+        estado = EstadoServicioPos.objects.get()
+        self.assertFalse(estado.disponible)
+        self.assertEqual(estado.ultima_respuesta, visto)
+        self.assertIsNone(estado.latencia_ms, 'una latencia de un chequeo fallido no es un dato')
+
+    def test_solo_guarda_muestra_de_latencia_cuando_responde(self):
+        """Graficar un cero diria que contesto instantaneamente."""
+        from apps.monitoreo.models import MuestraServicioPos
+
+        self._registrar(self._resultado('pg_local'))
+        self._registrar(self._resultado('pg_local', disponible=False))
+        self.assertEqual(MuestraServicioPos.objects.count(), 1)
+
+    def test_ignora_un_servicio_desconocido(self):
+        """El payload lo arma el agente: no puede inventar servicios que el modelo no
+        conoce."""
+        from apps.monitoreo.models import EstadoServicioPos
+
+        self.assertEqual(self._registrar(self._resultado('minado_de_bitcoin')), 0)
+        self.assertFalse(EstadoServicioPos.objects.exists())
+
+    def test_una_verificacion_vieja_no_se_lee_como_estado_actual(self):
+        """Si la estacion se apaga, su ultimo chequeo queda congelado y diria "todo bien"
+        indefinidamente."""
+        from apps.monitoreo.models import EstadoServicioPos
+
+        self._registrar(self._resultado('pg_local'))
+        estado = EstadoServicioPos.objects.get()
+        self.assertTrue(estado.verificacion_vigente)
+
+        EstadoServicioPos.objects.filter(pk=estado.pk).update(
+            ultima_verificacion=timezone.now() - timedelta(hours=5),
+        )
+        estado.refresh_from_db()
+        self.assertFalse(estado.verificacion_vigente)
+
+    # --- alertas ---
+
+    def test_un_servicio_critico_caido_abre_alerta_critica(self):
+        from apps.monitoreo.models import Alerta, ReglaAlerta
+
+        regla = self._regla(ReglaAlerta.Severidad.CRITICAL)
+        self._registrar(self._resultado('pg_local', disponible=False))
+
+        alerta = Alerta.objects.get(regla=regla, estacion=self.estacion)
+        self.assertEqual(alerta.estado, Alerta.Estado.ABIERTA)
+
+    def test_un_servicio_no_critico_no_dispara_la_regla_critica(self):
+        """Sin Odoo la caja sigue vendiendo. Tratar las dos caidas igual haria que una
+        alerta critica deje de significar "anda a la farmacia"."""
+        from apps.monitoreo.models import Alerta, ReglaAlerta
+
+        self._regla(ReglaAlerta.Severidad.CRITICAL)
+        self._registrar(self._resultado('odoo', disponible=False, critico=False))
+        self.assertFalse(Alerta.objects.exists())
+
+    def test_un_servicio_no_critico_dispara_la_regla_de_advertencia(self):
+        from apps.monitoreo.models import Alerta, ReglaAlerta
+
+        regla = self._regla(ReglaAlerta.Severidad.WARNING)
+        self._registrar(self._resultado('odoo', disponible=False, critico=False))
+        self.assertTrue(Alerta.objects.filter(regla=regla, estado=Alerta.Estado.ABIERTA).exists())
+
+    def test_al_volver_el_servicio_la_alerta_se_resuelve_sola(self):
+        from apps.monitoreo.models import Alerta, ReglaAlerta
+
+        self._regla(ReglaAlerta.Severidad.CRITICAL)
+        self._registrar(self._resultado('pg_local', disponible=False))
+        self.assertTrue(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).exists())
+
+        self._registrar(self._resultado('pg_local', disponible=True))
+        self.assertFalse(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).exists())
+
+    def test_dos_chequeos_caidos_seguidos_no_abren_dos_alertas(self):
+        """La alerta es por condicion, no por evento: si no, un servicio caido una hora
+        generaria doce alertas identicas."""
+        from apps.monitoreo.models import Alerta, ReglaAlerta
+
+        self._regla(ReglaAlerta.Severidad.CRITICAL)
+        self._registrar(self._resultado('pg_local', disponible=False))
+        self._registrar(self._resultado('pg_local', disponible=False))
+        self.assertEqual(Alerta.objects.count(), 1)
+
+    def test_sin_regla_configurada_no_se_inventa_ninguna_alerta(self):
+        from apps.monitoreo.models import Alerta
+
+        self._registrar(self._resultado('pg_local', disponible=False))
+        self.assertFalse(Alerta.objects.exists())
+
+    def test_una_regla_de_otra_unidad_de_negocio_no_aplica(self):
+        from apps.monitoreo.models import Alerta, Metrica, ReglaAlerta
+
+        ReglaAlerta.objects.create(
+            nombre='Solo para MIA', metrica=Metrica.SERVICIO_POS_CAIDO,
+            severidad=ReglaAlerta.Severidad.CRITICAL, umbral=0, duracion_minutos=0,
+            unidad_negocio=UnidadNegocio.objects.get(codigo='MIA'), creado_por=self.admin,
+        )
+        self._registrar(self._resultado('pg_local', disponible=False))
+        self.assertFalse(Alerta.objects.exists())
+
+    # --- el camino completo desde MQTT ---
+
+    def test_el_mensaje_mqtt_crea_el_estado(self):
+        from apps.monitoreo.models import EstadoServicioPos
+        from apps.mqtt_worker.services import manejar_servicios_pos
+
+        manejar_servicios_pos('ML001-A', {
+            'token': self.estacion.token_enrolamiento,
+            'resultados': [self._resultado('pg_local'), self._resultado('recargas_soap')],
+        })
+        self.assertEqual(EstadoServicioPos.objects.count(), 2)
+
+    def test_un_token_invalido_no_escribe_nada(self):
+        from apps.monitoreo.models import EstadoServicioPos
+        from apps.mqtt_worker.services import manejar_servicios_pos
+
+        manejar_servicios_pos('ML001-A', {
+            'token': 'token-inventado', 'resultados': [self._resultado()],
+        })
+        self.assertFalse(EstadoServicioPos.objects.exists())
+
+    def test_un_reporte_sin_resultados_no_marca_todo_como_caido(self):
+        """Significa que el agente no pudo leer el .exe.Config. Marcar los cuatro
+        servicios como caidos convertiria un problema de lectura en una falla aparente de
+        toda la infraestructura."""
+        from apps.monitoreo.models import EstadoServicioPos
+        from apps.mqtt_worker.services import manejar_servicios_pos
+
+        manejar_servicios_pos('ML001-A', {
+            'token': self.estacion.token_enrolamiento, 'resultados': [],
+        })
+        self.assertFalse(EstadoServicioPos.objects.exists())
+
+    # --- que no se filtren credenciales ---
+
+    def test_el_modelo_no_tiene_donde_guardar_una_contrasena(self):
+        """La defensa de fondo: aunque el agente mandara la clave, no hay campo que la
+        reciba. Mismo criterio que EstadoRedActivo, que guarda la IP sondeada y nada mas.
+        """
+        from apps.monitoreo.models import EstadoServicioPos
+
+        campos = {f.name for f in EstadoServicioPos._meta.get_fields()}
+        for prohibido in ('password', 'contrasena', 'clave', 'usuario', 'credencial'):
+            self.assertNotIn(prohibido, campos)
+
+    def test_lo_que_se_guarda_del_endpoint_no_incluye_credenciales(self):
+        from apps.monitoreo.models import EstadoServicioPos
+
+        self._registrar(self._resultado('pg_local', endpoint='10.0.0.5:5432/pos'))
+        estado = EstadoServicioPos.objects.get()
+        self.assertEqual(estado.endpoint, '10.0.0.5:5432/pos')
+        self.assertNotIn('@', estado.endpoint, 'una URL con user:pass@host filtraria la clave')
