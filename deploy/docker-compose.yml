@@ -113,10 +113,18 @@ services:
     command: ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "600", "--access-logfile", "-"]
     # No alcanza con que el puerto acepte conexiones: gunicorn escucha aunque Django
     # este roto. Esto renderiza /login/ de verdad, o sea que la base responde y las URLs
-    # resuelven. La cabecera Host sale de ALLOWED_HOSTS porque Django devuelve 400 a
-    # cualquier otro, y sin ella el chequeo mediria el rechazo en vez de la salud.
+    # resuelven.
+    #
+    # Dos cabeceras, las dos obligatorias:
+    #   Host              — Django devuelve 400 a cualquier host fuera de ALLOWED_HOSTS,
+    #                       asi que sin esto el chequeo mediria el rechazo, no la salud.
+    #   X-Forwarded-Proto — con SECURE_SSL_REDIRECT, Django responde 301 a https y el
+    #                       chequeo terminaba intentando TLS contra el 443 del propio
+    #                       contenedor, donde no escucha nadie. Esta cabecera es la que
+    #                       SECURE_PROXY_SSL_HEADER espera de nginx: le dice que la
+    #                       conexion ya venia cifrada, y entonces sirve la pagina.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; h=os.environ['ALLOWED_HOSTS'].split(',')[0].strip(); r=u.urlopen(u.Request('http://127.0.0.1:8000/login/', headers={'Host': h}), timeout=10); raise SystemExit(0 if r.status==200 else 1)\""]
+      test: ["CMD-SHELL", "python -c \"import os,http.client as c; h=os.environ['ALLOWED_HOSTS'].split(',')[0].strip(); x=c.HTTPConnection('127.0.0.1',8000,timeout=10); x.request('GET','/login/',headers={'Host':h,'X-Forwarded-Proto':'https'}); raise SystemExit(0 if x.getresponse().status==200 else 1)\""]
       interval: 30s
       timeout: 15s
       retries: 3
@@ -190,8 +198,14 @@ services:
     # Se pide /media/ y no la raiz: es lo unico que nginx sirve por si mismo. La raiz
     # pasa a gunicorn, y entonces este chequeo estaria midiendo la salud de web dos
     # veces en vez de la de nginx.
+    #
+    # Se acepta 403 ademas de 200: /media/ es un directorio y el listado esta apagado,
+    # asi que responde 403 — y un 403 prueba que nginx esta sirviendo, que es lo unico
+    # que este chequeo tiene que demostrar. Se mira la linea de estado y no el codigo de
+    # salida de wget porque el de busybox devuelve 1 para cualquier error HTTP, sin
+    # distinguir "403" de "no hay nadie escuchando".
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/media/ || test $$? = 8"]
+      test: ["CMD-SHELL", "wget -q --spider -S http://127.0.0.1/media/ 2>&1 | grep -qE 'HTTP/1.[01] (200|403)'"]
       interval: 30s
       timeout: 10s
       retries: 3
