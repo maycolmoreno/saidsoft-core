@@ -16,8 +16,8 @@ por noche es que se terminan ignorando todas — incluidas las verdaderas.
 
 Por eso el reparto no es arbitrario:
 
-- Las reglas de **métrica** (CPU, RAM, disco, errores del POS) se evalúan solo cuando
-  llega una muestra (ver `evaluar_reglas_metricas`). Una estación apagada no manda nada,
+- Las reglas de **métrica** (CPU, RAM, disco, errores y servicios del POS) se evalúan
+  solo cuando llega un reporte de la estación. Una estación apagada no manda nada,
   así que no pueden dispararse de noche. Son seguras y se siembran ACTIVAS.
 
 - `sin_heartbeat` y `agente_caido_red_viva` se disparan por AUSENCIA. Se siembran
@@ -38,6 +38,9 @@ Salen de lo que rompe la operación de una farmacia, no de números redondos:
 - **Errores del POS**: es la única métrica que habla del negocio y no del equipo. Diez
   errores en una ventana de reporte no es ruido: es una caja que no está vendiendo bien.
 - **BitLocker**: no es una falla, es cumplimiento. Warning, no crítica.
+- **Servicios del POS**: dos reglas para la misma métrica, una crítica y una de
+  advertencia. `evaluar_regla_servicio_pos` elige según el campo `critico` del
+  servicio: sin la base local la caja no vende, sin Odoo sigue vendiendo.
 """
 from django.contrib.auth.models import User
 from django.core.management.base import BaseCommand, CommandError
@@ -75,6 +78,21 @@ REGLAS = [
         'BitLocker deshabilitado', Metrica.BITLOCKER_DESHABILITADO, ReglaAlerta.Operador.GTE, 0, 0,
         ReglaAlerta.Severidad.WARNING, True,
         'Cumplimiento, no falla: el equipo funciona, el disco no esta cifrado.',
+    ),
+    # Dos reglas para la misma metrica, y no es redundancia: `evaluar_regla_servicio_pos`
+    # elige cual aplicar segun el campo `critico` del servicio. Sin la base local la caja
+    # no vende; sin Odoo sigue vendiendo y sincroniza despues. Si hubiera una sola regla,
+    # las dos caidas abririan la misma alerta y "critica" dejaria de significar "anda a la
+    # farmacia".
+    (
+        'Servicio critico del POS sin responder', Metrica.SERVICIO_POS_CAIDO,
+        ReglaAlerta.Operador.GTE, 0, 0, ReglaAlerta.Severidad.CRITICAL, True,
+        'La base local del POS: sin ella la caja no puede vender.',
+    ),
+    (
+        'Servicio del POS sin responder (no critico)', Metrica.SERVICIO_POS_CAIDO,
+        ReglaAlerta.Operador.GTE, 0, 0, ReglaAlerta.Severidad.WARNING, True,
+        'Base central, Odoo y recargas: la caja sigue vendiendo y sincroniza despues.',
     ),
     (
         'Sin heartbeat (30 min)', Metrica.SIN_HEARTBEAT, ReglaAlerta.Operador.GTE, 30, 0,

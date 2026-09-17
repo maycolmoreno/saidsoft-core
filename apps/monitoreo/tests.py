@@ -2543,7 +2543,7 @@ class SeedReglasAlertaTests(TestCase):
         from apps.monitoreo.models import ReglaAlerta
 
         self._correr('--aplicar')
-        self.assertEqual(ReglaAlerta.objects.count(), 8)
+        self.assertEqual(ReglaAlerta.objects.count(), 10)
 
     def test_las_reglas_que_se_disparan_por_ausencia_nacen_apagadas(self):
         """El punto entero del comando. `sin_heartbeat` y `agente_caido_red_viva` se
@@ -2566,8 +2566,8 @@ class SeedReglasAlertaTests(TestCase):
         de_metrica = ReglaAlerta.objects.exclude(
             metrica__in=[Metrica.SIN_HEARTBEAT, Metrica.AGENTE_CAIDO_RED_VIVA],
         )
-        self.assertEqual(de_metrica.count(), 6)
-        self.assertEqual(de_metrica.filter(activo=True).count(), 6)
+        self.assertEqual(de_metrica.count(), 8)
+        self.assertEqual(de_metrica.filter(activo=True).count(), 8)
 
     def test_ninguna_abre_mantenimiento_automatico(self):
         """Activar una regla no puede empezar a generar ordenes de trabajo sin que nadie
@@ -2583,14 +2583,14 @@ class SeedReglasAlertaTests(TestCase):
         from apps.monitoreo.models import ReglaAlerta
 
         self._correr('--aplicar')
-        self.assertEqual(ReglaAlerta.objects.filter(unidad_negocio__isnull=True).count(), 8)
+        self.assertEqual(ReglaAlerta.objects.filter(unidad_negocio__isnull=True).count(), 10)
 
     def test_correrlo_dos_veces_no_duplica(self):
         from apps.monitoreo.models import ReglaAlerta
 
         self._correr('--aplicar')
         texto = self._correr('--aplicar')
-        self.assertEqual(ReglaAlerta.objects.count(), 8)
+        self.assertEqual(ReglaAlerta.objects.count(), 10)
         self.assertIn('intactas', texto)
 
     def test_no_pisa_un_umbral_afinado_a_mano(self):
@@ -2627,6 +2627,46 @@ class SeedReglasAlertaTests(TestCase):
         self._correr('--aplicar', '--actualizar')
         self.assertTrue(ReglaAlerta.objects.get(nombre='Sin heartbeat (30 min)').activo)
 
+    def test_siembra_las_dos_reglas_de_servicios_del_POS(self):
+        """Dos reglas para la misma metrica no es redundancia: evaluar_regla_servicio_pos
+        elige cual aplicar segun el campo `critico` del servicio. Con una sola, la caida de
+        Odoo y la de la base local abririan la misma alerta, y "critica" dejaria de
+        significar "anda a la farmacia"."""
+        from apps.monitoreo.models import Metrica, ReglaAlerta
+
+        self._correr('--aplicar')
+        reglas = ReglaAlerta.objects.filter(metrica=Metrica.SERVICIO_POS_CAIDO)
+        self.assertEqual(reglas.count(), 2)
+        self.assertEqual(
+            sorted(reglas.values_list('severidad', flat=True)),
+            [ReglaAlerta.Severidad.CRITICAL, ReglaAlerta.Severidad.WARNING],
+        )
+        self.assertEqual(reglas.filter(activo=True).count(), 2)
+
+    def test_las_reglas_de_servicios_del_POS_son_las_que_el_motor_usa(self):
+        """Que existan no alcanza: si la severidad no coincidiera con la que
+        evaluar_regla_servicio_pos busca, la regla quedaria decorativa."""
+        from apps.catalogo.models import Estacion, Farmacia, Grupo
+        from apps.monitoreo.models import Alerta, EstadoServicioPos, ReglaAlerta, UnidadNegocio
+        from apps.monitoreo.services import evaluar_regla_servicio_pos
+
+        self._correr('--aplicar')
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=Grupo.objects.create(codigo='TRX001'), unidad_negocio=sg,
+        )
+        estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+
+        critico = EstadoServicioPos.objects.create(
+            estacion=estacion, servicio='pg_local', disponible=False, critico=True,
+            ultima_verificacion=timezone.now(),
+        )
+        evaluar_regla_servicio_pos(estacion, critico)
+        self.assertEqual(
+            Alerta.objects.get().regla.severidad, ReglaAlerta.Severidad.CRITICAL,
+            'la caida de la base local tiene que abrir la regla critica',
+        )
+
     def test_sin_superusuario_falla_con_un_mensaje_util(self):
         from django.core.management.base import CommandError
 
@@ -2647,7 +2687,8 @@ class SeedReglasAlertaTests(TestCase):
         # (disco_usado_pct sale de libre/total), no columnas. Mirar la lista de campos
         # daria un falso negativo sobre reglas que funcionan perfecto.
         aparte = {Metrica.SIN_HEARTBEAT, Metrica.AGENTE_CAIDO_RED_VIVA,
-                  Metrica.BITLOCKER_DESHABILITADO, Metrica.POS_ERRORES}
+                  Metrica.BITLOCKER_DESHABILITADO, Metrica.POS_ERRORES,
+                  Metrica.SERVICIO_POS_CAIDO}
         for regla in ReglaAlerta.objects.exclude(metrica__in=aparte):
             self.assertTrue(
                 hasattr(MuestraMetrica, regla.metrica),
