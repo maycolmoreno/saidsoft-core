@@ -2975,3 +2975,71 @@ class ServiciosPosTests(TestCase):
         estado = EstadoServicioPos.objects.get()
         self.assertEqual(estado.endpoint, '10.0.0.5:5432/pos')
         self.assertNotIn('@', estado.endpoint, 'una URL con user:pass@host filtraria la clave')
+
+
+class ComposeMeshCentralTests(TestCase):
+    """El servicio que EJECUTA sincronizar_meshcentral_task tiene que recibir la
+    configuracion de MeshCentral.
+
+    Existe por un fallo silencioso encontrado en produccion (17-sep-2026): las
+    MESHCENTRAL_API_* estaban en el .env y en el servicio meshcentral_worker, pero no en
+    celery_worker, que es donde corre la tarea periodica. `configurado()` daba False y la
+    tarea devolvia '0 nodo(s) sincronizado(s)' cada 15 minutos -- indistinguible en el log
+    de un resync legitimo sin novedades. El efecto real estaba dos saltos mas alla: sin
+    ese resync los EstadoDispositivo envejecian por encima de FRESCURA_MESHCENTRAL_MINUTOS
+    y evaluar_cruce_monitoreo los descartaba, dejando la regla agente_caido_red_viva sin
+    disparar nunca. Nada fallaba; simplemente la alerta no existia.
+
+    Se parsea el YAML como texto a proposito: pyyaml no es dependencia del proyecto y no
+    vale agregarla para una sola verificacion.
+    """
+
+    VARIABLES = ('MESHCENTRAL_API_WS_URL', 'MESHCENTRAL_API_USUARIO', 'MESHCENTRAL_API_PASSWORD')
+
+    def _entorno_del_servicio(self, servicio):
+        from django.conf import settings
+
+        ruta = settings.BASE_DIR / 'deploy' / 'docker-compose.yml'
+        lineas = ruta.read_text(encoding='utf-8').splitlines()
+        dentro_servicio = dentro_entorno = False
+        entorno = []
+        for linea in lineas:
+            if linea.startswith(f'  {servicio}:'):
+                dentro_servicio = True
+                continue
+            if dentro_servicio and linea.startswith('  ') and not linea.startswith('   ') and linea.strip():
+                break  # empezo el siguiente servicio
+            if not dentro_servicio:
+                continue
+            if linea.startswith('    environment:'):
+                dentro_entorno = True
+                continue
+            if dentro_entorno:
+                if linea.strip() and not linea.startswith('      '):
+                    dentro_entorno = False
+                    continue
+                if ':' in linea and not linea.strip().startswith('#'):
+                    entorno.append(linea.split(':', 1)[0].strip())
+        self.assertTrue(entorno, f'no se pudo leer el environment de {servicio} en docker-compose.yml')
+        return entorno
+
+    def test_la_tarea_periodica_esta_programada(self):
+        """Si alguien saca la tarea del schedule, este test deja de tener sentido y avisa."""
+        from django.conf import settings
+
+        tareas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
+        self.assertIn('apps.monitoreo.tasks.sincronizar_meshcentral_task', tareas)
+
+    def test_celery_worker_recibe_la_configuracion_de_meshcentral(self):
+        entorno = self._entorno_del_servicio('celery_worker')
+        for variable in self.VARIABLES:
+            self.assertIn(
+                variable, entorno,
+                f'{variable} falta en celery_worker: sincronizar_meshcentral_task corre ahi y sin '
+                f'esto devuelve 0 nodos en silencio',
+            )
+
+    def test_meshcentral_worker_sigue_recibiendola(self):
+        entorno = self._entorno_del_servicio('meshcentral_worker')
+        for variable in self.VARIABLES:
+            self.assertIn(variable, entorno)

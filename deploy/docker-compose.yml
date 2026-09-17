@@ -361,6 +361,23 @@ services:
       EMQX_API_URL: ${EMQX_API_URL:-}
       EMQX_API_KEY: ${EMQX_API_KEY:-}
       EMQX_API_SECRET: ${EMQX_API_SECRET:-}
+      # sincronizar_meshcentral_task corre ACÁ, no en meshcentral_worker: sin estas
+      # variables `AdaptadorMeshCentral.configurado()` da False y la tarea devuelve
+      # "0 nodo(s) sincronizado(s)" cada 15 min — un éxito aparente que en el log de
+      # Celery no se distingue de "no había nada que sincronizar".
+      #
+      # Importa porque ese resync es lo único que refresca `actualizado_en` de TODOS los
+      # EstadoDispositivo: el worker en vivo solo escribe la estación que generó un
+      # evento. Sin él los estados envejecen más de FRESCURA_MESHCENTRAL_MINUTOS y
+      # `evaluar_cruce_monitoreo` los descarta por viejos, así que la regla
+      # `agente_caido_red_viva` no dispara nunca. Encontrado en producción el
+      # 17-sep-2026: 8 estaciones con estado de 172 minutos y la regla inerte sin que
+      # nada lo reportara.
+      MESHCENTRAL_API_WS_URL: ${MESHCENTRAL_API_WS_URL}
+      MESHCENTRAL_API_USUARIO: ${MESHCENTRAL_API_USUARIO}
+      MESHCENTRAL_API_PASSWORD: ${MESHCENTRAL_API_PASSWORD}
+      MESHCENTRAL_API_CA_CERT: ${MESHCENTRAL_API_CA_CERT}
+      MESHCENTRAL_API_VERIFICAR_TLS: ${MESHCENTRAL_API_VERIFICAR_TLS:-True}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
