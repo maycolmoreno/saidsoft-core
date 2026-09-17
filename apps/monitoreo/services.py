@@ -467,3 +467,119 @@ def purgar_eventos_monitoreo_antiguos(*, dias: int = 30) -> int:
     umbral = timezone.now() - timedelta(days=dias)
     borrados, _ = EventoMonitoreo.objects.filter(timestamp__lt=umbral).delete()
     return borrados
+
+
+# --- Sondeo por ping de los activos sin agente (ver models.EstadoRedActivo) ---
+
+# Tope de equipos por pedido. No es una limitación técnica sino de tiempo: el agente
+# pingea en serie con 1 s de espera, así que 40 destinos son ~40 s en el peor caso. Una
+# farmacia estándar tiene menos de 10 activos de red; el tope existe para que una carga
+# masiva mal hecha no deje a una estación pingeando durante minutos.
+MAX_OBJETIVOS_POR_PEDIDO = 40
+
+
+def objetivos_de_ping(farmacia) -> str:
+    """"id:ip,id:ip,…" con los activos de `farmacia` que hay que pingear.
+
+    Quedan afuera, a propósito:
+
+    - Los que tienen estación RMM vinculada. Esos ya reportan su propio estado por
+      heartbeat; pingearlos sería una segunda fuente de verdad sobre lo mismo, y cuando
+      dos fuentes discrepan nadie sabe cuál creer.
+    - Los dados de baja. Un equipo que se retiró no responde, y eso es correcto, no una
+      incidencia.
+    - Los que no tienen IP cargada. Sin IP no hay a qué pingear — y son la mayoría hoy,
+      hasta que se cargue la planilla.
+    """
+    from apps.activos.models import Activo
+
+    candidatos = (
+        Activo.objects
+        .filter(farmacia=farmacia, estacion__isnull=True)
+        .exclude(ip__isnull=True)
+        .exclude(estado=Activo.Estado.DADO_DE_BAJA)
+        .order_by('codigo')
+        .values_list('pk', 'ip')[:MAX_OBJETIVOS_POR_PEDIDO]
+    )
+    return ','.join(f'{pk}:{ip}' for pk, ip in candidatos)
+
+
+def solicitar_sondeo_activos_via_agente() -> int:
+    """Por cada farmacia con activos pingeables y una estación en línea, le pide a esa
+    estación que los pingee. Devuelve cuántos pedidos se enviaron.
+
+    Que el pedido salga no significa que el sondeo funcione: eso se ve en
+    `EstadoRedActivo.ultima_verificacion`. Mismo criterio que
+    `solicitar_sondeo_red_farmacias_via_agente`.
+    """
+    from apps.catalogo.models import Estacion
+    from apps.catalogo.services import enviar_consultar_activos_farmacia
+
+    candidatas = (
+        Estacion.objects
+        .filter(
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+            farmacia__isnull=False,
+        )
+        .select_related('farmacia')
+        .order_by('farmacia_id', 'codigo')
+    )
+
+    vistas = set()
+    enviados = 0
+    for estacion in candidatas:
+        if estacion.farmacia_id in vistas:
+            continue
+        vistas.add(estacion.farmacia_id)
+        objetivos = objetivos_de_ping(estacion.farmacia)
+        if not objetivos:
+            continue
+        if enviar_consultar_activos_farmacia(estacion, objetivos):
+            enviados += 1
+    return enviados
+
+
+def registrar_estado_red_activos(*, estacion, resultados: list) -> int:
+    """Guarda lo que reportó el agente. `resultados` = [{activo_id, ip, responde, latencia_ms}].
+
+    `ultima_respuesta` solo avanza cuando el equipo contestó: es el "último visto", y
+    pisarlo en cada verificación borraría justamente el dato que sirve para saber hace
+    cuánto está caído.
+    """
+    from apps.activos.models import Activo
+    from .models import EstadoRedActivo
+
+    ahora = timezone.now()
+    permitidos = set(
+        Activo.objects.filter(farmacia=estacion.farmacia_id).values_list('pk', flat=True),
+    )
+    guardados = 0
+    for fila in resultados:
+        try:
+            activo_id = int(fila['activo_id'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        # Una estación solo puede reportar sobre activos de SU farmacia: el payload lo
+        # arma el agente y no puede ser autoridad sobre el inventario de otra.
+        if activo_id not in permitidos:
+            logger.warning(
+                'La estación %s reportó el activo %s, que no es de su farmacia — se ignora.',
+                estacion.codigo, activo_id,
+            )
+            continue
+        responde = bool(fila.get('responde'))
+        estado, _ = EstadoRedActivo.objects.get_or_create(
+            activo_id=activo_id,
+            defaults={'ip_sondeada': fila.get('ip') or '0.0.0.0', 'ultima_verificacion': ahora},
+        )
+        estado.ip_sondeada = fila.get('ip') or estado.ip_sondeada
+        estado.responde = responde
+        estado.latencia_ms = fila.get('latencia_ms') if responde else None
+        estado.ultima_verificacion = ahora
+        estado.estacion_que_sondeo = estacion
+        if responde:
+            estado.ultima_respuesta = ahora
+        estado.save()
+        guardados += 1
+    return guardados

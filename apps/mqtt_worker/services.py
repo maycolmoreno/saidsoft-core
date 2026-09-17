@@ -532,6 +532,38 @@ def manejar_perifericos(codigo_estacion: str, payload: dict) -> None:
     estacion.save(update_fields=['perifericos_ultima_verificacion'])
 
 
+def manejar_activos_farmacia(codigo_estacion: str, payload: dict) -> None:
+    """Guarda el resultado del ping a los activos sin agente de la farmacia (ver
+    apps.monitoreo.models.EstadoRedActivo).
+
+    A diferencia de `manejar_red_farmacia`, acá un "no responde" SÍ es un dato que hay
+    que guardar: la ausencia de respuesta es justamente lo que se quiere saber. Lo que no
+    se guarda es un reporte sin lista de resultados — eso significa que el agente no pudo
+    sondear nada, y marcar todo como caído por eso convertiría un problema de la estación
+    en una falla aparente de diez equipos.
+    """
+    cerrar_conexiones_viejas()
+    try:
+        estacion = Estacion.objects.select_related('farmacia').get(
+            codigo=codigo_estacion, token_enrolamiento=payload.get('token'),
+        )
+    except Estacion.DoesNotExist:
+        logger.warning('Reporte de activos de farmacia con token inválido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    resultados = payload.get('resultados')
+    if not isinstance(resultados, list) or not resultados:
+        logger.info('%s: reporte de activos sin resultados', codigo_estacion)
+        return
+
+    from apps.monitoreo.services import registrar_estado_red_activos
+
+    guardados = registrar_estado_red_activos(estacion=estacion, resultados=resultados)
+    logger.info('%s: estado de red actualizado para %d activo(s)', codigo_estacion, guardados)
+
+
 def manejar_red_farmacia(codigo_estacion: str, payload: dict) -> None:
     """Guarda el resultado de un sondeo de ancho de banda del Mikrotik LOCAL de la
     farmacia, hecho por una estación de esa misma LAN (ver

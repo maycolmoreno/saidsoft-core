@@ -82,6 +82,26 @@
                         </div>
                     {% elif a.slot %}<div>sin IP cargada</div>{% endif %}
                     {% if not a.slot and not a.ip_efectiva.0 %}—{% endif %}
+                    {% comment %}
+                    Estado de red de los equipos SIN agente (ver monitoreo.EstadoRedActivo).
+                    Se muestra "sin verificar" y no "caído" cuando la verificación quedó
+                    vieja: eso significa que la estación que sondeaba está apagada, no que
+                    el equipo se haya caído — y confundirlos mandaría a alguien a la
+                    farmacia por nada.
+                    {% endcomment %}
+                    {% with er=a.estado_red %}
+                    {% if er %}
+                        {% if not er.verificacion_vigente %}
+                            <span class="pill neutral">sin verificar</span>
+                        {% elif er.responde %}
+                            <span class="pill good">en línea</span>
+                        {% elif er.horas_sin_responder %}
+                            <span class="pill critical">sin respuesta {{ er.horas_sin_responder }} h</span>
+                        {% else %}
+                            <span class="pill warning">nunca respondió</span>
+                        {% endif %}
+                    {% endif %}
+                    {% endwith %}
                 </td>
             </tr>
         {% empty %}

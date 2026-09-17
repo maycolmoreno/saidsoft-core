@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.21'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.22'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -857,6 +857,8 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
             self._verificar_y_consultar_perifericos(payload)
         elif comando == 'consultar_red_farmacia':
             self._verificar_y_consultar_red_farmacia(payload)
+        elif comando == 'consultar_activos_farmacia':
+            self._verificar_y_consultar_activos_farmacia(payload)
         elif comando == 'configurar_nodo_pos':
             self._verificar_y_configurar_nodo_pos(payload)
         elif comando == 'actualizar_agente':
@@ -1194,6 +1196,64 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
     # en cambio, está en la MISMA LAN que el Mikrotik de su propia farmacia -- lo
     # alcanza directo, sin VPN. Mismos OIDs/protocolo que el lado servidor, pero
     # sondeando un solo router en vez de 700 en paralelo con asyncio.
+
+    # --- ping a los activos sin agente de la farmacia ---
+    #
+    # Mismo motivo de red que el sondeo del Mikrotik: el servidor central no tiene ruta
+    # hacia las IPs privadas de la farmacia, esta estación sí. Una impresora, un medianet
+    # o un pinpad no corren agente, así que este ping es la única forma de saber si están
+    # vivos.
+
+    def _verificar_y_consultar_activos_farmacia(self, payload):
+        if not self._firma_valida(
+            'comando consultar_activos_farmacia', payload,
+            comando='consultar_activos_farmacia', objetivos=payload.get('objetivos'),
+            estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+        ):
+            return
+        threading.Thread(
+            target=self._pingear_y_reportar_activos, args=(payload.get('objetivos') or '',), daemon=True,
+        ).start()
+
+    def _pingear_y_reportar_activos(self, objetivos: str):
+        resultados = []
+        for parte in objetivos.split(','):
+            parte = parte.strip()
+            if not parte or ':' not in parte:
+                continue
+            activo_id, _, ip = parte.partition(':')
+            responde, latencia = self._pingear(ip)
+            resultados.append({
+                'activo_id': activo_id, 'ip': ip, 'responde': responde, 'latencia_ms': latencia,
+            })
+        if not resultados:
+            return
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/activos_farmacia/', {
+            'token': self._token(), 'resultados': resultados,
+        })
+
+    def _pingear(self, ip: str):
+        """(responde, latencia_ms). Nunca lanza: un destino inalcanzable es un dato, no
+        un error.
+
+        Un solo intento con 1 s de espera. Con varios destinos en serie, subir esto
+        multiplica el tiempo total del sondeo; y para la pregunta que se responde —¿está
+        vivo?— un equipo que tarda más de un segundo dentro de su propia LAN ya es un
+        problema en sí mismo.
+        """
+        try:
+            proc = subprocess.run(
+                ['ping', '-n', '1', '-w', '1000', ip],
+                capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+        except Exception:
+            return False, None
+        if proc.returncode != 0:
+            return False, None
+        # "tiempo=3ms", "tiempo<1ms", "time=3ms" según el idioma de Windows.
+        encontrado = re.search(r'(?:tiempo|time)[=<](\d+)\s*ms', proc.stdout, re.IGNORECASE)
+        return True, int(encontrado.group(1)) if encontrado else None
 
     def _verificar_y_consultar_red_farmacia(self, payload):
         if not self._firma_valida(

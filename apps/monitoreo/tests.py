@@ -2165,3 +2165,492 @@ class PurgaMuestrasRedTests(TestCase):
 
         agendadas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
         self.assertIn('apps.monitoreo.tasks.purgar_muestras_red_task', agendadas)
+
+
+class SondeoDeActivosPorPingTests(TestCase):
+    """Ping a los activos sin agente, hecho por el agente de su propia farmacia.
+
+    Responde la pregunta que el inventario no podia: una impresora o un medianet existen
+    como Activo, pero nadie sabia si estaban vivos. Cuando una caja llamaba diciendo "no
+    imprime", no habia con que separar "esta apagado o desconectado" de "el POS no le
+    habla".
+
+    El sondeo sale del agente porque el servidor no tiene ruta hacia las IPs privadas de
+    las farmacias -- el mismo motivo por el que el Mikrotik se sondea desde adentro.
+    """
+
+    def setUp(self):
+        from apps.activos.models import Activo
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML016', grupo=grupo, unidad_negocio=self.sg, ip_router='10.201.7.225',
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML016-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        self.impresora = Activo.objects.create(
+            codigo='CR-IMP-0001', tipo=Activo.Tipo.IMPRESORA, unidad_negocio=self.sg,
+            farmacia=self.farmacia, ip='10.201.7.231',
+        )
+
+    # --- que se manda a pingear ---
+
+    def test_incluye_los_activos_con_ip_de_esa_farmacia(self):
+        from apps.monitoreo.services import objetivos_de_ping
+
+        self.assertEqual(objetivos_de_ping(self.farmacia), '%d:10.201.7.231' % self.impresora.pk)
+
+    def test_excluye_los_que_tienen_estacion_vinculada(self):
+        """Esos ya reportan su estado por heartbeat. Pingearlos seria una segunda fuente
+        de verdad sobre lo mismo, y cuando dos discrepan nadie sabe cual creer."""
+        from apps.activos.models import Activo
+        from apps.monitoreo.services import objetivos_de_ping
+
+        Activo.objects.create(
+            codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg,
+            farmacia=self.farmacia, estacion=self.estacion,
+        )
+        self.assertEqual(objetivos_de_ping(self.farmacia), '%d:10.201.7.231' % self.impresora.pk)
+
+    def test_excluye_los_dados_de_baja(self):
+        """Un equipo retirado no responde, y eso es correcto -- no una incidencia."""
+        from apps.activos.models import Activo
+        from apps.monitoreo.services import objetivos_de_ping
+
+        Activo.objects.create(
+            codigo='CR-IMP-0002', tipo=Activo.Tipo.IMPRESORA, unidad_negocio=self.sg,
+            farmacia=self.farmacia, ip='10.201.7.232', estado=Activo.Estado.DADO_DE_BAJA,
+        )
+        self.assertNotIn('10.201.7.232', objetivos_de_ping(self.farmacia))
+
+    def test_excluye_los_que_no_tienen_ip(self):
+        from apps.activos.models import Activo
+        from apps.monitoreo.services import objetivos_de_ping
+
+        Activo.objects.create(
+            codigo='CR-PIN-0001', tipo=Activo.Tipo.PINPAD, unidad_negocio=self.sg,
+            farmacia=self.farmacia,
+        )
+        self.assertEqual(objetivos_de_ping(self.farmacia), '%d:10.201.7.231' % self.impresora.pk)
+
+    def test_una_farmacia_sin_activos_pingeables_no_recibe_pedido(self):
+        """Sin objetivos no se manda nada: hoy la mayoria de las farmacias no tienen IPs
+        cargadas, y mandarles un pedido vacio seria trafico MQTT por nada."""
+        from apps.activos.models import Activo
+        from apps.monitoreo.services import solicitar_sondeo_activos_via_agente
+
+        # Sin IP, no sin activo: el modelo prohibe borrar un Activo a proposito.
+        Activo.objects.filter(pk=self.impresora.pk).update(ip=None)
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            self.assertEqual(solicitar_sondeo_activos_via_agente(), 0)
+        mock_single.assert_not_called()
+
+    def test_se_pide_una_sola_vez_por_farmacia(self):
+        """Con tres cajas en linea alcanza con que una pingee: son la misma LAN."""
+        from apps.monitoreo.services import solicitar_sondeo_activos_via_agente
+
+        for sufijo in ('B', 'C'):
+            Estacion.objects.create(
+                codigo='ML016-' + sufijo, farmacia=self.farmacia,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+                estado_conexion=Estacion.EstadoConexion.ONLINE,
+            )
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            self.assertEqual(solicitar_sondeo_activos_via_agente(), 1)
+        self.assertEqual(mock_single.call_count, 1)
+
+    def test_el_comando_va_firmado(self):
+        from apps.catalogo.services import enviar_consultar_activos_farmacia, firmar_payload
+
+        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+            enviar_consultar_activos_farmacia(self.estacion, '7:10.0.0.9')
+        payload = json.loads(mock_single.call_args.args[1])
+        self.assertEqual(
+            payload['firma'],
+            firmar_payload(
+                comando='consultar_activos_farmacia', objetivos='7:10.0.0.9',
+                estacion='ML016-A', timestamp=payload['timestamp'],
+            ),
+        )
+
+    # --- que se guarda al volver ---
+
+    def _reportar(self, resultados):
+        from apps.monitoreo.services import registrar_estado_red_activos
+
+        return registrar_estado_red_activos(estacion=self.estacion, resultados=resultados)
+
+    def test_guarda_que_responde_con_su_latencia(self):
+        from apps.monitoreo.models import EstadoRedActivo
+
+        self._reportar([
+            {'activo_id': self.impresora.pk, 'ip': '10.201.7.231', 'responde': True, 'latencia_ms': 3},
+        ])
+        estado = EstadoRedActivo.objects.get(activo=self.impresora)
+        self.assertTrue(estado.responde)
+        self.assertEqual(estado.latencia_ms, 3)
+        self.assertIsNotNone(estado.ultima_respuesta)
+
+    def test_guarda_tambien_que_no_responde(self):
+        """A diferencia del sondeo de ancho de banda, aca la ausencia de respuesta ES el
+        dato que se busca."""
+        from apps.monitoreo.models import EstadoRedActivo
+
+        self._reportar([{'activo_id': self.impresora.pk, 'ip': '10.201.7.231', 'responde': False}])
+        estado = EstadoRedActivo.objects.get(activo=self.impresora)
+        self.assertFalse(estado.responde)
+        self.assertIsNone(estado.latencia_ms)
+        self.assertIsNone(estado.ultima_respuesta)
+
+    def test_una_caida_no_borra_el_ultimo_visto(self):
+        """El dato que importa para decidir si hay que ir a la farmacia: hace cuanto esta
+        caido. Pisar ultima_respuesta en cada verificacion lo destruiria."""
+        from apps.monitoreo.models import EstadoRedActivo
+
+        self._reportar([{'activo_id': self.impresora.pk, 'ip': '10.201.7.231', 'responde': True}])
+        visto = EstadoRedActivo.objects.get(activo=self.impresora).ultima_respuesta
+
+        self._reportar([{'activo_id': self.impresora.pk, 'ip': '10.201.7.231', 'responde': False}])
+        estado = EstadoRedActivo.objects.get(activo=self.impresora)
+        self.assertFalse(estado.responde)
+        self.assertEqual(estado.ultima_respuesta, visto)
+
+    def test_una_estacion_no_puede_reportar_activos_de_otra_farmacia(self):
+        """El payload lo arma el agente: no puede ser autoridad sobre el inventario de
+        una farmacia que no es la suya."""
+        from apps.activos.models import Activo
+        from apps.monitoreo.models import EstadoRedActivo
+
+        otra = Farmacia.objects.create(
+            codigo='ML099', grupo=self.farmacia.grupo, unidad_negocio=self.sg,
+        )
+        ajeno = Activo.objects.create(
+            codigo='CR-IMP-0099', tipo=Activo.Tipo.IMPRESORA, unidad_negocio=self.sg,
+            farmacia=otra, ip='10.99.0.1',
+        )
+        self.assertEqual(self._reportar([{'activo_id': ajeno.pk, 'responde': True}]), 0)
+        self.assertFalse(EstadoRedActivo.objects.filter(activo=ajeno).exists())
+
+    def test_horas_sin_responder_distingue_anoche_de_hace_una_semana(self):
+        from apps.monitoreo.models import EstadoRedActivo
+
+        self._reportar([{'activo_id': self.impresora.pk, 'ip': '10.201.7.231', 'responde': True}])
+        estado = EstadoRedActivo.objects.get(activo=self.impresora)
+        self.assertLess(estado.horas_sin_responder, 0.1)
+
+        EstadoRedActivo.objects.filter(pk=estado.pk).update(
+            ultima_respuesta=timezone.now() - timedelta(days=7), responde=False,
+        )
+        estado.refresh_from_db()
+        self.assertAlmostEqual(estado.horas_sin_responder, 168, delta=1)
+
+    def test_nunca_visto_no_es_lo_mismo_que_recien_caido(self):
+        """None y "hace 0 horas" significan cosas opuestas: uno es "nunca contesto desde
+        que lo monitoreamos" -- probablemente la IP esta mal -- y el otro "se acaba de
+        caer"."""
+        from apps.monitoreo.models import EstadoRedActivo
+
+        self._reportar([{'activo_id': self.impresora.pk, 'ip': '10.201.7.231', 'responde': False}])
+        self.assertIsNone(EstadoRedActivo.objects.get(activo=self.impresora).horas_sin_responder)
+
+    def test_una_verificacion_vieja_no_se_lee_como_estado_actual(self):
+        """Si la estacion que sondeaba se apago, el ultimo estado queda congelado. Sin
+        este umbral, "responde: si" de hace tres dias se leeria como actual."""
+        from apps.monitoreo.models import EstadoRedActivo
+
+        self._reportar([{'activo_id': self.impresora.pk, 'ip': '10.201.7.231', 'responde': True}])
+        estado = EstadoRedActivo.objects.get(activo=self.impresora)
+        self.assertTrue(estado.verificacion_vigente)
+
+        EstadoRedActivo.objects.filter(pk=estado.pk).update(
+            ultima_verificacion=timezone.now() - timedelta(hours=5),
+        )
+        estado.refresh_from_db()
+        self.assertFalse(estado.verificacion_vigente)
+
+    def test_esta_agendada_en_beat(self):
+        from django.conf import settings
+
+        agendadas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
+        self.assertIn('apps.monitoreo.tasks.solicitar_sondeo_activos_task', agendadas)
+
+
+class VerificarSaludTests(TestCase):
+    """El comando que vigila al propio SAIDSOFT.
+
+    Existe porque el sistema monitorea 700 farmacias y no habia nada monitoreandolo a el.
+    Si el worker MQTT se cuelga sin morir, Docker lo reporta "corriendo" y el sintoma es
+    ausencia de datos: se descubre tarde y por casualidad.
+
+    Corre desde AFUERA del stack a proposito. Una alerta generada por Celery no sirve
+    para avisar que Celery se cayo.
+    """
+
+    def _correr(self, *args):
+        """Devuelve (texto, codigo_de_salida)."""
+        salida = io.StringIO()
+        try:
+            call_command('verificar_salud', *args, stdout=salida, stderr=salida)
+        except SystemExit as exc:
+            return salida.getvalue(), exc.code
+        return salida.getvalue(), 0
+
+    def _latido(self, nombre, hace_segundos=0):
+        from apps.mqtt_worker.models import WorkerHeartbeat
+
+        WorkerHeartbeat.objects.update_or_create(
+            nombre=nombre,
+            defaults={'ultimo_latido': timezone.now() - timedelta(seconds=hace_segundos)},
+        )
+
+    def _sano(self):
+        """Deja el sistema en estado sano: los dos workers latiendo hace un segundo."""
+        self._latido('mqtt_worker', 1)
+        self._latido('meshcentral_worker', 1)
+
+    def test_con_todo_sano_sale_con_cero(self):
+        self._sano()
+        texto, codigo = self._correr()
+        self.assertEqual(codigo, 0)
+        self.assertIn('Todo sano', texto)
+
+    def test_un_worker_atrasado_hace_fallar_el_comando(self):
+        """El codigo de salida es el contrato: un temporizador externo avisa sin tener
+        que interpretar el texto."""
+        self._latido('mqtt_worker', 600)
+        self._latido('meshcentral_worker', 1)
+        texto, codigo = self._correr()
+        self.assertEqual(codigo, 1)
+        self.assertIn('mqtt_worker', texto)
+
+    def test_un_worker_que_nunca_latio_tambien_falla(self):
+        """Distinto de atrasado, y el mensaje lo dice: puede ser que el contenedor nunca
+        haya arrancado, no que se haya colgado."""
+        self._latido('mqtt_worker', 1)
+        texto, codigo = self._correr()
+        self.assertEqual(codigo, 1)
+        self.assertIn('nunca registr', texto)
+
+    def test_el_respaldo_sin_registro_no_es_un_problema(self):
+        """Una instalacion nueva todavia no corrio ningun respaldo. Marcarlo como
+        problema llenaria de ruido el primer dia de cualquier despliegue."""
+        self._sano()
+        texto, codigo = self._correr()
+        self.assertEqual(codigo, 0)
+        self.assertIn('instalaci', texto)
+
+    def test_un_respaldo_viejo_si_es_un_problema(self):
+        self._sano()
+        self._latido('respaldo', 60 * 60 * 48)  # dos dias
+        texto, codigo = self._correr()
+        self.assertEqual(codigo, 1)
+        self.assertIn('respaldo', texto)
+
+    def test_modo_silencioso_solo_imprime_problemas(self):
+        """Pensado para un temporizador que manda correo solo cuando hay salida."""
+        self._sano()
+        texto, codigo = self._correr('--silencioso')
+        self.assertEqual(codigo, 0)
+        self.assertEqual(texto.strip(), '')
+
+    def test_los_umbrales_son_los_mismos_que_usa_el_panel(self):
+        """Si la consola y la pantalla discreparan sobre que es "sano", una de las dos
+        estaria mintiendo y no habria forma de saber cual."""
+        from pathlib import Path
+
+        from django.conf import settings
+
+        from apps.monitoreo.management.commands import verificar_salud as cmd
+        from apps.panel.views.dashboard import RESPALDO_UMBRAL_HORAS, WORKER_MQTT_UMBRAL_SEGUNDOS
+
+        self.assertEqual(cmd.WORKER_MQTT_UMBRAL_SEGUNDOS, WORKER_MQTT_UMBRAL_SEGUNDOS)
+        self.assertEqual(cmd.RESPALDO_UMBRAL_HORAS, RESPALDO_UMBRAL_HORAS)
+
+        # Que coincidan hoy no alcanza: tienen que venir del MISMO lugar, o el dia que
+        # alguien ajuste el umbral del panel la consola se queda con el viejo y las dos
+        # afirman cosas distintas sin que nada falle.
+        fuente = (Path(settings.BASE_DIR) / 'apps' / 'monitoreo' / 'management' / 'commands'
+                  / 'verificar_salud.py').read_text(encoding='utf-8')
+        self.assertIn('from apps.panel.views.dashboard import', fuente)
+
+    def test_reporta_el_espacio_en_disco(self):
+        """Por debajo del minimo, una purga o un respaldo pueden fallar a mitad de camino
+        y dejar la base peor de lo que estaba."""
+        self._sano()
+        texto, _ = self._correr()
+        self.assertIn('disco', texto)
+
+    def test_solo_acota_a_un_componente(self):
+        """Lo usa el healthcheck de cada contenedor: un contenedor tiene que medirse a sí
+        mismo. Sin esto, un respaldo atrasado marcaría enfermo al worker MQTT y Docker lo
+        reiniciaría en loop sin arreglar nada."""
+        self._latido('mqtt_worker', 1)
+        self._latido('respaldo', 60 * 60 * 48)  # respaldo viejo: problema del sistema
+
+        texto, codigo = self._correr('--solo', 'mqtt_worker')
+        self.assertEqual(codigo, 0, 'el worker está sano; el respaldo viejo no es asunto suyo')
+        self.assertNotIn('respaldo', texto)
+
+    def test_solo_sigue_detectando_el_problema_de_su_componente(self):
+        self._latido('mqtt_worker', 600)
+        texto, codigo = self._correr('--solo', 'mqtt_worker')
+        self.assertEqual(codigo, 1)
+        self.assertIn('mqtt_worker', texto)
+
+    def test_un_componente_inexistente_falla_y_lista_los_validos(self):
+        """Un nombre mal escrito en un healthcheck reportaría "sano" para siempre. Mejor
+        que falle ruidoso y diga cuáles son los nombres reales."""
+        self._sano()
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError) as ctx:
+            self._correr('--solo', 'mqtt-worker')  # con guion, no con guion bajo
+        self.assertIn('mqtt_worker', str(ctx.exception))
+
+
+class SeedReglasAlertaTests(TestCase):
+    """El juego inicial de reglas de alerta.
+
+    Existe porque el motor de alertas esta entero y probado, y en produccion habia CERO
+    reglas: el sistema detectaba y no avisaba. La capacidad existia sin estar en uso.
+
+    Lo que define esta siembra no son los umbrales sino QUE se siembra apagado. Las
+    farmacias cierran y apagan los equipos; una regla que alerte por ausencia dispararia
+    todas las noches en cada local, y cientos de falsos positivos por noche terminan en
+    que se ignoran todas, incluidas las verdaderas.
+    """
+
+    def setUp(self):
+        User.objects.create_superuser(username='u_seed_reglas', password='x' * 16, email='a@b.c')
+
+    def _correr(self, *args):
+        salida = io.StringIO()
+        call_command('seed_reglas_alerta', *args, stdout=salida)
+        return salida.getvalue()
+
+    def test_por_defecto_simula(self):
+        from apps.monitoreo.models import ReglaAlerta
+
+        texto = self._correr()
+        self.assertIn('Simulacion', texto)
+        self.assertEqual(ReglaAlerta.objects.count(), 0)
+
+    def test_crea_el_juego_completo(self):
+        from apps.monitoreo.models import ReglaAlerta
+
+        self._correr('--aplicar')
+        self.assertEqual(ReglaAlerta.objects.count(), 8)
+
+    def test_las_reglas_que_se_disparan_por_ausencia_nacen_apagadas(self):
+        """El punto entero del comando. `sin_heartbeat` y `agente_caido_red_viva` se
+        evaluan cuando NO llega un reporte, asi que una farmacia cerrada las dispara."""
+        from apps.monitoreo.models import Metrica, ReglaAlerta
+
+        self._correr('--aplicar')
+        por_ausencia = ReglaAlerta.objects.filter(
+            metrica__in=[Metrica.SIN_HEARTBEAT, Metrica.AGENTE_CAIDO_RED_VIVA],
+        )
+        self.assertEqual(por_ausencia.count(), 2)
+        self.assertFalse(por_ausencia.filter(activo=True).exists())
+
+    def test_las_reglas_de_metrica_nacen_activas(self):
+        """Son seguras: `evaluar_reglas_metricas` solo corre cuando llega una muestra, y
+        una estacion apagada no manda ninguna. No pueden dispararse de noche."""
+        from apps.monitoreo.models import Metrica, ReglaAlerta
+
+        self._correr('--aplicar')
+        de_metrica = ReglaAlerta.objects.exclude(
+            metrica__in=[Metrica.SIN_HEARTBEAT, Metrica.AGENTE_CAIDO_RED_VIVA],
+        )
+        self.assertEqual(de_metrica.count(), 6)
+        self.assertEqual(de_metrica.filter(activo=True).count(), 6)
+
+    def test_ninguna_abre_mantenimiento_automatico(self):
+        """Activar una regla no puede empezar a generar ordenes de trabajo sin que nadie
+        lo haya decidido — mismo criterio que el default del modelo."""
+        from apps.monitoreo.models import ReglaAlerta
+
+        self._correr('--aplicar')
+        self.assertFalse(ReglaAlerta.objects.filter(abre_mantenimiento=True).exists())
+
+    def test_todas_son_globales(self):
+        """Sin unidad de negocio aplican a los tres clientes. Sembrarlas por cliente
+        multiplicaria por tres el mantenimiento de los mismos umbrales."""
+        from apps.monitoreo.models import ReglaAlerta
+
+        self._correr('--aplicar')
+        self.assertEqual(ReglaAlerta.objects.filter(unidad_negocio__isnull=True).count(), 8)
+
+    def test_correrlo_dos_veces_no_duplica(self):
+        from apps.monitoreo.models import ReglaAlerta
+
+        self._correr('--aplicar')
+        texto = self._correr('--aplicar')
+        self.assertEqual(ReglaAlerta.objects.count(), 8)
+        self.assertIn('intactas', texto)
+
+    def test_no_pisa_un_umbral_afinado_a_mano(self):
+        """Si alguien bajo un umbral porque conoce su parque, sabe algo que el comando
+        no."""
+        from apps.monitoreo.models import ReglaAlerta
+
+        self._correr('--aplicar')
+        regla = ReglaAlerta.objects.get(nombre='CPU saturada (90%)')
+        regla.umbral = 70
+        regla.save(update_fields=['umbral'])
+
+        self._correr('--aplicar')
+        regla.refresh_from_db()
+        self.assertEqual(regla.umbral, 70)
+
+    def test_con_actualizar_si_ajusta_los_umbrales(self):
+        from apps.monitoreo.models import ReglaAlerta
+
+        self._correr('--aplicar')
+        ReglaAlerta.objects.filter(nombre='CPU saturada (90%)').update(umbral=70)
+
+        self._correr('--aplicar', '--actualizar')
+        self.assertEqual(ReglaAlerta.objects.get(nombre='CPU saturada (90%)').umbral, 90)
+
+    def test_actualizar_no_vuelve_a_apagar_lo_que_alguien_encendio(self):
+        """Si se activo `sin_heartbeat` despues de resolver el tema de los horarios,
+        volver a apagarla seria deshacer una decision tomada."""
+        from apps.monitoreo.models import ReglaAlerta
+
+        self._correr('--aplicar')
+        ReglaAlerta.objects.filter(nombre='Sin heartbeat (30 min)').update(activo=True)
+
+        self._correr('--aplicar', '--actualizar')
+        self.assertTrue(ReglaAlerta.objects.get(nombre='Sin heartbeat (30 min)').activo)
+
+    def test_sin_superusuario_falla_con_un_mensaje_util(self):
+        from django.core.management.base import CommandError
+
+        User.objects.all().delete()
+        with self.assertRaises(CommandError) as ctx:
+            self._correr('--aplicar')
+        self.assertIn('createsuperuser', str(ctx.exception))
+
+    def test_las_reglas_sembradas_son_evaluables(self):
+        """Que una regla exista no significa que el motor la entienda: si la metrica no
+        coincide con un campo de MuestraMetrica, `evaluar_reglas_metricas` la saltea en
+        silencio y la regla no sirve para nada."""
+        from apps.monitoreo.models import Metrica, MuestraMetrica, ReglaAlerta
+
+        self._correr('--aplicar')
+        # Se usa hasattr y no `_meta.get_fields()` porque el motor hace
+        # `getattr(muestra, regla.metrica)`: varias metricas son propiedades calculadas
+        # (disco_usado_pct sale de libre/total), no columnas. Mirar la lista de campos
+        # daria un falso negativo sobre reglas que funcionan perfecto.
+        aparte = {Metrica.SIN_HEARTBEAT, Metrica.AGENTE_CAIDO_RED_VIVA,
+                  Metrica.BITLOCKER_DESHABILITADO, Metrica.POS_ERRORES}
+        for regla in ReglaAlerta.objects.exclude(metrica__in=aparte):
+            self.assertTrue(
+                hasattr(MuestraMetrica, regla.metrica),
+                '"%s" usa la metrica %s, que MuestraMetrica no expone: el motor la '
+                'saltearia en silencio' % (regla.nombre, regla.metrica),
+            )

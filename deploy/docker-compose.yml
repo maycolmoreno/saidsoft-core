@@ -34,6 +34,14 @@ services:
 
   emqx:
     image: emqx/emqx:5.8.3
+    # `ctl status` consulta al nodo Erlang: responde solo si el broker esta realmente
+    # aceptando, no solo si el contenedor arranco.
+    healthcheck:
+      test: ["CMD-SHELL", "emqx ctl status | grep -q 'is started'"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
     restart: unless-stopped
     # El nodo Erlang de EMQX —y con él la base Mnesia de built_in_database, o sea los
     # usuarios y ACLs— vive en un directorio llamado como el nodo. Si el nombre cambia,
@@ -103,6 +111,16 @@ services:
     # --access-logfile -: sin access log, ese mismo diagnóstico fue a ciegas — los
     # requests que llegan (o no) tienen que verse en `docker-compose logs web`.
     command: ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "600", "--access-logfile", "-"]
+    # No alcanza con que el puerto acepte conexiones: gunicorn escucha aunque Django
+    # este roto. Esto renderiza /login/ de verdad, o sea que la base responde y las URLs
+    # resuelven. La cabecera Host sale de ALLOWED_HOSTS porque Django devuelve 400 a
+    # cualquier otro, y sin ella el chequeo mediria el rechazo en vez de la salud.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; h=os.environ['ALLOWED_HOSTS'].split(',')[0].strip(); r=u.urlopen(u.Request('http://127.0.0.1:8000/login/', headers={'Host': h}), timeout=10); raise SystemExit(0 if r.status==200 else 1)\""]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.produccion
       RUN_MIGRATIONS: "1"
@@ -169,6 +187,15 @@ services:
 
   nginx:
     image: nginx:1.27-alpine
+    # Se pide /media/ y no la raiz: es lo unico que nginx sirve por si mismo. La raiz
+    # pasa a gunicorn, y entonces este chequeo estaria midiendo la salud de web dos
+    # veces en vez de la de nginx.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/media/ || test $$? = 8"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
@@ -184,6 +211,20 @@ services:
     <<: *app-build
     restart: unless-stopped
     command: ["python", "manage.py", "run_mqtt_worker"]
+    # El worker no escucha ningun puerto, asi que un chequeo de red no aplica — y es
+    # justo el servicio donde "el proceso vive pero no procesa" es un modo de falla real
+    # (loop_forever sigue corriendo con el broker caido). Se mira su propio latido, que
+    # ya se registraba en WorkerHeartbeat y nadie verificaba.
+    #
+    # --solo y no la verificacion completa: un contenedor tiene que medirse a SI MISMO.
+    # Sin eso, un respaldo atrasado marcaria enfermo al worker y Docker lo reiniciaria en
+    # loop sin arreglar nada.
+    healthcheck:
+      test: ["CMD-SHELL", "python manage.py verificar_salud --silencioso --solo mqtt_worker"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 90s
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.produccion
       RUN_MIGRATIONS: "0"
@@ -221,6 +262,14 @@ services:
 
   meshcentral_worker:
     <<: *app-build
+    # Mismo criterio que el worker MQTT: no escucha puerto y registra su latido en
+    # WorkerHeartbeat, que es lo que verificar_salud revisa.
+    healthcheck:
+      test: ["CMD-SHELL", "python manage.py verificar_salud --silencioso --solo meshcentral_worker"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 90s
     restart: unless-stopped
     # Escucha el canal de control de MeshCentral (control.ashx) para el cruce
     # MQTT×MeshCentral — ver apps.monitoreo.adapters.meshcentral y
@@ -273,6 +322,14 @@ services:
     <<: *app-build
     restart: unless-stopped
     command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--concurrency=2"]
+    # `inspect ping` habla con el worker por la cola: responde solo si esta consumiendo
+    # de verdad. Un chequeo del proceso diria "vivo" con la conexion a Redis caida.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.produccion
       RUN_MIGRATIONS: "0"
@@ -307,6 +364,15 @@ services:
     # periódicas (marcar_estaciones_offline, purgar_metricas, generar_ejecuciones/
     # mantenimientos_programados) — ver CELERY_BEAT_SCHEDULE en config/settings/base.py.
     command: ["celery", "-A", "config", "beat", "--loglevel=INFO"]
+    # Beat no responde ping: solo programa. Se verifica indirecto, por el mismo comando
+    # que mira si las tareas periodicas siguen escribiendo. Es el servicio cuya caida
+    # menos se nota — nada falla, simplemente las cosas dejan de pasar.
+    healthcheck:
+      test: ["CMD-SHELL", "python manage.py verificar_salud --silencioso --solo 'celery beat'"]
+      interval: 120s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.produccion
       RUN_MIGRATIONS: "0"

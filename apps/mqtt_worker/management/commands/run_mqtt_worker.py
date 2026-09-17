@@ -18,7 +18,8 @@ from django.utils import timezone
 from apps.mqtt_worker.services import (
     NOMBRE_WORKER_MQTT, manejar_enrolamiento, manejar_estado_despliegue, manejar_estado_instalacion,
     manejar_estado_script, manejar_heartbeat, manejar_info_equipo, manejar_metricas, manejar_perifericos,
-    manejar_pos_errores, manejar_red_farmacia, manejar_software_instalado, manejar_windows_update,
+    manejar_activos_farmacia, manejar_pos_errores, manejar_red_farmacia, manejar_software_instalado,
+    manejar_windows_update,
     registrar_latido_worker, registrar_mensaje_fallido,
 )
 
@@ -35,6 +36,7 @@ TOPICO_WINDOWS_UPDATE = '/saidsof/agente/+/windows_update/'
 TOPICO_SOFTWARE_INSTALADO = '/saidsof/agente/+/software_instalado/'
 TOPICO_PERIFERICOS = '/saidsof/agente/+/perifericos/'
 TOPICO_RED_FARMACIA = '/saidsof/agente/+/red_farmacia/'
+TOPICO_ACTIVOS_FARMACIA = '/saidsof/agente/+/activos_farmacia/'
 TOPICO_POS_ERRORES = '/saidsof/agente/+/pos_errores/'
 
 # El latido se guarda como mucho cada N segundos (no en cada mensaje): a la
@@ -127,6 +129,7 @@ class Command(BaseCommand):
         client.subscribe(TOPICO_SOFTWARE_INSTALADO)
         client.subscribe(TOPICO_PERIFERICOS)
         client.subscribe(TOPICO_RED_FARMACIA)
+        client.subscribe(TOPICO_ACTIVOS_FARMACIA)
         client.subscribe(TOPICO_POS_ERRORES)
         registrar_latido_worker(NOMBRE_WORKER_MQTT)
 
@@ -178,6 +181,8 @@ class Command(BaseCommand):
                 manejar_perifericos(_codigo_desde_topico(msg.topic), payload)
             elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/red_farmacia/'):
                 manejar_red_farmacia(_codigo_desde_topico(msg.topic), payload)
+            elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/activos_farmacia/'):
+                manejar_activos_farmacia(_codigo_desde_topico(msg.topic), payload)
             elif msg.topic.startswith('/saidsof/agente/') and msg.topic.endswith('/pos_errores/'):
                 manejar_pos_errores(_codigo_desde_topico(msg.topic), payload)
         except Exception as exc:

@@ -11,10 +11,16 @@ from .activos import (
     activo_asignar, activo_baja, activo_consumible_entregar, activo_crear, activo_detalle,
     activo_devolver, activo_reparacion_enviar, activo_reparacion_retorno, activo_ubicar_farmacia,
     activos_avisos, activos_lista, especificaciones_por_serie_partial,
-    bodega_ajuste_stock, bodega_stock_ingresar, bodegas_lista, colaborador_crear, colaboradores_lista,
+)
+from .bodegas import bodega_ajuste_stock, bodega_stock_ingresar, bodegas_lista
+from .compras import (
     movimientos_inventario_lista, orden_compra_crear, orden_compra_detalle,
     orden_compra_linea_crear, orden_compra_linea_recibir, orden_compra_recibir, ordenes_compra_lista,
-    recepcion_lote_anular, visita_tecnica_accion, visita_tecnica_crear, visita_tecnica_lista,
+    recepcion_lote_anular,
+)
+from .personas import (
+    colaborador_crear, colaboradores_lista, visita_tecnica_accion, visita_tecnica_crear,
+    visita_tecnica_lista,
 )
 from .alertas import (
     alerta_reconocer, alerta_resolver, alertas_lista, pos_errores_flota, regla_alerta_crear, reglas_alerta_lista,
@@ -41,21 +47,26 @@ from .estaciones import (
     estacion_software_instalado_solicitar, estacion_supervision_grabaciones, estacion_windows_update_solicitar,
     estaciones_aprobar_lote, estaciones_lista, estaciones_pendientes_partial, farmacia_aplicar_nodo_pos,
 )
-from .mantenimiento import (
+from .actividades import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,
+)
+from .archivos import mantenimiento_imagen, mantenimiento_informe
+from .mantenimiento import (
     equipos_por_cliente_partial, mantenimiento_cancelar, mantenimiento_cerrar, mantenimiento_checklist_actualizar,
     mantenimiento_crear, mantenimiento_detalle, mantenimiento_firmar, mantenimiento_generar_informe_pdf,
-    mantenimiento_iniciar, mantenimiento_imagen, mantenimiento_imagen_adjuntar,
-    mantenimiento_informe, mantenimiento_orden_trabajo,
+    mantenimiento_iniciar, mantenimiento_imagen_adjuntar, mantenimiento_orden_trabajo,
     mantenimiento_programado_crear, mantenimiento_repuesto_agregar, mantenimientos_lista,
     mantenimientos_programados_lista, notificacion_marcar_leida, notificaciones_lista,
 )
 from .mfa import mfa_configurar, mfa_desactivar, mfa_estado
+from .enlaces import (
+    enlace_farmacia_modal, enlace_farmacia_solicitar, enlaces_farmacias_lista, red_farmacias_lista,
+)
 from .monitoreo import (
-    enlace_farmacia_modal, enlace_farmacia_solicitar, enlaces_farmacias_lista,
-    monitoreo_detalle, monitoreo_detalle_partial, monitoreo_lista, red_farmacias_lista, tendencia_flota,
+    monitoreo_detalle, monitoreo_detalle_partial, monitoreo_lista,
     ventana_mantenimiento_crear, ventanas_mantenimiento_lista,
 )
+from .tendencia import tendencia_flota
 from .reportes import (
     reporte_activos_csv, reporte_alertas_csv, reporte_auditoria_csv, reporte_cliente_resumen,
     reporte_cumplimiento_csv, reporte_despliegue_csv, reporte_facturacion_csv, reporte_mantenimiento_csv,

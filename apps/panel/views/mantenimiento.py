@@ -1,26 +1,16 @@
-from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
 from django.db.models import Q
-from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
-
 from apps.activos.models import Activo, Colaborador
 from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import (
     scope_opcional_por_unidad_negocio, scope_opcional_por_unidad_negocio_activa, verificar_acceso,
 )
 from apps.mantenimiento import services as mantenimiento_services
-from apps.mantenimiento.forms import (
-    ActividadPlanificadaForm, CancelarMantenimientoForm, CerrarMantenimientoForm, CompletarActividadForm,
-    FirmaMantenimientoForm, ImagenMantenimientoForm, MantenimientoManualForm, MantenimientoProgramadoForm,
-    RepuestoUtilizadoForm,
-)
-from apps.mantenimiento.models import (
-    ActividadChecklist, ActividadPlanificada, ImagenMantenimiento, Mantenimiento, MantenimientoProgramado,
-    Notificacion,
-)
+from apps.mantenimiento.forms import CancelarMantenimientoForm, CerrarMantenimientoForm, FirmaMantenimientoForm, ImagenMantenimientoForm, MantenimientoManualForm, MantenimientoProgramadoForm, RepuestoUtilizadoForm
+from apps.mantenimiento.models import ActividadChecklist, Mantenimiento, MantenimientoProgramado, Notificacion
 from apps.mantenimiento.tasks import generar_informe_pdf_task
 
 
@@ -414,85 +404,6 @@ def mantenimiento_generar_informe_pdf(request, pk):
 
 
 @login_required
-@permission_required('mantenimiento.view_actividadplanificada', raise_exception=True)
-def actividades_planificadas_lista(request):
-    actividades = ActividadPlanificada.objects.filter(activo=True).select_related(
-        'tecnico', 'equipo', 'ubicacion',
-    ).order_by('fecha_inicio')
-
-    tecnico = request.GET.get('tecnico')
-    estado = request.GET.get('estado')
-    if tecnico:
-        actividades = actividades.filter(tecnico__username=tecnico)
-    if estado:
-        actividades = actividades.filter(estado=estado)
-
-    return render(request, 'panel/actividades_planificadas_lista.html', {
-        'actividades': actividades,
-        'estados': ActividadPlanificada.Estado.choices,
-        'filtro_tecnico': tecnico or '', 'filtro_estado': estado or '',
-    })
-
-
-@login_required
-@permission_required('mantenimiento.add_actividadplanificada', raise_exception=True)
-def actividad_planificada_crear(request):
-    if request.method == 'POST':
-        form = ActividadPlanificadaForm(request.POST, user=request.user)
-        if form.is_valid():
-            d = form.cleaned_data
-            actividad = mantenimiento_services.crear_actividad_planificada(
-                tecnico=d['tecnico'], creado_por=request.user, titulo=d['titulo'], descripcion=d['descripcion'],
-                tipo_actividad=d['tipo_actividad'], prioridad=d['prioridad'], fecha_inicio=d['fecha_inicio'],
-                fecha_fin=d['fecha_fin'], tiempo_estimado_minutos=d['tiempo_estimado_minutos'],
-                equipo=d['equipo'], ubicacion=d['ubicacion'],
-            )
-            registrar_evento(
-                usuario=request.user, accion='actividad_planificada.crear', objeto=actividad, request=request,
-            )
-            messages.success(request, f'Actividad "{actividad.titulo}" creada.')
-            return redirect('panel:actividades_planificadas_lista')
-    else:
-        form = ActividadPlanificadaForm(user=request.user)
-    return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': 'Nueva actividad planificada', 'boton': 'Crear actividad',
-        'volver_url': reverse('panel:actividades_planificadas_lista'),
-    })
-
-
-@login_required
-@permission_required('mantenimiento.change_actividadplanificada', raise_exception=True)
-def actividad_planificada_completar(request, pk):
-    actividad = get_object_or_404(ActividadPlanificada, pk=pk)
-    if request.method == 'POST':
-        form = CompletarActividadForm(request.POST)
-        if form.is_valid():
-            try:
-                mantenimiento_services.completar_actividad_planificada(
-                    actividad=actividad, tiempo_real_minutos=form.cleaned_data['tiempo_real_minutos'],
-                )
-            except ValueError as exc:
-                form.add_error(None, str(exc))
-            else:
-                registrar_evento(
-                    usuario=request.user, accion='actividad_planificada.completar', objeto=actividad, request=request,
-                )
-                messages.success(request, f'Actividad "{actividad.titulo}" completada.')
-                return redirect('panel:actividades_planificadas_lista')
-    else:
-        form = CompletarActividadForm()
-    return render(request, 'panel/accion_form.html', {
-        'form': form, 'titulo': f'Completar actividad: {actividad.titulo}', 'boton': 'Marcar completada',
-        'resumen_tipo': 'mantenimiento', 'resumen_titulo': actividad.titulo,
-        'resumen_sub': f'Técnico: {actividad.tecnico}',
-        'resumen_campos': [
-            ('Prioridad', actividad.get_prioridad_display()), ('Vence', actividad.fecha_fin),
-        ],
-        'volver_url': reverse('panel:actividades_planificadas_lista'),
-    })
-
-
-@login_required
 def notificaciones_lista(request):
     notificaciones = Notificacion.objects.filter(usuario=request.user).order_by('-creado_en')[:100]
     return render(request, 'panel/notificaciones_lista.html', {'notificaciones': notificaciones})
@@ -504,55 +415,3 @@ def notificacion_marcar_leida(request, pk):
     notificacion.leida = True
     notificacion.save(update_fields=['leida'])
     return redirect('panel:notificaciones_lista')
-
-
-def _servir_archivo_protegido(archivo):
-    """Entrega un archivo de media que NO se sirve sin sesión.
-
-    En producción delega en nginx con `X-Accel-Redirect`: Django decide el permiso y
-    nginx manda los bytes. Importa a esta escala — un informe con fotos pesa varios MB, y
-    servirlo desde Django ocuparía un worker de gunicorn todo lo que dure la descarga (el
-    mismo problema que `config/urls.py` ya documentaba para /media/, y por el que existe
-    el proxy).
-
-    Fuera de nginx (runserver, pruebas) responde el archivo directo, así el flujo se puede
-    probar sin levantar el proxy.
-    """
-    if not archivo:
-        raise Http404('El archivo no existe.')
-
-    if settings.SERVIR_MEDIA_CON_NGINX:
-        respuesta = HttpResponse(status=200)
-        # La ruta tiene que caer dentro de la `location ... internal` de nginx, que es
-        # inalcanzable desde afuera: es lo que impide que alguien pida el archivo directo
-        # salteándose esta vista.
-        respuesta['X-Accel-Redirect'] = f'{settings.MEDIA_URL}{archivo.name}'
-        # Se borra para que el Content-Type lo resuelva nginx por la extensión real; si
-        # Django manda text/html, el navegador intenta renderizar un JPEG como página.
-        del respuesta['Content-Type']
-        return respuesta
-
-    return FileResponse(archivo.open('rb'))
-
-
-@login_required
-@permission_required('mantenimiento.view_mantenimiento', raise_exception=True)
-def mantenimiento_imagen(request, pk):
-    """Foto de evidencia de un mantenimiento, detrás de sesión y de alcance por cliente.
-
-    Antes estas fotos se servían desde `/media/mantenimiento/imagenes/` sin ninguna
-    autenticación: cualquiera con acceso a la red o a la VPN podía bajarlas conociendo la
-    ruta. Son fotos tomadas dentro de las farmacias, no paquetes de despliegue.
-    """
-    imagen = get_object_or_404(ImagenMantenimiento.objects.select_related('mantenimiento'), pk=pk)
-    verificar_acceso(request.user, imagen.mantenimiento.unidad_negocio)
-    return _servir_archivo_protegido(imagen.imagen)
-
-
-@login_required
-@permission_required('mantenimiento.view_mantenimiento', raise_exception=True)
-def mantenimiento_informe(request, pk):
-    """Informe PDF firmado de un mantenimiento, mismo criterio que las fotos."""
-    mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
-    verificar_acceso(request.user, mantenimiento.unidad_negocio)
-    return _servir_archivo_protegido(mantenimiento.informe_pdf)

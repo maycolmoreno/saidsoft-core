@@ -4,7 +4,7 @@ from .enlaces import sondear_enlaces_farmacias
 from .mikrotik import sincronizar_ancho_banda_farmacias, solicitar_sondeo_red_farmacias_via_agente
 from .services import (
     escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
-    purgar_muestras_red_antiguas,
+    purgar_muestras_red_antiguas, solicitar_sondeo_activos_via_agente,
 )
 
 
@@ -31,6 +31,18 @@ def purgar_muestras_red_task():
     no hay retención nativa detrás, esto es lo único que borra."""
     borradas = purgar_muestras_red_antiguas(dias=30)
     return f'{borradas} muestra(s) de red eliminada(s).'
+
+
+@shared_task(name='apps.monitoreo.tasks.solicitar_sondeo_activos_task')
+def solicitar_sondeo_activos_task():
+    """Cada 15 min (ver CELERY_BEAT_SCHEDULE) — le pide a una estación en línea de cada
+    farmacia que pingee los activos sin agente de su propia LAN.
+
+    Cada 15 y no cada 5 como el sondeo del Mikrotik: acá no se mide una tasa que necesite
+    muestras seguidas, se responde "¿está vivo?". Quince minutos de resolución alcanzan
+    para eso y son la cuarta parte de tráfico MQTT y de pings dentro de la farmacia."""
+    enviados = solicitar_sondeo_activos_via_agente()
+    return f'{enviados} pedido(s) de sondeo de activos enviado(s).'
 
 
 @shared_task(name='apps.monitoreo.tasks.evaluar_cruce_monitoreo_task')

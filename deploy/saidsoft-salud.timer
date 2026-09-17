@@ -1,0 +1,22 @@
+# Verifica la salud de SAIDSOFT cada 15 minutos.
+#
+# Cada 15 y no cada 5: el umbral mas corto que revisa son 90 segundos sin latido del
+# worker MQTT, pero avisar a los 5 minutos no cambia la reaccion humana y multiplica por
+# tres el ruido en el journal. Cada 15 detecta una caida dentro del cuarto de hora, que
+# es la resolucion util para algo que se atiende a mano.
+#
+# Sin Persistent=true, a diferencia del respaldo: una verificacion de salud atrasada no
+# tiene sentido. Lo que importa es como esta el sistema AHORA, no como estaba a las 02:00
+# del dia que la maquina estuvo apagada.
+
+[Unit]
+Description=Verificacion periodica de salud de SAIDSOFT
+Documentation=file:/home/glpi/Documentos/Said/saidsoft-core/deploy/README-produccion.md
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+Unit=saidsoft-salud.service
+
+[Install]
+WantedBy=timers.target

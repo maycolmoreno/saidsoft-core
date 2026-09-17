@@ -224,6 +224,34 @@ def enviar_consultar_red_farmacia(estacion, comunidad: str) -> bool:
     })
 
 
+def enviar_consultar_activos_farmacia(estacion, objetivos: str) -> bool:
+    """Pide a `estacion` que pingee los activos de su propia farmacia y reporte quién
+    responde. Ver `apps.monitoreo.models.EstadoRedActivo` sobre por qué el sondeo sale
+    del agente y no de este servidor.
+
+    `objetivos` viaja como UNA cadena "id:ip,id:ip,…" y no como lista JSON a propósito:
+    `firmar_payload` firma valores planos unidos con "|", así que una lista habría
+    obligado a que servidor y agente serialicen igual para que la firma coincida — y esa
+    es justo la clase de divergencia silenciosa que el esquema de firma evita al no
+    firmar el JSON. Con una cadena hay una sola representación y el agente la parsea.
+
+    Los objetivos los arma el servidor (ver `apps.monitoreo.services.objetivos_de_ping`)
+    y no los deduce el agente: cuáles son los activos declarados de una farmacia es
+    autoridad del inventario, no de la estación. Mismo criterio que la comunidad SNMP en
+    `enviar_consultar_red_farmacia`.
+    """
+    timestamp = int(time.time())
+    firma = firmar_payload(
+        secreto_de(estacion),
+        comando='consultar_activos_farmacia', objetivos=objetivos,
+        estacion=estacion.codigo, timestamp=timestamp,
+    )
+    return _publicar_comando(estacion, {
+        'comando': 'consultar_activos_farmacia', 'objetivos': objetivos,
+        'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
+    })
+
+
 def enviar_actualizacion_agente(estacion, version_agente) -> bool:
     """Publica la orden de actualizar el agente de `estacion` a `version_agente`
     (apps.catalogo.models.VersionAgente). El agente se detiene, reemplaza su propio

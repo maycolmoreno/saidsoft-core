@@ -57,7 +57,7 @@ def alertas_lista(request):
 
 def _top_mensajes_pos_errores(request, *, q=''):
     """Rollup de PosErrorDetectado por mensaje exacto, escopeado por tenant — factorizado
-    de pos_errores_flota para que apps.panel.views.monitoreo.tendencia_flota (M5) pueda
+    de pos_errores_flota para que apps.panel.views.tendencia.tendencia_flota (M5) pueda
     mostrar un top acotado sin duplicar la query. Devuelve (filas, queryset_detectados)."""
     detectados = PosErrorDetectado.objects.filter(categoria=PosErrorDetectado.Categoria.SISTEMA)
     detectados = scope_por_unidad_negocio_activa(detectados, request, 'estacion__farmacia__unidad_negocio')

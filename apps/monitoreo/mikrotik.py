@@ -1,6 +1,6 @@
 """Sondeo SNMP a los Mikrotik de cada farmacia (Parte A del monitoreo proactivo de
 ancho de banda) — ver PLAN_MODERNIZACION.md §9. Solo visibilidad en v1: no crea
-Alerta ni notifica, ver docstring de apps.panel.views.monitoreo.red_farmacias_lista.
+Alerta ni notifica, ver docstring de apps.panel.views.enlaces.red_farmacias_lista.
 
 No implementa apps.monitoreo.adapters.base.FuenteMonitoreo a propósito: ese puerto es
 para avisar estado online/offline de un DISPOSITIVO (EstadoDispositivo, estación-

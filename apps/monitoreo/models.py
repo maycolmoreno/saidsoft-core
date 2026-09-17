@@ -1,5 +1,8 @@
+from datetime import timedelta
+
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
@@ -757,3 +760,81 @@ class EventoEnlaceFarmacia(models.Model):
         if self.fin is None:
             return None
         return int((self.fin - self.inicio).total_seconds() // 60)
+
+
+class EstadoRedActivo(models.Model):
+    """Si un activo SIN agente responde en la red de su farmacia, y cuándo se lo vio.
+
+    Por qué existe: una impresora, un medianet o un pinpad no corren agente, así que el
+    sistema sabía que existen (`Activo`) pero nunca si están vivos. Cuando una caja
+    llamaba diciendo "no imprime", no había forma de separar "el equipo está apagado o
+    desconectado" de "el POS no le está hablando".
+
+    Por qué lo sondea el agente y no el servidor: el servidor no tiene ninguna ruta hacia
+    las IPs privadas de las farmacias — confirmado con pings reales, 100% de pérdida. Una
+    estación de la propia farmacia sí las alcanza. Mismo motivo por el que el Mikrotik se
+    sondea desde el agente (ver `apps.monitoreo.mikrotik.solicitar_sondeo_red_farmacias_via_agente`).
+
+    Por qué es último estado y NO una serie temporal como `MuestraRedFarmacia`: las
+    farmacias cierran y apagan los equipos. Guardar una fila por ping sería, en su mayor
+    parte, historial de equipos legítimamente apagados de noche — mucho volumen para una
+    pregunta que nadie hace. Lo que se necesita es "¿responde ahora?" y "¿desde cuándo no
+    responde?", y para eso alcanza con el último valor.
+
+    Por el mismo motivo esto NO genera alertas. Un equipo que no responde a las 22:00 es
+    una farmacia cerrada, no una incidencia; alertar sobre eso serían cientos de falsos
+    positivos por noche y el resultado conocido es que se terminan ignorando todas.
+    """
+
+    activo = models.OneToOneField(
+        'activos.Activo', on_delete=models.CASCADE, related_name='estado_red',
+    )
+    ip_sondeada = models.GenericIPAddressField(
+        help_text='La IP que se pingeó. Se guarda porque la del activo puede cambiar y '
+                  'entonces este estado ya no habla del mismo destino.',
+    )
+    responde = models.BooleanField(default=False)
+    latencia_ms = models.PositiveSmallIntegerField(null=True, blank=True)
+    ultima_verificacion = models.DateTimeField()
+    ultima_respuesta = models.DateTimeField(
+        null=True, blank=True,
+        help_text='La última vez que contestó. Vacío = nunca contestó desde que se lo '
+                  'monitorea, que no es lo mismo que "se cayó recién".',
+    )
+    estacion_que_sondeo = models.ForeignKey(
+        'catalogo.Estacion', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='sondeos_activos',
+        help_text='Qué estación hizo el ping. Si esa estación se apaga, el activo deja de '
+                  'sondearse — y eso explica un "sin verificar" que si no parecería una caída.',
+    )
+
+    class Meta:
+        db_table = 'estado_red_activo'
+        ordering = ['activo__codigo']
+        verbose_name = 'Estado de red de un activo'
+        verbose_name_plural = 'Estados de red de activos'
+
+    def __str__(self):
+        return f'{self.activo.codigo}: {"responde" if self.responde else "sin respuesta"}'
+
+    # Una verificación más vieja que esto significa que nadie lo está sondeando: la
+    # estación de esa farmacia está apagada, o la farmacia no tiene ninguna en línea.
+    # Sin este umbral, un dato viejo se leería como un estado actual.
+    HORAS_VERIFICACION_VIGENTE = 2
+
+    @property
+    def verificacion_vigente(self) -> bool:
+        return (timezone.now() - self.ultima_verificacion) <= timedelta(
+            hours=self.HORAS_VERIFICACION_VIGENTE,
+        )
+
+    @property
+    def horas_sin_responder(self):
+        """Horas desde la última respuesta, o None si nunca respondió.
+
+        Es el número que distingue "se apagó anoche" (unas horas) de "está fuera de
+        servicio hace una semana" — y solo el segundo caso amerita que alguien vaya.
+        """
+        if self.ultima_respuesta is None:
+            return None
+        return round((timezone.now() - self.ultima_respuesta).total_seconds() / 3600, 1)

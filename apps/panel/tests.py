@@ -530,7 +530,7 @@ class MonitoreoRedTests(TestCase):
 class RedFarmaciasListaTests(TestCase):
     """Consumo de red por FARMACIA (SNMP a Mikrotik), ahora integrado a la pantalla de
     enlaces: eran dos listados de las MISMAS farmacias y se fusionaron el 11-sep-2026
-    (ver el docstring de apps.panel.views.monitoreo.red_farmacias_lista).
+    (ver el docstring de apps.panel.views.enlaces.red_farmacias_lista).
 
     Estas pruebas se reapuntaron en vez de borrarse: lo que verifican —que una farmacia
     sin IP no aparezca, el aislamiento por tenant y que se muestre el consumo— sigue
@@ -1438,7 +1438,7 @@ class TendenciaFlotaTests(TestCase):
     """M5: series semanales a nivel de flota (alertas por severidad, recursos
     promedio) + top de errores del POS actual (sin tendencia — PosErrorDetectado no
     guarda cuándo ocurrió cada reporte, solo un contador de por vida, ver docstring de
-    apps.panel.views.monitoreo.tendencia_flota)."""
+    apps.panel.views.tendencia.tendencia_flota)."""
 
     def setUp(self):
         self.sg = UnidadNegocio.objects.get(codigo='SG')
@@ -3779,7 +3779,7 @@ class AperturaPanelTests(TestCase):
 
 
 class EnlacesFarmaciasPanelTests(TestCase):
-    """Vista /monitoreo/enlaces/ (apps/panel/views/monitoreo.py)."""
+    """Vista /monitoreo/enlaces/ (apps/panel/views/enlaces.py)."""
 
     def setUp(self):
         self.sg = UnidadNegocio.objects.get(codigo='SG')
@@ -4701,7 +4701,7 @@ class TendenciaFlotaConsultasTests(TestCase):
                 MuestraMetrica.objects.filter(pk=muestra.pk).update(timestamp=momento)
 
     def _series(self):
-        from apps.panel.views.monitoreo import _semanas_recientes, _series_semanales
+        from apps.panel.views.tendencia import _semanas_recientes, _series_semanales
 
         return _series_semanales(
             _semanas_recientes(12),
@@ -4732,7 +4732,7 @@ class TendenciaFlotaConsultasTests(TestCase):
         número."""
         from django.db.models import Avg
 
-        from apps.panel.views.monitoreo import _semanas_recientes
+        from apps.panel.views.tendencia import _semanas_recientes
 
         self._sembrar(semanas_atras=6, cuantas=2)
         series = self._series()
@@ -5000,3 +5000,59 @@ class EscalaDelGraficoDeConsumoTests(TestCase):
         resp = self._modal()
         self.assertEqual(resp.status_code, 200)
         self.assertIsNone(resp.context['pico_kbps'])
+
+
+class DivisionDeVistasTests(TestCase):
+    """Que la división de `views/activos.py` y `views/monitoreo.py` no se deshaga sola.
+
+    Los dos archivos habían llegado a 852 y 673 líneas, el segundo mezclando tres
+    dominios. Se dividieron en siete. Sin una prueba, vuelven a crecer: cada vista nueva
+    se agrega al archivo que ya existe porque es el camino de menor resistencia.
+    """
+
+    LIMITE_LINEAS = 550
+
+    def _modulos(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        return sorted((Path(settings.BASE_DIR) / 'apps' / 'panel' / 'views').glob('*.py'))
+
+    def test_ningun_modulo_de_vistas_pasa_el_limite(self):
+        """550 líneas no es un número sagrado: es "más grande que esto y cuesta entrar".
+        Si un módulo lo pasa, la respuesta es dividirlo, no subir el límite."""
+        grandes = [
+            '%s (%d líneas)' % (m.name, len(m.read_text(encoding='utf-8').splitlines()))
+            for m in self._modulos()
+            if len(m.read_text(encoding='utf-8').splitlines()) > self.LIMITE_LINEAS
+        ]
+        self.assertEqual(grandes, [], 'módulos de vistas demasiado grandes: %s' % ', '.join(grandes))
+
+    def test_los_umbrales_de_color_viven_en_un_solo_lugar(self):
+        """Al dividir, las cinco constantes de umbral quedaron copiadas en los tres
+        archivos nuevos. Un umbral escrito tres veces se desincroniza, y el síntoma es
+        peor que un error: la misma estación se ve amarilla en una pantalla y verde en
+        otra, sin que nada falle."""
+        import re
+
+        patron = re.compile(r'^(RED_FARMACIA_UMBRAL|UMBRAL_(CPU|RAM|DISCO))', re.MULTILINE)
+        con_definicion = [
+            m.name for m in self._modulos() if patron.search(m.read_text(encoding='utf-8'))
+        ]
+        self.assertEqual(
+            con_definicion, [],
+            'los umbrales tienen que importarse de apps/panel/umbrales.py, no redefinirse: %s'
+            % ', '.join(con_definicion),
+        )
+
+    def test_las_vistas_publicas_se_siguen_exportando_igual(self):
+        """`urls.py` hace `views.nombre_funcion`: si la división se llevara un nombre,
+        la URL rompe recién al visitarla, no al importar."""
+        from apps.panel import views
+
+        for nombre in (
+            'activos_lista', 'bodegas_lista', 'ordenes_compra_lista', 'colaboradores_lista',
+            'monitoreo_lista', 'tendencia_flota', 'enlaces_farmacias_lista',
+        ):
+            self.assertTrue(hasattr(views, nombre), 'falta %s en apps.panel.views' % nombre)

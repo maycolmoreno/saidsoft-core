@@ -1,0 +1,31 @@
+# Verificacion de salud del propio SAIDSOFT. Lo dispara saidsoft-salud.timer.
+#
+# Instalacion:
+#   sudo cp deploy/saidsoft-salud.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now saidsoft-salud.timer
+#
+# Por que vive en systemd y no como una tarea de Celery: una alerta generada por Celery
+# no puede avisar que Celery se cayo. Este proceso es externo al stack a proposito, y esa
+# es toda su razon de ser.
+#
+# Solo imprime cuando hay problemas (--silencioso). Si el sistema tiene configurado el
+# envio de correo de systemd (OnFailure=), la salida no vacia mas el codigo 1 alcanzan
+# para que avise. Si no, queda en el journal:
+#   journalctl -u saidsoft-salud.service --since today
+
+[Unit]
+Description=Verificacion de salud de SAIDSOFT
+Documentation=file:/home/glpi/Documentos/Said/saidsoft-core/deploy/README-produccion.md
+# Igual que el respaldo: habla con los contenedores, sin Docker no hay nada que medir.
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User=glpi
+WorkingDirectory=/home/glpi/Documentos/Said/saidsoft-core/deploy
+ExecStart=/usr/bin/docker compose --env-file .env exec -T web python manage.py verificar_salud --silencioso
+
+[Install]
+WantedBy=multi-user.target
