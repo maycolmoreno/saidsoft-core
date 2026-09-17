@@ -1332,3 +1332,56 @@ class HmacPropioConfirmadoTests(TestCase):
 
         self._latir(version_agente='agente-prueba-0.21', hmac_propio=True)
         self.assertEqual(secreto_de(self.estacion), self.estacion.hmac_secret)
+
+
+class ConfirmacionAlEnrolarTests(TestCase):
+    """El servidor marca la confirmación al ENTREGAR el secreto, no al deducirla después.
+
+    Segundo acto del incidente del 16-sep-2026. Al corregir la deducción por versión,
+    ML017-B quedó sin poder recibir comandos: se había instalado de cero con
+    ComandoHmacSecret VACÍO —que es lo que el instalador recomienda desde 0.21— así que
+    dependía solo de su secreto propio, y el servidor había dejado de usarlo.
+
+    La pieza que faltaba: en el enrolamiento el servidor sabe a quién le entrega el
+    secreto, y ahí la versión SÍ es un dato sólido — el agente que responde ese mensaje es
+    el que está corriendo en ese instante. El error anterior fue usar la versión para
+    afirmar algo sobre un enrolamiento de meses atrás, con otro ejecutable.
+    """
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+
+    def _enrolar(self, version):
+        from apps.mqtt_worker.services import manejar_enrolamiento
+
+        resp = manejar_enrolamiento({
+            'codigo': 'ML001-A', 'hardware_id': 'HW-1', 'version_agente': version,
+        })
+        return resp, Estacion.objects.get(codigo='ML001-A')
+
+    def test_un_agente_021_queda_confirmado_al_enrolarse(self):
+        resp, estacion = self._enrolar('agente-prueba-0.21')
+        self.assertEqual(resp['hmac_secret'], estacion.hmac_secret)
+        self.assertTrue(estacion.hmac_propio_confirmado)
+
+    def test_un_agente_viejo_no_queda_confirmado(self):
+        """El 0.20 ignora el campo del payload: marcarlo confirmado lo dejaría mudo."""
+        _, estacion = self._enrolar('agente-prueba-0.20')
+        self.assertFalse(estacion.hmac_propio_confirmado)
+
+    def test_reenrolarse_con_un_agente_nuevo_confirma_a_la_que_venia_de_antes(self):
+        """El camino de recuperación: una estación enrolada con 0.20 que se actualiza y se
+        re-enrola queda confirmada, sin que nadie vaya al local."""
+        _, estacion = self._enrolar('agente-prueba-0.20')
+        self.assertFalse(estacion.hmac_propio_confirmado)
+
+        _, estacion = self._enrolar('agente-prueba-0.23')
+        self.assertTrue(estacion.hmac_propio_confirmado)
+
+    def test_el_secreto_no_cambia_al_confirmar(self):
+        _, estacion = self._enrolar('agente-prueba-0.20')
+        antes = estacion.hmac_secret
+        _, estacion = self._enrolar('agente-prueba-0.23')
+        self.assertEqual(estacion.hmac_secret, antes)

@@ -66,11 +66,29 @@ def _cache_url_base_para(estacion) -> str | None:
     return f'http://{cache.ip_lan}:{cache.puerto_cache}/'
 
 
-def _respuesta_aceptado(estacion) -> dict:
+def _respuesta_aceptado(estacion, payload_version: str = '') -> dict:
     # Credencial MQTT propia de la estación (aislamiento a nivel de broker, no solo de
     # aplicación) — None si EMQX_ADMIN_CONFIG no está configurado o la llamada a EMQX
     # falla; el agente sigue funcionando con la credencial compartida en ese caso (ver
     # docstring de apps.mqtt_worker.emqx_admin).
+    from apps.catalogo.services import VERSION_AGENTE_CON_HMAC_PROPIO, _version_agente
+
+    # El servidor SABE a quien le entrega el secreto, y en el enrolamiento la version del
+    # agente si determina si lo va a guardar: es el mismo evento, el agente que responde
+    # este mensaje es el que esta corriendo ahora.
+    #
+    # Esa es exactamente la diferencia con el bug del 16-sep-2026: alli la version se uso
+    # para afirmar algo sobre un enrolamiento ocurrido MESES antes, con otro ejecutable.
+    # Aca la inferencia es sobre el instante presente y es solida.
+    #
+    # Sin esto, una estacion instalada de cero con ComandoHmacSecret vacio —que es lo que
+    # el instalador recomienda desde 0.21— queda sin poder recibir comandos: no tiene el
+    # compartido y el servidor no sabe que si tiene el propio. Le paso a ML017-B.
+    if _version_agente(payload_version) >= VERSION_AGENTE_CON_HMAC_PROPIO:
+        if not estacion.hmac_propio_confirmado:
+            estacion.hmac_propio_confirmado = True
+            estacion.save(update_fields=['hmac_propio_confirmado'])
+
     credencial_mqtt = aprovisionar_credencial_estacion(estacion)
     mqtt_username, mqtt_password = credencial_mqtt if credencial_mqtt else (None, None)
     # Secreto HMAC propio de la estación, por el mismo canal que la credencial MQTT. Un
@@ -126,7 +144,7 @@ def manejar_enrolamiento(payload: dict) -> dict:
             campos.append('hostname')
         if campos:
             estacion.save(update_fields=campos)
-        return _respuesta_aceptado(estacion)
+        return _respuesta_aceptado(estacion, payload.get('version_agente', ''))
 
     # Estación nueva. Si el agente trae un token de apertura válido, entra ya aprobada y
     # con la configuración de su perfil, y arranca sola los pasos de la plantilla — es el
@@ -141,7 +159,7 @@ def manejar_enrolamiento(payload: dict) -> dict:
         )
         if token is not None:
             estacion = enrolar_estacion_de_apertura(token=token, codigo=codigo, payload=payload)
-            return _respuesta_aceptado(estacion)
+            return _respuesta_aceptado(estacion, payload.get('version_agente', ''))
 
     farmacia = _farmacia_desde_codigo_estacion(codigo)
     if farmacia is None:
@@ -159,7 +177,7 @@ def manejar_enrolamiento(payload: dict) -> dict:
         version_agente=payload.get('version_agente', ''),
     )
     logger.info('Nueva estación enrolada (pendiente de aprobación): %s', codigo)
-    return _respuesta_aceptado(estacion)
+    return _respuesta_aceptado(estacion, payload.get('version_agente', ''))
 
 
 def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
