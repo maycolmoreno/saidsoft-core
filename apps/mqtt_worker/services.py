@@ -180,6 +180,13 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
 
     version_agente_anterior = estacion.version_agente
     estacion.version_agente = payload.get('version_agente', estacion.version_agente)
+    # Lo declara el agente, no se deduce de la versión: un agente actualizado a 0.21 que
+    # se enroló ANTES conserva su identidad.json y nunca recibió el secreto. Ver
+    # apps.catalogo.services.secreto_de. Un agente viejo no manda la clave y el
+    # `.get(..., actual)` deja el valor como estaba en vez de apagarlo por omisión.
+    estacion.hmac_propio_confirmado = bool(
+        payload.get('hmac_propio', estacion.hmac_propio_confirmado),
+    )
     estacion.version_pos = payload.get('version_pos', estacion.version_pos)
     estacion.so_nombre = payload.get('so_nombre', estacion.so_nombre)
     estacion.so_build = payload.get('so_build', estacion.so_build)

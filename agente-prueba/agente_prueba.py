@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.22'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.23'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -293,10 +293,22 @@ class AgentePrueba:
             client.subscribe(f"/saidsof/software/grupo/{self.identidad['grupo']}/")
             client.subscribe(f"/saidsof/despliegue/grupo/{self.identidad['grupo']}/")
 
-        if self._token():
-            logging.info('Ya tengo identidad guardada (token existente) — no vuelvo a enrolarme.')
-        else:
+        if not self._token():
             self._enrolar()
+        elif not self.identidad.get('hmac_secret'):
+            # Ya enrolada pero SIN secreto propio: es una estación que se enroló antes de
+            # que el mecanismo existiera y despues solo se le actualizo el ejecutable.
+            # Actualizar no re-enrola, asi que nunca lo recibio — y el servidor, viendo la
+            # version nueva, podia firmarle con un secreto que ella no tiene. El 16-sep-2026
+            # eso dejo mudas a dos estaciones del piloto.
+            #
+            # Re-enrolarse es seguro y es la unica forma de pedirlo: el servidor exige que
+            # el hardware_id coincida con el de la primera vez, asi que devuelve la misma
+            # identidad mas el secreto que faltaba.
+            logging.info('Tengo identidad pero no mi secreto propio — me re-enrolo para pedirlo.')
+            self._enrolar()
+        else:
+            logging.info('Ya tengo identidad guardada (token existente) — no vuelvo a enrolarme.')
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
         logging.warning('Desconectado del broker (%s), paho reintentará solo.', reason_code)
@@ -654,6 +666,11 @@ class AgentePrueba:
             self._publicar(f'/saidsof/agente/{self.args.codigo}/heartbeat/', {
                 'token': self._token(),
                 'version_agente': VERSION_AGENTE_PRUEBA,
+                # Se declara, no se deduce de la version: la version dice que este agente
+                # ENTIENDE el secreto propio, esto dice que lo TIENE. Son cosas distintas
+                # y confundirlas dejo mudas a dos estaciones (ver el bloque de
+                # re-enrolamiento en _on_connect y apps.catalogo.services.secreto_de).
+                'hmac_propio': bool(self.identidad.get('hmac_secret')),
                 'so_nombre': f'Windows {platform.win32_ver()[0]}',
                 'so_build': platform.win32_ver()[1],
                 'hostname': socket.gethostname(),

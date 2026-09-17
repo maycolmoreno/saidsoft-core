@@ -1712,8 +1712,11 @@ class SecretoHmacPorEstacionTests(TestCase):
             codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
         )
 
-    def _estacion(self, codigo='ML001-A', version=''):
-        return Estacion.objects.create(codigo=codigo, farmacia=self.farmacia, version_agente=version)
+    def _estacion(self, codigo='ML001-A', version='', confirmado=False):
+        return Estacion.objects.create(
+            codigo=codigo, farmacia=self.farmacia, version_agente=version,
+            hmac_propio_confirmado=confirmado,
+        )
 
     def _firma_publicada(self, estacion):
         with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
@@ -1736,7 +1739,7 @@ class SecretoHmacPorEstacionTests(TestCase):
         self.assertEqual(payload['firma'], esperada)
 
     def test_un_agente_021_recibe_la_firma_con_su_secreto_propio(self):
-        estacion = self._estacion(version='agente-prueba-0.21')
+        estacion = self._estacion(version='agente-prueba-0.21', confirmado=True)
         payload = self._firma_publicada(estacion)
         esperada = firmar_payload(
             estacion.hmac_secret,
@@ -1747,13 +1750,37 @@ class SecretoHmacPorEstacionTests(TestCase):
     def test_el_secreto_propio_de_una_estacion_no_firma_para_otra(self):
         """Es el punto entero del cambio: filtrar el secreto de un equipo compromete ese
         equipo, no la cadena."""
-        a = self._estacion('ML001-A', version='agente-prueba-0.21')
-        b = self._estacion('ML001-B', version='agente-prueba-0.21')
+        a = self._estacion('ML001-A', version='agente-prueba-0.21', confirmado=True)
+        b = self._estacion('ML001-B', version='agente-prueba-0.21', confirmado=True)
         payload = self._firma_publicada(a)
         con_el_de_b = firmar_payload(
             b.hmac_secret, comando='reiniciar', estacion='ML001-A', timestamp=payload['timestamp'],
         )
         self.assertNotEqual(payload['firma'], con_el_de_b)
+
+    def test_una_estacion_actualizada_a_021_que_no_confirmo_usa_la_compartida(self):
+        """El incidente del 16-sep-2026, y el motivo de que la capacidad se declare.
+
+        ML014-B y ML016-A reportaban 0.21 y descartaban todos los comandos en silencio,
+        mientras ML017-B —misma versión— funcionaba. La diferencia: ML017-B se instaló de
+        cero y se enroló DESPUÉS de que existiera el secreto propio; las otras dos venían
+        enroladas de antes y solo se actualizó su ejecutable.
+
+        El secreto viaja en la respuesta de enrolamiento, y un agente que ya tiene
+        identidad.json no vuelve a enrolarse. Así que la versión decía "entiendo el
+        mecanismo" y el servidor lo leía como "tengo el secreto". No es lo mismo.
+        """
+        estacion = self._estacion(version='agente-prueba-0.21', confirmado=False)
+        self.assertIsNone(
+            secreto_de(estacion),
+            'la version no alcanza: sin confirmacion hay que usar la compartida',
+        )
+
+    def test_la_confirmacion_manda_sobre_la_version(self):
+        """No se vuelve a mirar la versión para decidir. Si el agente dice que lo tiene,
+        lo tiene: es el único que puede saberlo."""
+        estacion = self._estacion(version='', confirmado=True)
+        self.assertEqual(secreto_de(estacion), estacion.hmac_secret)
 
     def test_una_estacion_que_nunca_reporto_version_usa_la_compartida(self):
         """Recién enrolada y todavía sin heartbeat: no hay evidencia de que entienda el
@@ -1765,17 +1792,18 @@ class SecretoHmacPorEstacionTests(TestCase):
             self.assertIsNone(secreto_de(self._estacion('ML001-%s' % rara[:3], version=rara)), rara)
 
     def test_una_version_posterior_tambien_lo_soporta(self):
-        estacion = self._estacion(version='agente-prueba-0.22')
+        estacion = self._estacion(version='agente-prueba-0.22', confirmado=True)
         self.assertEqual(secreto_de(estacion), estacion.hmac_secret)
 
     def test_un_downgrade_del_agente_vuelve_sola_a_la_compartida(self):
         """Si hay que rollbackear el agente a 0.20, la estación reporta esa versión en el
         siguiente heartbeat y el servidor vuelve a firmarle con la compartida sin que
         nadie toque nada. Sin esto, un rollback la dejaría muda."""
-        estacion = self._estacion(version='agente-prueba-0.21')
+        estacion = self._estacion(version='agente-prueba-0.21', confirmado=True)
         self.assertIsNotNone(secreto_de(estacion))
+        estacion.hmac_propio_confirmado = False
         estacion.version_agente = 'agente-prueba-0.20'
-        estacion.save(update_fields=['version_agente'])
+        estacion.save(update_fields=['version_agente', 'hmac_propio_confirmado'])
         self.assertIsNone(secreto_de(estacion))
 
     def test_sin_secreto_explicito_firma_con_el_compartido(self):

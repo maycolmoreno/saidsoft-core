@@ -319,6 +319,11 @@ class Estacion(models.Model):
     estado_aprobacion = models.CharField(
         max_length=20, choices=EstadoAprobacion.choices, default=EstadoAprobacion.PENDIENTE,
     )
+    hmac_propio_confirmado = models.BooleanField(
+        default=False, editable=False,
+        help_text='La estación confirmó en su heartbeat que tiene guardado su secreto '
+                  'propio. Es lo único que habilita a firmarle con él.',
+    )
     hmac_secret = models.CharField(
         max_length=64, blank=True, editable=False,
         help_text='Secreto con el que se firman los comandos dirigidos SOLO a esta estación. '

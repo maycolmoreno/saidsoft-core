@@ -64,16 +64,22 @@ def _version_agente(version: str) -> tuple:
 def secreto_de(estacion) -> str | None:
     """Con qué secreto firmar un comando dirigido a `estacion`.
 
-    El propio de la estación solo si su agente sabe verificarlo; si no, el compartido
-    (None = `firmar_payload` usa `settings.COMANDO_HMAC_SECRET`). El servidor decide esto
-    solo, sin ninguna bandera que alguien tenga que acordarse de tildar: apenas la
-    estación reporta 0.21 en su heartbeat, el siguiente comando ya va firmado con el
-    suyo. Y como el agente 0.21 acepta los dos, un rollback del servidor tampoco la deja
-    incomunicada.
+    El propio SOLO si la estación confirmó que lo tiene guardado; si no, el compartido
+    (None = `firmar_payload` usa `settings.COMANDO_HMAC_SECRET`).
+
+    Antes esto se deducía de la versión reportada, y estaba mal. La versión dice que el
+    agente ENTIENDE el mecanismo, no que RECIBIÓ el secreto: el secreto llega en la
+    respuesta de enrolamiento, y una estación ya enrolada que se actualiza conserva su
+    identidad.json y no vuelve a enrolarse. El 16-sep-2026 eso dejó mudas a ML014-B y
+    ML016-A —actualizadas a 0.21 pero enroladas antes— mientras ML017-B, instalada de
+    cero, funcionaba. El servidor les firmaba con un secreto que ellas no tenían y los
+    comandos se descartaban en silencio, sin nada visible en el panel.
+
+    La capacidad ahora se declara, no se infiere: el agente informa en cada heartbeat si
+    tiene el secreto guardado. Mientras no lo confirme, se usa el compartido — que es el
+    comportamiento que siempre funcionó.
     """
-    if not estacion.hmac_secret:
-        return None
-    if _version_agente(estacion.version_agente) < VERSION_AGENTE_CON_HMAC_PROPIO:
+    if not estacion.hmac_secret or not estacion.hmac_propio_confirmado:
         return None
     return estacion.hmac_secret
 

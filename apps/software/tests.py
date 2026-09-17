@@ -35,10 +35,13 @@ class _BaseSoftwareTests(TestCase):
             comando_instalacion_silenciosa='msiexec /i "{archivo}" /qn',
         )
 
-    def _crear_estacion(self, codigo, version=''):
+    def _crear_estacion(self, codigo, version='', hmac_propio=False):
+        # `hmac_propio` es lo que habilita la firma con el secreto propio, no la version:
+        # una estacion actualizada a 0.21 que se enrolo antes nunca recibio el secreto.
+        # Ver apps.catalogo.services.secreto_de.
         return Estacion.objects.create(
             codigo=codigo, farmacia=self.farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
-            version_agente=version,
+            version_agente=version, hmac_propio_confirmado=hmac_propio,
         )
 
     def _crear_solicitud(self, **kwargs):
@@ -315,8 +318,8 @@ class FanOutSoftwarePorEstacionTests(_BaseSoftwareTests):
             self.assertNotIn('/software/farmacia/', topico)
 
     def test_cada_estacion_recibe_su_propia_firma(self):
-        self._crear_estacion('ML001-A', version='agente-prueba-0.21')
-        self._crear_estacion('ML001-B', version='agente-prueba-0.21')
+        self._crear_estacion('ML001-A', version='agente-prueba-0.21', hmac_propio=True)
+        self._crear_estacion('ML001-B', version='agente-prueba-0.21', hmac_propio=True)
         publicado = self._publicar_a_la_cadena()
         self.assertNotEqual(
             publicado['/saidsof/agente/ML001-A/software/']['firma'],

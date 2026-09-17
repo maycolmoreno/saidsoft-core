@@ -1274,3 +1274,61 @@ class SimularAgenteTlsTests(TestCase):
     def test_sin_use_tls_no_configura_tls(self):
         mock_client = self._correr()
         mock_client.tls_set.assert_not_called()
+
+
+class HmacPropioConfirmadoTests(TestCase):
+    """La estación declara si tiene su secreto propio; el servidor no lo deduce.
+
+    El incidente del 16-sep-2026: ML014-B y ML016-A reportaban el agente 0.21 y
+    descartaban TODOS los comandos en silencio, mientras ML017-B —misma versión— andaba.
+    La diferencia era el origen: ML017-B se instaló de cero y se enroló después de que el
+    secreto propio existiera; las otras venían enroladas de antes y solo se les actualizó
+    el ejecutable, y actualizar no re-enrola.
+
+    La versión decía "entiendo el mecanismo" y el servidor lo leía como "tengo el
+    secreto". No es lo mismo, y la diferencia no se ve desde el panel: el comando se
+    publica bien y el agente lo descarta en su log local.
+    """
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def _latir(self, **extra):
+        from apps.mqtt_worker.services import manejar_heartbeat
+
+        payload = {'token': self.estacion.token_enrolamiento, 'version_agente': 'agente-prueba-0.23'}
+        payload.update(extra)
+        manejar_heartbeat('ML001-A', payload)
+        self.estacion.refresh_from_db()
+
+    def test_el_agente_que_lo_tiene_lo_declara(self):
+        self._latir(hmac_propio=True)
+        self.assertTrue(self.estacion.hmac_propio_confirmado)
+
+    def test_el_agente_que_no_lo_tiene_tambien_lo_declara(self):
+        """Es el caso que importa: reporta una versión nueva y avisa que NO lo tiene."""
+        self._latir(hmac_propio=False)
+        self.assertFalse(self.estacion.hmac_propio_confirmado)
+
+    def test_un_agente_viejo_no_apaga_la_confirmacion_por_omision(self):
+        """Un agente anterior a 0.23 no manda la clave. Tratar esa ausencia como "no lo
+        tengo" apagaría la confirmación de una estación que sí lo tiene, y el servidor
+        volvería al secreto compartido sin motivo."""
+        self._latir(hmac_propio=True)
+        self._latir()  # sin la clave, como un agente viejo
+        self.assertTrue(self.estacion.hmac_propio_confirmado)
+
+    def test_el_servidor_firma_segun_la_declaracion_y_no_la_version(self):
+        from apps.catalogo.services import secreto_de
+
+        self._latir(version_agente='agente-prueba-0.21', hmac_propio=False)
+        self.assertIsNone(secreto_de(self.estacion), 'sin confirmación va la compartida')
+
+        self._latir(version_agente='agente-prueba-0.21', hmac_propio=True)
+        self.assertEqual(secreto_de(self.estacion), self.estacion.hmac_secret)

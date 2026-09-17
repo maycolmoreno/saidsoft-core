@@ -37,10 +37,13 @@ class _BaseDespliegueTests(TestCase):
         defaults.update(kwargs)
         return Despliegue.objects.create(**defaults)
 
-    def _crear_estacion(self, codigo, version=''):
+    def _crear_estacion(self, codigo, version='', hmac_propio=False):
+        # `hmac_propio` es lo que habilita la firma con el secreto propio, no la version:
+        # una estacion actualizada a 0.21 que se enrolo antes nunca recibio el secreto.
+        # Ver apps.catalogo.services.secreto_de.
         return Estacion.objects.create(
             codigo=codigo, farmacia=self.farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
-            version_agente=version,
+            version_agente=version, hmac_propio_confirmado=hmac_propio,
         )
 
     def _resultado(self, despliegue, estacion, estado):
@@ -409,8 +412,8 @@ class FanOutPorEstacionTests(_BaseDespliegueTests):
             self.assertNotIn('/despliegue/farmacia/', topico)
 
     def test_cada_estacion_recibe_su_propia_firma(self):
-        a = self._crear_estacion('ML001-A', version='agente-prueba-0.21')
-        b = self._crear_estacion('ML001-B', version='agente-prueba-0.21')
+        a = self._crear_estacion('ML001-A', version='agente-prueba-0.21', hmac_propio=True)
+        b = self._crear_estacion('ML001-B', version='agente-prueba-0.21', hmac_propio=True)
         publicado = self._publicar_a_la_cadena(None)
         firma_a = publicado['/saidsof/agente/ML001-A/despliegue/']['firma']
         firma_b = publicado['/saidsof/agente/ML001-B/despliegue/']['firma']
@@ -431,7 +434,7 @@ class FanOutPorEstacionTests(_BaseDespliegueTests):
         le llegara la firma con el secreto propio, no desplegaría y el panel la mostraría
         como pendiente sin ninguna pista del motivo."""
         self._crear_estacion('ML001-VIEJA', version='agente-prueba-0.20')
-        self._crear_estacion('ML001-NUEVA', version='agente-prueba-0.21')
+        self._crear_estacion('ML001-NUEVA', version='agente-prueba-0.21', hmac_propio=True)
         publicado = self._publicar_a_la_cadena(None)
 
         vieja = publicado['/saidsof/agente/ML001-VIEJA/despliegue/']
