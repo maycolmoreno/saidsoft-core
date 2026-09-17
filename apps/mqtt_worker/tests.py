@@ -1421,3 +1421,47 @@ class AclDelWorkerCubreSusTopicosTests(TestCase):
             'estos topicos los suscribe el worker pero la ACL de EMQX no los permite, '
             'asi que en produccion la suscripcion se deniega en silencio: %s' % ', '.join(faltan),
         )
+
+
+class AclDeEstacionPermiteReenrolarseTests(TestCase):
+    """La ACL por estacion tiene que dejarla publicar su propio re-enrolamiento.
+
+    El 17-sep-2026: ML014-B se actualizo a 0.23, detecto que le faltaba su secreto HMAC e
+    intento re-enrolarse — y el broker denego el publish en silencio, porque su ACL solo
+    tenia permiso de SUSCRIPCION a la respuesta, no de PUBLICACION de la solicitud.
+
+    El efecto era exactamente el contrario al buscado: la auto-reparacion funcionaba en
+    las estaciones que aun usaban la credencial compartida (que no la necesitaban) y
+    fallaba en las que ya tenian credencial propia (que si).
+    """
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+
+    def test_puede_publicar_su_enrolamiento(self):
+        from apps.mqtt_worker.emqx_admin import _reglas_para
+
+        reglas = _reglas_para(self.estacion)
+        publica_enrolamiento = [
+            r for r in reglas
+            if r['topic'] == '/saidsof/enrolamiento/solicitar/' and r['action'] in ('publish', 'all')
+            and r['permission'] == 'allow'
+        ]
+        self.assertTrue(
+            publica_enrolamiento,
+            'sin esto una estacion con credencial propia no puede re-enrolarse, y el '
+            're-enrolamiento es el unico camino para conseguir su secreto HMAC propio',
+        )
+
+    def test_sigue_sin_poder_leer_el_enrolamiento_de_otra_estacion(self):
+        """El permiso nuevo es solo para publicar SU solicitud. Poder suscribirse a las
+        respuestas de otras dejaria leer el secreto propio de cualquier estacion."""
+        from apps.mqtt_worker.emqx_admin import _reglas_para
+
+        for r in _reglas_para(self.estacion):
+            if r['topic'].startswith('/saidsof/enrolamiento/respuesta/'):
+                self.assertIn(self.estacion.codigo, r['topic'])
+            self.assertNotIn('+', r['topic'], 'una estacion no puede tener comodines en su ACL')

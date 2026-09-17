@@ -91,6 +91,16 @@ def _reglas_para(estacion):
     reglas = [
         {'topic': f'/saidsof/agente/{codigo}/#', 'permission': 'allow', 'action': 'all'},
         {'topic': f'/saidsof/enrolamiento/respuesta/{codigo}/', 'permission': 'allow', 'action': 'subscribe'},
+        # Publicar su propio enrolamiento. Faltaba, y eso dejaba a una estacion con
+        # credencial propia sin poder RE-enrolarse: el broker deniega el publish en
+        # silencio y el agente se queda esperando una respuesta que nunca pidio.
+        #
+        # Importa porque el re-enrolamiento es el unico camino para que una estacion
+        # actualizada consiga su secreto HMAC propio (ver agente_prueba._on_connect y
+        # apps.catalogo.services.secreto_de). Sin esta regla, la auto-reparacion solo
+        # funcionaba en estaciones que todavia usaban la credencial compartida — es decir,
+        # justo en las que no la necesitaban.
+        {'topic': '/saidsof/enrolamiento/solicitar/', 'permission': 'allow', 'action': 'publish'},
         {'topic': '/saidsof/despliegue/global/', 'permission': 'allow', 'action': 'subscribe'},
         {'topic': '/saidsof/software/global/', 'permission': 'allow', 'action': 'subscribe'},
     ]
@@ -108,6 +118,25 @@ def _reglas_para(estacion):
         'topic': f'/saidsof/software/grupo/{farmacia.grupo.codigo}/', 'permission': 'allow', 'action': 'subscribe',
     })
     return reglas
+
+
+def reaplicar_acl_estacion(estacion) -> bool:
+    """Reescribe la ACL de `estacion` en EMQX SIN tocar su contrasena.
+
+    Existe porque `aprovisionar_credencial_estacion` rota la credencial, y rotarla para
+    corregir una regla dejaria a la estacion sin poder conectarse hasta que se re-enrole
+    — que es exactamente lo que no puede hacer si la regla que falta es la del
+    enrolamiento. Este camino solo actualiza permisos.
+    """
+    config = getattr(settings, 'EMQX_ADMIN_CONFIG', None) or {}
+    url_base, api_key, api_secret = config.get('URL'), config.get('API_KEY'), config.get('API_SECRET')
+    if not (url_base and api_key and api_secret):
+        return False
+    try:
+        return _definir_acl(url_base, api_key, api_secret, estacion.codigo, _reglas_para(estacion))
+    except Exception:
+        logger.exception('EMQX: error reaplicando la ACL de %s', estacion.codigo)
+        return False
 
 
 def aprovisionar_credencial_estacion(estacion) -> tuple[str, str] | None:
