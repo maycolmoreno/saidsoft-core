@@ -154,3 +154,61 @@ def sondear_identidad_equipos_task():
             'Reinicios de equipo de borde detectados: %s', '; '.join(resumen['reinicios']),
         )
     return {'leidos': resumen['leidos'], 'reinicios': len(resumen['reinicios'])}
+
+
+@shared_task(name='apps.monitoreo.tasks.diagnosticar_alerta_task')
+def diagnosticar_alerta_task(alerta_id):
+    """Genera el diagnóstico automático de una alerta CRÍTICA y lo manda por Telegram.
+
+    Lo dispara `abrir_o_mantener_alerta` al crear la alerta (ver `_pedir_diagnostico_ia`),
+    no el Beat: es por incidente, no periódico. Asíncrono para que una API lenta o caída
+    no retrase la apertura de la alerta ni su notificación.
+
+    Nunca lanza hacia Celery: la alerta ya está abierta y notificada, y un reintento
+    automático volvería a pagar la llamada sin más información que la primera vez.
+
+    Idempotente por `diagnostico_generado_en`: si ya se intentó, no se repite. Protege
+    contra un doble encolado (un retry de Celery, una corrida manual) que duplicaría el
+    costo y el mensaje.
+    """
+    from django.utils import timezone
+
+    from apps.monitoreo.diagnostico_ia import generar_diagnostico
+    from apps.monitoreo.models import Alerta, ReglaAlerta
+    from apps.monitoreo.services import _enviar_telegram, canales_telegram_para
+
+    alerta = (
+        Alerta.objects.filter(pk=alerta_id)
+        .select_related('regla', 'estacion__farmacia__unidad_negocio').first()
+    )
+    if alerta is None:
+        return 'La alerta ya no existe.'
+    if alerta.regla.severidad != ReglaAlerta.Severidad.CRITICAL:
+        # Defensa en profundidad: el filtro real está en abrir_o_mantener_alerta, pero
+        # esto evita que una llamada manual o futura gaste una llamada en un WARNING.
+        return 'Solo las alertas críticas se diagnostican.'
+    if alerta.diagnostico_generado_en is not None:
+        return 'Ya se había diagnosticado.'
+
+    texto = generar_diagnostico(alerta)
+    # Se marca el intento haya salido bien o no: si la API falló, reintentar en el mismo
+    # incidente daría lo mismo (el contexto no cambió) y solo sumaría costo.
+    alerta.diagnostico_ia = texto
+    alerta.diagnostico_generado_en = timezone.now()
+    alerta.save(update_fields=['diagnostico_ia', 'diagnostico_generado_en'])
+    if not texto:
+        return 'No se pudo generar el diagnóstico.'
+
+    # Mensaje de SEGUIMIENTO, aparte del aviso original: el aviso ya salió cuando se
+    # abrió la alerta y no debe esperar a esto. El rótulo no es decorativo — sin él,
+    # una hipótesis de un modelo se lee igual que un dato medido por el agente.
+    encabezado = (
+        f'🤖 Diagnóstico automático (IA) — confirmar antes de actuar:\n'
+        f'{alerta.regla.nombre} — {alerta.estacion.codigo}'
+    )
+    unidad = alerta.estacion.farmacia.unidad_negocio
+    enviados = sum(
+        1 for canal in canales_telegram_para(unidad)
+        if _enviar_telegram(canal.destino, f'{encabezado}\n\n{texto}')
+    )
+    return f'Diagnóstico generado para la alerta #{alerta.pk}; {enviados} envío(s) por Telegram.'

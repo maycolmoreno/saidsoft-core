@@ -591,6 +591,70 @@ confirmada con el usuario para no hacer `Alerta.estacion` opcional, mismo criter
 que Windows Update v1/Plan de energía v1: probar primero que el dato SNMP es
 confiable, automatizar después.
 
+## Notificaciones por Telegram y diagnóstico automático con IA
+
+Telegram entra por el **motor de alertas que ya existe**, no como un bot aparte: un
+`CanalNotificacion` de tipo `telegram` recibe exactamente el mismo aviso que ya reciben
+el correo y el webhook de Teams, resuelto igual (canal de la unidad de negocio, o el
+global). La escalada llega gratis, porque `escalar_alertas_abiertas` pasa por el mismo
+`notificar_alerta`.
+
+- **`TELEGRAM_BOT_TOKEN`** (settings) es el secreto, compartido por todos los canales.
+  El **chat_id** va en `CanalNotificacion.destino`, que no es secreto: sin el token no
+  sirve de nada. Mismo reparto que `COMANDO_HMAC_SECRET` frente a los datos de estación.
+- **`_enviar_telegram`** sigue el patrón de `_enviar_webhook_teams`: `urllib` (sin sumar
+  `requests`), timeout corto, nunca lanza. Un bot caído no puede impedir que salga el
+  correo ni tumbar la ingesta de métricas.
+- **Prefijo por severidad**: 🔴 para crítica, 🟡 para advertencia. Es para el teléfono —
+  en la lista de chats se ve el color antes que el texto, y con varias alertas encima es
+  lo que decide cuál abrir primero.
+- **El token nunca entra en un log.** Viaja dentro de la URL, así que los mensajes de
+  error informan el chat_id y jamás la URL armada. Hay un test que lo verifica.
+- Sin `TELEGRAM_BOT_TOKEN`, Telegram queda desactivado y el resto de la notificación
+  funciona igual.
+
+**Resumen de enlaces** (`ENLACES_TELEGRAM_CHAT_ID`): el aviso agrupado de caídos y
+recuperados también sale por Telegram. Setting propio y **no** un `CanalNotificacion`
+global, a propósito: el volumen de enlaces es otro orden de magnitud que el de alertas
+de estación (196 caídas en 24 h sobre 700 sitios), y reusar el canal global haría que
+configurar Telegram para las alertas inunde de enlaces a quien no lo pidió — el mismo
+motivo por el que `ENLACES_NOTIFICAR_A` no reusa los destinatarios de `notificar_alerta`.
+Alcanza con uno de los dos canales configurados para que el aviso salga; si no hay
+ninguno, el evento queda pendiente en vez de marcarse como avisado.
+
+### Diagnóstico automático (solo alertas CRÍTICAS)
+
+`apps/monitoreo/diagnostico_ia.py` arma el contexto que el sistema **ya midió** —estado
+de los servicios externos del POS con su mensaje real, enlace de la farmacia, errores del
+POS de las últimas 24 h con su recuento, alertas previas de esa estación— y se lo pasa a
+Claude. El resultado se guarda en `Alerta.diagnostico_ia` y llega como mensaje de
+**seguimiento** por Telegram, aparte del aviso original.
+
+Lo que hace que esto sea utilizable y no un generador de ruido con formato:
+
+- **Es una hipótesis, no un hecho.** Todo lo demás en esas tablas salió de un sondeo o de
+  un reporte del agente; esto sale de un modelo que puede equivocarse. Por eso vive en un
+  campo propio, es de solo lectura en el admin, y el mensaje va rotulado
+  `🤖 Diagnóstico automático (IA) — confirmar antes de actuar`.
+- **El prompt prohíbe adivinar**: si el contexto no alcanza, el modelo tiene que escribir
+  que no alcanza y decir qué información falta, en vez de inventar una causa. Hay un test
+  que verifica que esa instrucción sigue en el prompt.
+- **Una sola vez por incidente.** `abrir_o_mantener_alerta` no crea una Alerta nueva
+  mientras la anterior siga activa, así que un servicio caído hace horas reportando cada
+  5 minutos genera exactamente un diagnóstico. `diagnostico_generado_en` lo protege
+  además contra un doble encolado. Es control de costo, no solo de ruido.
+- **Solo CRITICAL.** Las advertencias siguen notificando por Telegram, sin diagnóstico.
+- **Asíncrono** (Celery). Una API lenta o caída no puede retrasar la apertura de la
+  alerta ni su notificación, que es lo único que de verdad no puede fallar acá. Si el
+  broker está caído, la alerta se abre y se notifica igual: el diagnóstico es un extra.
+- **Sin `ANTHROPIC_API_KEY` no se pide nada** y la alerta se comporta exactamente como
+  antes.
+
+La suite **nunca llama a la API real**: se mockea `generar_diagnostico` o el cliente. Una
+suite que dependiera de una API paga sería lenta, no reproducible y costaría dinero en
+cada corrida.
+
+
 ## Estado de enlaces por farmacia (ICMP y SNMP, sin agente)
 
 Todo el resto del monitoreo de este proyecto depende de que la farmacia tenga un **agente

@@ -15,3 +15,8 @@ django-axes>=8.3
 django-otp>=1.5
 qrcode[pil]>=8.0
 openpyxl>=3.1
+# Cliente oficial de la API de Claude, para el diagnóstico automático de alertas
+# críticas (apps/monitoreo/diagnostico_ia.py). A diferencia de los webhooks de Teams y
+# Telegram —que son un POST y se resuelven con urllib— acá la dependencia sí se
+# justifica: reintentos, streaming y tipos de la API. Sin ANTHROPIC_API_KEY no se usa.
+anthropic>=0.40

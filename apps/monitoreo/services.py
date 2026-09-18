@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.mail import send_mail
 from django.db.models import Q
 from django.utils import timezone
@@ -137,6 +138,8 @@ def abrir_o_mantener_alerta(regla, estacion, valor):
         return None
     alerta = Alerta.objects.create(regla=regla, estacion=estacion, valor_disparador=valor)
     notificar_alerta(alerta)
+    if regla.severidad == ReglaAlerta.Severidad.CRITICAL:
+        _pedir_diagnostico_ia(alerta)
     if regla.abre_mantenimiento:
         # Import diferido: mantener la dependencia monitoreo -> mantenimiento fuera del
         # nivel de módulo (mismo criterio que el resto de los cruces entre apps acá).
@@ -145,6 +148,31 @@ def abrir_o_mantener_alerta(regla, estacion, valor):
         from apps.mantenimiento.services import abrir_mantenimiento_desde_alerta
         abrir_mantenimiento_desde_alerta(alerta)
     return alerta
+
+
+def _pedir_diagnostico_ia(alerta) -> None:
+    """Encola el diagnóstico automático de una alerta CRÍTICA. Nunca lanza.
+
+    Asíncrono y no en línea: una llamada lenta o caída a la API retrasaría la apertura
+    de la alerta y su notificación, que es lo único que de verdad no puede fallar acá.
+    Mismo espíritu fail-silently que el resto de las notificaciones de este módulo.
+
+    Se dispara UNA VEZ por incidente, y eso lo garantiza `abrir_o_mantener_alerta`: si
+    la alerta sigue activa no se crea otra, así que no se vuelve a llegar hasta acá
+    mientras el servicio siga caído. Es control de costo, no solo de ruido.
+
+    Import diferido para no arrastrar apps.monitoreo.tasks (y con él Celery) al importar
+    services, que es lo que hacen el worker MQTT y los comandos de gestión.
+    """
+    if not getattr(settings, 'ANTHROPIC_API_KEY', ''):
+        return
+    try:
+        from .tasks import diagnosticar_alerta_task
+        diagnosticar_alerta_task.delay(alerta.pk)
+    except Exception:
+        # Un broker caído no debe impedir que la alerta quede abierta y notificada: el
+        # diagnóstico es un extra, la alerta es el producto.
+        logger.warning('No se pudo encolar el diagnóstico IA de la alerta #%s.', alerta.pk, exc_info=True)
 
 
 def resolver_condicion(regla, estacion):
@@ -344,6 +372,56 @@ def _enviar_webhook_teams(url, texto):
         logger.warning('No se pudo notificar por webhook de Teams (%s).', url, exc_info=True)
 
 
+_EMOJI_SEVERIDAD = {
+    ReglaAlerta.Severidad.CRITICAL: '🔴',
+    ReglaAlerta.Severidad.WARNING: '🟡',
+}
+
+
+def _enviar_telegram(chat_id, texto) -> bool:
+    """POST a sendMessage de la API de Telegram — nunca lanza, mismo criterio que
+    `_enviar_webhook_teams`: un bot caído o un chat_id mal cargado no debe tumbar la
+    ingesta de métricas ni impedir que salga el correo. Mismo patrón stdlib (urllib, sin
+    sumar `requests`) que el webhook de Teams y que apps.mqtt_worker.emqx_admin.
+
+    Devuelve si se envió, porque a diferencia del webhook acá sí hay quien necesita
+    saberlo: el diagnóstico de IA no debe darse por entregado si el mensaje no salió.
+
+    **El token nunca entra en un log.** Va dentro de la URL, así que los mensajes de
+    error informan el chat_id —que no es secreto— y jamás la URL armada. Mismo criterio
+    que las contraseñas del POS y del broker en el resto del proyecto.
+    """
+    token = getattr(settings, 'TELEGRAM_BOT_TOKEN', '')
+    if not token or not chat_id:
+        return False
+    datos = json.dumps({
+        'chat_id': str(chat_id),
+        'text': texto,
+        # Sin parse_mode a propósito: el texto lo arma el sistema con códigos de
+        # estación, circuitos y mensajes del POS, que traen guiones bajos y asteriscos.
+        # Con Markdown activo Telegram rechaza el mensaje entero por un carácter suelto.
+        'disable_web_page_preview': True,
+    }).encode('utf-8')
+    req = urllib.request.Request(
+        f'https://api.telegram.org/bot{token}/sendMessage',
+        data=datos, method='POST', headers={'Content-Type': 'application/json'},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        return True
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        logger.warning('No se pudo notificar por Telegram (chat %s).', chat_id, exc_info=True)
+        return False
+
+
+def canales_telegram_para(unidad):
+    """Los CanalNotificacion de Telegram activos que aplican a `unidad`: el suyo propio
+    más el global. Misma resolución "global o del cliente" que los de Teams."""
+    return CanalNotificacion.objects.filter(
+        activo=True, tipo=CanalNotificacion.Tipo.TELEGRAM,
+    ).filter(Q(unidad_negocio__isnull=True) | Q(unidad_negocio=unidad))
+
+
 def notificar_alerta(alerta, *, escalamiento=False):
     """Correo a quienes tengan acceso a la unidad de negocio de la estación (equipo
     interno + usuarios de ese cliente) con email configurado, más un webhook de Teams
@@ -394,6 +472,14 @@ def notificar_alerta(alerta, *, escalamiento=False):
     ).filter(Q(unidad_negocio__isnull=True) | Q(unidad_negocio=unidad))
     for canal in canales_teams:
         _enviar_webhook_teams(canal.destino, f'{asunto}\n\n{cuerpo}')
+
+    # El emoji va delante del asunto para que en la lista de chats del teléfono se vea
+    # la severidad antes que el texto: con varias alertas encima, es lo que decide cuál
+    # abrir primero.
+    emoji = _EMOJI_SEVERIDAD.get(alerta.regla.severidad, '')
+    texto_telegram = f'{emoji} {asunto}\n\n{cuerpo}'.strip()
+    for canal in canales_telegram_para(unidad):
+        _enviar_telegram(canal.destino, texto_telegram)
 
 
 def escalar_alertas_abiertas() -> int:

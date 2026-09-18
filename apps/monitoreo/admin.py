@@ -169,7 +169,9 @@ class AlertaAdmin(admin.ModelAdmin):
     list_filter = ('estado', 'regla')
     search_fields = ('estacion__codigo', 'regla__nombre')
     autocomplete_fields = ('regla', 'estacion', 'reconocida_por')
-    readonly_fields = ('abierta_en',)
+    # El diagnóstico es de solo lectura: lo genera un modelo, no una persona. Editarlo a
+    # mano dejaría un texto con pinta de automático que en realidad escribió alguien.
+    readonly_fields = ('abierta_en', 'diagnostico_ia', 'diagnostico_generado_en')
 
     def get_queryset(self, request):
         return scope_por_unidad_negocio(

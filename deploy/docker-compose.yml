@@ -186,6 +186,14 @@ services:
       EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
       EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
       EMAIL_PORT: ${EMAIL_PORT:-587}
+      # Telegram: el token lo comparten todos los CanalNotificacion de tipo telegram (el
+      # chat_id vive en el modelo). Vacio = Telegram desactivado, sin romper el correo.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # Tambien aca, no solo en celery_worker: `_pedir_diagnostico_ia` decide si encolar
+      # mirando esta variable en el proceso que ABRE la alerta (web o el worker MQTT).
+      # Sin ella ahi, la tarea no se encola nunca y la funcion queda muerta aunque
+      # celery_worker si la tenga.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
@@ -282,6 +290,14 @@ services:
       EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
       EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
       EMAIL_PORT: ${EMAIL_PORT:-587}
+      # Telegram: el token lo comparten todos los CanalNotificacion de tipo telegram (el
+      # chat_id vive en el modelo). Vacio = Telegram desactivado, sin romper el correo.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # Tambien aca, no solo en celery_worker: `_pedir_diagnostico_ia` decide si encolar
+      # mirando esta variable en el proceso que ABRE la alerta (web o el worker MQTT).
+      # Sin ella ahi, la tarea no se encola nunca y la funcion queda muerta aunque
+      # celery_worker si la tenga.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
@@ -411,6 +427,15 @@ services:
       # A quien avisarle de enlaces caidos/recuperados (lista separada por comas). La
       # lee notificar_cambios_enlaces_task, que corre en ESTE servicio.
       ENLACES_NOTIFICAR_A: ${ENLACES_NOTIFICAR_A:-}
+      # Telegram: el token lo comparten todos los CanalNotificacion de tipo telegram (el
+      # chat_id vive en el modelo). Vacio = Telegram desactivado, sin romper el correo.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # Resumen de enlaces por Telegram y diagnostico IA: ambos corren en tareas
+      # periodicas/encoladas, o sea en ESTE servicio. Si faltan, la tarea corre igual y
+      # no manda nada -- el mismo fallo silencioso que ya mordio con MESHCENTRAL_* y con
+      # EMAIL_*, por eso hay tests que atan estas variables al servicio que las usa.
+      ENLACES_TELEGRAM_CHAT_ID: ${ENLACES_TELEGRAM_CHAT_ID:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:

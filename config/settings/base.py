@@ -262,6 +262,34 @@ MESHCENTRAL_API_CONFIG = {
     'VERIFICAR_TLS': env.bool('MESHCENTRAL_API_VERIFICAR_TLS', default=True),
 }
 
+# --- Telegram (notificación saliente) ---
+# Token del bot, compartido por TODOS los CanalNotificacion de tipo TELEGRAM. Va acá y
+# no en el modelo porque es un secreto, no un destino: el chat_id sí vive en
+# CanalNotificacion.destino (y no es secreto — sin el token no sirve de nada). Mismo
+# criterio que COMANDO_HMAC_SECRET.
+#
+# Vacío = Telegram queda desactivado y `_enviar_telegram` no intenta nada. El resto de
+# la notificación (correo, webhook de Teams) sigue funcionando igual.
+TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN', default='')
+
+# Chat al que mandar el resumen agrupado de enlaces caídos/recuperados. Setting propio y
+# NO un CanalNotificacion global, a propósito: el volumen de enlaces es otro orden de
+# magnitud que el de alertas de estación (196 caídas en 24 h medidas el 17-sep-2026
+# sobre 700 sitios), y reusar el canal global haría que configurar Telegram para las
+# alertas inunde de enlaces a quien no lo pidió. Mismo motivo por el que
+# ENLACES_NOTIFICAR_A no reusa los destinatarios de notificar_alerta.
+ENLACES_TELEGRAM_CHAT_ID = env('ENLACES_TELEGRAM_CHAT_ID', default='')
+
+# --- Diagnóstico automático con IA (solo alertas CRÍTICAS) ---
+# Vacío = no se pide diagnóstico y la alerta se abre y notifica exactamente igual que
+# antes. La llamada es asíncrona (Celery) justamente para que una API lenta o caída no
+# retrase la apertura ni el aviso.
+ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY', default='')
+# Modelo y tope de tokens: acotados porque esto corre una vez por incidente crítico y el
+# costo es real. El diagnóstico es un párrafo, no un informe.
+ANTHROPIC_MODELO_DIAGNOSTICO = env('ANTHROPIC_MODELO_DIAGNOSTICO', default='claude-sonnet-5')
+ANTHROPIC_MAX_TOKENS_DIAGNOSTICO = env.int('ANTHROPIC_MAX_TOKENS_DIAGNOSTICO', default=700)
+
 # A quién avisar por correo cuando el enlace de una farmacia se cae o vuelve (ver
 # apps.monitoreo.enlaces.notificar_cambios_enlaces). Lista explícita y NO los
 # destinatarios de `notificar_alerta`: esos son las alertas de estación, que hoy llegan

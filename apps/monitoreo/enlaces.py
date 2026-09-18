@@ -292,9 +292,14 @@ def notificar_cambios_enlaces() -> dict:
         return resumen
 
     destinatarios = list(getattr(settings, 'ENLACES_NOTIFICAR_A', []) or [])
-    if not destinatarios:
+    chat_telegram = getattr(settings, 'ENLACES_TELEGRAM_CHAT_ID', '')
+    # Alcanza con UNO de los dos canales para que valga la pena armar el mensaje. Se sale
+    # solo si no hay a quién avisarle por ningún lado: marcar los eventos como avisados
+    # sin haberlos mandado a nadie perdería el aviso para siempre.
+    if not destinatarios and not chat_telegram:
         logger.info(
-            'Enlaces: %d caída(s) y %d recuperación(es) sin avisar — ENLACES_NOTIFICAR_A está vacío.',
+            'Enlaces: %d caída(s) y %d recuperación(es) sin avisar — no hay ENLACES_NOTIFICAR_A '
+            'ni ENLACES_TELEGRAM_CHAT_ID configurados.',
             len(caidos), len(recuperados),
         )
         return resumen
@@ -329,9 +334,19 @@ def notificar_cambios_enlaces() -> dict:
         partes_asunto.append(f'{len(recuperados)} recuperado(s)')
     asunto = '[Enlaces] ' + ', '.join(partes_asunto)
 
-    # fail_silently: un SMTP caído no debe tumbar el sondeo. El evento ya está en la BD y
-    # el panel lo muestra igual -- mismo criterio que notificar_alerta.
-    send_mail(asunto, '\n'.join(lineas), None, destinatarios, fail_silently=True)
+    cuerpo = '\n'.join(lineas)
+    if destinatarios:
+        # fail_silently: un SMTP caído no debe tumbar el sondeo. El evento ya está en la
+        # BD y el panel lo muestra igual -- mismo criterio que notificar_alerta.
+        send_mail(asunto, cuerpo, None, destinatarios, fail_silently=True)
+
+    if chat_telegram:
+        # Import diferido: enlaces.py lo importan el comando de sondeo y la API de
+        # ingesta, y services arrastra el motor de alertas entero.
+        from .services import _enviar_telegram
+        # Mismo texto que el correo, con el asunto arriba: es un resumen operativo, no
+        # una alerta de una estación, así que no lleva emoji de severidad.
+        _enviar_telegram(chat_telegram, f'{asunto}\n\n{cuerpo}')
 
     # Se marcan DESPUÉS del envío, y con fail_silently arriba eso significa que un SMTP
     # caído marca igual el evento como avisado: el correo se pierde. Es deliberado --

@@ -335,6 +335,20 @@ class Alerta(models.Model):
         help_text='Cuándo se reenvió la notificación por seguir ABIERTA sin reconocer '
                   '(ver apps.monitoreo.services.escalar_alertas_abiertas). Evita reescalar en cada corrida.',
     )
+    # Hipótesis generada por un modelo de lenguaje, NO un hecho verificado. Se guarda
+    # aparte de cualquier campo operativo justamente para que nadie la confunda con algo
+    # medido: todo lo demás en esta tabla salió de un sondeo o un reporte del agente.
+    # Solo se llena para alertas CRÍTICAS (ver apps.monitoreo.tasks.diagnosticar_alerta_task).
+    diagnostico_ia = models.TextField(
+        blank=True, null=True,
+        help_text='Diagnóstico automático generado por IA. Es una hipótesis sin verificar: '
+                  'confirmar antes de actuar.',
+    )
+    diagnostico_generado_en = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Cuándo se generó el diagnóstico. Vacío = no se pidió o no se pudo generar. '
+                  'Marca que el intento ya ocurrió, para no repetir la llamada (y el costo).',
+    )
 
     class Meta:
         db_table = 'alerta'
@@ -446,20 +460,33 @@ class VentanaMantenimiento(models.Model):
 
 
 class CanalNotificacion(models.Model):
-    """Webhook al que reenviar el aviso de una Alerta, además del correo (que sigue
+    """Destino al que reenviar el aviso de una Alerta, además del correo (que sigue
     yendo siempre vía notificar_alerta, sin pasar por este modelo). unidad_negocio en
     blanco = canal global, usado por cualquier unidad que no tenga uno propio — mismo
-    criterio "global o del cliente" que ReglaAlerta.unidad_negocio."""
+    criterio "global o del cliente" que ReglaAlerta.unidad_negocio.
+
+    `destino` guarda lo que identifica al receptor según el tipo: la URL del webhook
+    entrante para Teams, el chat_id para Telegram. El TOKEN del bot de Telegram NO vive
+    acá: es un secreto compartido por todos los canales, no un destino, así que va en
+    TELEGRAM_BOT_TOKEN (settings) igual que COMANDO_HMAC_SECRET. Un chat_id no es
+    secreto; sin el token no sirve para nada.
+    """
 
     class Tipo(models.TextChoices):
         WEBHOOK_TEAMS = 'webhook_teams', 'Webhook de Microsoft Teams'
+        TELEGRAM = 'telegram', 'Telegram (chat_id)'
 
     unidad_negocio = models.ForeignKey(
         UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='canales_notificacion',
         help_text='Vacío = canal global, aplica a toda unidad de negocio que no tenga uno propio.',
     )
     tipo = models.CharField(max_length=20, choices=Tipo.choices, default=Tipo.WEBHOOK_TEAMS)
-    destino = models.URLField(help_text='URL del webhook entrante de Teams.')
+    # CharField y no URLField: un chat_id de Telegram no es una URL (es un entero, a
+    # veces negativo para grupos). Validar como URL dejaba fuera el tipo nuevo.
+    destino = models.CharField(
+        max_length=500,
+        help_text='URL del webhook entrante (Teams) o chat_id del chat/grupo (Telegram).',
+    )
     activo = models.BooleanField(default=True)
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='canales_notificacion_creados',

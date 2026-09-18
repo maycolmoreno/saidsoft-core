@@ -3372,3 +3372,444 @@ class ResolverWanPorNexthopTests(TestCase):
         self.assertEqual(_ip_a_entero('10.107.130.73'), (10 << 24) | (107 << 16) | (130 << 8) | 73)
         for invalida in ('10.107.130', '10.107.130.999', 'ether3', ''):
             self.assertIsNone(_ip_a_entero(invalida), invalida)
+
+
+@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA')
+class TelegramNotificacionTests(TestCase):
+    """Telegram enganchado al motor de alertas que ya existe, no un bot aparte."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX910')
+        farmacia = Farmacia.objects.create(codigo='TSTT01', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='TSTT01-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_tg', password='x')
+        self.regla_critica = ReglaAlerta.objects.create(
+            nombre='Servicio critico caido', metrica=Metrica.SERVICIO_POS_CAIDO,
+            umbral=0, severidad=ReglaAlerta.Severidad.CRITICAL, creado_por=self.usuario,
+        )
+        self.regla_warning = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90,
+            severidad=ReglaAlerta.Severidad.WARNING, creado_por=self.usuario,
+        )
+        self.canal = CanalNotificacion.objects.create(
+            tipo=CanalNotificacion.Tipo.TELEGRAM, destino='-1001234567890',
+            creado_por=self.usuario,
+        )
+
+    def _cuerpos_enviados(self, urlopen):
+        """El JSON de cada POST que se le paso a urlopen."""
+        cuerpos = []
+        for llamada in urlopen.call_args_list:
+            req = llamada.args[0]
+            cuerpos.append(json.loads(req.data.decode('utf-8')))
+        return cuerpos
+
+    # --- enganche en notificar_alerta ---
+
+    def test_una_alerta_critica_llega_a_telegram_con_circulo_rojo(self):
+        alerta = Alerta.objects.create(
+            regla=self.regla_critica, estacion=self.estacion, valor_disparador=0)
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            notificar_alerta(alerta)
+        cuerpos = self._cuerpos_enviados(urlopen)
+        self.assertEqual(len(cuerpos), 1)
+        self.assertEqual(cuerpos[0]['chat_id'], '-1001234567890')
+        self.assertTrue(cuerpos[0]['text'].startswith('🔴'), cuerpos[0]['text'][:40])
+        self.assertIn('TSTT01-A', cuerpos[0]['text'])
+
+    def test_una_alerta_warning_llega_con_circulo_amarillo(self):
+        alerta = Alerta.objects.create(
+            regla=self.regla_warning, estacion=self.estacion, valor_disparador=95)
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            notificar_alerta(alerta)
+        self.assertTrue(self._cuerpos_enviados(urlopen)[0]['text'].startswith('🟡'))
+
+    def test_sin_token_no_se_llama_a_la_api(self):
+        """Vacio = desactivado, sin romper el resto de la notificacion."""
+        alerta = Alerta.objects.create(
+            regla=self.regla_critica, estacion=self.estacion, valor_disparador=0)
+        with override_settings(TELEGRAM_BOT_TOKEN=''):
+            with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+                notificar_alerta(alerta)
+        urlopen.assert_not_called()
+
+    def test_canal_de_otra_unidad_no_recibe_nada(self):
+        self.canal.unidad_negocio = self.mia
+        self.canal.save(update_fields=['unidad_negocio'])
+        alerta = Alerta.objects.create(
+            regla=self.regla_critica, estacion=self.estacion, valor_disparador=0)
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            notificar_alerta(alerta)
+        urlopen.assert_not_called()
+
+    def test_canal_inactivo_no_recibe_nada(self):
+        self.canal.activo = False
+        self.canal.save(update_fields=['activo'])
+        alerta = Alerta.objects.create(
+            regla=self.regla_critica, estacion=self.estacion, valor_disparador=0)
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            notificar_alerta(alerta)
+        urlopen.assert_not_called()
+
+    def test_telegram_caido_no_rompe_la_notificacion(self):
+        alerta = Alerta.objects.create(
+            regla=self.regla_critica, estacion=self.estacion, valor_disparador=0)
+        with patch('apps.monitoreo.services.urllib.request.urlopen',
+                   side_effect=urllib.error.URLError('caido')):
+            notificar_alerta(alerta)  # no debe lanzar
+
+    def test_la_escalada_tambien_llega_a_telegram(self):
+        """Punto 4 de la verificacion: escalar_alertas_abiertas pasa por notificar_alerta."""
+        from apps.monitoreo.services import escalar_alertas_abiertas
+
+        alerta = Alerta.objects.create(
+            regla=self.regla_critica, estacion=self.estacion, valor_disparador=0)
+        Alerta.objects.filter(pk=alerta.pk).update(
+            abierta_en=timezone.now() - timedelta(minutes=90))
+
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            escaladas = escalar_alertas_abiertas()
+
+        self.assertEqual(escaladas, 1)
+        textos = [c['text'] for c in self._cuerpos_enviados(urlopen)]
+        self.assertTrue(any('SIN ATENDER' in t for t in textos), textos)
+
+    # --- el secreto no se filtra ---
+
+    def test_el_token_no_aparece_en_el_mensaje_ni_en_el_log(self):
+        """Punto 6 de la verificacion. El token va en la URL, nunca en el texto ni en
+        un log: un log se comparte, se sube a un ticket y se pega en un chat."""
+        alerta = Alerta.objects.create(
+            regla=self.regla_critica, estacion=self.estacion, valor_disparador=0)
+
+        with patch('apps.monitoreo.services.urllib.request.urlopen',
+                   side_effect=urllib.error.URLError('caido')):
+            with self.assertLogs('apps.monitoreo.services', level='WARNING') as registro:
+                notificar_alerta(alerta)
+        self.assertNotIn('TOKEN-SECRETO-DE-PRUEBA', '\n'.join(registro.output))
+
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            notificar_alerta(alerta)
+        for cuerpo in self._cuerpos_enviados(urlopen):
+            self.assertNotIn('TOKEN-SECRETO-DE-PRUEBA', json.dumps(cuerpo))
+
+    def test_el_token_no_queda_guardado_en_la_base(self):
+        campos = {f.name for f in CanalNotificacion._meta.get_fields()}
+        for prohibido in ('token', 'api_key', 'secreto', 'password'):
+            self.assertNotIn(prohibido, campos)
+
+
+@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA', ANTHROPIC_API_KEY='CLAVE-IA-DE-PRUEBA')
+class DiagnosticoIATests(TestCase):
+    """Diagnostico automatico: solo criticas, una vez por incidente, marcado como IA.
+
+    Nunca se llama a la API real: se mockea `generar_diagnostico` o el propio cliente.
+    Una suite que dependiera de una API paga seria lenta, no reproducible y costaria
+    dinero en cada corrida.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX911')
+        self.farmacia = Farmacia.objects.create(codigo='TSTI01', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='TSTI01-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_ia', password='x')
+        self.critica = ReglaAlerta.objects.create(
+            nombre='Servicio critico del POS sin responder', metrica=Metrica.SERVICIO_POS_CAIDO,
+            umbral=0, severidad=ReglaAlerta.Severidad.CRITICAL, creado_por=self.usuario,
+        )
+        self.warning = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90,
+            severidad=ReglaAlerta.Severidad.WARNING, creado_por=self.usuario,
+        )
+        CanalNotificacion.objects.create(
+            tipo=CanalNotificacion.Tipo.TELEGRAM, destino='-100999', creado_por=self.usuario,
+        )
+
+    # --- puntos 1 y 2 de la verificacion: quien dispara IA y quien no ---
+
+    def test_una_alerta_critica_encola_el_diagnostico(self):
+        from apps.monitoreo.services import abrir_o_mantener_alerta
+
+        with patch('apps.monitoreo.tasks.diagnosticar_alerta_task.delay') as encolar:
+            with patch('apps.monitoreo.services.urllib.request.urlopen'):
+                alerta = abrir_o_mantener_alerta(self.critica, self.estacion, 0)
+        encolar.assert_called_once_with(alerta.pk)
+
+    def test_una_alerta_warning_no_llama_a_la_api_de_ia(self):
+        """Punto 2: WARNING notifica por Telegram pero NO dispara diagnostico."""
+        from apps.monitoreo.services import abrir_o_mantener_alerta
+
+        with patch('apps.monitoreo.tasks.diagnosticar_alerta_task.delay') as encolar:
+            with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+                abrir_o_mantener_alerta(self.warning, self.estacion, 95)
+        encolar.assert_not_called()
+        self.assertTrue(urlopen.called, 'la WARNING si tiene que llegar a Telegram')
+
+    def test_sin_api_key_no_se_encola_nada(self):
+        from apps.monitoreo.services import abrir_o_mantener_alerta
+
+        with override_settings(ANTHROPIC_API_KEY=''):
+            with patch('apps.monitoreo.tasks.diagnosticar_alerta_task.delay') as encolar:
+                with patch('apps.monitoreo.services.urllib.request.urlopen'):
+                    abrir_o_mantener_alerta(self.critica, self.estacion, 0)
+        encolar.assert_not_called()
+
+    def test_un_broker_caido_no_impide_abrir_ni_notificar_la_alerta(self):
+        from apps.monitoreo.services import abrir_o_mantener_alerta
+
+        with patch('apps.monitoreo.tasks.diagnosticar_alerta_task.delay',
+                   side_effect=OSError('redis caido')):
+            with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+                alerta = abrir_o_mantener_alerta(self.critica, self.estacion, 0)
+        self.assertIsNotNone(alerta, 'la alerta es el producto; el diagnostico es un extra')
+        self.assertTrue(urlopen.called)
+
+    # --- punto 3: una sola vez por incidente ---
+
+    def test_un_segundo_reporte_del_mismo_problema_no_vuelve_a_pedir_diagnostico(self):
+        from apps.monitoreo.services import abrir_o_mantener_alerta
+
+        with patch('apps.monitoreo.tasks.diagnosticar_alerta_task.delay') as encolar:
+            with patch('apps.monitoreo.services.urllib.request.urlopen'):
+                abrir_o_mantener_alerta(self.critica, self.estacion, 0)
+                abrir_o_mantener_alerta(self.critica, self.estacion, 0)
+                abrir_o_mantener_alerta(self.critica, self.estacion, 0)
+        self.assertEqual(encolar.call_count, 1, 'control de costo: una llamada por incidente')
+
+    def test_el_task_no_regenera_si_ya_habia_diagnostico(self):
+        """Defensa contra un doble encolado (retry de Celery, corrida manual)."""
+        from apps.monitoreo.tasks import diagnosticar_alerta_task
+
+        alerta = Alerta.objects.create(
+            regla=self.critica, estacion=self.estacion, valor_disparador=0,
+            diagnostico_ia='ya estaba', diagnostico_generado_en=timezone.now(),
+        )
+        with patch('apps.monitoreo.diagnostico_ia.generar_diagnostico') as generar:
+            resultado = diagnosticar_alerta_task(alerta.pk)
+        generar.assert_not_called()
+        self.assertIn('Ya se', resultado)
+
+    def test_el_task_rechaza_una_warning_aunque_lo_llamen_a_mano(self):
+        from apps.monitoreo.tasks import diagnosticar_alerta_task
+
+        alerta = Alerta.objects.create(regla=self.warning, estacion=self.estacion, valor_disparador=95)
+        with patch('apps.monitoreo.diagnostico_ia.generar_diagnostico') as generar:
+            diagnosticar_alerta_task(alerta.pk)
+        generar.assert_not_called()
+
+    # --- el mensaje de seguimiento ---
+
+    def test_el_diagnostico_se_guarda_y_se_manda_marcado_como_automatico(self):
+        from apps.monitoreo.tasks import diagnosticar_alerta_task
+
+        alerta = Alerta.objects.create(regla=self.critica, estacion=self.estacion, valor_disparador=0)
+        with patch('apps.monitoreo.diagnostico_ia.generar_diagnostico',
+                   return_value='CAUSA MAS PROBABLE: el servidor del POS no responde.'):
+            with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+                diagnosticar_alerta_task(alerta.pk)
+
+        alerta.refresh_from_db()
+        self.assertIn('CAUSA MAS PROBABLE', alerta.diagnostico_ia)
+        self.assertIsNotNone(alerta.diagnostico_generado_en)
+
+        enviado = json.loads(urlopen.call_args.args[0].data.decode('utf-8'))['text']
+        self.assertIn('\U0001f916', enviado)
+        self.assertIn('automatico (IA)'.replace('automatico', 'automático'), enviado)
+        self.assertIn('confirmar antes de actuar', enviado)
+
+    def test_si_la_api_falla_se_marca_el_intento_y_no_se_manda_nada(self):
+        """No reintentar en el mismo incidente: el contexto no cambio, solo el costo."""
+        from apps.monitoreo.tasks import diagnosticar_alerta_task
+
+        alerta = Alerta.objects.create(regla=self.critica, estacion=self.estacion, valor_disparador=0)
+        with patch('apps.monitoreo.diagnostico_ia.generar_diagnostico', return_value=None):
+            with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+                diagnosticar_alerta_task(alerta.pk)
+        alerta.refresh_from_db()
+        self.assertIsNone(alerta.diagnostico_ia)
+        self.assertIsNotNone(alerta.diagnostico_generado_en)
+        urlopen.assert_not_called()
+
+    # --- el contexto que se le manda al modelo ---
+
+    def test_el_contexto_incluye_los_servicios_del_pos_medidos(self):
+        from apps.monitoreo.diagnostico_ia import _contexto_de
+        from apps.monitoreo.models import EstadoServicioPos, ServicioPos
+
+        EstadoServicioPos.objects.create(
+            estacion=self.estacion, servicio=ServicioPos.PG_LOCAL, disponible=False,
+            mensaje='connection timeout', endpoint='192.168.111.6:5433/hub', critico=True,
+            ultima_verificacion=timezone.now(),
+        )
+        alerta = Alerta.objects.create(regla=self.critica, estacion=self.estacion, valor_disparador=0)
+        contexto = _contexto_de(alerta)
+        self.assertIn('connection timeout', contexto)
+        self.assertIn('192.168.111.6:5433/hub', contexto)
+        self.assertIn('NO responde', contexto)
+
+    def test_el_contexto_no_incluye_ningun_secreto(self):
+        """Punto 6: ni el token ni la API key pueden viajar a la API de Claude."""
+        from apps.monitoreo.diagnostico_ia import _contexto_de
+
+        alerta = Alerta.objects.create(regla=self.critica, estacion=self.estacion, valor_disparador=0)
+        contexto = _contexto_de(alerta)
+        self.assertNotIn('TOKEN-SECRETO-DE-PRUEBA', contexto)
+        self.assertNotIn('CLAVE-IA-DE-PRUEBA', contexto)
+
+    def test_el_prompt_prohibe_inventar_una_causa(self):
+        """Lo que separa un diagnostico util de una adivinanza con formato."""
+        from apps.monitoreo.diagnostico_ia import _INSTRUCCIONES
+
+        self.assertIn('No inventes datos', _INSTRUCCIONES)
+        self.assertIn('no alcanza para concluir', _INSTRUCCIONES)
+
+    def test_sin_api_key_generar_diagnostico_no_intenta_nada(self):
+        from apps.monitoreo.diagnostico_ia import generar_diagnostico
+
+        alerta = Alerta.objects.create(regla=self.critica, estacion=self.estacion, valor_disparador=0)
+        with override_settings(ANTHROPIC_API_KEY=''):
+            self.assertIsNone(generar_diagnostico(alerta))
+
+    def test_la_api_key_no_queda_en_el_log_si_la_llamada_falla(self):
+        from apps.monitoreo.diagnostico_ia import generar_diagnostico
+
+        alerta = Alerta.objects.create(regla=self.critica, estacion=self.estacion, valor_disparador=0)
+        with patch('anthropic.Anthropic', side_effect=RuntimeError('401 con CLAVE-IA-DE-PRUEBA')):
+            with self.assertLogs('apps.monitoreo.diagnostico_ia', level='WARNING') as registro:
+                self.assertIsNone(generar_diagnostico(alerta))
+        self.assertNotIn('CLAVE-IA-DE-PRUEBA', '\n'.join(registro.output))
+
+
+@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA', ENLACES_TELEGRAM_CHAT_ID='-100777')
+class EnlacesTelegramTests(TestCase):
+    """Punto 5: el resumen agrupado de enlaces tambien sale por Telegram, no solo por correo."""
+
+    def setUp(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self.unidad = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX912')
+        self.farmacia = Farmacia.objects.create(
+            codigo='TSTG01', grupo=self.grupo, unidad_negocio=self.unidad, ip_router='10.0.2.1',
+            circuito_proveedor='telconet-pruebas',
+        )
+        self.UMBRAL = EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS
+        mail.outbox = []
+
+    def _caer(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+
+        registrar_sondeo(self.farmacia, True, 12.0)
+        for _ in range(self.UMBRAL):
+            registrar_sondeo(self.farmacia, False, None)
+
+    def _texto_enviado(self, urlopen):
+        return json.loads(urlopen.call_args.args[0].data.decode('utf-8'))['text']
+
+    def test_una_caida_llega_a_telegram(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caer()
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            resumen = notificar_cambios_enlaces()
+
+        self.assertEqual(resumen['caidos'], 1)
+        urlopen.assert_called_once()
+        texto = self._texto_enviado(urlopen)
+        self.assertIn('TSTG01', texto)
+        self.assertIn('telconet', texto)
+
+    def test_la_recuperacion_tambien_llega(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces, registrar_sondeo
+
+        self._caer()
+        with patch('apps.monitoreo.services.urllib.request.urlopen'):
+            notificar_cambios_enlaces()
+        registrar_sondeo(self.farmacia, True, 15.0)
+
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['recuperados'], 1)
+        self.assertIn('RECUPERADOS', self._texto_enviado(urlopen))
+
+    def test_solo_con_telegram_configurado_igual_avisa_y_marca_el_evento(self):
+        """Sin correo pero con chat: el aviso tiene que salir igual, no perderse."""
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        self._caer()
+        with override_settings(ENLACES_NOTIFICAR_A=[]):
+            with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+                resumen = notificar_cambios_enlaces()
+
+        self.assertTrue(resumen['enviado'])
+        urlopen.assert_called_once()
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertFalse(
+            EventoEnlaceFarmacia.objects.filter(notificado_en__isnull=True).exists(),
+            'el evento ya fue avisado por Telegram: no puede quedar pendiente',
+        )
+
+    def test_sin_ningun_canal_no_marca_el_evento_como_avisado(self):
+        """Ni correo ni Telegram: el aviso queda pendiente para cuando se configure uno."""
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        self._caer()
+        with override_settings(ENLACES_NOTIFICAR_A=[], ENLACES_TELEGRAM_CHAT_ID=''):
+            with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+                resumen = notificar_cambios_enlaces()
+
+        self.assertFalse(resumen['enviado'])
+        urlopen.assert_not_called()
+        self.assertTrue(EventoEnlaceFarmacia.objects.filter(notificado_en__isnull=True).exists())
+
+    def test_el_token_no_viaja_en_el_texto_del_resumen(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caer()
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            notificar_cambios_enlaces()
+        self.assertNotIn('TOKEN-SECRETO-DE-PRUEBA', self._texto_enviado(urlopen))
+
+
+class ComposeTelegramIATests(ComposeMeshCentralTests):
+    """Las variables nuevas tienen que llegar al servicio que las usa.
+
+    Tercera vez que aparece la misma clase de fallo en el proyecto (MESHCENTRAL_*,
+    EMAIL_*): config presente en el .env pero ausente en el contenedor, y la
+    funcionalidad muerta en silencio. Por eso cada variable nueva entra con su test.
+    """
+
+    def test_los_tres_servicios_que_notifican_tienen_el_token_de_telegram(self):
+        for servicio in ('web', 'worker', 'celery_worker'):
+            self.assertIn('TELEGRAM_BOT_TOKEN', self._entorno_del_servicio(servicio), servicio)
+
+    def test_la_api_key_esta_donde_se_decide_encolar_y_donde_se_ejecuta(self):
+        """`_pedir_diagnostico_ia` mira la clave en el proceso que ABRE la alerta (web o
+        el worker MQTT); el task la usa en celery_worker. Si falta en los primeros, no se
+        encola nunca y la funcion queda muerta aunque celery_worker si la tenga."""
+        for servicio in ('web', 'worker', 'celery_worker'):
+            self.assertIn('ANTHROPIC_API_KEY', self._entorno_del_servicio(servicio), servicio)
+
+    def test_el_chat_de_enlaces_esta_en_celery_worker(self):
+        """notificar_cambios_enlaces_task corre ahi y en ningun otro lado."""
+        self.assertIn('ENLACES_TELEGRAM_CHAT_ID', self._entorno_del_servicio('celery_worker'))
+
+    def test_ningun_secreto_nuevo_esta_escrito_literal_en_el_compose(self):
+        """Los valores van por ${VAR}, nunca embebidos: el compose se versiona."""
+        from django.conf import settings
+
+        contenido = (settings.BASE_DIR / 'deploy' / 'docker-compose.yml').read_text(encoding='utf-8')
+        for variable in ('TELEGRAM_BOT_TOKEN', 'ANTHROPIC_API_KEY'):
+            for linea in contenido.splitlines():
+                if linea.strip().startswith(f'{variable}:'):
+                    self.assertIn('${', linea, f'{variable} tiene un valor literal en el compose')
