@@ -1916,3 +1916,90 @@ class AgenteAceptaAmbosSecretosTests(TestCase):
             'el agente del repo es anterior a la versión que el servidor da por capaz de '
             'verificar el secreto propio',
         )
+
+
+class CorregirIpRouterProveedorTests(TestCase):
+    """La IP del borde en las redes del proveedor es .254, no .1.
+
+    Medido el 18-sep-2026 sobre 24 farmacias: las 12 que el panel daba por caidas
+    respondian en .254, y las 12 que respondian en .1 tambien lo hacian en .254 con
+    MENOS latencia. O sea que muchas "caidas" eran falsos positivos por apuntar a una IP
+    que no era el router.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX930')
+        self.proveedor = Farmacia.objects.create(
+            codigo='TSTI10', grupo=self.grupo, unidad_negocio=self.sg, ip_router='192.169.100.1')
+        self.otra_proveedor = Farmacia.objects.create(
+            codigo='TSTI11', grupo=self.grupo, unidad_negocio=self.sg, ip_router='192.170.55.1')
+        # Mikrotik propio: su IP ya es la correcta y NO debe tocarse.
+        self.mikrotik = Farmacia.objects.create(
+            codigo='TSTI12', grupo=self.grupo, unidad_negocio=self.sg, ip_router='10.101.36.97')
+        # 192.x pero ya corregida: tampoco es candidata.
+        self.ya_ok = Farmacia.objects.create(
+            codigo='TSTI13', grupo=self.grupo, unidad_negocio=self.sg, ip_router='192.168.20.254')
+
+    def _correr(self, *args, responde=True):
+        salida = io.StringIO()
+        with patch('apps.monitoreo.enlaces.sondear_enlace', return_value=(responde, 21.0)):
+            with patch('apps.monitoreo.enlaces.verificar_ping_disponible'):
+                call_command('corregir_ip_router_proveedor', *args, stdout=salida)
+        return salida.getvalue()
+
+    def test_sin_aplicar_no_escribe_nada(self):
+        """Simulacro por defecto: 299 registros en produccion no se tocan por accidente."""
+        salida = self._correr()
+        self.proveedor.refresh_from_db()
+        self.assertEqual(str(self.proveedor.ip_router), '192.169.100.1')
+        self.assertIn('Simulacro', salida)
+        self.assertIn('192.169.100.1 -> 192.169.100.254', salida)
+
+    def test_con_aplicar_corrige_las_del_proveedor(self):
+        self._correr('--aplicar')
+        self.proveedor.refresh_from_db()
+        self.otra_proveedor.refresh_from_db()
+        self.assertEqual(str(self.proveedor.ip_router), '192.169.100.254')
+        self.assertEqual(str(self.otra_proveedor.ip_router), '192.170.55.254')
+
+    def test_no_toca_los_mikrotik_propios(self):
+        """Las 10.101.x son los Mikrotik que hoy si responden SNMP: cambiarlas romperia
+        el unico monitoreo de trafico que funciona."""
+        self._correr('--aplicar')
+        self.mikrotik.refresh_from_db()
+        self.assertEqual(str(self.mikrotik.ip_router), '10.101.36.97')
+
+    def test_no_toca_las_que_ya_estaban_bien(self):
+        self._correr('--aplicar')
+        self.ya_ok.refresh_from_db()
+        self.assertEqual(str(self.ya_ok.ip_router), '192.168.20.254')
+
+    def test_no_cambia_la_que_tampoco_responde_en_254(self):
+        """Puede ser una caida real o un sitio de baja: cambiarle la IP esconderia el
+        problema detras de un dato nuevo."""
+        salida = self._correr('--aplicar', responde=False)
+        self.proveedor.refresh_from_db()
+        self.assertEqual(str(self.proveedor.ip_router), '192.169.100.1')
+        self.assertIn('sin tocar', salida)
+
+    def test_forzar_salta_la_verificacion(self):
+        salida = io.StringIO()
+        with patch('apps.monitoreo.enlaces.sondear_enlace') as sondear:
+            call_command('corregir_ip_router_proveedor', '--aplicar', '--forzar', stdout=salida)
+        sondear.assert_not_called()
+        self.proveedor.refresh_from_db()
+        self.assertEqual(str(self.proveedor.ip_router), '192.169.100.254')
+
+    def test_se_puede_acotar_a_un_prefijo(self):
+        self._correr('--aplicar', '--prefijo', '192.170')
+        self.proveedor.refresh_from_db()
+        self.otra_proveedor.refresh_from_db()
+        self.assertEqual(str(self.proveedor.ip_router), '192.169.100.1', 'fuera del prefijo pedido')
+        self.assertEqual(str(self.otra_proveedor.ip_router), '192.170.55.254')
+
+    def test_sin_candidatas_lo_dice_y_no_falla(self):
+        Farmacia.objects.filter(pk__in=[self.proveedor.pk, self.otra_proveedor.pk]).update(
+            ip_router='192.169.1.254')
+        salida = self._correr('--aplicar')
+        self.assertIn('Ninguna farmacia', salida)

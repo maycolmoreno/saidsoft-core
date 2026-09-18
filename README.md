@@ -622,6 +622,40 @@ motivo por el que `ENLACES_NOTIFICAR_A` no reusa los destinatarios de `notificar
 Alcanza con uno de los dos canales configurados para que el aviso salga; si no hay
 ninguno, el evento queda pendiente en vez de marcarse como avisado.
 
+### Consultas por Telegram (solo lectura)
+
+Además de avisar, el bot responde preguntas. `run_telegram_bot` es un worker de larga
+duración (calco de `run_meshcentral_worker`: latido propio y apagado limpio) y
+`apps/monitoreo/telegram_bot.py` decide qué contesta cada comando.
+
+| Comando | Qué devuelve |
+|---|---|
+| `/enlaces` | Enlaces caídos, cada uno con el tiempo desde su **primera** falla, agrupados por proveedor |
+| `/estado` | Estaciones en línea, alertas por severidad, enlaces caídos, servicios del POS y frescura del último sondeo |
+| `/alertas` | Alertas sin resolver, con severidad, estación y antigüedad |
+| `/farmacia ML016` | Enlace, tráfico SNMP, estaciones y sus servicios del POS caídos |
+
+- **Long polling, no webhook.** Un webhook exige que Telegram alcance el servidor desde
+  Internet con HTTPS válido; este vive en red interna con certificado autofirmado.
+  `getUpdates` con `timeout=30` invierte la dirección: el proceso sale a buscar, así que
+  no hay que abrir nada y una consulta se contesta en uno o dos segundos. En reposo son
+  dos requests por minuto, no polling agresivo.
+- **Lista blanca obligatoria** (`TELEGRAM_CHAT_IDS_AUTORIZADOS`). Un bot de Telegram es
+  público: cualquiera que adivine su usuario puede escribirle, y estas respuestas son
+  códigos de farmacia, IPs de routers y qué está caído — el mapa que alguien necesitaría
+  para atacar la red. A un chat no autorizado **no se le contesta nada**, ni siquiera "no
+  autorizado": confirmar que el bot responde ya es información. Sin la lista, el worker
+  ni siquiera arranca, porque consumiría los mensajes sin contestar y desde afuera
+  parecería roto.
+- **Solo lectura, sin excepciones.** Nada aprueba estaciones, reconoce alertas ni manda
+  comandos a un agente; hay un test que compara el estado de la base antes y después de
+  correr todos los comandos. El canal de entrada de un bot público no es el lugar para
+  accionar sobre 1.800 equipos.
+- `/enlaces` **no mezcla** las caídas reales con los sitios que nunca respondieron, y el
+  tiempo sale del `EventoEnlaceFarmacia` abierto (el primer fallo), no de
+  `ultimo_cambio_estado` (el sondeo que confirmó la caída): usar el segundo mostraría
+  toda caída más corta de lo que fue.
+
 ### Diagnóstico automático (solo alertas CRÍTICAS)
 
 `apps/monitoreo/diagnostico_ia.py` arma el contexto que el sistema **ya midió** —estado

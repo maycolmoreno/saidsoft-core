@@ -272,6 +272,16 @@ MESHCENTRAL_API_CONFIG = {
 # la notificación (correo, webhook de Teams) sigue funcionando igual.
 TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN', default='')
 
+# Quien puede CONSULTARLE al bot (comandos /enlaces, /estado, /alertas, /farmacia).
+# Un bot de Telegram es publico: cualquiera que adivine su nombre de usuario puede
+# escribirle. Sin esta lista blanca, un desconocido podria pedir el estado de la red
+# —codigos de farmacia, IPs de routers, que esta caido y desde cuando—, que es
+# justamente el mapa que alguien necesitaria para atacarla.
+#
+# Vacio = el bot no le responde a nadie. Es el default a proposito: una instalacion
+# nueva no debe quedar contestando consultas sin que alguien lo decida.
+TELEGRAM_CHAT_IDS_AUTORIZADOS = env.list('TELEGRAM_CHAT_IDS_AUTORIZADOS', default=[])
+
 # Chat al que mandar el resumen agrupado de enlaces caídos/recuperados. Setting propio y
 # NO un CanalNotificacion global, a propósito: el volumen de enlaces es otro orden de
 # magnitud que el de alertas de estación (196 caídas en 24 h medidas el 17-sep-2026

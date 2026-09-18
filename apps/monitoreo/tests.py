@@ -3877,3 +3877,227 @@ class TrozosTelegramTests(TestCase):
         with patch('apps.monitoreo.services.urllib.request.urlopen',
                    side_effect=[None, urllib.error.URLError('caido')]):
             self.assertFalse(_enviar_telegram('-100999', texto))
+
+
+@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA',
+                   TELEGRAM_CHAT_IDS_AUTORIZADOS=['8499615591'])
+class BotConsultasTests(TestCase):
+    """Consultas de solo lectura por Telegram.
+
+    Lo que mas importa verificar acá no es el formato sino dos cosas: que el bot no le
+    conteste a un desconocido (es publico y lo que responde es el mapa de la red), y que
+    /enlaces no mezcle las caidas reales con los sitios que nunca respondieron — el
+    numero mezclado decia 162 cuando lo accionable eran 13.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX920')
+        self.viva = Farmacia.objects.create(
+            codigo='TSTB01', grupo=grupo, unidad_negocio=self.sg, ip_router='10.5.0.1',
+            circuito_proveedor='telconet-sitio-uno', ancho_contratado_mbps=10)
+        self.caida = Farmacia.objects.create(
+            codigo='TSTB02', grupo=grupo, unidad_negocio=self.sg, ip_router='10.5.0.2',
+            circuito_proveedor='telconet-sitio-dos')
+        self.nunca = Farmacia.objects.create(
+            codigo='TSTB03', grupo=grupo, unidad_negocio=self.sg, ip_router='10.5.0.3',
+            circuito_proveedor='puntonet-sitio-tres')
+
+        registrar_sondeo(self.viva, True, 12.0)
+        registrar_sondeo(self.caida, True, 15.0)
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(self.caida, False, None)
+            registrar_sondeo(self.nunca, False, None)
+
+    # --- autorizacion ---
+
+    def test_un_chat_desconocido_no_recibe_ninguna_respuesta(self):
+        """Ni siquiera "no autorizado": confirmar que el bot responde ya es informacion."""
+        from apps.monitoreo.telegram_bot import procesar_actualizacion
+
+        update = {'message': {'chat': {'id': 999999}, 'text': '/enlaces'}}
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            respondido = procesar_actualizacion(update)
+        self.assertFalse(respondido)
+        urlopen.assert_not_called()
+
+    def test_el_chat_autorizado_si_recibe_respuesta(self):
+        from apps.monitoreo.telegram_bot import procesar_actualizacion
+
+        update = {'message': {'chat': {'id': 8499615591}, 'text': '/enlaces'}}
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            self.assertTrue(procesar_actualizacion(update))
+        urlopen.assert_called()
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=[])
+    def test_sin_lista_blanca_no_responde_a_nadie(self):
+        from apps.monitoreo.telegram_bot import chat_autorizado
+
+        self.assertFalse(chat_autorizado(8499615591))
+
+    # --- /enlaces, que es lo que se pidio ---
+
+    def test_enlaces_cuenta_solo_las_caidas_reales(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        texto = responder_a('/enlaces')
+        self.assertIn('1 enlace(s) caído(s)', texto, texto)
+        self.assertIn('TSTB02', texto)
+        self.assertNotIn('TSTB03', texto, 'la que nunca respondio no es una caida')
+        self.assertIn('nunca respondieron', texto, 'pero si se informa aparte')
+
+    def test_enlaces_dice_hace_cuanto_esta_caido(self):
+        from apps.monitoreo.telegram_bot import responder_a
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        evento = EventoEnlaceFarmacia.objects.filter(farmacia=self.caida, fin__isnull=True).first()
+        EventoEnlaceFarmacia.objects.filter(pk=evento.pk).update(
+            inicio=timezone.now() - timedelta(hours=3, minutes=12))
+
+        texto = responder_a('/enlaces')
+        self.assertIn('hace 3 h 12 min', texto, texto)
+
+    def test_el_tiempo_sale_del_evento_no_del_ultimo_cambio(self):
+        """El evento marca el PRIMER fallo; ultimo_cambio_estado, el sondeo que confirmo
+        la caida. Usar el segundo la mostraria mas corta de lo que fue."""
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+        from apps.monitoreo.telegram_bot import responder_a
+
+        EventoEnlaceFarmacia.objects.filter(farmacia=self.caida, fin__isnull=True).update(
+            inicio=timezone.now() - timedelta(hours=5))
+        EstadoEnlaceFarmacia.objects.filter(farmacia=self.caida).update(
+            ultimo_cambio_estado=timezone.now() - timedelta(minutes=10))
+
+        self.assertIn('hace 5 h', responder_a('/enlaces'))
+
+    def test_enlaces_agrupa_por_proveedor(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self.assertIn('telconet', responder_a('/enlaces'))
+
+    def test_sin_caidas_lo_dice_y_no_inventa_una_lista(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.telegram_bot import responder_a
+
+        registrar_sondeo(self.caida, True, 20.0)
+        texto = responder_a('/enlaces')
+        self.assertIn('Ningún enlace caído', texto)
+
+    # --- los otros comandos ---
+
+    def test_estado_da_el_resumen_general(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        texto = responder_a('/estado')
+        for esperado in ('Estaciones:', 'Alertas abiertas:', 'Enlaces caídos:'):
+            self.assertIn(esperado, texto)
+
+    def test_alertas_lista_las_abiertas(self):
+        from apps.monitoreo.models import Alerta, Metrica, ReglaAlerta
+        from apps.monitoreo.telegram_bot import responder_a
+
+        usuario = User.objects.create_user(username='u_bot', password='x')
+        grupo = Grupo.objects.create(codigo='TRX921')
+        farmacia = Farmacia.objects.create(codigo='TSTB09', grupo=grupo, unidad_negocio=self.sg)
+        estacion = Estacion.objects.create(
+            codigo='TSTB09-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        regla = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90, creado_por=usuario)
+        Alerta.objects.create(regla=regla, estacion=estacion, valor_disparador=95)
+
+        texto = responder_a('/alertas')
+        self.assertIn('TSTB09-A', texto)
+        self.assertIn('CPU alta', texto)
+
+    def test_farmacia_muestra_enlace_y_circuito(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        texto = responder_a('/farmacia TSTB02')
+        self.assertIn('TSTB02', texto)
+        self.assertIn('telconet-sitio-dos', texto)
+        self.assertIn('caído', texto)
+
+    def test_farmacia_acepta_el_codigo_en_minuscula(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self.assertIn('TSTB01', responder_a('/farmacia tstb01'))
+
+    def test_farmacia_inexistente_sugiere_parecidas(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        texto = responder_a('/farmacia TSTB99')
+        self.assertIn('No encontré', texto)
+        self.assertIn('TSTB01', texto, 'sugiere las del mismo prefijo')
+
+    def test_farmacia_sin_codigo_pide_el_codigo(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self.assertIn('Falta el código', responder_a('/farmacia'))
+
+    # --- comportamiento del bot ---
+
+    def test_el_comando_funciona_con_el_sufijo_del_bot(self):
+        """En un grupo, Telegram entrega "/enlaces@saidsoftbot"."""
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self.assertIsNotNone(responder_a('/enlaces@saidsoftbot'))
+
+    def test_un_comando_desconocido_ofrece_la_ayuda(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        texto = responder_a('/reiniciar_todo')
+        self.assertIn('No conozco', texto)
+        self.assertIn('/enlaces', texto)
+
+    def test_texto_suelto_no_recibe_respuesta(self):
+        """El bot no conversa: responder a cualquier texto lo volveria ruidoso en grupo."""
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self.assertIsNone(responder_a('hola, todo bien?'))
+
+    def test_un_update_sin_texto_no_rompe_el_bucle(self):
+        """Una foto o un sticker no pueden dejar el bot mudo hasta que alguien mire."""
+        from apps.monitoreo.telegram_bot import procesar_actualizacion
+
+        self.assertFalse(procesar_actualizacion({'message': {'chat': {'id': 8499615591}}}))
+        self.assertFalse(procesar_actualizacion({}))
+
+    def test_ningun_comando_modifica_datos(self):
+        """Solo lectura: el canal de entrada de un bot publico no acciona sobre la flota."""
+        from apps.monitoreo.models import Alerta, EstadoEnlaceFarmacia
+        from apps.monitoreo.telegram_bot import responder_a
+
+        antes = (Alerta.objects.count(), EstadoEnlaceFarmacia.objects.count(),
+                 list(EstadoEnlaceFarmacia.objects.values_list('alcanzable', flat=True).order_by('pk')))
+        for comando in ('/enlaces', '/estado', '/alertas', '/farmacia TSTB02', '/ayuda'):
+            responder_a(comando)
+        despues = (Alerta.objects.count(), EstadoEnlaceFarmacia.objects.count(),
+                   list(EstadoEnlaceFarmacia.objects.values_list('alcanzable', flat=True).order_by('pk')))
+        self.assertEqual(antes, despues)
+
+    def test_ninguna_respuesta_incluye_el_token(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        for comando in ('/enlaces', '/estado', '/alertas', '/farmacia TSTB02', '/ayuda'):
+            self.assertNotIn('TOKEN-SECRETO-DE-PRUEBA', responder_a(comando) or '')
+
+
+class ComposeBotTelegramTests(ComposeMeshCentralTests):
+    """El servicio del bot tiene que recibir el token y la lista blanca."""
+
+    def test_el_servicio_del_bot_tiene_lo_que_necesita(self):
+        entorno = self._entorno_del_servicio('telegram_bot')
+        for variable in ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_IDS_AUTORIZADOS', 'DATABASE_URL'):
+            self.assertIn(variable, entorno, variable)
+
+    def test_el_bot_no_publica_ningun_puerto(self):
+        """Long polling: sale a buscar, nadie tiene que alcanzarlo desde afuera."""
+        from django.conf import settings
+
+        contenido = (settings.BASE_DIR / 'deploy' / 'docker-compose.yml').read_text(encoding='utf-8')
+        bloque = contenido.split('\n  telegram_bot:\n', 1)[1].split('\n  redis:\n', 1)[0]
+        self.assertNotIn('ports:', bloque)
