@@ -3293,3 +3293,82 @@ class ComposeCorreoTests(ComposeMeshCentralTests):
 
         tareas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
         self.assertIn('apps.monitoreo.tasks.notificar_cambios_enlaces_task', tareas)
+
+
+class ResolverWanPorNexthopTests(TestCase):
+    """Resolver la interfaz WAN en routers que no exponen la ipRouteTable clasica.
+
+    GCH20 (10.201.6.33) tenia SNMP bien configurado —respondia sysName con su
+    community— pero salia "sin SNMP" en el panel: su RouterOS devuelve noSuchName para
+    la ipRouteTable de RFC1213, asi que no habia forma de saber cual era la WAN.
+
+    Los datos de estos tests son los que devolvieron los routers reales el 17-sep-2026,
+    no inventados: por eso el test sirve de regresion si alguien toca el parseo.
+    """
+
+    # GCH20: la ruta por defecto sale por el nexthop 10.107.130.73; el router tiene
+    # 10.107.130.74/30 en ifIndex 4 (ether3_TELCO) y 10.201.6.33/27 en ifIndex 9.
+    RUTAS_GCH20 = [('1.3.6.1.2.1.4.24.4.1.5.0.0.0.0.0.0.0.0.0.10.107.130.73', 0)]
+    IFINDEX_GCH20 = [
+        ('1.3.6.1.2.1.4.20.1.2.10.107.130.74', 4),
+        ('1.3.6.1.2.1.4.20.1.2.10.201.6.33', 9),
+    ]
+    MASCARAS_GCH20 = [
+        ('1.3.6.1.2.1.4.20.1.3.10.107.130.74', '255.255.255.252'),
+        ('1.3.6.1.2.1.4.20.1.3.10.201.6.33', '255.255.255.224'),
+    ]
+
+    def _walk_falso(self, rutas=None, indices=None, mascaras=None):
+        from apps.monitoreo import mikrotik
+
+        async def _walk(engine, comunidad, target, raiz):
+            if raiz == mikrotik._OID_IP_CIDR_ROUTE_IF_INDEX:
+                return self.RUTAS_GCH20 if rutas is None else rutas
+            if raiz == mikrotik._OID_IP_AD_ENT_IF_INDEX:
+                return self.IFINDEX_GCH20 if indices is None else indices
+            if raiz == mikrotik._OID_IP_AD_ENT_NETMASK:
+                return self.MASCARAS_GCH20 if mascaras is None else mascaras
+            return []
+        return _walk
+
+    def _resolver(self, **kwargs):
+        import asyncio
+
+        from apps.monitoreo import mikrotik
+
+        with patch.object(mikrotik, '_walk', self._walk_falso(**kwargs)):
+            return asyncio.run(mikrotik._resolver_wan_por_nexthop(None, '10.201.6.33', 'gch20', None))
+
+    def test_elige_la_interfaz_cuya_subred_contiene_el_nexthop(self):
+        self.assertEqual(self._resolver(), 4, 'ether3_TELCO es la WAN, no la interfaz de la LAN')
+
+    def test_sin_ruta_por_defecto_no_inventa_una_interfaz(self):
+        """Una tabla de rutas sin la ruta 0.0.0.0 no permite deducir nada."""
+        otras = [('1.3.6.1.2.1.4.24.4.1.5.10.101.0.0.255.255.0.0.0.10.107.130.73', 0)]
+        self.assertIsNone(self._resolver(rutas=otras))
+
+    def test_si_ninguna_subred_contiene_el_nexthop_devuelve_none(self):
+        ajenas = [('1.3.6.1.2.1.4.20.1.2.192.168.5.1', 7)]
+        mascaras = [('1.3.6.1.2.1.4.20.1.3.192.168.5.1', '255.255.255.0')]
+        self.assertIsNone(self._resolver(indices=ajenas, mascaras=mascaras))
+
+    def test_la_mascara_se_lee_venga_como_texto_o_como_bytes(self):
+        from apps.monitoreo.mikrotik import _mascara_a_entero
+
+        esperado = 0xFFFFFFFC
+
+        class ComoIpAddress:
+            def prettyPrint(self):
+                return '255.255.255.252'
+
+        self.assertEqual(_mascara_a_entero(ComoIpAddress()), esperado)
+        self.assertEqual(_mascara_a_entero('255.255.255.252'), esperado)
+        self.assertEqual(_mascara_a_entero(b'\xff\xff\xff\xfc'), esperado)
+        self.assertIsNone(_mascara_a_entero(None))
+
+    def test_ip_a_entero_rechaza_lo_que_no_es_una_ip(self):
+        from apps.monitoreo.mikrotik import _ip_a_entero
+
+        self.assertEqual(_ip_a_entero('10.107.130.73'), (10 << 24) | (107 << 16) | (130 << 8) | 73)
+        for invalida in ('10.107.130', '10.107.130.999', 'ether3', ''):
+            self.assertIsNone(_ip_a_entero(invalida), invalida)

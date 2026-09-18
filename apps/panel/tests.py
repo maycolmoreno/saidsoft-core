@@ -5284,3 +5284,73 @@ class ServiciosPosEnLaFichaDeEstacionTests(TestCase):
         resp = self._ficha()
         self.assertNotContains(resp, 'Contrasena')
         self.assertNotContains(resp, 'password')
+
+
+class EnlacesKpiFiltrablesTests(TestCase):
+    """Las tarjetas de KPI tienen que llevar al listado de lo que cuentan.
+
+    Pedido del usuario (17-sep-2026), con sus palabras: "me dice que tengo 11 enlaces
+    caidos pero no se cuales son". El numero estaba a la vista y para llegar al detalle
+    habia que ir al select de abajo y repetir a mano lo que la tarjeta ya sabia.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX903')
+        self.viva = Farmacia.objects.create(
+            codigo='TSTK01', grupo=grupo, unidad_negocio=self.sg, ip_router='10.0.1.1')
+        self.caida = Farmacia.objects.create(
+            codigo='TSTK02', grupo=grupo, unidad_negocio=self.sg, ip_router='10.0.1.2')
+        self.nunca = Farmacia.objects.create(
+            codigo='TSTK03', grupo=grupo, unidad_negocio=self.sg, ip_router='10.0.1.3')
+
+        registrar_sondeo(self.viva, True, 10.0)
+        registrar_sondeo(self.caida, True, 11.0)
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(self.caida, False, None)
+            registrar_sondeo(self.nunca, False, None)
+
+        self.usuario = User.objects.create_user(username='kpi_enlaces', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo',
+                                   codename='view_estadoenlacefarmacia'),
+        )
+        self.client.force_login(self.usuario)
+
+    def test_la_tarjeta_de_caidos_enlaza_al_filtro_de_caidos(self):
+        respuesta = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertContains(respuesta, 'href="?estado=caidos"')
+
+    def test_el_filtro_de_caidos_muestra_solo_la_caida_real(self):
+        url = reverse('panel:enlaces_farmacias_lista')
+        respuesta = self.client.get(url, {'estado': 'caidos'})
+        codigos = [f['farmacia'].codigo for f in respuesta.context['filas']]
+        self.assertEqual(codigos, ['TSTK02'])
+
+    def test_el_filtro_de_nunca_respondieron_muestra_solo_esa(self):
+        url = reverse('panel:enlaces_farmacias_lista')
+        respuesta = self.client.get(url, {'estado': 'nunca'})
+        codigos = [f['farmacia'].codigo for f in respuesta.context['filas']]
+        self.assertEqual(codigos, ['TSTK03'])
+
+    def test_la_tarjeta_activa_ofrece_quitar_el_filtro(self):
+        """Pulsarla de nuevo vuelve al total, en vez de dejar al operador atrapado."""
+        url = reverse('panel:enlaces_farmacias_lista')
+        respuesta = self.client.get(url, {'estado': 'caidos'})
+        self.assertContains(respuesta, 'quitar filtro')
+
+    def test_el_numero_de_la_tarjeta_coincide_con_lo_que_lista_su_filtro(self):
+        """Si el KPI dice 1 y el filtro muestra 3, la tarjeta miente."""
+        url = reverse('panel:enlaces_farmacias_lista')
+        sin_filtro = self.client.get(url)
+        for clave, filtro in (('caidas', 'caidos'), ('nunca_respondieron', 'nunca'),
+                              ('activas', 'activos')):
+            filtrado = self.client.get(url, {'estado': filtro})
+            self.assertEqual(
+                sin_filtro.context[clave], len(filtrado.context['filas']),
+                f'el KPI "{clave}" no coincide con lo que lista ?estado={filtro}',
+            )

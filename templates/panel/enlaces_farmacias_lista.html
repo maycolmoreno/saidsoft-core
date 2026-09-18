@@ -42,36 +42,45 @@ todo y solo se lee una vez.
     </details>
 </div>
 
-{% comment %} KPI sobre el total, no sobre la página: "154 caídos" dice 154 aunque estés en la página 3. {% endcomment %}
+{% comment %}
+KPI sobre el total, no sobre la página: "154 caídos" dice 154 aunque estés en la página 3.
+
+Cada tarjeta es un enlace que aplica su propio filtro. El KPI decía "11 caídos" sin dar
+forma de ver CUÁLES, y había que ir al select de abajo a repetir a mano lo que la
+tarjeta ya sabía. El href limpia los demás filtros a propósito: la tarjeta cuenta sobre
+el total, así que al pulsarla tiene que mostrar ese mismo conjunto, no la intersección
+con una búsqueda anterior. La tarjeta activa queda resaltada y su enlace vuelve a "Todos".
+{% endcomment %}
 <div class="grid gap-3 mb-5" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));">
-    <div class="card p-4">
+    <a href="?" class="card p-4 block hover:opacity-80 transition-opacity" {% if not filtros.estado and not filtros.trafico %}style="outline:2px solid var(--border-strong,var(--border));"{% endif %}>
         <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Total enlaces</div>
         <div class="text-2xl font-semibold num">{{ total }}</div>
-    </div>
-    <div class="card p-4">
+        <div class="text-xs text-[var(--text-faint)]">ver todos</div>
+    </a>
+    <a href="{% if filtros.estado == 'activos' %}?{% else %}?estado=activos{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtros.estado == 'activos' %}style="outline:2px solid var(--good);"{% endif %}>
         <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Activos</div>
         <div class="text-2xl font-semibold num" style="color:var(--good);">{{ activas }}</div>
         <div class="text-xs text-[var(--text-faint)]">{% widthratio activas total 100 %}% del total</div>
-    </div>
-    <div class="card p-4" {% if caidas %}style="border-left:3px solid var(--critical);"{% endif %}>
+    </a>
+    <a href="{% if filtros.estado == 'caidos' %}?{% else %}?estado=caidos{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtros.estado == 'caidos' %}style="outline:2px solid var(--critical);"{% elif caidas %}style="border-left:3px solid var(--critical);"{% endif %}>
         <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Caídos</div>
         <div class="text-2xl font-semibold num" {% if caidas %}style="color:var(--critical);"{% endif %}>{{ caidas }}</div>
-        <div class="text-xs text-[var(--text-faint)]">{% widthratio caidas total 100 %}% del total</div>
-    </div>
-    <div class="card p-4" {% if nunca_respondieron %}style="border-left:3px solid var(--warning);"{% endif %}>
+        <div class="text-xs text-[var(--text-faint)]">{% if filtros.estado == 'caidos' %}quitar filtro{% else %}ver cuáles{% endif %}</div>
+    </a>
+    <a href="{% if filtros.estado == 'nunca' %}?{% else %}?estado=nunca{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtros.estado == 'nunca' %}style="outline:2px solid var(--warning);"{% elif nunca_respondieron %}style="border-left:3px solid var(--warning);"{% endif %}>
         <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Nunca respondieron</div>
         <div class="text-2xl font-semibold num" {% if nunca_respondieron %}style="color:var(--warning);"{% endif %}>{{ nunca_respondieron }}</div>
         <div class="text-xs text-[var(--text-faint)]">no son caídas: revisar ruta o IP</div>
-    </div>
-    <div class="card p-4">
+    </a>
+    <a href="{% if filtros.estado == 'sin_sondear' %}?{% else %}?estado=sin_sondear{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtros.estado == 'sin_sondear' %}style="outline:2px solid var(--border-strong,var(--border));"{% endif %}>
         <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Sin sondear</div>
         <div class="text-2xl font-semibold num">{{ sin_sondear }}</div>
-    </div>
-    <div class="card p-4">
+    </a>
+    <a href="{% if filtros.trafico == 'con' %}?{% else %}?trafico=con{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtros.trafico == 'con' %}style="outline:2px solid var(--info);"{% endif %}>
         <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Con tráfico (SNMP)</div>
         <div class="text-2xl font-semibold num" style="color:var(--info);">{{ con_ancho_banda }}</div>
         <div class="text-xs text-[var(--text-faint)]">{% widthratio con_ancho_banda total 100 %}% del total</div>
-    </div>
+    </a>
 </div>
 
 {% if total and sin_sondear == total %}

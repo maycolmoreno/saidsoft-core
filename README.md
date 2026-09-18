@@ -560,11 +560,26 @@ vida — decisión explícita del usuario ante ese gap de datos).
 `/monitoreo/red-farmacias/` (19-ago-2026): complementa el consumo de red por
 estación de arriba — el Mikrotik de cada farmacia (~600, uno por sitio) no reparte
 tráfico por equipo (sin Queues por IP/MAC), así que solo puede dar el consumo TOTAL
-del enlace del sitio. `apps/monitoreo/mikrotik.py` (Celery Beat cada 5 min, sin
-efecto si `MIKROTIK_SNMP_INTERFAZ_WAN` no está configurado) resuelve el `ifIndex` de
-la interfaz WAN por WALK sobre `ifDescr` (cacheado en proceso) y lee `ifHCInOctets`/
+del enlace del sitio. `apps/monitoreo/mikrotik.py` (Celery Beat cada 5 min) resuelve
+el `ifIndex` de la interfaz WAN —cacheado en proceso— y lee `ifHCInOctets`/
 `ifHCOutOctets` (contadores de 64 bits, evita wraparound) de cada `Farmacia` con
-`ip_router` cargada. La community SNMP no se configura en el servidor: es el código
+`ip_router` cargada.
+
+La WAN se resuelve **sin depender del nombre de la interfaz**, que no es uniforme entre
+sitios (`ether3_Telconet` en ML006, `ether3_TELCO` en GCH20). Hay dos caminos, y se usa
+el segundo cuando el primero no da respuesta:
+
+1. `ipRouteIfIndex` de la ruta por defecto (RFC 1213), un solo GET.
+2. Si esa tabla no existe o devuelve `ifIndex 0` —RouterOS moderno responde
+   `noSuchName`, comprobado en GCH20 el 17-sep-2026— se deduce por **la subred del
+   nexthop**: `ipCidrRouteTable` lleva el gateway de la ruta por defecto pegado en su
+   propio OID, y `ipAddrTable` dice qué IP y máscara tiene el router en cada interfaz.
+   La WAN es aquella cuya subred contiene ese nexthop. Validado contra dos routers
+   reales: en GCH20 da el `ifIndex` correcto donde el camino 1 fallaba, y en MCAR3 da
+   exactamente el mismo valor que ya devolvía por el camino 1.
+
+Sin esto, un sitio con SNMP bien configurado aparecía igual como "sin SNMP" en el panel,
+sin ninguna pista de por qué. La community SNMP no se configura en el servidor: es el código
 de la farmacia en minúscula (ej. `ml006` para ML006), convención confirmada contra un
 router real de producción — se deriva sola (`_comunidad_para`), no hace falta cargar
 ni distribuir ningún secreto compartido. La tasa se calcula diferenciando contra la última

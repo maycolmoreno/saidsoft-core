@@ -42,6 +42,26 @@ logger = logging.getLogger(__name__)
 # compatibilidad aunque internamente use ipCidrRouteTable.
 _OID_IP_ROUTE_IF_INDEX_DEFAULT = '1.3.6.1.2.1.4.21.1.2.0.0.0.0'
 
+# Segundo camino para la misma pregunta, cuando el de arriba no esta. RouterOS puede
+# no exponer la ipRouteTable de RFC1213 (GCH20 devuelve noSuchName) o exponerla con
+# ifIndex 0, que no sirve. Estas dos tablas juntas dan la respuesta igual:
+#
+#   ipCidrRouteIfIndex — su OID lleva el NEXTHOP pegado al final (los ultimos 4
+#     octetos), asi que aunque el valor sea 0 el indice del OID dice por que gateway
+#     sale la ruta por defecto.
+#   ipAddrTable — que IP tiene el router en cada interfaz, y con que mascara.
+#
+# La WAN es la interfaz cuya subred CONTIENE ese nexthop. Verificado contra dos routers
+# reales (17-sep-2026): en GCH20 da ifIndex 4 (ether3_TELCO) donde el camino clasico
+# fallaba, y en MCAR3 da 3, exactamente el mismo valor que ya devolvia por ipRouteTable.
+# No depende del nombre de la interfaz, que no es uniforme entre sitios.
+_OID_IP_CIDR_ROUTE_IF_INDEX = '1.3.6.1.2.1.4.24.4.1.5'
+# dest 0.0.0.0 + mascara 0.0.0.0 + tos 0 = la ruta por defecto. Lo que sigue en el
+# OID es el nexthop, que es el dato que se busca.
+_PREFIJO_RUTA_DEFECTO = '.0.0.0.0.0.0.0.0.0.'
+_OID_IP_AD_ENT_IF_INDEX = '1.3.6.1.2.1.4.20.1.2'
+_OID_IP_AD_ENT_NETMASK = '1.3.6.1.2.1.4.20.1.3'
+
 # IF-MIB: contadores de 64 bits ("HC" = high capacity), no los de 32 bits
 # (ifInOctets/ifOutOctets) — un enlace con tráfico sostenido puede dar la vuelta al
 # contador de 32 bits en minutos/horas; HC evita ese wraparound.
@@ -81,6 +101,93 @@ def _comunidad_para(farmacia) -> str:
     return farmacia.codigo.lower()
 
 
+def _ip_a_entero(texto: str) -> int | None:
+    partes = str(texto).split('.')
+    if len(partes) != 4:
+        return None
+    try:
+        octetos = [int(o) for o in partes]
+    except ValueError:
+        return None
+    if any(o < 0 or o > 255 for o in octetos):
+        return None
+    return (octetos[0] << 24) | (octetos[1] << 16) | (octetos[2] << 8) | octetos[3]
+
+
+def _mascara_a_entero(valor) -> int | None:
+    """La mascara puede llegar como IpAddress o como OCTET STRING de 4 bytes.
+
+    RouterOS la manda como IpAddress (comprobado en GCH20 y MCAR3), cuyo prettyPrint ya
+    da "255.255.255.252". Pero `str()` sobre un OCTET STRING daria los bytes crudos
+    interpretados como caracteres, ilegibles. Se prueban las dos formas.
+    """
+    if valor is None:
+        return None
+    texto = valor.prettyPrint() if hasattr(valor, 'prettyPrint') else str(valor)
+    entero = _ip_a_entero(texto)
+    if entero is not None:
+        return entero
+    try:
+        crudo = bytes(valor)
+    except (TypeError, ValueError):
+        return None
+    return int.from_bytes(crudo, 'big') if len(crudo) == 4 else None
+
+
+async def _walk(engine, comunidad, target, raiz):
+    """Walk acotado al subarbol `raiz`, devolviendo (oid, valor) como texto/objeto.
+
+    lexicographicMode=False para que corte al salir del subarbol en vez de seguir
+    recorriendo el MIB entero del router.
+    """
+    filas = []
+    async for errorIndication, errorStatus, _, varBinds in bulk_walk_cmd(
+        engine, CommunityData(comunidad), target, ContextData(),
+        0, 10, ObjectType(ObjectIdentity(raiz)), lexicographicMode=False,
+    ):
+        if errorIndication or errorStatus:
+            return []
+        filas.extend((str(oid), valor) for oid, valor in varBinds)
+        if len(filas) > 200:  # un router con cientos de rutas no debe colgar la corrida
+            break
+    return filas
+
+
+async def _resolver_wan_por_nexthop(engine, ip, comunidad, target):
+    """Deduce la WAN por la subred del nexthop de la ruta por defecto. None si no se
+    puede — nunca lanza, mismo criterio que el resto del modulo."""
+    # Se camina la tabla entera y se filtra en Python: acotar el walk al OID de la ruta
+    # por defecto devuelve cero filas, porque bulk_walk arranca DESPUES del OID que se le
+    # pasa y ese OID no es un nodo real sino un indice compuesto (comprobado contra
+    # GCH20, que por ese camino no devolvia nada aunque la fila existiera).
+    rutas = await _walk(engine, comunidad, target, _OID_IP_CIDR_ROUTE_IF_INDEX)
+    nexthop = None
+    for oid, _valor in rutas:
+        if _OID_IP_CIDR_ROUTE_IF_INDEX + _PREFIJO_RUTA_DEFECTO not in oid + '.':
+            continue
+        nexthop = _ip_a_entero('.'.join(oid.split('.')[-4:]))
+        if nexthop:
+            break
+    if nexthop is None:
+        return None
+
+    indices = await _walk(engine, comunidad, target, _OID_IP_AD_ENT_IF_INDEX)
+    mascaras = {oid.rsplit(_OID_IP_AD_ENT_NETMASK + '.', 1)[-1]: valor
+                for oid, valor in await _walk(engine, comunidad, target, _OID_IP_AD_ENT_NETMASK)}
+    for oid, valor in indices:
+        direccion = oid.rsplit(_OID_IP_AD_ENT_IF_INDEX + '.', 1)[-1]
+        local = _ip_a_entero(direccion)
+        mascara = _mascara_a_entero(mascaras.get(direccion))
+        if local is None or mascara is None:
+            continue
+        if (local & mascara) == (nexthop & mascara):
+            try:
+                return int(valor)
+            except (ValueError, TypeError):
+                return None
+    return None
+
+
 async def _resolver_indice_interfaz_wan(ip, comunidad, puerto):
     """GET de ipRouteIfIndex para la ruta por defecto — da el ifIndex de la interfaz
     WAN sin necesitar su nombre (que no es uniforme entre sitios, ver docstring del
@@ -100,13 +207,28 @@ async def _resolver_indice_interfaz_wan(ip, comunidad, puerto):
     except Exception:
         logger.warning('Mikrotik %s: excepción resolviendo la interfaz WAN.', ip, exc_info=True)
         return None
-    if errorIndication or errorStatus:
-        logger.warning('Mikrotik %s: error resolviendo la interfaz WAN (%s).', ip, errorIndication or errorStatus)
-        return None
-    try:
-        indice = int(varBinds[0][1])
-    except (IndexError, ValueError, TypeError):
-        logger.warning('Mikrotik %s: respuesta SNMP con forma inesperada resolviendo la interfaz WAN.', ip)
+    indice = None
+    if not (errorIndication or errorStatus):
+        try:
+            indice = int(varBinds[0][1])
+        except (IndexError, ValueError, TypeError):
+            indice = None
+
+    # indice 0 es tan inutil como no tener respuesta: RouterOS lo devuelve cuando conoce
+    # la ruta pero no informa por que interfaz sale.
+    if not indice:
+        try:
+            indice = await _resolver_wan_por_nexthop(engine, ip, comunidad, target)
+        except Exception:
+            logger.warning('Mikrotik %s: excepción en el camino alternativo de la WAN.', ip, exc_info=True)
+            indice = None
+
+    if not indice:
+        logger.warning(
+            'Mikrotik %s: no se pudo resolver la interfaz WAN, ni por ipRouteTable (%s) ni por el '
+            'nexthop de la ruta por defecto. El sitio va a aparecer "sin SNMP" aunque responda.',
+            ip, errorIndication or errorStatus or 'sin ifIndex',
+        )
         return None
     _cache_indice_interfaz[ip] = indice
     return indice
