@@ -622,6 +622,27 @@ motivo por el que `ENLACES_NOTIFICAR_A` no reusa los destinatarios de `notificar
 Alcanza con uno de los dos canales configurados para que el aviso salga; si no hay
 ninguno, el evento queda pendiente en vez de marcarse como avisado.
 
+### Un servicio que nunca respondió no genera alerta
+
+`EstadoServicioPos.nunca_respondio` (la `ultima_respuesta` vacía) separa dos cosas que
+antes se veían iguales: un servicio que se cayó, y uno que el `.exe.Config` del POS
+nombra pero que nunca existió del lado de acá.
+
+El caso que lo motivó (18-sep-2026): Odoo (`192.168.112.125:8069`) figuraba en la
+configuración del POS de las **9** estaciones con agente y no había respondido **ni una
+vez** desde que existe el monitor — el servicio está dado de baja. Cada estación abría su
+alerta "Servicio del POS sin responder" por algo que nadie iba a arreglar, y al operador
+le llegaba una advertencia sin que hubiera pasado nada en su POS.
+
+- `registrar_servicios_pos` excluye del disparo lo que nunca respondió, pero **solo
+  eso**: si en el mismo grupo de criticidad hay un servicio que sí respondía y se cayó,
+  la alerta se abre igual. Un servicio de baja no puede tapar una caída real.
+- En el panel aparece en tono neutro y con la etiqueta "nunca respondió", no en rojo:
+  es configuración a limpiar, no un incidente a atender.
+- Mismo criterio que `EstadoEnlaceFarmacia.nunca_respondio` para los enlaces. Las dos
+  veces el síntoma fue el mismo: un estado permanente disfrazado de incidente, inflando
+  el número que el operador usa para decidir a dónde ir.
+
 ### Consultas por Telegram (solo lectura)
 
 Además de avisar, el bot responde preguntas. `run_telegram_bot` es un worker de larga
@@ -634,6 +655,9 @@ duración (calco de `run_meshcentral_worker`: latido propio y apagado limpio) y
 | `/estado` | Estaciones en línea, alertas por severidad, enlaces caídos, servicios del POS y frescura del último sondeo |
 | `/alertas` | Alertas sin resolver, con severidad, estación y antigüedad |
 | `/farmacia ML016` | Enlace, tráfico SNMP, estaciones y sus servicios del POS caídos |
+| `/criticas` | Solo las alertas de severidad crítica |
+| `/mantenimiento` | Ventanas de mantenimiento en curso: qué alertas están silenciadas y hasta cuándo |
+| `/toperrores` | Errores del POS más repetidos en TODA la flota, con en cuántas estaciones aparece cada uno |
 
 - **Long polling, no webhook.** Un webhook exige que Telegram alcance el servidor desde
   Internet con HTTPS válido; este vive en red interna con certificado autofirmado.
@@ -655,6 +679,39 @@ duración (calco de `run_meshcentral_worker`: latido propio y apagado limpio) y
   tiempo sale del `EventoEnlaceFarmacia` abierto (el primer fallo), no de
   `ultimo_cambio_estado` (el sondeo que confirmó la caída): usar el segundo mostraría
   toda caída más corta de lo que fue.
+- `/toperrores` es una vista de **flota**, no de una estación (para eso está
+  `/farmacia`): sirve para encontrar el mismo bug repetido en muchas farmacias, que
+  conviene arreglar una vez en vez de atenderlo sucursal por sucursal. **Excluye
+  `PosErrorDetectado.Categoria.NEGOCIO`**, el mismo criterio que ya aplica
+  `manejar_pos_errores` al contar para la alerta: esas son validaciones del POS haciendo
+  su trabajo y son altísimamente frecuentes. Verificado forzando un caso de cada
+  categoría contra producción — uno de negocio con 9.999 repeticiones no entra al
+  ranking mientras uno de sistema con 7 sí.
+- `/mantenimiento` aplica el mismo filtro que `ventana_mantenimiento_activa`
+  (`activo=True` más el rango `desde`/`hasta`) y resuelve el destino con
+  `resolver_estaciones`, el mismo punto que usa el motor: mostrar algo distinto de lo
+  que silencia sería peor que no mostrarlo. Importa porque una ventana activa explica el
+  silencio — sin esto, "no llegó ninguna alerta" se lee igual si todo está bien que si
+  alguien dejó una ventana abierta de la semana pasada.
+- Los tres comandos nuevos viven detrás del botón **"⋯ Más"** y no sueltos en la pantalla
+  principal: siete botones se leen peor que cuatro en un teléfono, y estos se consultan
+  menos seguido. Como comando escrito están siempre disponibles.
+
+**Resumen diario** (`resumen_diario_telegram_task`, 8:00 hora de Ecuador): manda el mismo
+texto de `/estado` una vez por día. Las alertas avisan cuando algo se rompe; esto dice
+cómo se arrancó el día aunque no se haya roto nada — "44 enlaces caídos" tres mañanas
+seguidas es un problema que las alertas ya no reportan porque no hay nada nuevo que abrir.
+
+- Sale por **`CanalNotificacion`**, no por `TELEGRAM_CHAT_IDS_AUTORIZADOS`. Son cosas
+  distintas aunque hoy apunten al mismo chat: esa lista es control de acceso a las
+  consultas entrantes, esto es un destino de notificación saliente. Mezclarlas haría que
+  dar permiso de consulta suscriba a alguien sin pedirlo.
+- Solo los canales **globales**, y ahí difiere de `notificar_alerta`: ese texto habla de
+  una estación y el canal de su unidad tiene que verlo, pero este resumen cuenta la flota
+  entera. Mandárselo al canal de MIA le mostraría los enlaces caídos de San Gregorio.
+- Es el primer `crontab` del proyecto (el resto del schedule son intervalos). Como
+  `CELERY_TIMEZONE = TIME_ZONE = 'America/Guayaquil'`, las 8:00 ya son hora local: con la
+  zona en UTC habrían caído a las 3 de la mañana.
 
 ### Diagnóstico automático (solo alertas CRÍTICAS)
 

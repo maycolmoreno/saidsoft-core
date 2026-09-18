@@ -417,7 +417,31 @@ def _trozos_telegram(texto):
     return trozos
 
 
-def _enviar_telegram(chat_id, texto) -> bool:
+def llamar_telegram(metodo: str, cuerpo: dict) -> bool:
+    """POST a cualquier método de la API de Telegram. Nunca lanza.
+
+    Existe además de `_enviar_telegram` porque el bot necesita métodos que no son
+    sendMessage: `answerCallbackQuery` para sacarle el reloj al botón que el operador
+    acaba de tocar. El token se arma acá y no se devuelve a nadie.
+    """
+    token = getattr(settings, 'TELEGRAM_BOT_TOKEN', '')
+    if not token:
+        return False
+    req = urllib.request.Request(
+        f'https://api.telegram.org/bot{token}/{metodo}',
+        data=json.dumps(cuerpo).encode('utf-8'),
+        method='POST', headers={'Content-Type': 'application/json'},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        return True
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        # Sin la URL en el log: lleva el token adentro.
+        logger.warning('Telegram: falló %s.', metodo, exc_info=True)
+        return False
+
+
+def _enviar_telegram(chat_id, texto, *, teclado=None) -> bool:
     """POST a sendMessage de la API de Telegram — nunca lanza, mismo criterio que
     `_enviar_webhook_teams`: un bot caído o un chat_id mal cargado no debe tumbar la
     ingesta de métricas ni impedir que salga el correo. Mismo patrón stdlib (urllib, sin
@@ -425,6 +449,10 @@ def _enviar_telegram(chat_id, texto) -> bool:
 
     Devuelve si se envió, porque a diferencia del webhook acá sí hay quien necesita
     saberlo: el diagnóstico de IA no debe darse por entregado si el mensaje no salió.
+
+    `teclado` es el `inline_keyboard` que acompaña la respuesta. Va solo en el ÚLTIMO
+    fragmento cuando el mensaje se trocea: repetirlo en cada trozo dejaría tres filas de
+    botones idénticas en el chat, y la de arriba operaría sobre un mensaje viejo.
 
     **El token nunca entra en un log.** Va dentro de la URL, así que los mensajes de
     error informan el chat_id —que no es secreto— y jamás la URL armada. Mismo criterio
@@ -434,15 +462,19 @@ def _enviar_telegram(chat_id, texto) -> bool:
     if not token or not chat_id:
         return False
     url = f'https://api.telegram.org/bot{token}/sendMessage'
-    for fragmento in _trozos_telegram(texto):
-        datos = json.dumps({
+    fragmentos = _trozos_telegram(texto)
+    for indice, fragmento in enumerate(fragmentos):
+        cuerpo = {
             'chat_id': str(chat_id),
             'text': fragmento,
             # Sin parse_mode a propósito: el texto lo arma el sistema con códigos de
             # estación, circuitos y mensajes del POS, que traen guiones bajos y asteriscos.
             # Con Markdown activo Telegram rechaza el mensaje entero por un carácter suelto.
             'disable_web_page_preview': True,
-        }).encode('utf-8')
+        }
+        if teclado and indice == len(fragmentos) - 1:
+            cuerpo['reply_markup'] = {'inline_keyboard': teclado}
+        datos = json.dumps(cuerpo).encode('utf-8')
         req = urllib.request.Request(
             url, data=datos, method='POST', headers={'Content-Type': 'application/json'},
         )
@@ -788,8 +820,19 @@ def evaluar_regla_servicio_pos(estacion, estado) -> None:
     # regla: resolver por el servicio que acaba de volver dejaría la alerta cerrada con
     # otro todavía caído. Visto en producción el 17-sep-2026 — Odoo sin responder en
     # ML017-B y la alerta figurando resuelta porque pg_central habia contestado despues.
+    #
+    # Se excluye lo que NUNCA respondió (`ultima_respuesta` vacía): eso no es una caída
+    # sino configuración pendiente o un servicio que ya no existe, y tratarlo como
+    # incidente convierte un estado permanente en una alerta que se reabre para siempre.
+    # Mismo criterio que `EstadoEnlaceFarmacia.nunca_respondio` para los enlaces.
+    #
+    # Encontrado en producción el 18-sep-2026: Odoo (192.168.112.125:8069) figuraba en el
+    # .exe.Config del POS de las 9 estaciones con agente y no había respondido ni una vez
+    # desde que existe el monitor — el servicio está de baja. Cada estación abría su
+    # alerta de "servicio del POS sin responder" por algo que nadie iba a arreglar.
     hay_caido = EstadoServicioPos.objects.filter(
         estacion=estacion, critico=estado.critico, disponible=False,
+        ultima_respuesta__isnull=False,
     ).exists()
 
     for regla in reglas_aplicables_a(unidad, metrica=Metrica.SERVICIO_POS_CAIDO):

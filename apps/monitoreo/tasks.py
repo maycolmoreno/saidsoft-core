@@ -212,3 +212,43 @@ def diagnosticar_alerta_task(alerta_id):
         if _enviar_telegram(canal.destino, f'{encabezado}\n\n{texto}')
     )
     return f'Diagnóstico generado para la alerta #{alerta.pk}; {enviados} envío(s) por Telegram.'
+
+
+@shared_task(name='apps.monitoreo.tasks.resumen_diario_telegram_task')
+def resumen_diario_telegram_task():
+    """Manda por Telegram el mismo resumen que devuelve /estado, una vez por día.
+
+    Para qué sirve además de las alertas: las alertas avisan cuando algo se rompe, esto
+    dice cómo se arrancó el día aunque no se haya roto nada. Un número que no cambia
+    también informa — "44 enlaces caídos" tres mañanas seguidas es un problema que las
+    alertas ya no reportan porque no hay nada nuevo que abrir.
+
+    **Va por CanalNotificacion y NO por TELEGRAM_CHAT_IDS_AUTORIZADOS.** Son dos cosas
+    distintas aunque hoy apunten al mismo chat: esa lista es control de acceso a las
+    consultas ENTRANTES (quién puede preguntarle al bot), y esto es un destino de
+    notificación SALIENTE. Mezclarlas haría que dar permiso de consulta suscriba a
+    alguien a recibir mensajes sin pedirlo, y que quitar un canal le saque el permiso de
+    consultar — dos efectos que nadie esperaría de un cambio en la otra lista.
+
+    Solo los canales GLOBALES (`unidad_negocio__isnull=True`), y esto sí es una
+    diferencia con `notificar_alerta`: ahí el texto habla de una estación concreta y el
+    canal de esa unidad de negocio tiene que verlo, pero este resumen cuenta la flota
+    ENTERA. Mandárselo a un canal de MIA le mostraría cuántos enlaces de San Gregorio
+    están caídos, que es exactamente el aislamiento entre clientes que el resto del
+    proyecto cuida. Un resumen por unidad sería otra tarea, no un parámetro de esta.
+
+    No escribe nada: lee y notifica.
+    """
+    from apps.monitoreo.models import CanalNotificacion
+    from apps.monitoreo.services import _enviar_telegram
+    from apps.monitoreo.telegram_bot import _comando_estado
+
+    canales = CanalNotificacion.objects.filter(
+        activo=True, tipo=CanalNotificacion.Tipo.TELEGRAM, unidad_negocio__isnull=True,
+    )
+    if not canales.exists():
+        return 'Sin canales de Telegram globales configurados.'
+
+    texto = 'Buen día. Resumen de las últimas 24 h:\n\n' + _comando_estado()
+    enviados = sum(1 for canal in canales if _enviar_telegram(canal.destino, texto))
+    return f'Resumen diario enviado a {enviados} de {canales.count()} canal(es).'

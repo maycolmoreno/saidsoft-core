@@ -2660,6 +2660,9 @@ class SeedReglasAlertaTests(TestCase):
         critico = EstadoServicioPos.objects.create(
             estacion=estacion, servicio='pg_local', disponible=False, critico=True,
             ultima_verificacion=timezone.now(),
+            # Respondia antes: sin esto seria un servicio que nunca existio, que el motor
+            # ignora a proposito (ver EstadoServicioPos.nunca_respondio).
+            ultima_respuesta=timezone.now() - timedelta(hours=1),
         )
         evaluar_regla_servicio_pos(estacion, critico)
         self.assertEqual(
@@ -2738,6 +2741,17 @@ class ServiciosPosTests(TestCase):
         from apps.monitoreo.services import registrar_servicios_pos
 
         return registrar_servicios_pos(estacion=self.estacion, resultados=list(resultados))
+
+    def _caer(self, *resultados):
+        """Deja los servicios CAIDOS de verdad: primero responden, despues dejan de hacerlo.
+
+        El chequeo exitoso previo no es decorativo. Desde el 18-sep-2026 un servicio que
+        nunca respondio NO abre alerta (ver EstadoServicioPos.nunca_respondio): eso es
+        configuracion vieja, no una caida. Sin este paso, el fixture describiria un
+        servicio que jamas existio y el motor tendria razon en ignorarlo.
+        """
+        self._registrar(*[dict(r, disponible=True, latencia_ms=42) for r in resultados])
+        return self._registrar(*[dict(r, disponible=False, latencia_ms=None) for r in resultados])
 
     def _regla(self, severidad):
         from apps.monitoreo.models import Metrica, ReglaAlerta
@@ -2818,7 +2832,7 @@ class ServiciosPosTests(TestCase):
         from apps.monitoreo.models import Alerta, ReglaAlerta
 
         regla = self._regla(ReglaAlerta.Severidad.CRITICAL)
-        self._registrar(self._resultado('pg_local', disponible=False))
+        self._caer(self._resultado('pg_local'))
 
         alerta = Alerta.objects.get(regla=regla, estacion=self.estacion)
         self.assertEqual(alerta.estado, Alerta.Estado.ABIERTA)
@@ -2836,14 +2850,14 @@ class ServiciosPosTests(TestCase):
         from apps.monitoreo.models import Alerta, ReglaAlerta
 
         regla = self._regla(ReglaAlerta.Severidad.WARNING)
-        self._registrar(self._resultado('odoo', disponible=False, critico=False))
+        self._caer(self._resultado('odoo', critico=False))
         self.assertTrue(Alerta.objects.filter(regla=regla, estado=Alerta.Estado.ABIERTA).exists())
 
     def test_al_volver_el_servicio_la_alerta_se_resuelve_sola(self):
         from apps.monitoreo.models import Alerta, ReglaAlerta
 
         self._regla(ReglaAlerta.Severidad.CRITICAL)
-        self._registrar(self._resultado('pg_local', disponible=False))
+        self._caer(self._resultado('pg_local'))
         self.assertTrue(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).exists())
 
         self._registrar(self._resultado('pg_local', disponible=True))
@@ -2861,9 +2875,9 @@ class ServiciosPosTests(TestCase):
         from apps.monitoreo.models import Alerta, ReglaAlerta
 
         self._regla(ReglaAlerta.Severidad.WARNING)
-        self._registrar(
-            self._resultado('odoo', disponible=False, critico=False),
-            self._resultado('pg_central', disponible=False, critico=False),
+        self._caer(
+            self._resultado('odoo', critico=False),
+            self._resultado('pg_central', critico=False),
         )
         self.assertTrue(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).exists())
 
@@ -2885,9 +2899,9 @@ class ServiciosPosTests(TestCase):
 
         self._regla(ReglaAlerta.Severidad.CRITICAL)
         self._regla(ReglaAlerta.Severidad.WARNING)
-        self._registrar(
-            self._resultado('pg_local', disponible=False),
-            self._resultado('odoo', disponible=False, critico=False),
+        self._caer(
+            self._resultado('pg_local'),
+            self._resultado('odoo', critico=False),
         )
         self.assertEqual(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).count(), 2)
 
@@ -2902,7 +2916,7 @@ class ServiciosPosTests(TestCase):
         from apps.monitoreo.models import Alerta, ReglaAlerta
 
         self._regla(ReglaAlerta.Severidad.CRITICAL)
-        self._registrar(self._resultado('pg_local', disponible=False))
+        self._caer(self._resultado('pg_local'))
         self._registrar(self._resultado('pg_local', disponible=False))
         self.assertEqual(Alerta.objects.count(), 1)
 
@@ -4101,3 +4115,550 @@ class ComposeBotTelegramTests(ComposeMeshCentralTests):
         contenido = (settings.BASE_DIR / 'deploy' / 'docker-compose.yml').read_text(encoding='utf-8')
         bloque = contenido.split('\n  telegram_bot:\n', 1)[1].split('\n  redis:\n', 1)[0]
         self.assertNotIn('ports:', bloque)
+
+
+class ServicioPosNuncaRespondioTests(TestCase):
+    """Un servicio que NUNCA respondio no es una caida: es configuracion vieja.
+
+    Encontrado el 18-sep-2026. Odoo (192.168.112.125:8069) figuraba en el .exe.Config del
+    POS de las 9 estaciones con agente y no habia respondido ni una vez desde que existe
+    el monitor — el servicio esta de baja. Cada estacion abria su alerta "Servicio del POS
+    sin responder" por algo que nadie iba a arreglar, y el usuario la recibia sin que
+    hubiera pasado nada en su POS.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX940')
+        farmacia = Farmacia.objects.create(codigo='TSTN10', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='TSTN10-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        usuario = User.objects.create_user(username='u_pos_nunca', password='x')
+        self.regla = ReglaAlerta.objects.create(
+            nombre='Servicio del POS sin responder (no critico)',
+            metrica=Metrica.SERVICIO_POS_CAIDO, umbral=0,
+            severidad=ReglaAlerta.Severidad.WARNING, creado_por=usuario)
+
+    def _registrar(self, servicio, disponible, *, respondio_antes):
+        """Deja un EstadoServicioPos como lo dejaria el agente."""
+        from apps.monitoreo.models import EstadoServicioPos
+
+        ahora = timezone.now()
+        estado, _ = EstadoServicioPos.objects.update_or_create(
+            estacion=self.estacion, servicio=servicio,
+            defaults={
+                'disponible': disponible,
+                'mensaje': 'PostgreSQL 160014' if disponible else '<urlopen error timed out>',
+                'endpoint': 'http://192.168.112.125:8069',
+                'critico': False,
+                'ultima_verificacion': ahora,
+                # Lo unico que distingue los dos casos: si alguna vez contesto.
+                'ultima_respuesta': ahora if disponible else (
+                    ahora - timedelta(hours=4) if respondio_antes else None),
+            },
+        )
+        return estado
+
+    def test_un_servicio_que_nunca_respondio_no_abre_alerta(self):
+        from apps.monitoreo.models import Alerta, ServicioPos
+        from apps.monitoreo.services import evaluar_regla_servicio_pos
+
+        estado = self._registrar(ServicioPos.ODOO, False, respondio_antes=False)
+        evaluar_regla_servicio_pos(self.estacion, estado)
+
+        self.assertFalse(
+            Alerta.objects.filter(regla=self.regla, estado=Alerta.Estado.ABIERTA).exists(),
+            'un servicio dado de baja no es un incidente que atender',
+        )
+
+    def test_un_servicio_que_si_respondia_y_se_cayo_SI_abre_alerta(self):
+        """El contraste: esto sigue siendo una caida real y tiene que avisar."""
+        from apps.monitoreo.models import Alerta, ServicioPos
+        from apps.monitoreo.services import evaluar_regla_servicio_pos
+
+        estado = self._registrar(ServicioPos.PG_CENTRAL, False, respondio_antes=True)
+        evaluar_regla_servicio_pos(self.estacion, estado)
+
+        self.assertTrue(
+            Alerta.objects.filter(regla=self.regla, estado=Alerta.Estado.ABIERTA).exists())
+
+    def test_uno_de_baja_no_tapa_la_caida_real_de_otro(self):
+        """Los tres no criticos comparten regla: el que nunca respondio se ignora, pero
+        el que si se cayo tiene que abrir igual."""
+        from apps.monitoreo.models import Alerta, ServicioPos
+        from apps.monitoreo.services import evaluar_regla_servicio_pos
+
+        self._registrar(ServicioPos.ODOO, False, respondio_antes=False)
+        estado = self._registrar(ServicioPos.PG_CENTRAL, False, respondio_antes=True)
+        evaluar_regla_servicio_pos(self.estacion, estado)
+
+        self.assertTrue(
+            Alerta.objects.filter(regla=self.regla, estado=Alerta.Estado.ABIERTA).exists())
+
+    def test_la_alerta_se_resuelve_si_lo_unico_caido_nunca_respondio(self):
+        from apps.monitoreo.models import Alerta, ServicioPos
+        from apps.monitoreo.services import evaluar_regla_servicio_pos
+
+        Alerta.objects.create(regla=self.regla, estacion=self.estacion, valor_disparador=0)
+        self._registrar(ServicioPos.ODOO, False, respondio_antes=False)
+        estado = self._registrar(ServicioPos.PG_CENTRAL, True, respondio_antes=True)
+        evaluar_regla_servicio_pos(self.estacion, estado)
+
+        self.assertFalse(
+            Alerta.objects.filter(regla=self.regla, estado=Alerta.Estado.ABIERTA).exists(),
+            'lo unico sin responder es un servicio de baja: la alerta no tiene por que seguir',
+        )
+
+    def test_la_propiedad_distingue_los_dos_casos(self):
+        from apps.monitoreo.models import ServicioPos
+
+        nunca = self._registrar(ServicioPos.ODOO, False, respondio_antes=False)
+        caido = self._registrar(ServicioPos.PG_CENTRAL, False, respondio_antes=True)
+        self.assertTrue(nunca.nunca_respondio)
+        self.assertFalse(caido.nunca_respondio)
+        self.assertIsNone(nunca.horas_sin_responder)
+        self.assertIsNotNone(caido.horas_sin_responder)
+
+
+@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA',
+                   TELEGRAM_CHAT_IDS_AUTORIZADOS=['8499615591'])
+class TecladoInlineTests(TestCase):
+    """Botones en vez de escribir comandos."""
+
+    def setUp(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX950')
+        self.caida = Farmacia.objects.create(
+            codigo='TSTK10', grupo=grupo, unidad_negocio=self.sg, ip_router='10.7.0.1',
+            circuito_proveedor='telconet-uno')
+        registrar_sondeo(self.caida, True, 10.0)
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(self.caida, False, None)
+
+    def _cuerpos(self, urlopen):
+        return [json.loads(l.args[0].data.decode('utf-8')) for l in urlopen.call_args_list]
+
+    def _metodos(self, urlopen):
+        return [l.args[0].full_url.rsplit('/', 1)[-1] for l in urlopen.call_args_list]
+
+    # --- el teclado viaja con la respuesta ---
+
+    def test_una_consulta_escrita_responde_con_botones(self):
+        from apps.monitoreo.telegram_bot import procesar_actualizacion
+
+        update = {'message': {'chat': {'id': 8499615591}, 'text': '/estado'}}
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            procesar_actualizacion(update)
+
+        cuerpo = self._cuerpos(urlopen)[-1]
+        filas = cuerpo['reply_markup']['inline_keyboard']
+        etiquetas = [b['text'] for fila in filas for b in fila]
+        self.assertTrue(any('Enlaces' in e for e in etiquetas), etiquetas)
+        self.assertTrue(any('Alertas' in e for e in etiquetas), etiquetas)
+
+    def test_el_teclado_va_solo_en_el_ultimo_trozo_de_un_mensaje_largo(self):
+        """Repetirlo en cada trozo dejaria tres filas de botones y la de arriba operaria
+        sobre un mensaje viejo."""
+        from apps.monitoreo.services import _enviar_telegram
+
+        texto = '\n'.join(f'linea {i} de relleno para pasar el limite' for i in range(300))
+        teclado = [[{'text': 'x', 'callback_data': 'cmd:estado'}]]
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            _enviar_telegram('8499615591', texto, teclado=teclado)
+
+        cuerpos = self._cuerpos(urlopen)
+        self.assertGreater(len(cuerpos), 1)
+        self.assertNotIn('reply_markup', cuerpos[0])
+        self.assertIn('reply_markup', cuerpos[-1])
+
+    # --- los botones ---
+
+    def test_un_boton_devuelve_lo_mismo_que_el_comando_escrito(self):
+        from apps.monitoreo.telegram_bot import responder_a, responder_a_callback
+
+        texto, teclado = responder_a_callback('cmd:enlaces')
+        self.assertEqual(texto, responder_a('/enlaces'))
+        self.assertTrue(teclado)
+
+    def test_el_submenu_ofrece_las_farmacias_con_problemas(self):
+        from apps.monitoreo.telegram_bot import responder_a_callback
+
+        _texto, teclado = responder_a_callback('menu:farmacias')
+        etiquetas = [b['text'] for fila in teclado for b in fila]
+        self.assertIn('TSTK10', etiquetas, etiquetas)
+        self.assertTrue(any('Volver' in e for e in etiquetas))
+
+    def test_el_boton_de_una_farmacia_trae_su_detalle(self):
+        from apps.monitoreo.telegram_bot import responder_a_callback
+
+        texto, _teclado = responder_a_callback('farm:TSTK10')
+        self.assertIn('TSTK10', texto)
+        self.assertIn('telconet-uno', texto)
+
+    def test_un_callback_desconocido_no_hace_nada(self):
+        from apps.monitoreo.telegram_bot import responder_a_callback
+
+        self.assertIsNone(responder_a_callback('cmd:borrar_todo'))
+        self.assertIsNone(responder_a_callback(''))
+        self.assertIsNone(responder_a_callback(None))
+
+    def test_callback_data_nunca_supera_el_tope_de_telegram(self):
+        """64 bytes es un limite duro: pasarlo hace que Telegram rechace el teclado."""
+        from apps.monitoreo.telegram_bot import _TECLADO_PRINCIPAL, _teclado_farmacias
+
+        for teclado in (_TECLADO_PRINCIPAL, _teclado_farmacias()):
+            for fila in teclado:
+                for boton in fila:
+                    self.assertLessEqual(len(boton['callback_data'].encode('utf-8')), 64, boton)
+
+    # --- el reloj del boton ---
+
+    def test_siempre_se_confirma_el_boton_aunque_no_se_responda(self):
+        """Sin answerCallbackQuery el boton le queda al operador girando y parece colgado."""
+        from apps.monitoreo.telegram_bot import procesar_actualizacion
+
+        update = {'callback_query': {'id': 'abc123', 'data': 'cmd:inexistente',
+                                     'message': {'chat': {'id': 8499615591}}}}
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            procesar_actualizacion(update)
+        self.assertIn('answerCallbackQuery', self._metodos(urlopen))
+
+    def test_un_boton_pulsado_desde_un_chat_no_autorizado_no_responde(self):
+        from apps.monitoreo.telegram_bot import procesar_actualizacion
+
+        update = {'callback_query': {'id': 'abc', 'data': 'cmd:enlaces',
+                                     'message': {'chat': {'id': 111222}}}}
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            self.assertFalse(procesar_actualizacion(update))
+        self.assertNotIn('sendMessage', self._metodos(urlopen))
+
+    def test_el_boton_responde_de_punta_a_punta(self):
+        from apps.monitoreo.telegram_bot import procesar_actualizacion
+
+        update = {'callback_query': {'id': 'abc', 'data': 'cmd:enlaces',
+                                     'message': {'chat': {'id': 8499615591}}}}
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            self.assertTrue(procesar_actualizacion(update))
+        metodos = self._metodos(urlopen)
+        self.assertEqual(metodos[0], 'answerCallbackQuery', 'primero se saca el reloj')
+        self.assertIn('sendMessage', metodos)
+
+    def test_el_worker_pide_los_callback_query_a_telegram(self):
+        """Telegram NO entrega los botones si no estan en allowed_updates."""
+        from django.conf import settings
+
+        ruta = (settings.BASE_DIR / 'apps' / 'monitoreo' / 'management' / 'commands'
+                / 'run_telegram_bot.py')
+        self.assertIn("'callback_query'", ruta.read_text(encoding='utf-8'))
+
+
+@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA',
+                   TELEGRAM_CHAT_IDS_AUTORIZADOS=['8499615591'])
+class ComandosCriticasMantenimientoTopErroresTests(TestCase):
+    """/criticas, /mantenimiento y /toperrores."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX960')
+        self.farmacia = Farmacia.objects.create(
+            codigo='TSTC01', grupo=self.grupo, unidad_negocio=self.sg, ip_router='10.9.0.1')
+        self.estacion = Estacion.objects.create(
+            codigo='TSTC01-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        self.otra = Estacion.objects.create(
+            codigo='TSTC01-B', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        self.usuario = User.objects.create_user(username='u_cmd_nuevos', password='x')
+
+    def _alerta(self, severidad, nombre):
+        regla = ReglaAlerta.objects.create(
+            nombre=nombre, metrica=Metrica.CPU_CARGA_PCT, umbral=90,
+            severidad=severidad, creado_por=self.usuario)
+        return Alerta.objects.create(regla=regla, estacion=self.estacion, valor_disparador=95)
+
+    # --- /criticas ---
+
+    def test_criticas_deja_afuera_las_advertencias(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._alerta(ReglaAlerta.Severidad.CRITICAL, 'Base local caida')
+        self._alerta(ReglaAlerta.Severidad.WARNING, 'CPU alta')
+
+        texto = responder_a('/criticas')
+        self.assertIn('Base local caida', texto)
+        self.assertNotIn('CPU alta', texto)
+        self.assertIn('CRÍTICA', texto)
+
+    def test_alertas_sigue_mostrando_las_dos(self):
+        """La factorizacion no puede cambiar lo que ya devolvia /alertas."""
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._alerta(ReglaAlerta.Severidad.CRITICAL, 'Base local caida')
+        self._alerta(ReglaAlerta.Severidad.WARNING, 'CPU alta')
+
+        texto = responder_a('/alertas')
+        self.assertIn('Base local caida', texto)
+        self.assertIn('CPU alta', texto)
+
+    def test_sin_criticas_lo_dice_sin_inventar_una_lista(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._alerta(ReglaAlerta.Severidad.WARNING, 'CPU alta')
+        self.assertIn('No hay alertas críticas', responder_a('/criticas'))
+
+    # --- /mantenimiento ---
+
+    def _ventana(self, motivo, *, desde_horas, hasta_horas, activo=True, destino='cadena'):
+        from apps.monitoreo.models import VentanaMantenimiento
+
+        ahora = timezone.now()
+        return VentanaMantenimiento.objects.create(
+            unidad_negocio=self.sg, destino_tipo=destino,
+            desde=ahora + timedelta(hours=desde_horas),
+            hasta=ahora + timedelta(hours=hasta_horas),
+            motivo=motivo, activo=activo, creado_por=self.usuario,
+        )
+
+    def test_mantenimiento_solo_muestra_la_ventana_en_curso(self):
+        """Punto 3 de la verificacion: una vencida y una activa."""
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._ventana('despliegue de ayer', desde_horas=-48, hasta_horas=-24)
+        self._ventana('reinicio programado de hoy', desde_horas=-1, hasta_horas=2)
+
+        texto = responder_a('/mantenimiento')
+        self.assertIn('reinicio programado de hoy', texto)
+        self.assertNotIn('despliegue de ayer', texto)
+
+    def test_una_ventana_futura_todavia_no_aparece(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._ventana('mantenimiento de la semana que viene', desde_horas=48, hasta_horas=72)
+        self.assertIn('Sin ventanas', responder_a('/mantenimiento'))
+
+    def test_una_ventana_desactivada_no_aparece_aunque_este_en_rango(self):
+        """activo=False es el mismo criterio que usa ventana_mantenimiento_activa para
+        NO silenciar: mostrarla diria que hay alertas calladas cuando no las hay."""
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._ventana('desactivada', desde_horas=-1, hasta_horas=2, activo=False)
+        self.assertIn('Sin ventanas', responder_a('/mantenimiento'))
+
+    def test_mantenimiento_cuenta_las_estaciones_del_destino(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._ventana('despliegue de POS', desde_horas=-1, hasta_horas=3)
+        texto = responder_a('/mantenimiento')
+        # Con pocas estaciones se listan los codigos en vez del numero.
+        self.assertIn('TSTC01-A', texto)
+        self.assertIn('TSTC01-B', texto)
+
+    def test_sin_ventanas_lo_dice_corto(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self.assertEqual(responder_a('/mantenimiento'), 'Sin ventanas de mantenimiento activas.')
+
+    # --- /toperrores ---
+
+    def _error(self, estacion, mensaje, cantidad, categoria):
+        from apps.monitoreo.models import PosErrorDetectado
+
+        return PosErrorDetectado.objects.create(
+            estacion=estacion, mensaje=mensaje, cantidad_total=cantidad, categoria=categoria)
+
+    def test_toperrores_no_cuenta_los_de_negocio(self):
+        """Punto 2 de la verificacion. "VENTA SIN LOTE" es el POS validando bien: con
+        3.000 repeticiones le ganaria a cualquier bug real y el ranking seria inutil."""
+        from apps.monitoreo.models import PosErrorDetectado
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._error(self.estacion, 'VENTA SIN LOTE en el detalle', 3000,
+                    PosErrorDetectado.Categoria.NEGOCIO)
+        self._error(self.estacion, 'Timeout conectando a la base', 12,
+                    PosErrorDetectado.Categoria.SISTEMA)
+
+        texto = responder_a('/toperrores')
+        # La nota al pie nombra "VENTA SIN LOTE" como ejemplo de lo excluido, asi que se
+        # mira el ranking sin esa linea: lo que importa es que no COMPITA, no que la
+        # palabra no aparezca.
+        ranking = texto.split('No se cuentan')[0]
+        self.assertIn('Timeout conectando a la base', ranking)
+        self.assertNotIn('VENTA SIN LOTE', ranking)
+        self.assertNotIn('3000', ranking, 'sus 3.000 repeticiones no pueden encabezar el ranking')
+
+    def test_toperrores_ordena_por_cantidad_total(self):
+        from apps.monitoreo.models import PosErrorDetectado
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._error(self.estacion, 'error poco frecuente', 5, PosErrorDetectado.Categoria.SISTEMA)
+        self._error(self.estacion, 'error muy frecuente', 500, PosErrorDetectado.Categoria.SISTEMA)
+
+        texto = responder_a('/toperrores')
+        self.assertLess(texto.index('error muy frecuente'), texto.index('error poco frecuente'))
+
+    def test_toperrores_suma_la_flota_y_cuenta_estaciones_distintas(self):
+        """El punto del comando: el mismo bug repetido en varias farmacias."""
+        from apps.monitoreo.models import PosErrorDetectado
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._error(self.estacion, 'relacion faltante en la base', 10,
+                    PosErrorDetectado.Categoria.SISTEMA)
+        self._error(self.otra, 'relacion faltante en la base', 15,
+                    PosErrorDetectado.Categoria.SISTEMA)
+
+        texto = responder_a('/toperrores')
+        self.assertIn('x25', texto, texto)
+        self.assertIn('2 estación(es)', texto)
+
+    def test_sin_errores_de_sistema_lo_dice(self):
+        from apps.monitoreo.models import PosErrorDetectado
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._error(self.estacion, 'VENTA SIN LOTE', 99, PosErrorDetectado.Categoria.NEGOCIO)
+        self.assertIn('Sin errores de sistema', responder_a('/toperrores'))
+
+    # --- solo lectura ---
+
+    def test_los_comandos_nuevos_no_escriben_nada(self):
+        from apps.monitoreo.models import Alerta, PosErrorDetectado, VentanaMantenimiento
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._alerta(ReglaAlerta.Severidad.CRITICAL, 'Base local caida')
+        self._ventana('algo', desde_horas=-1, hasta_horas=2)
+        self._error(self.estacion, 'un error', 3, PosErrorDetectado.Categoria.SISTEMA)
+
+        antes = (Alerta.objects.count(), VentanaMantenimiento.objects.count(),
+                 PosErrorDetectado.objects.count())
+        for comando in ('/criticas', '/mantenimiento', '/toperrores'):
+            responder_a(comando)
+        despues = (Alerta.objects.count(), VentanaMantenimiento.objects.count(),
+                   PosErrorDetectado.objects.count())
+        self.assertEqual(antes, despues)
+
+    # --- teclado ---
+
+    def test_los_comandos_nuevos_estan_detras_del_submenu(self):
+        """Siete botones en la pantalla principal se leen peor que cuatro."""
+        from apps.monitoreo.telegram_bot import _TECLADO_PRINCIPAL, responder_a_callback
+
+        principales = [b['callback_data'] for fila in _TECLADO_PRINCIPAL for b in fila]
+        self.assertNotIn('cmd:criticas', principales)
+        self.assertIn('menu:mas', principales)
+
+        _texto, teclado = responder_a_callback('menu:mas')
+        datos = [b['callback_data'] for fila in teclado for b in fila]
+        for esperado in ('cmd:criticas', 'cmd:mantenimiento', 'cmd:toperrores'):
+            self.assertIn(esperado, datos)
+
+    def test_un_boton_del_submenu_devuelve_al_submenu(self):
+        """Volver al principal obligaria a entrar a "Mas" otra vez en cada consulta."""
+        from apps.monitoreo.telegram_bot import responder_a_callback
+
+        _texto, teclado = responder_a_callback('cmd:toperrores')
+        datos = [b['callback_data'] for fila in teclado for b in fila]
+        self.assertIn('cmd:criticas', datos)
+
+
+@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA')
+class ResumenDiarioTelegramTests(TestCase):
+    """El resumen diario sale por CanalNotificacion, no por la lista de autorizados."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.usuario = User.objects.create_user(username='u_resumen', password='x')
+
+    def _canal(self, destino, unidad=None):
+        return CanalNotificacion.objects.create(
+            tipo=CanalNotificacion.Tipo.TELEGRAM, destino=destino,
+            unidad_negocio=unidad, creado_por=self.usuario)
+
+    def _textos(self, urlopen):
+        return [json.loads(l.args[0].data.decode('utf-8'))['text'] for l in urlopen.call_args_list]
+
+    def test_manda_el_mismo_contenido_que_estado(self):
+        from apps.monitoreo.tasks import resumen_diario_telegram_task
+        from apps.monitoreo.telegram_bot import _comando_estado
+
+        self._canal('-100555')
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            resultado = resumen_diario_telegram_task()
+
+        enviado = self._textos(urlopen)[0]
+        self.assertIn('Estaciones:', enviado)
+        self.assertIn('Enlaces caídos:', enviado)
+        # El cuerpo es el de /estado, con un saludo adelante.
+        for linea in _comando_estado().splitlines():
+            if linea.strip():
+                self.assertIn(linea.split(':')[0], enviado)
+        self.assertIn('1 de 1', resultado)
+
+    def test_no_usa_la_lista_de_chats_autorizados(self):
+        """Esa lista es control de acceso a las consultas entrantes, no un destino."""
+        from apps.monitoreo.tasks import resumen_diario_telegram_task
+
+        with override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=['8499615591']):
+            with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+                resultado = resumen_diario_telegram_task()
+        urlopen.assert_not_called()
+        self.assertIn('Sin canales', resultado)
+
+    def test_no_le_manda_el_resumen_global_a_un_canal_de_una_unidad(self):
+        """El texto habla de la flota entera: mandarselo al canal de MIA le mostraria
+        cuantos enlaces de San Gregorio estan caidos."""
+        from apps.monitoreo.tasks import resumen_diario_telegram_task
+
+        self._canal('-100777', unidad=self.mia)
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            resumen_diario_telegram_task()
+        urlopen.assert_not_called()
+
+    def test_un_canal_inactivo_no_recibe(self):
+        from apps.monitoreo.tasks import resumen_diario_telegram_task
+
+        canal = self._canal('-100555')
+        canal.activo = False
+        canal.save(update_fields=['activo'])
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            resumen_diario_telegram_task()
+        urlopen.assert_not_called()
+
+    def test_un_canal_de_teams_no_recibe_el_resumen_de_telegram(self):
+        from apps.monitoreo.tasks import resumen_diario_telegram_task
+
+        CanalNotificacion.objects.create(
+            tipo=CanalNotificacion.Tipo.WEBHOOK_TEAMS, destino='https://outlook.office.com/webhook/x',
+            creado_por=self.usuario)
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            resultado = resumen_diario_telegram_task()
+        urlopen.assert_not_called()
+        self.assertIn('Sin canales', resultado)
+
+    def test_la_tarea_esta_programada_a_una_hora_fija(self):
+        from django.conf import settings
+
+        entrada = settings.CELERY_BEAT_SCHEDULE['resumen-diario-telegram']
+        self.assertEqual(entrada['task'], 'apps.monitoreo.tasks.resumen_diario_telegram_task')
+        # crontab y no un intervalo: tiene que caer a una hora del dia.
+        self.assertEqual(set(entrada['schedule'].hour), {8})
+        self.assertEqual(set(entrada['schedule'].minute), {0})
+
+    def test_el_crontab_queda_en_hora_local(self):
+        """Con CELERY_TIMEZONE en UTC, las 8:00 caerian a las 3 de la manana en Ecuador."""
+        from django.conf import settings
+
+        self.assertEqual(settings.CELERY_TIMEZONE, 'America/Guayaquil')
+
+    def test_el_resumen_no_escribe_en_la_base(self):
+        from apps.monitoreo.models import Alerta
+        from apps.monitoreo.tasks import resumen_diario_telegram_task
+
+        self._canal('-100555')
+        antes = Alerta.objects.count()
+        with patch('apps.monitoreo.services.urllib.request.urlopen'):
+            resumen_diario_telegram_task()
+        self.assertEqual(Alerta.objects.count(), antes)

@@ -29,11 +29,9 @@ logger = logging.getLogger(__name__)
 _MAX_FILAS = 15
 
 
-def _texto_duracion(desde) -> str:
+def _texto_intervalo(delta) -> str:
     """"3 h 12 min" en vez de "192 minutos": es lo que se lee de un vistazo."""
-    if desde is None:
-        return 'sin dato'
-    minutos = int((timezone.now() - desde).total_seconds() // 60)
+    minutos = max(0, int(delta.total_seconds() // 60))
     if minutos < 60:
         return f'{minutos} min'
     horas, resto = divmod(minutos, 60)
@@ -41,6 +39,13 @@ def _texto_duracion(desde) -> str:
         return f'{horas} h {resto} min'
     dias, horas = divmod(horas, 24)
     return f'{dias} d {horas} h'
+
+
+def _texto_duracion(desde) -> str:
+    """Cuánto pasó desde `desde`. Para lo que FALTA, usar `_texto_intervalo`."""
+    if desde is None:
+        return 'sin dato'
+    return _texto_intervalo(timezone.now() - desde)
 
 
 def _comando_enlaces() -> str:
@@ -148,17 +153,30 @@ def _comando_estado() -> str:
     ])
 
 
-def _comando_alertas() -> str:
+def _comando_alertas(*, solo_criticas: bool = False) -> str:
+    """Alertas sin resolver. Con `solo_criticas`, únicamente las de severidad crítica.
+
+    Un parámetro y no una función aparte: el query, el orden, el recorte por _MAX_FILAS
+    y la marca de "reconocida" son idénticos, y duplicarlos garantizaba que el día que
+    alguien cambie uno se olvide del otro. Lo único que cambia es el filtro y el
+    encabezado.
+    """
     from .models import Alerta, ReglaAlerta
 
-    abiertas = list(
-        Alerta.objects.filter(estado__in=[Alerta.Estado.ABIERTA, Alerta.Estado.RECONOCIDA])
-        .select_related('regla', 'estacion').order_by('-abierta_en')
-    )
-    if not abiertas:
-        return '✅ No hay alertas abiertas.'
+    abiertas = Alerta.objects.filter(
+        estado__in=[Alerta.Estado.ABIERTA, Alerta.Estado.RECONOCIDA],
+    ).select_related('regla', 'estacion').order_by('-abierta_en')
+    if solo_criticas:
+        abiertas = abiertas.filter(regla__severidad=ReglaAlerta.Severidad.CRITICAL)
+    abiertas = list(abiertas)
 
-    lineas = [f'🔔 {len(abiertas)} alerta(s) sin resolver', '']
+    if not abiertas:
+        return ('✅ No hay alertas críticas abiertas.' if solo_criticas
+                else '✅ No hay alertas abiertas.')
+
+    titulo = ('alerta(s) CRÍTICA(s) sin resolver' if solo_criticas
+              else 'alerta(s) sin resolver')
+    lineas = [f'🔔 {len(abiertas)} {titulo}', '']
     for alerta in abiertas[:_MAX_FILAS]:
         emoji = '🔴' if alerta.regla.severidad == ReglaAlerta.Severidad.CRITICAL else '🟡'
         # Reconocida = alguien ya la vio, aunque no la haya resuelto. Distinguirlo evita
@@ -170,6 +188,101 @@ def _comando_alertas() -> str:
         )
     if len(abiertas) > _MAX_FILAS:
         lineas.append(f'… y {len(abiertas) - _MAX_FILAS} más')
+    return '\n'.join(lineas)
+
+
+def _comando_mantenimiento() -> str:
+    """Ventanas de mantenimiento en curso: qué alertas están silenciadas y hasta cuándo.
+
+    Importa poder consultarlo desde el teléfono porque una ventana activa explica el
+    silencio: sin esto, "no llegó ninguna alerta" se lee igual si todo está bien que si
+    alguien dejó abierta una ventana de la semana pasada. El `activo=True` junto con el
+    rango es lo que mira `ventana_mantenimiento_activa` para silenciar, así que acá se
+    aplica el MISMO criterio — mostrar algo distinto de lo que el motor usa sería peor
+    que no mostrar nada.
+
+    El destino se resuelve con `resolver_estaciones`, el mismo punto que usa el motor:
+    contar las estaciones a mano según destino_tipo duplicaría esa lógica y se
+    desincronizaría en cuanto aparezca un tipo de destino nuevo.
+    """
+    from apps.catalogo.services import resolver_estaciones
+
+    from .models import VentanaMantenimiento
+
+    ahora = timezone.now()
+    activas = list(
+        VentanaMantenimiento.objects
+        .filter(activo=True, desde__lte=ahora, hasta__gte=ahora)
+        .select_related('unidad_negocio').order_by('desde')
+    )
+    if not activas:
+        return 'Sin ventanas de mantenimiento activas.'
+
+    lineas = [f'🔧 {len(activas)} ventana(s) de mantenimiento en curso', '']
+    for ventana in activas[:_MAX_FILAS]:
+        estaciones = resolver_estaciones(
+            ventana.destino_tipo, unidad_negocio=ventana.unidad_negocio,
+            grupos=ventana.grupos.all(), farmacias=ventana.farmacias.all(),
+            estaciones=ventana.estaciones.all(),
+        )
+        cantidad = estaciones.count()
+        # Con pocas, los códigos dicen más que el número: se ve enseguida si la ventana
+        # cubre lo que se quería. Con muchas, la lista tapa el resto del mensaje.
+        if cantidad and cantidad <= 5:
+            detalle = ', '.join(estaciones.values_list('codigo', flat=True))
+        else:
+            detalle = f'{cantidad} estación(es)'
+        lineas.append(
+            f'  {ventana.motivo}\n'
+            f'    {ventana.unidad_negocio.codigo} · {detalle}\n'
+            f'    hasta {timezone.localtime(ventana.hasta):%d/%m %H:%M} '
+            f'(faltan {_texto_intervalo(ventana.hasta - ahora)})'
+        )
+    if len(activas) > _MAX_FILAS:
+        lineas.append(f'… y {len(activas) - _MAX_FILAS} más')
+
+    lineas += ['', 'Las alertas de esas estaciones están silenciadas a propósito.']
+    return '\n'.join(lineas)
+
+
+def _comando_toperrores() -> str:
+    """Ranking de errores del POS en TODA la flota, agrupado por mensaje.
+
+    Es una vista de flota y no de una estación (para eso está /farmacia): sirve para
+    encontrar el mismo bug repetido en muchas farmacias, que es el que conviene arreglar
+    una vez en vez de atenderlo sucursal por sucursal. Por eso lo que ordena es la
+    cantidad total, y al lado va en cuántas estaciones distintas aparece: un error con
+    5.000 repeticiones en una sola caja es un problema de esa caja; uno con 300 en 40
+    farmacias es un problema del sistema.
+
+    **Excluye `Categoria.NEGOCIO`**, el mismo criterio que ya aplica
+    `manejar_pos_errores` al contar para la alerta. Esos son validaciones del POS
+    haciendo su trabajo (ej. "VENTA SIN LOTE" bloqueando una venta), rutinarias y de
+    altísima frecuencia: incluirlas haría que coparan las primeras posiciones y que este
+    ranking nunca mostrara un bug real. Se siguen guardando y se ven en la ficha de la
+    estación, solo no compiten acá.
+    """
+    from django.db.models import Count, Sum
+
+    from .models import PosErrorDetectado
+
+    ranking = list(
+        PosErrorDetectado.objects
+        .exclude(categoria=PosErrorDetectado.Categoria.NEGOCIO)
+        .values('mensaje')
+        .annotate(total=Sum('cantidad_total'), estaciones=Count('estacion', distinct=True))
+        .order_by('-total')[:_MAX_FILAS]
+    )
+    if not ranking:
+        return '✅ Sin errores de sistema en el log del POS.'
+
+    lineas = ['🐞 Errores del POS más repetidos (toda la flota)', '']
+    for fila in ranking:
+        mensaje = fila['mensaje'][:110]
+        lineas.append(
+            f'  x{fila["total"]} · {fila["estaciones"]} estación(es)\n    {mensaje}'
+        )
+    lineas += ['', 'No se cuentan las validaciones de negocio (ej. VENTA SIN LOTE).']
     return '\n'.join(lineas)
 
 
@@ -238,10 +351,113 @@ _AYUDA = '\n'.join([
     '/enlaces — enlaces caídos y desde cuándo',
     '/estado — resumen general',
     '/alertas — alertas sin resolver',
+    '/criticas — solo las críticas',
+    '/mantenimiento — ventanas activas (alertas silenciadas)',
+    '/toperrores — errores del POS más repetidos en la flota',
     '/farmacia ML016 — detalle de una farmacia',
     '',
     'Solo lectura: nada de esto modifica el sistema.',
 ])
+
+
+# Teclado que acompaña cada respuesta. Se repite siempre a propósito: sin él, después de
+# la primera consulta habría que volver a escribir para hacer la siguiente, que es
+# justamente lo que el teclado viene a evitar.
+#
+# `callback_data` tiene un tope duro de 64 bytes en Telegram, así que se manda un código
+# corto ("cmd:enlaces", "farm:ML016") y no el texto del comando.
+_TECLADO_PRINCIPAL = [
+    [{'text': '🔴 Enlaces', 'callback_data': 'cmd:enlaces'},
+     {'text': '📊 Estado', 'callback_data': 'cmd:estado'}],
+    [{'text': '🔔 Alertas', 'callback_data': 'cmd:alertas'},
+     {'text': '🏥 Farmacias', 'callback_data': 'menu:farmacias'}],
+    # Los tres comandos nuevos van detrás de "Más" y no sueltos acá: siete botones en la
+    # pantalla principal se leen peor que cuatro en un teléfono, y estos se consultan
+    # menos seguido que el estado o los enlaces. El que los use a diario los tiene igual
+    # como comando escrito.
+    [{'text': '⋯ Más', 'callback_data': 'menu:mas'}],
+]
+
+_TECLADO_MAS = [
+    [{'text': '🔴 Críticas', 'callback_data': 'cmd:criticas'},
+     {'text': '🔧 Mantenimiento', 'callback_data': 'cmd:mantenimiento'}],
+    [{'text': '🐞 Top errores POS', 'callback_data': 'cmd:toperrores'}],
+    [{'text': '◀ Volver', 'callback_data': 'menu:principal'}],
+]
+
+# Cuántas farmacias entran en el submenú. Telegram deja mandar más, pero una pared de
+# botones en el teléfono se vuelve peor que escribir el código.
+_MAX_BOTONES_FARMACIA = 8
+
+# Cuáles viven detrás de "Más", para devolver al operador al submenú correcto.
+_COMANDOS_DEL_SUBMENU = frozenset({'criticas', 'mantenimiento', 'toperrores'})
+
+# Qué comandos puede disparar un botón. Se declara aparte de los que acepta `responder_a`
+# porque no son lo mismo: `/farmacia` necesita un argumento y por eso tiene su submenú.
+_COMANDOS_CON_BOTON = frozenset({'enlaces', 'estado', 'alertas', 'criticas',
+                                 'mantenimiento', 'toperrores'})
+
+
+def _teclado_farmacias():
+    """Submenú con las farmacias que hoy tienen algo para mirar.
+
+    Se listan las que tienen un problema —enlace caído, o un servicio del POS sin
+    responder— y no las 700: el teclado es un atajo para el caso frecuente, no un
+    navegador del padrón. Para cualquier otra sigue estando `/farmacia CODIGO`.
+    """
+    from apps.catalogo.models import Farmacia
+
+    from .models import EstadoEnlaceFarmacia, EstadoServicioPos
+
+    codigos = []
+    for estado in EstadoEnlaceFarmacia.objects.filter(alcanzable=False).select_related('farmacia'):
+        if not estado.nunca_respondio:
+            codigos.append(estado.farmacia.codigo)
+    con_pos_caido = (
+        EstadoServicioPos.objects.filter(disponible=False, ultima_respuesta__isnull=False)
+        .values_list('estacion__farmacia__codigo', flat=True).distinct()
+    )
+    codigos.extend(con_pos_caido)
+
+    # Sin nada roto, se ofrecen las que tienen agente: son las únicas con detalle rico.
+    if not codigos:
+        codigos = list(
+            Farmacia.objects.filter(estaciones__estado_aprobacion='aprobada')
+            .values_list('codigo', flat=True).distinct()
+        )
+
+    unicos = sorted(set(codigos))[:_MAX_BOTONES_FARMACIA]
+    filas = [
+        [{'text': c, 'callback_data': f'farm:{c}'} for c in unicos[i:i + 2]]
+        for i in range(0, len(unicos), 2)
+    ]
+    filas.append([{'text': '◀ Volver', 'callback_data': 'menu:principal'}])
+    return filas
+
+
+def responder_a_callback(data: str):
+    """Traduce el botón tocado a (texto, teclado). None = no se hace nada."""
+    data = (data or '').strip()
+    if data == 'menu:principal':
+        return _AYUDA, _TECLADO_PRINCIPAL
+    if data == 'menu:mas':
+        return 'Otras consultas:', _TECLADO_MAS
+    if data == 'menu:farmacias':
+        return 'Elegí una farmacia (o escribí /farmacia CODIGO):', _teclado_farmacias()
+    if data.startswith('farm:'):
+        return _comando_farmacia(data.split(':', 1)[1]), _teclado_farmacias()
+    if data.startswith('cmd:'):
+        # Lista explícita y no "lo que sea que venga después de cmd:": un callback_data
+        # solo puede venir de un botón que armó este mismo bot, así que cualquier otra
+        # cosa es un botón viejo o un valor manipulado. A eso no se le contesta con la
+        # ayuda —sería regalarle la lista de comandos a quien está probando—, se ignora.
+        comando = data.split(':', 1)[1]
+        if comando in _COMANDOS_CON_BOTON:
+            # Se vuelve al mismo submenú desde el que se llegó: mandar al principal
+            # obligaría a entrar a "Más" de nuevo para la consulta siguiente.
+            teclado = _TECLADO_MAS if comando in _COMANDOS_DEL_SUBMENU else _TECLADO_PRINCIPAL
+            return responder_a('/' + comando), teclado
+    return None
 
 
 def chat_autorizado(chat_id) -> bool:
@@ -269,6 +485,12 @@ def responder_a(texto: str) -> str | None:
         return _comando_estado()
     if comando == '/alertas':
         return _comando_alertas()
+    if comando == '/criticas':
+        return _comando_alertas(solo_criticas=True)
+    if comando == '/mantenimiento':
+        return _comando_mantenimiento()
+    if comando == '/toperrores':
+        return _comando_toperrores()
     if comando == '/farmacia':
         return _comando_farmacia(argumento)
     if comando.startswith('/'):
@@ -285,6 +507,10 @@ def procesar_actualizacion(update: dict) -> bool:
     from .services import _enviar_telegram
 
     try:
+        callback = update.get('callback_query')
+        if callback:
+            return _procesar_boton(callback)
+
         mensaje = update.get('message') or update.get('edited_message') or {}
         chat_id = (mensaje.get('chat') or {}).get('id')
         texto = mensaje.get('text') or ''
@@ -298,7 +524,33 @@ def procesar_actualizacion(update: dict) -> bool:
         respuesta = responder_a(texto)
         if respuesta is None:
             return False
-        return _enviar_telegram(chat_id, respuesta)
+        return _enviar_telegram(chat_id, respuesta, teclado=_TECLADO_PRINCIPAL)
     except Exception:
         logger.exception('Telegram: error procesando una consulta.')
         return False
+
+
+def _procesar_boton(callback: dict) -> bool:
+    """Atiende un botón del teclado inline.
+
+    `answerCallbackQuery` va SIEMPRE y primero, incluso si no se va a responder nada:
+    hasta que Telegram lo recibe, el botón le queda al operador con un reloj girando y
+    parece que el bot se colgó. Es la diferencia entre "no tenés permiso" y "esto no
+    anda".
+    """
+    from .services import _enviar_telegram, llamar_telegram
+
+    chat_id = ((callback.get('message') or {}).get('chat') or {}).get('id')
+    if callback.get('id'):
+        llamar_telegram('answerCallbackQuery', {'callback_query_id': callback['id']})
+    if chat_id is None or not chat_autorizado(chat_id):
+        logger.warning('Telegram: botón pulsado desde un chat no autorizado (%s).', chat_id)
+        return False
+
+    resultado = responder_a_callback(callback.get('data'))
+    if resultado is None:
+        return False
+    texto, teclado = resultado
+    # Mensaje nuevo en vez de editar el anterior: así queda el historial de lo que se
+    # consultó y a qué hora, que es lo que después se copia a un ticket.
+    return _enviar_telegram(chat_id, texto, teclado=teclado)

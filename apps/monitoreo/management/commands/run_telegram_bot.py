@@ -100,7 +100,12 @@ class Command(BaseCommand):
                 procesar_actualizacion(update)
 
     def _pedir_updates(self, token, offset):
-        cuerpo = {'timeout': ESPERA_LARGA_SEGUNDOS, 'allowed_updates': ['message']}
+        # `callback_query` es obligatorio acá: Telegram NO entrega los botones del teclado
+        # inline si no están en allowed_updates, y el bot se vería como si los ignorara.
+        cuerpo = {
+            'timeout': ESPERA_LARGA_SEGUNDOS,
+            'allowed_updates': ['message', 'callback_query'],
+        }
         if offset is not None:
             cuerpo['offset'] = offset
         req = urllib.request.Request(

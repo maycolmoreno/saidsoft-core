@@ -159,7 +159,14 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
             <h3>Servicios que consume el POS</h3>
         </div>
         {% for s in servicios_pos %}
-        <div class="security-block {% if not s.verificacion_vigente %}{% elif s.disponible %}tone-good{% elif s.critico %}tone-critical{% else %}tone-warning{% endif %}">
+        {% comment %}
+        "Nunca respondió" va en tono neutro y no en rojo/amarillo: no es una caída sino
+        un servicio que el .exe.Config del POS nombra y que nunca existió del lado de
+        acá — configuración a limpiar, no un incidente a atender. Pintarlo como caída
+        mandaba a alguien a revisar el POS de una farmacia por un servidor dado de baja
+        (pasó el 18-sep-2026 con Odoo). Tampoco genera alerta, ver registrar_servicios_pos.
+        {% endcomment %}
+        <div class="security-block {% if not s.verificacion_vigente %}{% elif s.disponible %}tone-good{% elif s.nunca_respondio %}{% elif s.critico %}tone-critical{% else %}tone-warning{% endif %}">
             <div class="field-body">
                 <div class="field-label">{{ s.get_servicio_display }}{% if s.critico %} · crítico{% endif %}</div>
                 <div class="field-value">
@@ -167,6 +174,8 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
                         <span class="pill neutral">sin verificar</span>
                     {% elif s.disponible %}
                         <span class="pill good">responde{% if s.latencia_ms %} · {{ s.latencia_ms }} ms{% endif %}</span>
+                    {% elif s.nunca_respondio %}
+                        <span class="pill neutral">nunca respondió</span>
                     {% elif s.critico %}
                         <span class="pill critical">sin respuesta</span>
                     {% else %}
@@ -176,10 +185,10 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
                 <div class="mono text-xs text-[var(--text-faint)]">{{ s.endpoint|default:"—" }}</div>
                 {% if s.mensaje %}<div class="text-xs text-[var(--text-dim)]">{{ s.mensaje }}</div>{% endif %}
                 {% if not s.disponible and s.verificacion_vigente %}
-                    {% if s.horas_sin_responder %}
-                        <div class="text-xs text-[var(--text-faint)]">sin responder hace {{ s.horas_sin_responder }} h</div>
+                    {% if s.nunca_respondio %}
+                        <div class="text-xs text-[var(--text-faint)]">nunca respondió desde que se monitorea — revisar si sigue en uso</div>
                     {% else %}
-                        <div class="text-xs text-[var(--text-faint)]">nunca respondió desde que se monitorea</div>
+                        <div class="text-xs text-[var(--text-faint)]">sin responder hace {{ s.horas_sin_responder }} h</div>
                     {% endif %}
                 {% endif %}
             </div>

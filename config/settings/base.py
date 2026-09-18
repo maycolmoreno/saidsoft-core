@@ -339,6 +339,11 @@ REST_FRAMEWORK = {
 # Sin Redis local en dev (no hay build oficial de Redis para Windows): CELERY_TASK_ALWAYS_EAGER
 # en config/settings/desarrollo.py hace que las tareas corran en el mismo proceso, sin
 # necesitar un broker. En producción (deploy/docker-compose.yml) sí hay un `redis` real.
+# `crontab` en vez de un intervalo en segundos: el resumen diario tiene que caer
+# a una hora del día, no cada N horas desde que arrancó Beat. Es el único del
+# schedule que lo necesita.
+from celery.schedules import crontab  # noqa: E402
+
 CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
@@ -433,6 +438,14 @@ CELERY_BEAT_SCHEDULE = {
         # Cada 5 min, mismo intervalo que el sondeo directo que reemplaza en la
         # práctica -- ver docstring de solicitar_sondeo_red_farmacias_via_agente.
         'schedule': 60.0 * 5,
+    },
+    'resumen-diario-telegram': {
+        'task': 'apps.monitoreo.tasks.resumen_diario_telegram_task',
+        # 8:00 hora de Ecuador: CELERY_TIMEZONE = TIME_ZONE = 'America/Guayaquil', así
+        # que el crontab ya queda en hora local y no hay que compensar UTC. Verificado
+        # antes de fijar la hora — con la zona en UTC, estas 8:00 habrían caído a las 3
+        # de la mañana.
+        'schedule': crontab(hour=8, minute=0),
     },
     'notificar-cambios-enlaces': {
         'task': 'apps.monitoreo.tasks.notificar_cambios_enlaces_task',

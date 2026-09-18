@@ -124,6 +124,9 @@ queda congelado y leerlo como actual mandaría a alguien a revisar algo que nadi
                     <span class="pill neutral">sin verificar</span>
                 {% elif s.disponible %}
                     <span class="pill good">responde{% if s.latencia_ms %} · {{ s.latencia_ms }} ms{% endif %}</span>
+                {% elif s.nunca_respondio %}
+                    {# Neutro a propósito: es configuración vieja, no un incidente. #}
+                    <span class="pill neutral">nunca respondió</span>
                 {% elif s.critico %}
                     <span class="pill critical">sin respuesta</span>
                 {% else %}
@@ -132,10 +135,12 @@ queda congelado y leerlo como actual mandaría a alguien a revisar algo que nadi
             </div>
             <div class="mono text-xs text-[var(--text-faint)] mt-1">{{ s.endpoint|default:"—" }}</div>
             {% if s.mensaje %}<div class="text-xs text-[var(--text-dim)] mt-1">{{ s.mensaje }}</div>{% endif %}
-            {% if not s.disponible and s.horas_sin_responder %}
-                <div class="text-xs text-[var(--text-faint)] mt-1">sin responder hace {{ s.horas_sin_responder }} h</div>
-            {% elif not s.disponible and s.verificacion_vigente %}
-                <div class="text-xs text-[var(--text-faint)] mt-1">nunca respondió desde que se monitorea</div>
+            {% if not s.disponible and s.verificacion_vigente %}
+                {% if s.nunca_respondio %}
+                    <div class="text-xs text-[var(--text-faint)] mt-1">nunca respondió desde que se monitorea — revisar si sigue en uso</div>
+                {% else %}
+                    <div class="text-xs text-[var(--text-faint)] mt-1">sin responder hace {{ s.horas_sin_responder }} h</div>
+                {% endif %}
             {% endif %}
         </div>
         {% endfor %}

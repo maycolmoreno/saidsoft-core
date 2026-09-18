@@ -1001,6 +1001,19 @@ class EstadoServicioPos(models.Model):
         )
 
     @property
+    def nunca_respondio(self) -> bool:
+        """Se lo sondea y jamás contestó: no es una caída, es configuración pendiente o
+        un servicio dado de baja que el `.exe.Config` del POS sigue nombrando.
+
+        La distinción existe porque tratarlo como caída convierte un estado permanente en
+        una alerta que se reabre para siempre. Encontrado el 18-sep-2026 con Odoo: las 9
+        estaciones con agente lo medían, ninguna lo había alcanzado nunca, y cada una
+        abría su alerta por un servicio que estaba de baja. Mismo criterio que
+        `EstadoEnlaceFarmacia.nunca_respondio`.
+        """
+        return self.ultima_respuesta is None
+
+    @property
     def verificacion_vigente(self) -> bool:
         return (timezone.now() - self.ultima_verificacion) <= timedelta(
             hours=self.HORAS_VERIFICACION_VIGENTE,
