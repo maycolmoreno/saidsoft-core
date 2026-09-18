@@ -377,6 +377,45 @@ _EMOJI_SEVERIDAD = {
     ReglaAlerta.Severidad.WARNING: '🟡',
 }
 
+# Telegram rechaza con "message is too long" cualquier sendMessage de más de 4096
+# caracteres. Se deja margen porque el límite es sobre el texto ya codificado y los
+# emojis y acentos de estos mensajes ocupan más de un byte.
+#
+# No es teórico: la primera corrida real tras configurar el chat (17-sep-2026 21:27)
+# juntó 29 caídas y 128 recuperaciones en un mensaje, Telegram lo rechazó entero, y como
+# `notificar_cambios_enlaces` marca los eventos como avisados aunque el envío falle —a
+# propósito, para no acumular backlog— esos 157 avisos se perdieron sin dejar más rastro
+# que un WARNING. Trocear es lo que hace que ese diseño siga siendo seguro.
+_LIMITE_TELEGRAM = 3800
+
+
+def _trozos_telegram(texto):
+    """Parte `texto` en fragmentos que Telegram acepte, cortando por líneas.
+
+    Cortar por líneas y no a ciegas cada N caracteres importa porque estos mensajes son
+    listados: partir "GP024  192.168.61.1  desde 14:20" por la mitad deja dos fragmentos
+    que no se entienden. Una línea que por sí sola supere el límite (no debería pasar con
+    el formato actual) se corta duro, que es mejor que no mandar nada.
+    """
+    if len(texto) <= _LIMITE_TELEGRAM:
+        return [texto]
+    trozos, actual = [], ''
+    for linea in texto.split('\n'):
+        while len(linea) > _LIMITE_TELEGRAM:
+            if actual:
+                trozos.append(actual)
+                actual = ''
+            trozos.append(linea[:_LIMITE_TELEGRAM])
+            linea = linea[_LIMITE_TELEGRAM:]
+        if len(actual) + len(linea) + 1 > _LIMITE_TELEGRAM:
+            trozos.append(actual)
+            actual = linea
+        else:
+            actual = f'{actual}\n{linea}' if actual else linea
+    if actual:
+        trozos.append(actual)
+    return trozos
+
 
 def _enviar_telegram(chat_id, texto) -> bool:
     """POST a sendMessage de la API de Telegram — nunca lanza, mismo criterio que
@@ -394,24 +433,25 @@ def _enviar_telegram(chat_id, texto) -> bool:
     token = getattr(settings, 'TELEGRAM_BOT_TOKEN', '')
     if not token or not chat_id:
         return False
-    datos = json.dumps({
-        'chat_id': str(chat_id),
-        'text': texto,
-        # Sin parse_mode a propósito: el texto lo arma el sistema con códigos de
-        # estación, circuitos y mensajes del POS, que traen guiones bajos y asteriscos.
-        # Con Markdown activo Telegram rechaza el mensaje entero por un carácter suelto.
-        'disable_web_page_preview': True,
-    }).encode('utf-8')
-    req = urllib.request.Request(
-        f'https://api.telegram.org/bot{token}/sendMessage',
-        data=datos, method='POST', headers={'Content-Type': 'application/json'},
-    )
-    try:
-        urllib.request.urlopen(req, timeout=5)
-        return True
-    except (urllib.error.URLError, urllib.error.HTTPError):
-        logger.warning('No se pudo notificar por Telegram (chat %s).', chat_id, exc_info=True)
-        return False
+    url = f'https://api.telegram.org/bot{token}/sendMessage'
+    for fragmento in _trozos_telegram(texto):
+        datos = json.dumps({
+            'chat_id': str(chat_id),
+            'text': fragmento,
+            # Sin parse_mode a propósito: el texto lo arma el sistema con códigos de
+            # estación, circuitos y mensajes del POS, que traen guiones bajos y asteriscos.
+            # Con Markdown activo Telegram rechaza el mensaje entero por un carácter suelto.
+            'disable_web_page_preview': True,
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            url, data=datos, method='POST', headers={'Content-Type': 'application/json'},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5)
+        except (urllib.error.URLError, urllib.error.HTTPError):
+            logger.warning('No se pudo notificar por Telegram (chat %s).', chat_id, exc_info=True)
+            return False
+    return True
 
 
 def canales_telegram_para(unidad):

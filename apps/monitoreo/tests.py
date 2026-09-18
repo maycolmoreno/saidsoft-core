@@ -3813,3 +3813,67 @@ class ComposeTelegramIATests(ComposeMeshCentralTests):
             for linea in contenido.splitlines():
                 if linea.strip().startswith(f'{variable}:'):
                     self.assertIn('${', linea, f'{variable} tiene un valor literal en el compose')
+
+
+@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA')
+class TrozosTelegramTests(TestCase):
+    """Telegram rechaza mensajes de mas de 4096 caracteres.
+
+    Encontrado en produccion el 17-sep-2026, no en teoria: la primera corrida real tras
+    configurar el chat junto 29 caidas y 128 recuperaciones en un mensaje, Telegram lo
+    rechazo con "message is too long", y como notificar_cambios_enlaces marca los eventos
+    como avisados aunque el envio falle, esos 157 avisos se perdieron.
+    """
+
+    def test_un_mensaje_corto_va_en_un_solo_envio(self):
+        from apps.monitoreo.services import _trozos_telegram
+
+        self.assertEqual(_trozos_telegram('hola'), ['hola'])
+
+    def test_un_mensaje_largo_se_parte_y_ningun_trozo_excede_el_limite(self):
+        from apps.monitoreo.services import _LIMITE_TELEGRAM, _trozos_telegram
+
+        texto = '\n'.join(f'  GP{i:03d}      192.168.1.{i}  desde 14:20  circuito: proveedor-sitio-{i}'
+                          for i in range(200))
+        trozos = _trozos_telegram(texto)
+        self.assertGreater(len(trozos), 1)
+        for trozo in trozos:
+            self.assertLessEqual(len(trozo), _LIMITE_TELEGRAM)
+
+    def test_no_se_pierde_ni_se_duplica_una_sola_linea(self):
+        """Lo que importa de trocear un listado: que esten todas las farmacias."""
+        from apps.monitoreo.services import _trozos_telegram
+
+        lineas = [f'linea numero {i} con texto de relleno para llegar al limite' for i in range(300)]
+        trozos = _trozos_telegram('\n'.join(lineas))
+        recompuesto = '\n'.join(trozos).split('\n')
+        self.assertEqual(recompuesto, lineas)
+
+    def test_una_linea_gigante_sola_no_cuelga_ni_se_descarta(self):
+        from apps.monitoreo.services import _LIMITE_TELEGRAM, _trozos_telegram
+
+        trozos = _trozos_telegram('Z' * (_LIMITE_TELEGRAM * 3 + 17))
+        self.assertEqual(''.join(trozos), 'Z' * (_LIMITE_TELEGRAM * 3 + 17))
+        for trozo in trozos:
+            self.assertLessEqual(len(trozo), _LIMITE_TELEGRAM)
+
+    def test_un_resumen_largo_se_manda_en_varios_envios(self):
+        from apps.monitoreo.services import _enviar_telegram
+
+        texto = '\n'.join(f'  GP{i:03d}  192.168.1.{i}  circuito: proveedor-{i}' for i in range(300))
+        with patch('apps.monitoreo.services.urllib.request.urlopen') as urlopen:
+            enviado = _enviar_telegram('-100999', texto)
+
+        self.assertTrue(enviado)
+        self.assertGreater(urlopen.call_count, 1, 'un solo POST lo rechazaria Telegram entero')
+
+    def test_si_falla_un_trozo_se_reporta_como_no_enviado(self):
+        """El diagnostico de IA no debe darse por entregado con la mitad del mensaje."""
+        import urllib.error
+
+        from apps.monitoreo.services import _enviar_telegram
+
+        texto = '\n'.join(f'linea {i} de relleno para superar el limite del mensaje' for i in range(300))
+        with patch('apps.monitoreo.services.urllib.request.urlopen',
+                   side_effect=[None, urllib.error.URLError('caido')]):
+            self.assertFalse(_enviar_telegram('-100999', texto))
