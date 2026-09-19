@@ -31,6 +31,7 @@ _MAX_FILAS = 15
 # Ventana de /toperrores. Siete días cubre la semana operativa: lo bastante largo para
 # que un error de los fines de semana no desaparezca, y lo bastante corto para que algo
 # arreglado hace tres semanas deje de encabezar el ranking.
+# Valor por defecto. La fuente real es ConfiguracionMonitoreo (editable en el admin).
 _DIAS_TOPERRORES = 7
 
 
@@ -284,9 +285,10 @@ def _comando_toperrores() -> str:
 
     from django.db.models import Count, Max, Sum
 
-    from .models import PosErrorDetectado
+    from .models import ConfiguracionMonitoreo, PosErrorDetectado
 
-    desde = timezone.now() - timedelta(days=_DIAS_TOPERRORES)
+    dias = ConfiguracionMonitoreo.obtener().dias_ventana_top_errores
+    desde = timezone.now() - timedelta(days=dias)
     ranking = list(
         PosErrorDetectado.objects
         .exclude(categoria=PosErrorDetectado.Categoria.NEGOCIO)
@@ -300,9 +302,9 @@ def _comando_toperrores() -> str:
         .order_by('-total')[:_MAX_FILAS]
     )
     if not ranking:
-        return f'✅ Sin errores de sistema del POS en los últimos {_DIAS_TOPERRORES} días.'
+        return f'✅ Sin errores de sistema del POS en los últimos {dias} días.'
 
-    lineas = [f'🐞 Errores del POS de los últimos {_DIAS_TOPERRORES} días (toda la flota)', '']
+    lineas = [f'🐞 Errores del POS de los últimos {dias} días (toda la flota)', '']
     for fila in ranking:
         mensaje = fila['mensaje'][:110]
         lineas.append(

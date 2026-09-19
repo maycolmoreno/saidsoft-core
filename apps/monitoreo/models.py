@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
@@ -1070,3 +1071,90 @@ class MuestraServicioPos(models.Model):
 
     def __str__(self):
         return '%s / %s: %d ms' % (self.estacion.codigo, self.servicio, self.latencia_ms)
+
+
+class ConfiguracionMonitoreo(models.Model):
+    """Los umbrales que se ajustan con la experiencia operativa, editables sin desplegar.
+
+    Nacieron como constantes en el código y como variables de entorno, que es donde
+    deberían estar los valores que no cambian. Estos cambian: cuánto tiene que durar una
+    caída para que valga un aviso depende de qué tan ruidosa esté la red esta semana, y
+    averiguarlo es prueba y error. Pedir un despliegue —o un `.env` en el servidor— para
+    subir un número de 10 a 15 convierte un ajuste de dos minutos en una tarea de otro.
+
+    **Una sola fila.** No es configuración por unidad de negocio: el sondeo de enlaces y
+    el escalamiento de alertas son del sistema, no de un cliente. `obtener()` la crea con
+    los valores por defecto la primera vez, así que nunca hay que acordarse de sembrarla.
+
+    Los valores se leen en cada uso y no se cachean. El más frecuente es
+    `fallas_consecutivas`, que `registrar_sondeo` consulta una vez por farmacia en cada
+    barrido (700 cada 2 minutos): es un SELECT por clave primaria sobre una tabla de una
+    fila, al lado del `get_or_create` de EstadoEnlaceFarmacia que esa misma función ya
+    hace. Cachearlo traería el problema de invalidar entre cuatro procesos distintos
+    (web, worker MQTT, celery, bot) a cambio de nada medible.
+    """
+
+    minutos_minimos_aviso_enlace = models.PositiveSmallIntegerField(
+        default=10,
+        verbose_name='Minutos mínimos antes de avisar una caída de enlace',
+        help_text='Un enlace que se cae y vuelve en menos de esto no genera aviso. Si sigue '
+                  'caído en la corrida siguiente, ahí sí se avisa: no se pierde, se espera. '
+                  '0 = avisar toda caída confirmada.',
+    )
+    fallas_consecutivas_enlace = models.PositiveSmallIntegerField(
+        default=3,
+        validators=[MinValueValidator(1), MaxValueValidator(20)],
+        verbose_name='Sondeos fallidos seguidos para declarar caído un enlace',
+        help_text='Con el barrido cada 2 minutos, 3 equivalen a ~6 minutos de fallos antes de '
+                  'declarar la caída. Bajarlo a 1 haría que un paquete ICMP perdido —que pasa '
+                  'seguido en enlaces WAN— cuente como caída.',
+    )
+    minutos_escalamiento_alerta = models.PositiveSmallIntegerField(
+        default=30,
+        validators=[MinValueValidator(1)],
+        verbose_name='Minutos sin reconocer antes de reenviar una alerta',
+        help_text='Una alerta que sigue ABIERTA y sin reconocer pasado este tiempo se vuelve a '
+                  'notificar por los mismos canales. Reconocerla detiene el reenvío aunque no '
+                  'se haya resuelto.',
+    )
+    dias_ventana_top_errores = models.PositiveSmallIntegerField(
+        default=7,
+        validators=[MinValueValidator(1), MaxValueValidator(365)],
+        verbose_name='Días que mira /toperrores hacia atrás',
+        help_text='El ranking de errores del POS solo muestra los vistos en esta ventana. Sin '
+                  'corte, un problema resuelto hace semanas sigue encabezando, porque el '
+                  'contador de cada mensaje es de por vida.',
+    )
+
+    actualizado_en = models.DateTimeField(auto_now=True)
+    actualizado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+        help_text='Quién tocó estos valores por última vez. Un umbral cambiado explica por qué '
+                  'el sistema empezó a avisar más o menos que antes.',
+    )
+
+    class Meta:
+        db_table = 'configuracion_monitoreo'
+        verbose_name = 'Configuración del monitoreo'
+        verbose_name_plural = 'Configuración del monitoreo'
+
+    def __str__(self):
+        return 'Configuración del monitoreo'
+
+    def save(self, force_insert=False, force_update=False, using=None, update_fields=None):
+        # Fuerza la fila única: sin esto, "Agregar" en el admin crearía una segunda que
+        # nadie leería nunca, y el operador cambiaría valores sin efecto.
+        #
+        # `force_insert` se descarta a propósito: con la clave primaria fija, un INSERT
+        # choca contra la fila que ya existe, y `objects.create()` lo pasa siempre. Con
+        # esto, crear una "segunda" configuración actualiza la única que hay, que es lo
+        # que quien la crea estaba tratando de hacer.
+        self.pk = 1
+        super().save(False, force_update, using, update_fields)
+
+    @classmethod
+    def obtener(cls):
+        """La configuración vigente, creándola con los valores por defecto si no existe."""
+        configuracion, _ = cls.objects.get_or_create(pk=1)
+        return configuracion

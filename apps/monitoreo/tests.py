@@ -3059,7 +3059,18 @@ class ComposeMeshCentralTests(TestCase):
             self.assertIn(variable, entorno)
 
 
-@override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'], ENLACES_MINUTOS_MINIMOS_AVISO=0)
+def _fijar_umbral_aviso(minutos):
+    """El umbral vive en ConfiguracionMonitoreo, no en settings: override_settings no lo
+    alcanza. Se usa en los tests que prueban el ENVIO y no el umbral en si."""
+    from apps.monitoreo.models import ConfiguracionMonitoreo
+
+    config = ConfiguracionMonitoreo.obtener()
+    config.minutos_minimos_aviso_enlace = minutos
+    config.save()
+    return config
+
+
+@override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'])
 class NotificarCambiosEnlacesTests(TestCase):
     """El aviso proactivo de enlaces caidos/recuperados (lo que se reporta al proveedor)."""
 
@@ -3079,6 +3090,7 @@ class NotificarCambiosEnlacesTests(TestCase):
             circuito_proveedor='puntonet-colimes',
         )
         self.Evento = EventoEnlaceFarmacia
+        _fijar_umbral_aviso(0)  # estos prueban el envio, no el umbral
         mail.outbox = []
 
     def _caida(self, farmacia, *, minutos_atras=10, fin=None, **kwargs):
@@ -3235,6 +3247,7 @@ class NuncaRespondioTests(TestCase):
         from apps.monitoreo.enlaces import notificar_cambios_enlaces, registrar_sondeo
         from apps.monitoreo.models import EstadoEnlaceFarmacia
 
+        _fijar_umbral_aviso(0)  # lo que se prueba acá es el contraste, no el umbral
         mail.outbox = []
         registrar_sondeo(self.farmacia, True, 12.0)
         for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
@@ -3702,8 +3715,7 @@ class DiagnosticoIATests(TestCase):
         self.assertNotIn('CLAVE-IA-DE-PRUEBA', '\n'.join(registro.output))
 
 
-@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA', ENLACES_TELEGRAM_CHAT_ID='-100777',
-                   ENLACES_MINUTOS_MINIMOS_AVISO=0)
+@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA', ENLACES_TELEGRAM_CHAT_ID='-100777')
 class EnlacesTelegramTests(TestCase):
     """Punto 5: el resumen agrupado de enlaces tambien sale por Telegram, no solo por correo."""
 
@@ -3717,6 +3729,7 @@ class EnlacesTelegramTests(TestCase):
             circuito_proveedor='telconet-pruebas',
         )
         self.UMBRAL = EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS
+        _fijar_umbral_aviso(0)  # estos prueban el envio por Telegram, no el umbral
         mail.outbox = []
 
     def _caer(self):
@@ -4738,7 +4751,7 @@ class TopErroresVentanaTests(TestCase):
         self.assertNotIn('solo cosas viejas', texto)
 
 
-@override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'], ENLACES_MINUTOS_MINIMOS_AVISO=10)
+@override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'])
 class ParpadeoDeEnlacesTests(TestCase):
     """Cortes breves que no tienen que generar aviso.
 
@@ -4758,6 +4771,7 @@ class ParpadeoDeEnlacesTests(TestCase):
             codigo='TSTP01', grupo=grupo, unidad_negocio=self.sg, ip_router='10.8.0.1',
             circuito_proveedor='telconet-prueba')
         self.UMBRAL = EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS
+        _fijar_umbral_aviso(10)  # esta clase SI prueba el umbral
         mail.outbox = []
 
     def _sondear(self, alcanzable, veces=1):
@@ -4871,10 +4885,160 @@ class ParpadeoDeEnlacesTests(TestCase):
         resumen = notificar_cambios_enlaces()
         self.assertEqual(resumen['caidos'], 1)
 
-    @override_settings(ENLACES_MINUTOS_MINIMOS_AVISO=0)
     def test_el_umbral_se_puede_desactivar(self):
         """Con 0 vuelve el comportamiento anterior, para quien prefiera enterarse de todo."""
         from apps.monitoreo.enlaces import notificar_cambios_enlaces
 
+        _fijar_umbral_aviso(0)
         self._caer()
         self.assertEqual(notificar_cambios_enlaces()['caidos'], 1)
+
+
+class ConfiguracionMonitoreoTests(TestCase):
+    """Los umbrales operativos, editables sin desplegar.
+
+    Pedido del usuario el 18-sep-2026: "puede que a futuro le baje pero necesito tener el
+    control por interfaz". Un valor que se ajusta con la experiencia no puede exigir un
+    despliegue para pasar de 10 a 15.
+    """
+
+    def test_se_crea_sola_con_los_valores_por_defecto(self):
+        """Nunca hay que acordarse de sembrarla."""
+        from apps.monitoreo.models import ConfiguracionMonitoreo
+
+        ConfiguracionMonitoreo.objects.all().delete()
+        config = ConfiguracionMonitoreo.obtener()
+        self.assertEqual(config.minutos_minimos_aviso_enlace, 10)
+        self.assertEqual(config.fallas_consecutivas_enlace, 3)
+        self.assertEqual(config.minutos_escalamiento_alerta, 30)
+        self.assertEqual(config.dias_ventana_top_errores, 7)
+
+    def test_siempre_hay_una_sola_fila(self):
+        """Una segunda fila seria configuracion que nadie lee: el operador cambiaria
+        valores sin efecto."""
+        from apps.monitoreo.models import ConfiguracionMonitoreo
+
+        ConfiguracionMonitoreo.obtener()
+        ConfiguracionMonitoreo.objects.create(minutos_minimos_aviso_enlace=99)
+        self.assertEqual(ConfiguracionMonitoreo.objects.count(), 1)
+        self.assertEqual(ConfiguracionMonitoreo.obtener().minutos_minimos_aviso_enlace, 99)
+
+    # --- que cada umbral llegue a donde se usa ---
+
+    def test_cambiar_los_minutos_minimos_cambia_a_quien_se_avisa(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces, registrar_sondeo
+        from apps.monitoreo.models import ConfiguracionMonitoreo, EventoEnlaceFarmacia
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX990')
+        farmacia = Farmacia.objects.create(
+            codigo='TSTQ01', grupo=grupo, unidad_negocio=sg, ip_router='10.6.0.1')
+
+        config = ConfiguracionMonitoreo.obtener()
+        registrar_sondeo(farmacia, True, 10.0)
+        for _ in range(config.fallas_consecutivas_enlace):
+            registrar_sondeo(farmacia, False, None)
+        EventoEnlaceFarmacia.objects.filter(farmacia=farmacia, fin__isnull=True).update(
+            inicio=timezone.now() - timedelta(minutes=12))
+
+        with override_settings(ENLACES_NOTIFICAR_A=['x@y.z']):
+            config.minutos_minimos_aviso_enlace = 30
+            config.save()
+            self.assertEqual(notificar_cambios_enlaces()['caidos'], 0, 'con 30 todavia no')
+
+            config.minutos_minimos_aviso_enlace = 5
+            config.save()
+            self.assertEqual(notificar_cambios_enlaces()['caidos'], 1, 'con 5 ya califica')
+
+    def test_cambiar_las_fallas_consecutivas_cambia_cuando_se_declara_la_caida(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import ConfiguracionMonitoreo, EstadoEnlaceFarmacia
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX991')
+        farmacia = Farmacia.objects.create(
+            codigo='TSTQ02', grupo=grupo, unidad_negocio=sg, ip_router='10.6.0.2')
+
+        config = ConfiguracionMonitoreo.obtener()
+        config.fallas_consecutivas_enlace = 1
+        config.save()
+
+        registrar_sondeo(farmacia, True, 10.0)
+        registrar_sondeo(farmacia, False, None)
+        self.assertFalse(
+            EstadoEnlaceFarmacia.objects.get(farmacia=farmacia).alcanzable,
+            'con el umbral en 1, un solo fallo ya la declara caida')
+
+    def test_cambiar_la_ventana_cambia_lo_que_muestra_toperrores(self):
+        from apps.monitoreo.models import ConfiguracionMonitoreo, PosErrorDetectado
+        from apps.monitoreo.telegram_bot import responder_a
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX992')
+        farmacia = Farmacia.objects.create(codigo='TSTQ03', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='TSTQ03-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        error = PosErrorDetectado.objects.create(
+            estacion=estacion, mensaje='error de hace 20 dias', cantidad_total=50,
+            categoria=PosErrorDetectado.Categoria.SISTEMA)
+        PosErrorDetectado.objects.filter(pk=error.pk).update(
+            ultima_vez=timezone.now() - timedelta(days=20))
+
+        config = ConfiguracionMonitoreo.obtener()
+        self.assertNotIn('error de hace 20 dias', responder_a('/toperrores'),
+                         'con 7 dias queda afuera')
+
+        config.dias_ventana_top_errores = 30
+        config.save()
+        self.assertIn('error de hace 20 dias', responder_a('/toperrores'),
+                      'con 30 dias entra')
+
+    def test_cambiar_el_escalamiento_cambia_que_alertas_se_reenvian(self):
+        from apps.monitoreo.models import Alerta, ConfiguracionMonitoreo, Metrica, ReglaAlerta
+        from apps.monitoreo.services import escalar_alertas_abiertas
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX993')
+        farmacia = Farmacia.objects.create(codigo='TSTQ04', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='TSTQ04-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        usuario = User.objects.create_user(username='u_cfg', password='x')
+        regla = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90, creado_por=usuario)
+        alerta = Alerta.objects.create(regla=regla, estacion=estacion, valor_disparador=95)
+        Alerta.objects.filter(pk=alerta.pk).update(
+            abierta_en=timezone.now() - timedelta(minutes=45))
+
+        config = ConfiguracionMonitoreo.obtener()
+        config.minutos_escalamiento_alerta = 120
+        config.save()
+        self.assertEqual(escalar_alertas_abiertas(), 0, 'con 120 min todavia no toca')
+
+        config.minutos_escalamiento_alerta = 30
+        config.save()
+        self.assertEqual(escalar_alertas_abiertas(), 1, 'con 30 min si')
+
+    # --- el admin ---
+
+    def test_el_admin_no_deja_crear_una_segunda_ni_borrar(self):
+        from django.contrib.admin.sites import site
+
+        from apps.monitoreo.models import ConfiguracionMonitoreo
+
+        admin_config = site._registry[ConfiguracionMonitoreo]
+        ConfiguracionMonitoreo.obtener()
+        self.assertFalse(admin_config.has_add_permission(None))
+        self.assertFalse(admin_config.has_delete_permission(None))
+
+    def test_los_rangos_se_validan(self):
+        """Poner 0 fallos consecutivos haria que cualquier paquete perdido sea una caida."""
+        from django.core.exceptions import ValidationError
+
+        from apps.monitoreo.models import ConfiguracionMonitoreo
+
+        config = ConfiguracionMonitoreo.obtener()
+        config.fallas_consecutivas_enlace = 0
+        with self.assertRaises(ValidationError):
+            config.full_clean()

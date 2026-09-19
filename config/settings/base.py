@@ -282,13 +282,6 @@ TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN', default='')
 # nueva no debe quedar contestando consultas sin que alguien lo decida.
 TELEGRAM_CHAT_IDS_AUTORIZADOS = env.list('TELEGRAM_CHAT_IDS_AUTORIZADOS', default=[])
 
-# Cuanto tiene que llevar caido un enlace antes de avisarlo. Un corte que se resuelve
-# solo en pocos minutos no amerita despertar a nadie ni abrir un ticket con el proveedor:
-# medido el 18-sep-2026, de 85 caidas en 24 h, 16 duraron 5 minutos o menos.
-#
-# Con el sondeo cada 2 min y 3 fallos para confirmar, una caida ya tarda ~6 min en
-# declararse; esto agrega la espera que falta para distinguir un parpadeo de un corte.
-ENLACES_MINUTOS_MINIMOS_AVISO = env.int('ENLACES_MINUTOS_MINIMOS_AVISO', default=10)
 
 # Chat al que mandar el resumen agrupado de enlaces caídos/recuperados. Setting propio y
 # NO un CanalNotificacion global, a propósito: el volumen de enlaces es otro orden de

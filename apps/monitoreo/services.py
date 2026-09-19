@@ -20,7 +20,7 @@ from apps.catalogo.db import cerrar_conexiones_viejas
 
 from .models import (
     Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, MuestraRedFarmacia,
-    PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
+    ConfiguracionMonitoreo, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,9 @@ FRESCURA_MESHCENTRAL_MINUTOS = 30
 # a propósito (decisión del usuario): un solo valor es más simple de operar mientras
 # no haya evidencia real de que algunas reglas necesitan escalar antes/después que
 # otras — mismo criterio que FRESCURA_MESHCENTRAL_MINUTOS arriba.
+# Valor por defecto historico. La fuente real es ConfiguracionMonitoreo, editable
+# desde el admin: cuanto esperar antes de insistir depende de quien este de guardia,
+# y eso no se decide una vez en el codigo.
 UMBRAL_ESCALAMIENTO_MINUTOS = 30
 
 # Prefijos de mensaje que el POS loguea en nivel ERROR pero que son una validación de
@@ -522,9 +525,10 @@ def notificar_alerta(alerta, *, escalamiento=False):
         )
     prefijo_asunto = 'SIN ATENDER — ' if escalamiento else ''
     asunto = f'[{alerta.regla.get_severidad_display()}] {prefijo_asunto}{alerta.regla.nombre} — {alerta.estacion.codigo}'
-    aviso_escalamiento = (
-        f'Sigue ABIERTA sin reconocer hace más de {UMBRAL_ESCALAMIENTO_MINUTOS} minutos.\n' if escalamiento else ''
-    )
+    aviso_escalamiento = ''
+    if escalamiento:
+        minutos = ConfiguracionMonitoreo.obtener().minutos_escalamiento_alerta
+        aviso_escalamiento = f'Sigue ABIERTA sin reconocer hace más de {minutos} minutos.\n'
     cuerpo = (
         f'{aviso_escalamiento}'
         f'{alerta.regla.nombre} en {alerta.estacion.codigo} ({unidad.codigo}).\n'
@@ -560,7 +564,8 @@ def escalar_alertas_abiertas() -> int:
     RECONOCIDA ya significa que alguien la vio, aunque no la haya resuelto todavía) más
     vieja que UMBRAL_ESCALAMIENTO_MINUTOS, por los mismos canales que la notificación
     original. Marca escalada_en para no repetir el aviso en cada corrida siguiente."""
-    umbral = timezone.now() - timedelta(minutes=UMBRAL_ESCALAMIENTO_MINUTOS)
+    minutos = ConfiguracionMonitoreo.obtener().minutos_escalamiento_alerta
+    umbral = timezone.now() - timedelta(minutes=minutos)
     candidatas = Alerta.objects.filter(
         estado=Alerta.Estado.ABIERTA, escalada_en__isnull=True, abierta_en__lte=umbral,
     ).select_related('regla', 'estacion__farmacia__unidad_negocio')

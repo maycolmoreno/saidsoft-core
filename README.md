@@ -643,6 +643,36 @@ le llegaba una advertencia sin que hubiera pasado nada en su POS.
   veces el síntoma fue el mismo: un estado permanente disfrazado de incidente, inflando
   el número que el operador usa para decidir a dónde ir.
 
+### Umbrales editables sin desplegar
+
+`ConfiguracionMonitoreo` (admin: **Monitoreo → Configuración del monitoreo**) tiene los
+cuatro valores que se ajustan con la experiencia operativa:
+
+| Campo | Por defecto | Qué controla |
+|---|---|---|
+| Sondeos fallidos seguidos | 3 | Cuándo se declara caído un enlace (con el barrido cada 2 min, ~6 minutos) |
+| Minutos mínimos antes de avisar | 10 | Cuán corto es "un parpadeo" que no genera aviso |
+| Minutos de escalamiento | 30 | Cuándo se reenvía una alerta que sigue sin reconocer |
+| Días de ventana de `/toperrores` | 7 | Qué tan atrás mira el ranking de errores del POS |
+
+Por qué en base y no en `settings`: estos cambian. Cuánto tiene que durar una caída para
+que valga un aviso depende de qué tan ruidosa esté la red esta semana, y averiguarlo es
+prueba y error — pedir un despliegue para subir un número de 10 a 15 convierte un ajuste
+de dos minutos en una tarea de otra persona. Los que **no** son editables (frescura de
+MeshCentral, verificación vigente, el 80 % del barrido sospechoso) siguen en el código a
+propósito: bajar ese último haría que un corte de red del servidor registre 700 caídas
+falsas.
+
+Es una fila única, creada sola la primera vez que se la lee (`obtener()`), y el admin no
+deja agregar ni borrar. Guarda quién la modificó: un umbral cambiado explica por qué el
+sistema empezó a avisar más o menos que antes.
+
+Los valores se leen en cada uso, sin caché. El más frecuente es el de sondeos fallidos,
+que se consulta una vez por farmacia en cada barrido (700 cada 2 minutos): es un SELECT
+por clave primaria sobre una tabla de una fila, al lado del `get_or_create` que esa misma
+función ya hace. Cachearlo traería el problema de invalidar entre cuatro procesos (web,
+worker MQTT, celery, bot) a cambio de nada medible.
+
 ### Consultas por Telegram (solo lectura)
 
 Además de avisar, el bot responde preguntas. `run_telegram_bot` es un worker de larga

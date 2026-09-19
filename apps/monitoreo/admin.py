@@ -3,7 +3,8 @@ from django.contrib import admin
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_por_unidad_negocio
 
 from .models import (
-    Alerta, CanalNotificacion, DispositivoDetectado, EquipoBordeFarmacia, EstadoDispositivo,
+    Alerta, CanalNotificacion, ConfiguracionMonitoreo, DispositivoDetectado,
+    EquipoBordeFarmacia, EstadoDispositivo,
     EstadoServicioPos,
     EstadoEnlaceFarmacia, EventoEnlaceFarmacia, EventoMonitoreo, MuestraMetrica, MuestraRedFarmacia,
     PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
@@ -347,3 +348,52 @@ class EstadoServicioPosAdmin(admin.ModelAdmin):
 
     def has_change_permission(self, request, obj=None):
         return False
+
+
+@admin.register(ConfiguracionMonitoreo)
+class ConfiguracionMonitoreoAdmin(admin.ModelAdmin):
+    """Los cuatro umbrales operativos, editables sin desplegar.
+
+    Sin `add` ni `delete`: es una fila única (ver `ConfiguracionMonitoreo.save`). Dejar
+    el botón de agregar invitaría a crear una segunda que nadie lee, y el operador
+    cambiaría valores que no tienen efecto; dejar el de borrar permitiría quedarse sin
+    configuración, aunque `obtener()` la recree.
+    """
+
+    list_display = (
+        'minutos_minimos_aviso_enlace', 'fallas_consecutivas_enlace',
+        'minutos_escalamiento_alerta', 'dias_ventana_top_errores', 'actualizado_en',
+        'actualizado_por',
+    )
+    readonly_fields = ('actualizado_en', 'actualizado_por')
+    fieldsets = (
+        ('Enlaces de farmacia', {
+            'fields': ('fallas_consecutivas_enlace', 'minutos_minimos_aviso_enlace'),
+            'description': 'El barrido corre cada 2 minutos. Los sondeos fallidos deciden CUÁNDO '
+                           'se declara la caída; los minutos mínimos, cuándo vale la pena avisarla.',
+        }),
+        ('Alertas', {'fields': ('minutos_escalamiento_alerta',)}),
+        ('Consultas del bot', {'fields': ('dias_ventana_top_errores',)}),
+        ('Última modificación', {'fields': ('actualizado_en', 'actualizado_por')}),
+    )
+
+    def has_add_permission(self, request):
+        return not ConfiguracionMonitoreo.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        # Se entra directo a editar la única fila: una lista de un elemento es un clic de
+        # más para llegar a lo único que se puede hacer acá.
+        from django.shortcuts import redirect
+        from django.urls import reverse
+
+        configuracion = ConfiguracionMonitoreo.obtener()
+        return redirect(reverse('admin:monitoreo_configuracionmonitoreo_change',
+                                args=[configuracion.pk]))
+
+    def save_model(self, request, obj, form, change):
+        # Quién lo tocó explica por qué el sistema empezó a avisar más o menos que antes.
+        obj.actualizado_por = request.user
+        super().save_model(request, obj, form, change)

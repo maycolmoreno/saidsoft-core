@@ -141,9 +141,10 @@ def registrar_sondeo(farmacia, alcanzable: bool, latencia_ms: float | None):
     Se cuentan `UMBRAL_FALLAS_CONSECUTIVAS` sondeos fallidos seguidos, igual que hacía
     `Cresio_enlaces`. La recuperación sí es inmediata — si respondió, está viva.
     """
-    from .models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+    from .models import ConfiguracionMonitoreo, EstadoEnlaceFarmacia, EventoEnlaceFarmacia
 
     ahora = timezone.now()
+    umbral_fallas = ConfiguracionMonitoreo.obtener().fallas_consecutivas_enlace
     estado, _ = EstadoEnlaceFarmacia.objects.get_or_create(farmacia=farmacia)
     estaba_caida = estado.alcanzable is False
 
@@ -163,7 +164,7 @@ def registrar_sondeo(farmacia, alcanzable: bool, latencia_ms: float | None):
         # Mientras no supere el umbral se conserva el estado anterior: null sigue siendo
         # null (nunca se sondeó) y una farmacia viva sigue viva. No se inventa un "caído"
         # con una sola pérdida de paquete.
-        if estado.fallas_consecutivas >= EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS:
+        if estado.fallas_consecutivas >= umbral_fallas:
             nuevo_alcanzable = False
         else:
             nuevo_alcanzable = estado.alcanzable
@@ -278,7 +279,7 @@ def notificar_cambios_enlaces() -> dict:
     from django.conf import settings
     from django.core.mail import send_mail
 
-    from .models import EventoEnlaceFarmacia
+    from .models import ConfiguracionMonitoreo, EventoEnlaceFarmacia
 
     # Se excluye lo que nunca respondio: un sitio que jamas contesto no tiene una
     # caida que reportarle al proveedor -- el proveedor va a responder que su enlace
@@ -289,7 +290,7 @@ def notificar_cambios_enlaces() -> dict:
     # duraron 5 minutos o menos. Las que sigan caidas en la proxima corrida se avisan
     # entonces — no se pierden, se esperan.
     ahora = timezone.now()
-    minimos = getattr(settings, 'ENLACES_MINUTOS_MINIMOS_AVISO', 10)
+    minimos = ConfiguracionMonitoreo.obtener().minutos_minimos_aviso_enlace
     corte = ahora - timedelta(minutes=minimos)
     caidos = list(
         EventoEnlaceFarmacia.objects
