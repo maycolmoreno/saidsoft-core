@@ -28,6 +28,11 @@ from django.db import transaction
 from apps.scripts.models import Script, TipoScript
 
 CATEGORIA = 'Hora'
+# El nombre es la clave con la que otros modulos encuentran este script (lo dispara
+# `/sincronizar` por Telegram, ver apps.monitoreo.telegram_bot). Constante y no una
+# cadena suelta en cada lado: renombrarlo aca sin que el otro se entere dejaria el
+# comando respondiendo "no encuentro el script" sin que ningun test lo note.
+NOMBRE_SINCRONIZAR = 'Sincronizar hora con el dominio'
 
 # Ecuador: UTC-5 todo el año, sin horario de verano.
 ZONA_HORARIA = 'SA Pacific Standard Time'
@@ -164,7 +169,7 @@ SCRIPTS = [
         _con_valores(CONTENIDO_DIAGNOSTICO),
     ),
     (
-        'Sincronizar hora con el dominio',
+        NOMBRE_SINCRONIZAR,
         f'Corrige la zona horaria a "{ZONA_HORARIA}" si hace falta, habilita W32Time y '
         f'sincroniza contra {SERVIDOR_HORA} (con "net time" de respaldo). Deja el peer '
         f'configurado para que Windows la mantenga en hora sola.',

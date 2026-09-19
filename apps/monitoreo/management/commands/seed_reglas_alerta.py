@@ -94,6 +94,21 @@ REGLAS = [
         ReglaAlerta.Operador.GTE, 0, 0, ReglaAlerta.Severidad.WARNING, True,
         'Base central, Odoo y recargas: la caja sigue vendiendo y sincroniza despues.',
     ),
+    # Dos niveles, y la diferencia entre ellos es la que decide si hace falta un viaje.
+    # A los 120 s el agente descarta TODO mensaje firmado (VENTANA_TIMESTAMP_SEGUNDOS),
+    # incluido el script que le arreglaria el reloj: pasada esa marca la estacion solo se
+    # recupera en el local. Se siembran ACTIVAS, a diferencia de sin_heartbeat: se evaluan
+    # con el latido, no por ausencia, asi que una farmacia cerrada no las dispara.
+    (
+        'Reloj corrido (30 s)', Metrica.DESFASE_RELOJ, ReglaAlerta.Operador.GTE, 30, 0,
+        ReglaAlerta.Severidad.WARNING, True,
+        'Mismo umbral que ya usa el panel. Todavia obedece comandos: se arregla en remoto.',
+    ),
+    (
+        'Reloj por quedar incomunicado (90 s)', Metrica.DESFASE_RELOJ, ReglaAlerta.Operador.GTE, 90, 0,
+        ReglaAlerta.Severidad.CRITICAL, True,
+        'Ultima llamada: quedan 30 s antes de los 120 s en que deja de obedecer y hay que ir al local.',
+    ),
     (
         'Sin heartbeat (30 min)', Metrica.SIN_HEARTBEAT, ReglaAlerta.Operador.GTE, 30, 0,
         ReglaAlerta.Severidad.CRITICAL, False,

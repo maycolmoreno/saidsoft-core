@@ -343,6 +343,35 @@ def resolver_alertas_bitlocker(estacion):
     ).update(estado=Alerta.Estado.RESUELTA, resuelta_en=timezone.now())
 
 
+def evaluar_regla_reloj(estacion) -> None:
+    """Llamada desde `manejar_heartbeat` justo despues de recalcular
+    `Estacion.desfase_reloj_segundos`. De la familia de `evaluar_regla_bitlocker`: el
+    heartbeat ya trae el estado medido, no hay condicion sostenida que esperar.
+
+    Por que existe esta alerta y no alcanzaba con verlo en el panel: pasados los
+    `UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS` (120 s) el agente descarta TODO mensaje
+    firmado, incluido el script que le arreglaria el reloj, y la estacion solo se
+    recupera yendo al local. Entre los 30 s y los 120 s hay una ventana en la que
+    todavia obedece y el arreglo es remoto — avisar dentro de esa ventana es la
+    diferencia entre un clic y un viaje. Le paso a MAM06-A el 26-ago-2026 y nadie se
+    entero hasta que la estacion ya estaba muda.
+
+    Se compara el valor ABSOLUTO contra el umbral: un reloj 40 s atrasado rompe la firma
+    igual que uno 40 s adelantado. En la Alerta se guarda el desfase CON SIGNO, porque
+    la direccion dice la causa probable (adelantada = reloj corriendo rapido; atrasada
+    = tipicamente equipo apagado con la pila de CMOS agotada).
+    """
+    desfase = estacion.desfase_reloj_segundos
+    if desfase is None:
+        return
+    unidad = estacion.farmacia.unidad_negocio
+    for regla in reglas_aplicables_a(unidad, metrica=Metrica.DESFASE_RELOJ):
+        if _cumple(regla, abs(desfase)):
+            abrir_o_mantener_alerta(regla, estacion, desfase)
+        else:
+            resolver_condicion(regla, estacion)
+
+
 def evaluar_regla_pos_errores(estacion, total_nuevos: int) -> None:
     """Llamada tras ingerir un reporte del log del POS (ver
     apps.mqtt_worker.services.manejar_pos_errores). Cada reporte ya es una ventana
@@ -519,6 +548,22 @@ def notificar_alerta(alerta, *, escalamiento=False):
         # Condición binaria: "valor (umbral: >= X)" no significa nada aquí, a diferencia
         # de las métricas numéricas (CPU/RAM/latencia/sin_heartbeat).
         detalle_condicion = 'BitLocker deshabilitado.'
+    elif alerta.regla.metrica == Metrica.DESFASE_RELOJ:
+        # "Valor: -95 (umbral: >= 90.0)" es ilegible: el valor guardado tiene signo y el
+        # umbral se compara contra el absoluto, así que el número no parece cumplirlo.
+        # Lo que hay que leer de un vistazo es cuánto se corrió, para qué lado, y cuánto
+        # margen queda antes de que la estación se quede muda.
+        from apps.catalogo.models import Estacion
+
+        segundos = int(alerta.valor_disparador)
+        direccion = 'adelantada' if segundos > 0 else 'atrasada'
+        margen = Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS - abs(segundos)
+        detalle_condicion = (
+            f'Reloj {direccion} {abs(segundos)} s (umbral: {int(alerta.regla.umbral)} s).\n'
+            f'Quedan {margen} s de margen: pasados los '
+            f'{Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS} s la estación descarta todo '
+            f'comando y hay que ir al local.'
+        )
     else:
         detalle_condicion = (
             f'Valor: {alerta.valor_disparador} (umbral: {alerta.regla.get_operador_display()} {alerta.regla.umbral}).'
@@ -554,8 +599,22 @@ def notificar_alerta(alerta, *, escalamiento=False):
     # abrir primero.
     emoji = _EMOJI_SEVERIDAD.get(alerta.regla.severidad, '')
     texto_telegram = f'{emoji} {asunto}\n\n{cuerpo}'.strip()
+    # El aviso de reloj corrido viene con el botón para corregirlo. Es el único caso en
+    # que la notificación ofrece accionar, y se justifica porque la acción es única,
+    # obvia y contra el reloj: pasados los 120 s de desfase la estación deja de obedecer
+    # y el arreglo ya no se puede hacer en remoto. Sin el botón, el aviso llega al
+    # teléfono y obliga a abrir la computadora para dar un clic.
+    #
+    # `pedirsync:` y no `sync:`: el botón pide confirmación, no ejecuta. Un roce sobre
+    # una notificación no puede accionar sobre una caja.
+    teclado_alerta = None
+    if alerta.regla.metrica == Metrica.DESFASE_RELOJ:
+        teclado_alerta = [[{
+            'text': f'🕐 Sincronizar {alerta.estacion.codigo}',
+            'callback_data': f'pedirsync:{alerta.estacion.codigo}',
+        }]]
     for canal in canales_telegram_para(unidad):
-        _enviar_telegram(canal.destino, texto_telegram)
+        _enviar_telegram(canal.destino, texto_telegram, teclado=teclado_alerta)
 
 
 def escalar_alertas_abiertas() -> int:

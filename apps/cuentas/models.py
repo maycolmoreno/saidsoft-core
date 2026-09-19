@@ -29,9 +29,34 @@ class PerfilUsuario(models.Model):
         help_text='Para personal interno (soporte/operaciones) que necesita ver todos los '
                   'clientes. `unidades_negocio` se ignora si esto está activo.',
     )
+    # Consultar por Telegram y ACCIONAR por Telegram son dos permisos distintos, y este
+    # campo es el que los separa. Las consultas (/enlaces, /estado, ...) siguen gobernadas
+    # por TELEGRAM_CHAT_IDS_AUTORIZADOS, una lista en el .env. Eso alcanza para leer, pero
+    # no para escribir: no dice QUIÉN es cada chat, así que el historial de una ejecución
+    # disparada desde ahí no podría nombrar a nadie, y quitarle la acción a una persona
+    # significaría quitarle también la consulta.
+    #
+    # Atando el chat a un usuario real, accionar reusa el RBAC que ya existe —permiso
+    # `scripts.add_ejecucionscript` más `verificar_acceso` a la unidad de la estación— y
+    # `EjecucionScript.creado_por` queda con una persona, no con una cuenta de servicio.
+    telegram_chat_id = models.CharField(
+        max_length=32, blank=True, db_index=True,
+        help_text='chat_id de Telegram de esta persona. Con esto, sus comandos de acción '
+                  'por Telegram se ejecutan con SUS permisos y quedan a su nombre en el '
+                  'historial. Vacío = solo puede consultar (si su chat está en '
+                  'TELEGRAM_CHAT_IDS_AUTORIZADOS).',
+    )
 
     class Meta:
         db_table = 'perfil_usuario'
+        constraints = [
+            # Dos personas no pueden compartir chat: si lo hicieran, el historial diría
+            # el nombre equivocado. Los vacíos no chocan entre sí (condition).
+            models.UniqueConstraint(
+                fields=['telegram_chat_id'], condition=~models.Q(telegram_chat_id=''),
+                name='un_chat_de_telegram_por_persona',
+            ),
+        ]
         verbose_name = 'Perfil de usuario'
         verbose_name_plural = 'Perfiles de usuario'
 

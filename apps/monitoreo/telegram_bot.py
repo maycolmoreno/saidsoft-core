@@ -1,17 +1,34 @@
-"""Consultas de solo lectura por Telegram: /enlaces, /estado, /alertas, /farmacia.
+"""Consultas por Telegram (/enlaces, /estado, /alertas, /farmacia, /hora) y una sola
+acción: /sincronizar.
 
 Complementa la notificación saliente (ver `notificar_alerta` y
 `notificar_cambios_enlaces`): eso avisa cuando algo pasa, esto responde cuando alguien
-pregunta. Nada de acá modifica nada — ni aprueba estaciones, ni reconoce alertas, ni
-manda comandos a un agente. Es deliberado: el canal de entrada de un bot público no es
-el lugar para accionar sobre 1.800 equipos.
+pregunta.
 
-**Autorización.** Un bot de Telegram es público: cualquiera que adivine su nombre de
-usuario puede escribirle. Solo se responde a los chat_id de
-`TELEGRAM_CHAT_IDS_AUTORIZADOS`; a cualquier otro no se le contesta nada, ni siquiera
-"no autorizado" — confirmar que el bot existe y a qué responde ya es información. Lo
-que devuelven estos comandos (códigos de farmacia, IPs de routers, qué está caído y
-desde cuándo) es exactamente el mapa que alguien necesitaría para atacar la red.
+**Por qué hay una acción, si esto nació de solo lectura.** La regla original era que
+nada de acá modificara nada, porque el canal de entrada de un bot público no es el lugar
+para accionar sobre 1.800 equipos. Sigue valiendo. `/sincronizar` es la excepción y no
+la puerta de entrada a más: corrige el reloj de UNA estación, es idempotente, y es
+exactamente lo que la alerta que llega por este mismo chat te está pidiendo que hagas.
+Sin eso el aviso te llega al teléfono y te obliga a abrir la computadora para dar un
+clic. Cualquier otra acción tiene que discutirse de nuevo — no hereda este permiso.
+
+**Dos autorizaciones distintas, y conviene no confundirlas.**
+
+*Consultar* se gobierna con `TELEGRAM_CHAT_IDS_AUTORIZADOS`, una lista en el .env. Un
+bot de Telegram es público: cualquiera que adivine su nombre de usuario puede
+escribirle. A un chat que no está en la lista no se le contesta nada, ni siquiera "no
+autorizado" — confirmar que el bot existe y a qué responde ya es información. Lo que
+devuelven estos comandos (códigos de farmacia, IPs de routers, qué está caído y desde
+cuándo) es exactamente el mapa que alguien necesitaría para atacar la red.
+
+*Accionar* exige además que el chat esté atado a un usuario del panel
+(`PerfilUsuario.telegram_chat_id`), y se resuelve con el RBAC que ya existe: el permiso
+`scripts.add_ejecucionscript` y acceso a la unidad de negocio de esa estación. Una lista
+de chats no alcanza para escribir: no dice quién es cada uno, así que el historial no
+podría nombrar a nadie y revocarle la acción a una persona le quitaría también la
+consulta. Con el vínculo, `EjecucionScript.creado_por` queda con una persona real y dar
+de baja el usuario en Django le apaga el Telegram.
 
 El transporte lo pone `run_telegram_bot` (long polling). Acá vive solo qué se responde,
 para que se pueda probar sin red.
@@ -388,9 +405,163 @@ _AYUDA = '\n'.join([
     '/mantenimiento — ventanas activas (alertas silenciadas)',
     '/toperrores — errores del POS más repetidos en la flota',
     '/farmacia ML016 — detalle de una farmacia',
+    '/hora — estaciones con el reloj corrido',
     '',
-    'Solo lectura: nada de esto modifica el sistema.',
+    'Acciones:',
+    '',
+    '/sincronizar ML002-B — corrige el reloj de esa estación (pide confirmación)',
+    '',
+    'Todo lo demás es solo lectura. La acción se ejecuta con TUS permisos y queda a tu '
+    'nombre en el historial, así que tu chat tiene que estar atado a tu usuario del panel.',
 ])
+
+
+# --- Reloj: consultar y corregir ---
+#
+# `/sincronizar` es la PRIMERA accion de escritura de este bot, que hasta aca era solo
+# de lectura por decision explicita (ver el docstring del modulo). Se abre esta sola, y
+# no "ejecutar cualquier script", porque el caso lo justifica y el radio de daño es
+# minimo: corrige el reloj de UNA estacion, es idempotente, y es exactamente lo que la
+# alerta que llega por este mismo chat te esta pidiendo que hagas. Cualquier otra accion
+# tiene que volver a discutirse, no heredar este permiso.
+
+def _comando_hora() -> str:
+    """Estaciones con el reloj corrido, la peor primero. Solo lectura."""
+    from apps.catalogo.models import Estacion
+
+    estaciones = [
+        e for e in Estacion.objects.filter(estado_aprobacion='aprobada').select_related('farmacia')
+        if e.desfase_reloj_segundos is not None and e.reloj_desincronizado
+    ]
+    estaciones.sort(key=lambda e: abs(e.desfase_reloj_segundos), reverse=True)
+
+    if not estaciones:
+        return (
+            'Ninguna estacion con el reloj corrido.\n'
+            f'(Se lista a partir de {Estacion.UMBRAL_RELOJ_AVISO_SEGUNDOS} s de desfase.)'
+        )
+
+    lineas = ['Relojes corridos:', '']
+    for e in estaciones[:_MAX_FILAS]:
+        seg = e.desfase_reloj_segundos
+        direccion = 'adelantada' if seg > 0 else 'atrasada'
+        if e.reloj_incomunicado:
+            estado = 'INCOMUNICADA: descarta comandos, hay que ir al local'
+        else:
+            margen = Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS - abs(seg)
+            estado = f'quedan {margen} s de margen, se arregla en remoto'
+        lineas.append(f'{e.codigo} ({e.farmacia.codigo}) {abs(seg)} s {direccion}')
+        lineas.append(f'   {estado}')
+    if len(estaciones) > _MAX_FILAS:
+        lineas.append(f'... y {len(estaciones) - _MAX_FILAS} mas.')
+    lineas.append('')
+    lineas.append('Para corregir una: /sincronizar CODIGO')
+    return '\n'.join(lineas)
+
+
+def _buscar_estacion(codigo: str):
+    from apps.catalogo.models import Estacion
+
+    return Estacion.objects.select_related('farmacia__unidad_negocio').filter(
+        codigo__iexact=(codigo or '').strip(), estado_aprobacion='aprobada',
+    ).first()
+
+
+def _pedir_confirmacion_sincronizar(codigo: str):
+    """Paso intermedio: que un toque no alcance para accionar sobre una estacion."""
+    from apps.catalogo.models import Estacion
+
+    estacion = _buscar_estacion(codigo)
+    if estacion is None:
+        # Teclado principal y no None: que un codigo mal escrito no deje al operador sin
+        # botones, teniendo que escribir el comando siguiente a mano.
+        return f'No encuentro una estacion aprobada con codigo "{codigo}".', _TECLADO_PRINCIPAL
+
+    seg = estacion.desfase_reloj_segundos
+    if seg is None:
+        detalle = 'Todavia no reporto su reloj.'
+    else:
+        direccion = 'adelantada' if seg > 0 else 'atrasada'
+        detalle = f'Hoy esta {abs(seg)} s {direccion}.'
+
+    aviso = ''
+    if estacion.reloj_incomunicado:
+        # No se bloquea el intento, se avisa: el desfase se midio en el ultimo latido y
+        # pudo haber cambiado. Pero que nadie crea que quedo resuelto si el agente lo
+        # descarta en silencio, que es justo como se pierde una tarde.
+        aviso = (
+            f'\n\nOJO: con mas de {Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS} s de desfase '
+            'el agente DESCARTA todo mensaje firmado, incluido este script. Lo mas probable '
+            'es que no llegue y haya que ir al local.'
+        )
+
+    texto = (
+        f'Sincronizar el reloj de {estacion.codigo} ({estacion.farmacia.codigo}).\n'
+        f'{detalle}\n\n'
+        'Se le va a ejecutar el script "Sincronizar hora con el dominio": corrige la zona '
+        f'horaria si hace falta y sincroniza contra el dominio.{aviso}'
+    )
+    teclado = [[
+        {'text': f'Confirmar {estacion.codigo}', 'callback_data': f'sync:{estacion.codigo}'},
+        {'text': 'Cancelar', 'callback_data': 'menu:principal'},
+    ]]
+    return texto, teclado
+
+
+def _ejecutar_sincronizar(codigo: str, chat_id) -> str:
+    """Dispara el script de hora sobre una estacion, con los permisos de la PERSONA
+    atada a este chat — no con los del bot.
+
+    Tres controles, los mismos que aplica el panel y por las mismas razones:
+      1. el chat tiene que estar atado a un usuario activo (si no, el historial no
+         podria decir quien lo hizo);
+      2. ese usuario necesita el permiso de ejecutar scripts;
+      3. y acceso a la unidad de negocio de esa estacion.
+    """
+    from apps.cuentas.services import usuario_de_chat_telegram, usuario_puede_ver
+    from apps.scripts.management.commands.seed_scripts_hora import NOMBRE_SINCRONIZAR
+    from apps.scripts.models import EjecucionScript, Script
+    from apps.scripts.services import registrar_ejecucion_script
+
+    usuario = usuario_de_chat_telegram(chat_id)
+    if usuario is None:
+        return (
+            'Este chat puede consultar, pero no accionar.\n\n'
+            'Para habilitarlo, un administrador tiene que poner tu chat_id '
+            f'({chat_id}) en tu perfil de usuario del panel. Asi la ejecucion queda '
+            'a tu nombre y con tus permisos.'
+        )
+    if not usuario.has_perm('scripts.add_ejecucionscript'):
+        return f'{usuario.username}: no tenes permiso para ejecutar scripts.'
+
+    estacion = _buscar_estacion(codigo)
+    if estacion is None:
+        return f'No encuentro una estacion aprobada con codigo "{codigo}".'
+
+    unidad = estacion.farmacia.unidad_negocio
+    if not usuario_puede_ver(usuario, unidad):
+        return f'{usuario.username}: no tenes acceso a {unidad.codigo}.'
+
+    script = Script.objects.filter(nombre=NOMBRE_SINCRONIZAR, unidad_negocio__isnull=True).first()
+    if script is None:
+        return (
+            f'Falta el script "{NOMBRE_SINCRONIZAR}" en la biblioteca.\n'
+            'Se crea con: manage.py seed_scripts_hora'
+        )
+
+    ejecucion = registrar_ejecucion_script(
+        script=script, destino_tipo=EjecucionScript.DestinoTipo.ESTACIONES,
+        usuario=usuario, unidad_negocio=unidad, estaciones=[estacion],
+    )
+    logger.info(
+        'Telegram: %s disparo la sincronizacion de hora de %s (ejecucion #%s).',
+        usuario.username, estacion.codigo, ejecucion.pk,
+    )
+    return (
+        f'Enviado a {estacion.codigo}: ejecucion #{ejecucion.pk}, a nombre de {usuario.username}.\n\n'
+        'El agente lo aplica y reporta el resultado. Volve a mirar con /hora en un par de minutos: '
+        'el desfase se recalcula con el siguiente latido.'
+    )
 
 
 # Teclado que acompaña cada respuesta. Se repite siempre a propósito: sin él, después de
@@ -414,7 +585,8 @@ _TECLADO_PRINCIPAL = [
 _TECLADO_MAS = [
     [{'text': '🔴 Críticas', 'callback_data': 'cmd:criticas'},
      {'text': '🔧 Mantenimiento', 'callback_data': 'cmd:mantenimiento'}],
-    [{'text': '🐞 Top errores POS', 'callback_data': 'cmd:toperrores'}],
+    [{'text': '🐞 Top errores POS', 'callback_data': 'cmd:toperrores'},
+     {'text': '🕐 Relojes', 'callback_data': 'cmd:hora'}],
     [{'text': '◀ Volver', 'callback_data': 'menu:principal'}],
 ]
 
@@ -423,12 +595,16 @@ _TECLADO_MAS = [
 _MAX_BOTONES_FARMACIA = 8
 
 # Cuáles viven detrás de "Más", para devolver al operador al submenú correcto.
-_COMANDOS_DEL_SUBMENU = frozenset({'criticas', 'mantenimiento', 'toperrores'})
+_COMANDOS_DEL_SUBMENU = frozenset({'criticas', 'mantenimiento', 'toperrores', 'hora'})
 
 # Qué comandos puede disparar un botón. Se declara aparte de los que acepta `responder_a`
 # porque no son lo mismo: `/farmacia` necesita un argumento y por eso tiene su submenú.
+#
+# `sincronizar` NO está acá, y la omisión es deliberada: es el único comando que escribe.
+# Su botón no sale de esta lista genérica sino de `pedirsync:`/`sync:`, que llevan el
+# código de la estación adentro y pasan por una confirmación explícita.
 _COMANDOS_CON_BOTON = frozenset({'enlaces', 'estado', 'alertas', 'criticas',
-                                 'mantenimiento', 'toperrores'})
+                                 'mantenimiento', 'toperrores', 'hora'})
 
 
 def _teclado_farmacias():
@@ -468,11 +644,22 @@ def _teclado_farmacias():
     return filas
 
 
-def responder_a_callback(data: str):
-    """Traduce el botón tocado a (texto, teclado). None = no se hace nada."""
+def responder_a_callback(data: str, chat_id=None):
+    """Traduce el botón tocado a (texto, teclado). None = no se hace nada.
+
+    `chat_id` identifica a la persona para los botones que ACCIONAN (`sync:`); los de
+    consulta lo ignoran.
+    """
     data = (data or '').strip()
     if data == 'menu:principal':
         return _AYUDA, _TECLADO_PRINCIPAL
+    if data.startswith('pedirsync:'):
+        # Botón que viene con la alerta de reloj: no ejecuta, pide confirmación. Que
+        # llegue un aviso al teléfono y un roce accidental accione sobre una caja no
+        # puede ser el diseño.
+        return _pedir_confirmacion_sincronizar(data.split(':', 1)[1])
+    if data.startswith('sync:'):
+        return _ejecutar_sincronizar(data.split(':', 1)[1], chat_id), _TECLADO_PRINCIPAL
     if data == 'menu:mas':
         return 'Otras consultas:', _TECLADO_MAS
     if data == 'menu:farmacias':
@@ -498,8 +685,16 @@ def chat_autorizado(chat_id) -> bool:
     return str(chat_id) in autorizados
 
 
-def responder_a(texto: str) -> str | None:
+def responder_a(texto: str, chat_id=None):
     """Qué contestar a un mensaje. None = no se contesta nada.
+
+    Devuelve un str, o una tupla `(texto, teclado)` cuando la respuesta necesita su
+    propio teclado en vez del principal — hoy solo la confirmación de `/sincronizar`,
+    que tiene que ofrecer "Confirmar" y "Cancelar" y nada más.
+
+    `chat_id` solo hace falta para los comandos que ACCIONAN: es con lo que se resuelve
+    qué persona está del otro lado (ver `usuario_de_chat_telegram`). Las consultas no lo
+    usan, y por eso sigue siendo opcional: se pueden probar sin inventar un chat.
 
     Separado del transporte para poder probar cada comando sin red ni bot.
     """
@@ -526,6 +721,15 @@ def responder_a(texto: str) -> str | None:
         return _comando_toperrores()
     if comando == '/farmacia':
         return _comando_farmacia(argumento)
+    if comando == '/hora':
+        return _comando_hora()
+    if comando == '/sincronizar':
+        if not argumento.strip():
+            return 'Decime cuál: /sincronizar CODIGO (mirá /hora para ver cuáles están corridas).'
+        # No ejecuta: devuelve la confirmación. Escribir el comando es el primer paso,
+        # tocar "Confirmar" es el segundo — accionar sobre una estación no puede salir
+        # de un solo tipeo.
+        return _pedir_confirmacion_sincronizar(argumento)
     if comando.startswith('/'):
         return f'No conozco {comando}.\n\n{_AYUDA}'
     return None  # texto suelto: el bot no conversa, solo responde comandos
@@ -554,10 +758,16 @@ def procesar_actualizacion(update: dict) -> bool:
             # real y que responde. Queda en el log para poder detectar el sondeo.
             logger.warning('Telegram: consulta de un chat no autorizado (%s).', chat_id)
             return False
-        respuesta = responder_a(texto)
+        respuesta = responder_a(texto, chat_id)
         if respuesta is None:
             return False
-        return _enviar_telegram(chat_id, respuesta, teclado=_TECLADO_PRINCIPAL)
+        # Un comando puede pedir su propio teclado (la confirmación de /sincronizar);
+        # el resto sigue con el principal.
+        if isinstance(respuesta, tuple):
+            respuesta, teclado = respuesta
+        else:
+            teclado = _TECLADO_PRINCIPAL
+        return _enviar_telegram(chat_id, respuesta, teclado=teclado)
     except Exception:
         logger.exception('Telegram: error procesando una consulta.')
         return False
@@ -580,7 +790,7 @@ def _procesar_boton(callback: dict) -> bool:
         logger.warning('Telegram: botón pulsado desde un chat no autorizado (%s).', chat_id)
         return False
 
-    resultado = responder_a_callback(callback.get('data'))
+    resultado = responder_a_callback(callback.get('data'), chat_id)
     if resultado is None:
         return False
     texto, teclado = resultado

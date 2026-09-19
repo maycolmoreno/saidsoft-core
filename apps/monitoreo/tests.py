@@ -2543,7 +2543,7 @@ class SeedReglasAlertaTests(TestCase):
         from apps.monitoreo.models import ReglaAlerta
 
         self._correr('--aplicar')
-        self.assertEqual(ReglaAlerta.objects.count(), 10)
+        self.assertEqual(ReglaAlerta.objects.count(), 12)
 
     def test_las_reglas_que_se_disparan_por_ausencia_nacen_apagadas(self):
         """El punto entero del comando. `sin_heartbeat` y `agente_caido_red_viva` se
@@ -2566,8 +2566,10 @@ class SeedReglasAlertaTests(TestCase):
         de_metrica = ReglaAlerta.objects.exclude(
             metrica__in=[Metrica.SIN_HEARTBEAT, Metrica.AGENTE_CAIDO_RED_VIVA],
         )
-        self.assertEqual(de_metrica.count(), 8)
-        self.assertEqual(de_metrica.filter(activo=True).count(), 8)
+        # Las dos de reloj entran acá: se evalúan con el latido, no por ausencia,
+        # así que una farmacia cerrada tampoco las dispara.
+        self.assertEqual(de_metrica.count(), 10)
+        self.assertEqual(de_metrica.filter(activo=True).count(), 10)
 
     def test_ninguna_abre_mantenimiento_automatico(self):
         """Activar una regla no puede empezar a generar ordenes de trabajo sin que nadie
@@ -2583,14 +2585,14 @@ class SeedReglasAlertaTests(TestCase):
         from apps.monitoreo.models import ReglaAlerta
 
         self._correr('--aplicar')
-        self.assertEqual(ReglaAlerta.objects.filter(unidad_negocio__isnull=True).count(), 10)
+        self.assertEqual(ReglaAlerta.objects.filter(unidad_negocio__isnull=True).count(), 12)
 
     def test_correrlo_dos_veces_no_duplica(self):
         from apps.monitoreo.models import ReglaAlerta
 
         self._correr('--aplicar')
         texto = self._correr('--aplicar')
-        self.assertEqual(ReglaAlerta.objects.count(), 10)
+        self.assertEqual(ReglaAlerta.objects.count(), 12)
         self.assertIn('intactas', texto)
 
     def test_no_pisa_un_umbral_afinado_a_mano(self):
@@ -2691,7 +2693,7 @@ class SeedReglasAlertaTests(TestCase):
         # daria un falso negativo sobre reglas que funcionan perfecto.
         aparte = {Metrica.SIN_HEARTBEAT, Metrica.AGENTE_CAIDO_RED_VIVA,
                   Metrica.BITLOCKER_DESHABILITADO, Metrica.POS_ERRORES,
-                  Metrica.SERVICIO_POS_CAIDO}
+                  Metrica.SERVICIO_POS_CAIDO, Metrica.DESFASE_RELOJ}
         for regla in ReglaAlerta.objects.exclude(metrica__in=aparte):
             self.assertTrue(
                 hasattr(MuestraMetrica, regla.metrica),
@@ -5130,3 +5132,337 @@ class HistorialProtegidoTests(TestCase):
         with self.assertRaises(ProtectedError):
             mantenimiento.delete()
         self.assertEqual(EventoMantenimiento.objects.count(), 1)
+
+class AlertaDesfaseRelojTests(TestCase):
+    """El reloj corrido tiene una ventana en la que se arregla solo y otra en la que
+    obliga a un viaje. Estas pruebas fijan dónde está el corte.
+
+    A los 120 s (VENTANA_TIMESTAMP_SEGUNDOS) el agente descarta TODO mensaje firmado,
+    incluido el script que le arreglaría el reloj: pasada esa marca la estación solo se
+    recupera yendo al local. Le pasó a MAM06-A el 26-ago-2026 y nadie se enteró hasta
+    que ya estaba muda, porque el dato estaba en el panel y no había ninguna alerta.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.services import evaluar_regla_reloj
+
+        self.evaluar = evaluar_regla_reloj
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX900')
+        farmacia = Farmacia.objects.create(codigo='ML900', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML900-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        usuario = User.objects.create_user(username='u_reloj', password='x')
+        self.aviso = ReglaAlerta.objects.create(
+            nombre='Reloj corrido (30 s)', metrica=Metrica.DESFASE_RELOJ,
+            umbral=30, duracion_minutos=0, severidad=ReglaAlerta.Severidad.WARNING,
+            creado_por=usuario,
+        )
+        self.critica = ReglaAlerta.objects.create(
+            nombre='Reloj por quedar incomunicado (90 s)', metrica=Metrica.DESFASE_RELOJ,
+            umbral=90, duracion_minutos=0, severidad=ReglaAlerta.Severidad.CRITICAL,
+            creado_por=usuario,
+        )
+
+    def _con_desfase(self, segundos):
+        self.estacion.desfase_reloj_segundos = segundos
+        self.estacion.save(update_fields=['desfase_reloj_segundos'])
+        self.evaluar(self.estacion)
+
+    def test_un_reloj_en_hora_no_abre_nada(self):
+        self._con_desfase(3)
+        self.assertEqual(Alerta.objects.count(), 0)
+
+    def test_sin_dato_de_reloj_no_abre_nada(self):
+        """Una estación que todavía no reportó no es una estación con el reloj mal."""
+        self.evaluar(self.estacion)
+        self.assertEqual(Alerta.objects.count(), 0)
+
+    def test_treinta_y_dos_segundos_abre_el_aviso_pero_no_la_critica(self):
+        """El caso real de ML002-B el 19-sep-2026."""
+        self._con_desfase(32)
+        reglas = set(Alerta.objects.values_list('regla__nombre', flat=True))
+        self.assertEqual(reglas, {'Reloj corrido (30 s)'})
+
+    def test_una_estacion_ATRASADA_alerta_igual_que_una_adelantada(self):
+        """El corazón de todo esto: el umbral se compara contra el ABSOLUTO.
+
+        Un reloj 95 s atrasado rompe la firma HMAC igual que uno 95 s adelantado — el
+        agente valida |ahora - timestamp|, no la dirección. Comparando el valor crudo
+        con `gte`, -95 nunca superaría un umbral de 30 y la estación se quedaría muda
+        sin que se abriera una sola alerta. Y atrasada es el caso MÁS común: es lo que
+        hace un equipo con la pila de CMOS agotada.
+        """
+        self._con_desfase(-95)
+        reglas = set(Alerta.objects.values_list('regla__nombre', flat=True))
+        self.assertEqual(reglas, {'Reloj corrido (30 s)', 'Reloj por quedar incomunicado (90 s)'})
+
+    def test_volver_a_la_hora_resuelve_la_alerta(self):
+        self._con_desfase(60)
+        self.assertEqual(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).count(), 1)
+
+        self._con_desfase(2)
+
+        alerta = Alerta.objects.get()
+        self.assertEqual(alerta.estado, Alerta.Estado.RESUELTA)
+        self.assertIsNotNone(alerta.resuelta_en)
+
+    def test_se_guarda_el_desfase_CON_SIGNO_aunque_se_compare_el_absoluto(self):
+        """La dirección dice la causa probable, así que no se puede perder."""
+        self._con_desfase(-95)
+        for alerta in Alerta.objects.all():
+            self.assertEqual(alerta.valor_disparador, -95)
+
+    def test_no_duplica_si_el_desfase_se_mantiene(self):
+        self._con_desfase(60)
+        self._con_desfase(61)
+        self._con_desfase(62)
+        self.assertEqual(Alerta.objects.count(), 1)
+
+    def test_el_correo_dice_para_que_lado_y_cuanto_margen_queda(self):
+        """'Valor: -95 (umbral: >= 90.0)' no le sirve a nadie a las 3 de la mañana."""
+        PerfilUsuario.objects.create(usuario=self.aviso.creado_por, acceso_todas_unidades=True)
+        self.aviso.creado_por.email = 'ops@example.com'
+        self.aviso.creado_por.save(update_fields=['email'])
+        self.critica.activo = False
+        self.critica.save(update_fields=['activo'])
+
+        self._con_desfase(-95)
+
+        cuerpo = mail.outbox[0].body
+        self.assertIn('atrasada 95 s', cuerpo)
+        self.assertIn('25 s de margen', cuerpo)  # 120 - 95
+        self.assertIn('ir al local', cuerpo)
+
+    def test_el_correo_dice_adelantada_cuando_va_adelante(self):
+        PerfilUsuario.objects.create(usuario=self.aviso.creado_por, acceso_todas_unidades=True)
+        self.aviso.creado_por.email = 'ops@example.com'
+        self.aviso.creado_por.save(update_fields=['email'])
+        self.critica.activo = False
+        self.critica.save(update_fields=['activo'])
+
+        self._con_desfase(45)
+
+        self.assertIn('adelantada 45 s', mail.outbox[0].body)
+
+    @override_settings(TELEGRAM_BOT_TOKEN='TOKEN-DE-PRUEBA')
+    def test_el_aviso_de_telegram_trae_el_boton_para_corregir(self):
+        """Sin el botón, el aviso llega al teléfono y obliga a abrir la computadora."""
+        CanalNotificacion.objects.create(
+            tipo=CanalNotificacion.Tipo.TELEGRAM, destino='999', activo=True,
+            creado_por=self.aviso.creado_por,
+        )
+        self.critica.activo = False
+        self.critica.save(update_fields=['activo'])
+
+        with patch('apps.monitoreo.services._enviar_telegram', return_value=True) as enviar:
+            self._con_desfase(45)
+
+        self.assertEqual(enviar.call_count, 1)
+        teclado = enviar.call_args.kwargs['teclado']
+        botones = [b for fila in teclado for b in fila]
+        self.assertEqual(botones[0]['callback_data'], 'pedirsync:ML900-A')
+        self.assertIn('ML900-A', botones[0]['text'])
+
+    @override_settings(TELEGRAM_BOT_TOKEN='TOKEN-DE-PRUEBA')
+    def test_las_otras_alertas_siguen_sin_boton(self):
+        """El botón es la excepción, no el nuevo default de toda notificación."""
+        from apps.monitoreo.services import abrir_o_mantener_alerta
+
+        CanalNotificacion.objects.create(
+            tipo=CanalNotificacion.Tipo.TELEGRAM, destino='999', activo=True,
+            creado_por=self.aviso.creado_por,
+        )
+        regla_disco = ReglaAlerta.objects.create(
+            nombre='Disco lleno', metrica=Metrica.DISCO_USADO_PCT, umbral=95,
+            duracion_minutos=0, creado_por=self.aviso.creado_por,
+        )
+
+        with patch('apps.monitoreo.services._enviar_telegram', return_value=True) as enviar:
+            abrir_o_mantener_alerta(regla_disco, self.estacion, 99)
+
+        self.assertEqual(enviar.call_count, 1)
+        self.assertIsNone(enviar.call_args.kwargs['teclado'])
+
+
+class SincronizarHoraPorTelegramTests(TestCase):
+    """La primera acción de escritura del bot. Lo que se prueba acá es sobre todo lo que
+    NO tiene que poder hacerse: hasta ahora el peor caso de un chat comprometido era leer
+    el mapa de la red, y desde este comando pasa a ser accionar sobre una caja.
+    """
+
+    def setUp(self):
+        from apps.scripts.management.commands.seed_scripts_hora import NOMBRE_SINCRONIZAR
+        from apps.scripts.models import Script, TipoScript
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX901')
+        farmacia = Farmacia.objects.create(codigo='ML901', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML901-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, desfase_reloj_segundos=40,
+        )
+
+        self.admin = User.objects.create_user(username='admin_h', password='x', is_superuser=True)
+        self.script = Script.objects.create(
+            nombre=NOMBRE_SINCRONIZAR, tipo=TipoScript.POWERSHELL, contenido='w32tm /resync',
+            categoria='Hora', unidad_negocio=None, creado_por=self.admin,
+        )
+
+        # Quien sí puede: permiso de ejecutar scripts y acceso a SG.
+        self.operador = User.objects.create_user(username='operador', password='x')
+        self.operador.user_permissions.add(
+            Permission.objects.get(content_type__app_label='scripts', codename='add_ejecucionscript'),
+        )
+        perfil = PerfilUsuario.objects.create(
+            usuario=self.operador, acceso_todas_unidades=False, telegram_chat_id='111',
+        )
+        perfil.unidades_negocio.add(self.sg)
+
+    def _sincronizar(self, codigo, chat_id):
+        from apps.monitoreo.telegram_bot import _ejecutar_sincronizar
+
+        return _ejecutar_sincronizar(codigo, chat_id)
+
+    def test_un_chat_sin_usuario_atado_no_puede_accionar(self):
+        """Estar en TELEGRAM_CHAT_IDS_AUTORIZADOS alcanza para consultar, no para esto."""
+        from apps.scripts.models import EjecucionScript
+
+        respuesta = self._sincronizar('ML901-A', '999')
+
+        self.assertEqual(EjecucionScript.objects.count(), 0)
+        self.assertIn('no accionar', respuesta)
+
+    def test_el_mensaje_explica_como_habilitarse_y_dice_el_chat_id(self):
+        """Un "no autorizado" a secas deja a la persona sin saber qué pedir."""
+        respuesta = self._sincronizar('ML901-A', '999')
+        self.assertIn('999', respuesta)
+
+    def test_sin_el_permiso_de_ejecutar_scripts_no_puede(self):
+        from apps.scripts.models import EjecucionScript
+
+        miron = User.objects.create_user(username='miron', password='x')
+        PerfilUsuario.objects.create(
+            usuario=miron, acceso_todas_unidades=True, telegram_chat_id='222',
+        )
+
+        respuesta = self._sincronizar('ML901-A', '222')
+
+        self.assertEqual(EjecucionScript.objects.count(), 0)
+        self.assertIn('permiso', respuesta)
+
+    def test_no_puede_accionar_sobre_una_unidad_de_negocio_ajena(self):
+        """El mismo aislamiento multi-tenant del panel, no uno paralelo."""
+        from apps.scripts.models import EjecucionScript
+
+        ajeno = User.objects.create_user(username='ajeno', password='x')
+        ajeno.user_permissions.add(
+            Permission.objects.get(content_type__app_label='scripts', codename='add_ejecucionscript'),
+        )
+        perfil = PerfilUsuario.objects.create(
+            usuario=ajeno, acceso_todas_unidades=False, telegram_chat_id='333',
+        )
+        perfil.unidades_negocio.add(self.mia)
+
+        respuesta = self._sincronizar('ML901-A', '333')
+
+        self.assertEqual(EjecucionScript.objects.count(), 0)
+        self.assertIn('SG', respuesta)
+
+    def test_un_usuario_desactivado_no_puede_accionar(self):
+        """Dar de baja a alguien en Django tiene que apagarle también el Telegram."""
+        from apps.scripts.models import EjecucionScript
+
+        self.operador.is_active = False
+        self.operador.save(update_fields=['is_active'])
+
+        self._sincronizar('ML901-A', '111')
+
+        self.assertEqual(EjecucionScript.objects.count(), 0)
+
+    def test_quien_tiene_todo_si_dispara_y_queda_A_SU_NOMBRE(self):
+        from apps.scripts.models import EjecucionScript
+
+        with patch('apps.scripts.services.enviar_script', return_value=True):
+            respuesta = self._sincronizar('ML901-A', '111')
+
+        ejecucion = EjecucionScript.objects.get()
+        self.assertEqual(ejecucion.creado_por, self.operador)
+        self.assertEqual(ejecucion.script, self.script)
+        self.assertEqual(list(ejecucion.estaciones.all()), [self.estacion])
+        self.assertIn('operador', respuesta)
+
+    def test_una_estacion_inexistente_no_revienta(self):
+        respuesta = self._sincronizar('NO-EXISTE', '111')
+        self.assertIn('No encuentro', respuesta)
+
+    def test_sin_el_script_sembrado_lo_dice_en_vez_de_fallar_raro(self):
+        self.script.delete()
+        respuesta = self._sincronizar('ML901-A', '111')
+        self.assertIn('seed_scripts_hora', respuesta)
+
+    def test_escribir_el_comando_NO_ejecuta_solo_pide_confirmacion(self):
+        """Accionar sobre una estación no puede salir de un solo tipeo."""
+        from apps.monitoreo.telegram_bot import responder_a
+        from apps.scripts.models import EjecucionScript
+
+        respuesta = responder_a('/sincronizar ML901-A', '111')
+
+        self.assertEqual(EjecucionScript.objects.count(), 0)
+        texto, teclado = respuesta
+        botones = [b for fila in teclado for b in fila]
+        self.assertEqual(botones[0]['callback_data'], 'sync:ML901-A')
+
+    def test_la_confirmacion_avisa_si_la_estacion_ya_esta_incomunicada(self):
+        """Con >120 s el agente descarta el script: hay que decirlo antes, no dejar que
+        la persona crea que quedó resuelto."""
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self.estacion.desfase_reloj_segundos = 300
+        self.estacion.save(update_fields=['desfase_reloj_segundos'])
+
+        texto, _ = responder_a('/sincronizar ML901-A', '111')
+
+        self.assertIn('DESCARTA', texto)
+        self.assertIn('ir al local', texto)
+
+    def test_el_boton_de_la_alerta_pide_confirmacion_no_ejecuta(self):
+        from apps.monitoreo.telegram_bot import responder_a_callback
+        from apps.scripts.models import EjecucionScript
+
+        resultado = responder_a_callback('pedirsync:ML901-A', '111')
+
+        self.assertEqual(EjecucionScript.objects.count(), 0)
+        texto, _ = resultado
+        self.assertIn('ML901-A', texto)
+
+    def test_confirmar_desde_un_chat_sin_usuario_tampoco_ejecuta(self):
+        """La confirmación no es la autorización: se vuelve a chequear al ejecutar."""
+        from apps.monitoreo.telegram_bot import responder_a_callback
+        from apps.scripts.models import EjecucionScript
+
+        responder_a_callback('sync:ML901-A', '999')
+
+        self.assertEqual(EjecucionScript.objects.count(), 0)
+
+    def test_sincronizar_sin_codigo_pide_el_codigo(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self.assertIn('/sincronizar CODIGO', responder_a('/sincronizar', '111'))
+
+    def test_hora_lista_las_corridas_y_no_las_que_estan_en_hora(self):
+        from apps.monitoreo.telegram_bot import _comando_hora
+
+        grupo = Grupo.objects.create(codigo='TRX902')
+        farmacia = Farmacia.objects.create(codigo='ML902', grupo=grupo, unidad_negocio=self.sg)
+        Estacion.objects.create(
+            codigo='ML902-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, desfase_reloj_segundos=1,
+        )
+
+        salida = _comando_hora()
+
+        self.assertIn('ML901-A', salida)
+        self.assertNotIn('ML902-A', salida)

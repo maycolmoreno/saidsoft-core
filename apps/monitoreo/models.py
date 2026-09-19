@@ -162,6 +162,10 @@ class Metrica(models.TextChoices):
     # regla. Cuatro métricas obligarían a crear cuatro reglas por unidad de negocio para
     # expresar la misma intención — "avisame si el POS pierde una dependencia".
     SERVICIO_POS_CAIDO = 'servicio_pos_caido', 'Servicio del POS sin responder'
+    # Se compara el valor ABSOLUTO del desfase: una estación atrasada está tan rota como
+    # una adelantada, y el agente descarta los mensajes firmados en las dos direcciones.
+    # Lo que se GUARDA en la Alerta es el valor con signo, que es lo que dice qué pasó.
+    DESFASE_RELOJ = 'desfase_reloj', 'Desfase de reloj (segundos)'
 
 
 class EstadoDispositivo(models.Model):

@@ -253,8 +253,11 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
     registrar_actividad_mensual(estacion)
 
     from apps.monitoreo.models import EstadoDispositivo
-    from apps.monitoreo.services import registrar_estado_dispositivo
+    from apps.monitoreo.services import evaluar_regla_reloj, registrar_estado_dispositivo
     registrar_estado_dispositivo(estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=True)
+    # Despues del save: el desfase recien recalculado ya esta persistido, y la alerta se
+    # abre o se resuelve con el valor de ESTE latido (ver evaluar_regla_reloj).
+    evaluar_regla_reloj(estacion)
 
 
 def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:

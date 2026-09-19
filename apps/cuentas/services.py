@@ -68,6 +68,37 @@ def usuario_puede_ver(user, unidad_negocio) -> bool:
     return unidades_negocio_visibles(user).filter(pk=unidad_negocio.pk).exists()
 
 
+def usuario_de_chat_telegram(chat_id):
+    """El usuario Django atado a `chat_id` de Telegram, o None si no hay ninguno.
+
+    Es la puerta para ACCIONAR desde Telegram, no para consultar. Las consultas se
+    gobiernan con `TELEGRAM_CHAT_IDS_AUTORIZADOS` (una lista en el .env), que alcanza
+    para leer pero no dice quien es cada chat: una ejecucion disparada desde ahi no
+    podria quedar a nombre de nadie, y revocarle la accion a una persona le quitaria
+    tambien la consulta.
+
+    Devolver el usuario permite que el resto del camino reuse el RBAC que ya existe
+    —`has_perm` y `verificar_acceso`, los mismos que aplica el panel— en vez de inventar
+    una segunda tabla de permisos que se desincronizaria de la primera.
+
+    Un usuario desactivado no vale: dar de baja a alguien en Django tiene que apagarle
+    tambien el Telegram, o la baja es de mentira.
+    """
+    from apps.cuentas.models import PerfilUsuario
+
+    if chat_id in (None, ''):
+        return None
+    perfil = (
+        PerfilUsuario.objects
+        .select_related('usuario')
+        .filter(telegram_chat_id=str(chat_id))
+        .first()
+    )
+    if perfil is None or not perfil.usuario.is_active:
+        return None
+    return perfil.usuario
+
+
 def scope_por_unidad_negocio(queryset, user, campo_lookup):
     """Filtra `queryset` a lo que `user` puede ver, salvo que tenga acceso total.
 
