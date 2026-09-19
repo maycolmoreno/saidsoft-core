@@ -3059,7 +3059,7 @@ class ComposeMeshCentralTests(TestCase):
             self.assertIn(variable, entorno)
 
 
-@override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'])
+@override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'], ENLACES_MINUTOS_MINIMOS_AVISO=0)
 class NotificarCambiosEnlacesTests(TestCase):
     """El aviso proactivo de enlaces caidos/recuperados (lo que se reporta al proveedor)."""
 
@@ -3702,7 +3702,8 @@ class DiagnosticoIATests(TestCase):
         self.assertNotIn('CLAVE-IA-DE-PRUEBA', '\n'.join(registro.output))
 
 
-@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA', ENLACES_TELEGRAM_CHAT_ID='-100777')
+@override_settings(TELEGRAM_BOT_TOKEN='TOKEN-SECRETO-DE-PRUEBA', ENLACES_TELEGRAM_CHAT_ID='-100777',
+                   ENLACES_MINUTOS_MINIMOS_AVISO=0)
 class EnlacesTelegramTests(TestCase):
     """Punto 5: el resumen agrupado de enlaces tambien sale por Telegram, no solo por correo."""
 
@@ -4735,3 +4736,145 @@ class TopErroresVentanaTests(TestCase):
         texto = responder_a('/toperrores')
         self.assertIn('Sin errores de sistema', texto)
         self.assertNotIn('solo cosas viejas', texto)
+
+
+@override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'], ENLACES_MINUTOS_MINIMOS_AVISO=10)
+class ParpadeoDeEnlacesTests(TestCase):
+    """Cortes breves que no tienen que generar aviso.
+
+    El usuario reporto el 18-sep-2026 recibir "GP092 estuvo caido 2 min". Dos problemas
+    distintos detras del mismo sintoma: la recuperacion se avisaba aunque la caida nunca
+    se hubiera avisado (12 de 85 caidas de ese dia), y la duracion estaba mal calculada
+    — el evento arrancaba en el tercer fallo, no en el primero, asi que GP092 figuraba
+    con 2 minutos cuando el enlace habia estado mal unos 8.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX980')
+        self.farmacia = Farmacia.objects.create(
+            codigo='TSTP01', grupo=grupo, unidad_negocio=self.sg, ip_router='10.8.0.1',
+            circuito_proveedor='telconet-prueba')
+        self.UMBRAL = EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS
+        mail.outbox = []
+
+    def _sondear(self, alcanzable, veces=1):
+        from apps.monitoreo.enlaces import registrar_sondeo
+
+        for _ in range(veces):
+            registrar_sondeo(self.farmacia, alcanzable, 12.0 if alcanzable else None)
+
+    def _caer(self):
+        self._sondear(True)
+        self._sondear(False, veces=self.UMBRAL)
+
+    def _envejecer(self, minutos):
+        """Mueve el inicio de la caida abierta hacia atras."""
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        EventoEnlaceFarmacia.objects.filter(farmacia=self.farmacia, fin__isnull=True).update(
+            inicio=timezone.now() - timedelta(minutes=minutos))
+
+    # --- el inicio del evento ---
+
+    def test_la_caida_arranca_en_el_primer_fallo_no_en_el_tercero(self):
+        """Lo que hacia que GP092 figurara con 2 min en vez de 8."""
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        self._sondear(True)
+        antes = timezone.now()
+        self._sondear(False, veces=self.UMBRAL)
+
+        evento = EventoEnlaceFarmacia.objects.get(farmacia=self.farmacia)
+        estado = EstadoEnlaceFarmacia.objects.get(farmacia=self.farmacia)
+        self.assertLessEqual(evento.inicio, estado.ultimo_cambio_estado,
+                             'el inicio no puede ser posterior al momento en que se confirmo')
+        self.assertGreaterEqual(evento.inicio, antes)
+
+    def test_al_responder_se_limpia_la_marca_del_primer_fallo(self):
+        """Si no, la proxima racha heredaria el inicio de la anterior."""
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self._sondear(False)
+        self.assertIsNotNone(EstadoEnlaceFarmacia.objects.get(farmacia=self.farmacia).primer_fallo)
+        self._sondear(True)
+        self.assertIsNone(EstadoEnlaceFarmacia.objects.get(farmacia=self.farmacia).primer_fallo)
+
+    def test_un_fallo_suelto_seguido_de_respuesta_no_deja_racha(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        self._sondear(True)
+        self._sondear(False)
+        self._sondear(True)
+        self.assertFalse(EventoEnlaceFarmacia.objects.exists(), 'un fallo no es una caida')
+        self.assertEqual(
+            EstadoEnlaceFarmacia.objects.get(farmacia=self.farmacia).fallas_consecutivas, 0)
+
+    # --- el umbral de duracion ---
+
+    def test_una_caida_recien_confirmada_todavia_no_se_avisa(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caer()
+        resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['caidos'], 0, 'hay que esperar el minimo antes de avisar')
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_la_misma_caida_se_avisa_cuando_pasa_el_minimo(self):
+        """No se pierde: se espera. En la corrida siguiente ya califica."""
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caer()
+        notificar_cambios_enlaces()
+        self._envejecer(15)
+
+        resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['caidos'], 1)
+        self.assertIn('TSTP01', mail.outbox[-1].body)
+
+    # --- la recuperacion huerfana ---
+
+    def test_un_parpadeo_completo_no_genera_ningun_aviso(self):
+        """El caso exacto que reporto el usuario: cae y vuelve entre dos corridas."""
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caer()
+        self._sondear(True)  # vuelve enseguida
+
+        resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['caidos'], 0)
+        self.assertEqual(resumen['recuperados'], 0,
+                         'no se anuncia que volvio algo que nunca se dijo que se fue')
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_la_recuperacion_si_se_avisa_cuando_la_caida_se_habia_avisado(self):
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caer()
+        self._envejecer(15)
+        notificar_cambios_enlaces()
+        mail.outbox = []
+
+        self._sondear(True)
+        resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['recuperados'], 1)
+        self.assertIn('RECUPERADOS', mail.outbox[-1].body)
+
+    def test_un_corte_largo_sigue_avisando_normal(self):
+        """El filtro no puede silenciar lo que si importa."""
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caer()
+        self._envejecer(180)
+        resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['caidos'], 1)
+
+    @override_settings(ENLACES_MINUTOS_MINIMOS_AVISO=0)
+    def test_el_umbral_se_puede_desactivar(self):
+        """Con 0 vuelve el comportamiento anterior, para quien prefiera enterarse de todo."""
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caer()
+        self.assertEqual(notificar_cambios_enlaces()['caidos'], 1)

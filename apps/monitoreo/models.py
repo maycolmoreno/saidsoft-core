@@ -663,6 +663,17 @@ class EstadoEnlaceFarmacia(models.Model):
         null=True, blank=True, help_text='Latencia del último sondeo exitoso. null = el último falló.',
     )
     fallas_consecutivas = models.PositiveIntegerField(default=0)
+    # Cuando empezo la racha de fallos actual, no cuando se CONFIRMO la caida.
+    #
+    # `ultimo_cambio_estado` marca el tercer fallo (el que cruza el umbral), y usarlo
+    # como inicio del EventoEnlaceFarmacia hacia que toda caida se registrara mas corta
+    # de lo que fue: GP092 el 18-sep-2026 figuro como "2 min" cuando el enlace habia
+    # estado mal unos 8. El docstring del evento ya decia que el inicio tenia que ser el
+    # primer fallo "o el dato no serviria para un SLA" — faltaba el campo para saberlo.
+    primer_fallo = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Primer sondeo fallido de la racha actual. Se limpia cuando responde.',
+    )
     # Tercera categoria, que faltaba: `alcanzable` distingue "responde" de "caido" y
     # null de "nunca se sondeo", pero no habia forma de ver "se sondea y nunca
     # respondio". Medido el 17-sep-2026: de 162 farmacias en False, 133 nunca habian

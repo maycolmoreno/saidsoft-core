@@ -799,6 +799,19 @@ alertas de estación, serían ~2.000 envíos diarios — Gmail los corta y nadie
 - **No avisa de lo que nunca respondió.** Un sitio que jamás contestó no tiene una
   caída que reportar; se revisa por el panel (filtro "Nunca respondieron"), no por
   correo. El evento igual queda registrado en `EventoEnlaceFarmacia`.
+- **No avisa cortes breves** (`ENLACES_MINUTOS_MINIMOS_AVISO`, 10 min por defecto). Un
+  enlace que se cae y vuelve en dos minutos no amerita un aviso ni un ticket con el
+  proveedor: de 85 caídas en 24 h medidas el 18-sep-2026, 16 duraron 5 minutos o menos.
+  Las que sigan caídas en la corrida siguiente se avisan entonces — no se pierden, se
+  esperan. Con el valor en 0 vuelve el comportamiento anterior.
+- **No anuncia recuperaciones huérfanas.** Antes, una caída que nacía y moría entre dos
+  corridas generaba solo el aviso de vuelta: llegaba "GP092 estuvo caído 2 min" sin que
+  nadie hubiera avisado que se había caído. Pasaba en 12 de esas 85. Ahora la
+  recuperación solo se avisa si la caída se avisó.
+- **La caída arranca en el primer fallo**, no en el tercero. `ultimo_cambio_estado` marca
+  el sondeo que *confirma* la caída, así que usarlo como inicio registraba todo más corto
+  de lo que fue: ese GP092 figuraba con 2 minutos cuando el enlace había estado mal unos
+  8. Para eso existe `EstadoEnlaceFarmacia.primer_fallo`.
 - **No decide cuándo una caída es real.** Eso ya lo resolvió `registrar_sondeo()` exigiendo
   `UMBRAL_FALLAS_CONSECUTIVAS` (3) sondeos fallidos seguidos: con el barrido cada 2 min, una
   caída se declara a los ~6 minutos. El aviso solo reporta lo ya confirmado.

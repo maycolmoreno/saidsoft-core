@@ -151,8 +151,13 @@ def registrar_sondeo(farmacia, alcanzable: bool, latencia_ms: float | None):
         estado.fallas_consecutivas = 0
         estado.latencia_ms = latencia_ms
         estado.respondio_alguna_vez = True
+        estado.primer_fallo = None
         nuevo_alcanzable = True
     else:
+        if estado.fallas_consecutivas == 0:
+            # Arranca la racha: este es el instante que despues va como inicio de la
+            # caida, no el tercer fallo (ver EstadoEnlaceFarmacia.primer_fallo).
+            estado.primer_fallo = ahora
         estado.fallas_consecutivas += 1
         estado.latencia_ms = None
         # Mientras no supere el umbral se conserva el estado anterior: null sigue siendo
@@ -174,7 +179,8 @@ def registrar_sondeo(farmacia, alcanzable: bool, latencia_ms: float | None):
             farmacia=farmacia,
             # El inicio real es el primer fallo, no el tercero: si no, toda caída
             # aparecería más corta de lo que fue y el dato no serviría para un SLA.
-            inicio=estado.ultimo_cambio_estado or ahora,
+            # `ultimo_cambio_estado` marca justamente el tercero, así que no sirve acá.
+            inicio=estado.primer_fallo or ahora,
             circuito_proveedor=farmacia.circuito_proveedor,
         )
         logger.warning('Enlace CAÍDO en %s (circuito %s)', farmacia.codigo, farmacia.circuito_proveedor or '?')
@@ -267,6 +273,8 @@ def notificar_cambios_enlaces() -> dict:
     Sin ENLACES_NOTIFICAR_A configurado no manda nada y lo dice en el log: el evento ya
     quedó guardado igual, y una instalación nueva no debe empezar a escribirle a nadie.
     """
+    from datetime import timedelta
+
     from django.conf import settings
     from django.core.mail import send_mail
 
@@ -276,15 +284,28 @@ def notificar_cambios_enlaces() -> dict:
     # caida que reportarle al proveedor -- el proveedor va a responder que su enlace
     # esta arriba, y va a tener razon. Eso se revisa por el panel (ruta, IP, si el
     # sitio sigue activo), no por un correo de incidente.
+    # Solo lo que lleva caido el tiempo minimo. Un corte que se resuelve solo en pocos
+    # minutos no amerita un aviso: de 85 caidas en 24 h medidas el 18-sep-2026, 16
+    # duraron 5 minutos o menos. Las que sigan caidas en la proxima corrida se avisan
+    # entonces — no se pierden, se esperan.
+    ahora = timezone.now()
+    minimos = getattr(settings, 'ENLACES_MINUTOS_MINIMOS_AVISO', 10)
+    corte = ahora - timedelta(minutes=minimos)
     caidos = list(
         EventoEnlaceFarmacia.objects
-        .filter(fin__isnull=True, notificado_en__isnull=True)
+        .filter(fin__isnull=True, notificado_en__isnull=True, inicio__lte=corte)
         .exclude(farmacia__estado_enlace__respondio_alguna_vez=False)
         .select_related('farmacia').order_by('inicio')
     )
+    # Solo la recuperacion de lo que SI se aviso como caido. Sin este filtro llegaba
+    # "GP092 estuvo caido 2 min" sin que antes se hubiera avisado nada: la caida nacia y
+    # moria entre dos corridas, y salia el aviso de vuelta huerfano. Pasaba en 12 de las
+    # 85 caidas de un dia. Anunciar que algo volvio, cuando nunca se dijo que se habia
+    # ido, es puro ruido.
     recuperados = list(
         EventoEnlaceFarmacia.objects
-        .filter(fin__isnull=False, recuperacion_notificada_en__isnull=True)
+        .filter(fin__isnull=False, recuperacion_notificada_en__isnull=True,
+                notificado_en__isnull=False)
         .select_related('farmacia').order_by('fin')
     )
     resumen = {'caidos': len(caidos), 'recuperados': len(recuperados), 'enviado': False}
@@ -304,7 +325,6 @@ def notificar_cambios_enlaces() -> dict:
         )
         return resumen
 
-    ahora = timezone.now()
     lineas = []
     if caidos:
         lineas.append(f'ENLACES CAÍDOS ({len(caidos)})')

@@ -74,10 +74,17 @@ docker compose --env-file .env up -d || echo "   (up -d devolvió error; se sigu
 # o si no había ninguna— sin tocar la base. Que hayan quedado pendientes lo decide la
 # verificación de abajo, que es de solo lectura.
 echo "==> 4/4  migraciones (las aplicó el entrypoint; esto muestra el resultado)"
-docker compose logs --since "${INICIO_DESPLIEGUE}" web 2>/dev/null \
-    | grep -E 'Applying |No migrations to apply|Operations to perform' \
-    | sed 's/^/   /' \
-    || echo "   (sin líneas de migración en el arranque de web)"
+# A variable y no a un pipe con `|| echo`: en un pipe el código de salida es el del
+# ÚLTIMO comando, así que un `grep` sin resultados seguido de `sed` devuelve 0 y el
+# fallback no se dispara nunca. El paso quedaba en blanco, que es justo lo contrario de
+# lo que busca: dejar a la vista si se aplicó algo.
+LINEAS_MIGRACION=$(docker compose logs --since "${INICIO_DESPLIEGUE}" web 2>/dev/null \
+    | grep -E 'Applying |No migrations to apply' || true)
+if [ -n "$LINEAS_MIGRACION" ]; then
+    echo "$LINEAS_MIGRACION" | sed 's/^/   /'
+else
+    echo "   (el arranque de web no reportó migraciones; la verificación de abajo decide)"
+fi
 
 # Comprobación final: que no quede ninguna migración sin aplicar. Es lo que convierte
 # este script en algo más que un atajo — si un paso no tuvo efecto, se entera acá y no
