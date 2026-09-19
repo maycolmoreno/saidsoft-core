@@ -4662,3 +4662,76 @@ class ResumenDiarioTelegramTests(TestCase):
         with patch('apps.monitoreo.services.urllib.request.urlopen'):
             resumen_diario_telegram_task()
         self.assertEqual(Alerta.objects.count(), antes)
+
+
+class TopErroresVentanaTests(TestCase):
+    """El ranking muestra lo que esta pasando, no lo que paso alguna vez.
+
+    PosErrorDetectado es un contador de por vida, asi que sin corte temporal un problema
+    resuelto sigue encabezando para siempre. El 18-sep-2026 el segundo puesto lo ocupaba
+    un '3D000: no existe la base de datos "TRX004"' de ML027-ADM del 27 de agosto, ya
+    arreglado: el ranking mandaba a revisar algo que no existia.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX970')
+        farmacia = Farmacia.objects.create(codigo='TSTV01', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='TSTV01-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+
+    def _error(self, mensaje, cantidad, *, dias_atras):
+        """auto_now obliga a pisar ultima_vez con un update despues de crear."""
+        from apps.monitoreo.models import PosErrorDetectado
+
+        obj = PosErrorDetectado.objects.create(
+            estacion=self.estacion, mensaje=mensaje, cantidad_total=cantidad,
+            categoria=PosErrorDetectado.Categoria.SISTEMA)
+        PosErrorDetectado.objects.filter(pk=obj.pk).update(
+            ultima_vez=timezone.now() - timedelta(days=dias_atras))
+        return obj
+
+    def test_un_error_viejo_no_encabeza_el_ranking(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._error('problema arreglado hace tres semanas', 5000, dias_atras=22)
+        self._error('problema de esta semana', 3, dias_atras=1)
+
+        texto = responder_a('/toperrores')
+        self.assertIn('problema de esta semana', texto)
+        self.assertNotIn('arreglado hace tres semanas', texto,
+                         'con 5.000 repeticiones viejas igual no entra')
+
+    def test_el_borde_de_la_ventana(self):
+        from apps.monitoreo.telegram_bot import _DIAS_TOPERRORES, responder_a
+
+        self._error('justo adentro', 10, dias_atras=_DIAS_TOPERRORES - 1)
+        self._error('justo afuera', 10, dias_atras=_DIAS_TOPERRORES + 1)
+
+        texto = responder_a('/toperrores')
+        self.assertIn('justo adentro', texto)
+        self.assertNotIn('justo afuera', texto)
+
+    def test_dice_hace_cuanto_se_vio_cada_uno(self):
+        """Sin esto, dos errores de la ventana se ven igual de urgentes."""
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._error('error de ayer', 4, dias_atras=1)
+        self.assertIn('visto hace 1 d', responder_a('/toperrores'))
+
+    def test_aclara_que_el_total_es_historico(self):
+        """"x500" no puede leerse como "500 veces esta semana": el modelo no guarda el
+        desglose por dia, asi que el numero es el acumulado del mensaje."""
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._error('algo', 500, dias_atras=1)
+        self.assertIn('histórico', responder_a('/toperrores'))
+
+    def test_sin_nada_reciente_lo_dice_y_no_muestra_lo_viejo(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self._error('solo cosas viejas', 900, dias_atras=60)
+        texto = responder_a('/toperrores')
+        self.assertIn('Sin errores de sistema', texto)
+        self.assertNotIn('solo cosas viejas', texto)

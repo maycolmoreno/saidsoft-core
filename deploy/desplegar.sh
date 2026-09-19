@@ -30,6 +30,10 @@ fi
 
 cd "$REPO"
 
+# Marca de tiempo del arranque, para poder filtrar después los logs de ESTE despliegue y
+# no los del anterior. `--since` de Compose acepta este formato RFC3339.
+INICIO_DESPLIEGUE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
 echo "==> 1/4  git pull"
 git pull
 
@@ -55,12 +59,25 @@ docker compose --env-file .env build
 echo "==> 3/4  up -d"
 docker compose --env-file .env up -d || echo "   (up -d devolvió error; se sigue y lo decide la verificación del final)"
 
-# El entrypoint YA corre `migrate` al arrancar cada contenedor (ver entrypoint.sh).
-# Se repite acá solo para VER el resultado en la salida del despliegue: sin esto, que una
-# migración se aplique o no queda enterrado en los logs del contenedor. Es idempotente,
-# así que repetirlo no cuesta nada.
-echo "==> 4/4  migrate (el entrypoint ya lo corrió; esto lo deja a la vista)"
-docker compose exec -T web python manage.py migrate || true
+# El entrypoint YA corre `migrate` al arrancar cada contenedor (ver entrypoint.sh), así
+# que acá NO se vuelve a correr: solo se muestra lo que hizo.
+#
+# Antes sí se repetía, con el argumento de que "migrate es idempotente". Lo es en
+# secuencia, pero no en concurrencia: `up -d` devuelve apenas los contenedores arrancan y
+# el entrypoint de `web` todavía está migrando, así que los dos aplicaban la misma
+# migración a la vez y Django no toma ningún lock. El segundo reventaba con
+# `column "..." already exists` y el despliegue terminaba mostrando un traceback rojo
+# aunque todo hubiera salido bien — pasó dos veces el 17-sep-2026 (migraciones 0025 y
+# 0026), y las dos veces hubo que entrar a comprobar a mano si la base había quedado sana.
+#
+# Mostrar el log del propio entrypoint da la misma información —qué migración se aplicó,
+# o si no había ninguna— sin tocar la base. Que hayan quedado pendientes lo decide la
+# verificación de abajo, que es de solo lectura.
+echo "==> 4/4  migraciones (las aplicó el entrypoint; esto muestra el resultado)"
+docker compose logs --since "${INICIO_DESPLIEGUE}" web 2>/dev/null \
+    | grep -E 'Applying |No migrations to apply|Operations to perform' \
+    | sed 's/^/   /' \
+    || echo "   (sin líneas de migración en el arranque de web)"
 
 # Comprobación final: que no quede ninguna migración sin aplicar. Es lo que convierte
 # este script en algo más que un atajo — si un paso no tuvo efecto, se entera acá y no

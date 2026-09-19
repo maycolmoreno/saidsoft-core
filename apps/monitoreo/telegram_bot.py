@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 # lo que sirve es el total y los más recientes.
 _MAX_FILAS = 15
 
+# Ventana de /toperrores. Siete días cubre la semana operativa: lo bastante largo para
+# que un error de los fines de semana no desaparezca, y lo bastante corto para que algo
+# arreglado hace tres semanas deje de encabezar el ranking.
+_DIAS_TOPERRORES = 7
+
 
 def _texto_intervalo(delta) -> str:
     """"3 h 12 min" en vez de "192 minutos": es lo que se lee de un vistazo."""
@@ -261,28 +266,54 @@ def _comando_toperrores() -> str:
     altísima frecuencia: incluirlas haría que coparan las primeras posiciones y que este
     ranking nunca mostrara un bug real. Se siguen guardando y se ven en la ficha de la
     estación, solo no compiten acá.
+
+    **Solo lo visto en los últimos `_DIAS_TOPERRORES` días.** `PosErrorDetectado` es un
+    contador de por vida, así que sin corte un problema ya resuelto sigue encabezando el
+    ranking para siempre: el 18-sep-2026, 19 de los 42 mensajes acumulados eran viejos, y
+    el segundo puesto lo ocupaba un `3D000: no existe la base de datos "TRX004"` de
+    ML027-ADM del 27 de agosto, arreglado hacía tres semanas. Un ranking que muestra lo
+    que pasó alguna vez, en vez de lo que está pasando, manda a revisar cosas que ya no
+    existen.
+
+    El número que se muestra sigue siendo el acumulado histórico de ese mensaje —el
+    modelo no guarda el desglose por día, así que no se puede recortar— pero solo
+    aparecen los que se vieron dentro de la ventana. El encabezado lo dice para que
+    nadie lea "x500" como "500 veces esta semana".
     """
-    from django.db.models import Count, Sum
+    from datetime import timedelta
+
+    from django.db.models import Count, Max, Sum
 
     from .models import PosErrorDetectado
 
+    desde = timezone.now() - timedelta(days=_DIAS_TOPERRORES)
     ranking = list(
         PosErrorDetectado.objects
         .exclude(categoria=PosErrorDetectado.Categoria.NEGOCIO)
+        .filter(ultima_vez__gte=desde)
         .values('mensaje')
-        .annotate(total=Sum('cantidad_total'), estaciones=Count('estacion', distinct=True))
+        .annotate(
+            total=Sum('cantidad_total'),
+            estaciones=Count('estacion', distinct=True),
+            visto=Max('ultima_vez'),
+        )
         .order_by('-total')[:_MAX_FILAS]
     )
     if not ranking:
-        return '✅ Sin errores de sistema en el log del POS.'
+        return f'✅ Sin errores de sistema del POS en los últimos {_DIAS_TOPERRORES} días.'
 
-    lineas = ['🐞 Errores del POS más repetidos (toda la flota)', '']
+    lineas = [f'🐞 Errores del POS de los últimos {_DIAS_TOPERRORES} días (toda la flota)', '']
     for fila in ranking:
         mensaje = fila['mensaje'][:110]
         lineas.append(
-            f'  x{fila["total"]} · {fila["estaciones"]} estación(es)\n    {mensaje}'
+            f'  x{fila["total"]} · {fila["estaciones"]} estación(es) · '
+            f'visto hace {_texto_duracion(fila["visto"])}\n    {mensaje}'
         )
-    lineas += ['', 'No se cuentan las validaciones de negocio (ej. VENTA SIN LOTE).']
+    lineas += [
+        '',
+        'El total es histórico del mensaje; la ventana filtra qué sigue apareciendo.',
+        'No se cuentan las validaciones de negocio (ej. VENTA SIN LOTE).',
+    ]
     return '\n'.join(lineas)
 
 

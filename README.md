@@ -657,7 +657,7 @@ duración (calco de `run_meshcentral_worker`: latido propio y apagado limpio) y
 | `/farmacia ML016` | Enlace, tráfico SNMP, estaciones y sus servicios del POS caídos |
 | `/criticas` | Solo las alertas de severidad crítica |
 | `/mantenimiento` | Ventanas de mantenimiento en curso: qué alertas están silenciadas y hasta cuándo |
-| `/toperrores` | Errores del POS más repetidos en TODA la flota, con en cuántas estaciones aparece cada uno |
+| `/toperrores` | Errores del POS más repetidos en TODA la flota (últimos 7 días), con en cuántas estaciones aparece cada uno |
 
 - **Long polling, no webhook.** Un webhook exige que Telegram alcance el servidor desde
   Internet con HTTPS válido; este vive en red interna con certificado autofirmado.
@@ -686,7 +686,14 @@ duración (calco de `run_meshcentral_worker`: latido propio y apagado limpio) y
   `manejar_pos_errores` al contar para la alerta: esas son validaciones del POS haciendo
   su trabajo y son altísimamente frecuentes. Verificado forzando un caso de cada
   categoría contra producción — uno de negocio con 9.999 repeticiones no entra al
-  ranking mientras uno de sistema con 7 sí.
+  ranking mientras uno de sistema con 7 sí. **Y solo lo visto en los últimos 7 días**:
+  `PosErrorDetectado` es un contador de por vida, así que sin corte un problema resuelto
+  encabeza para siempre — el 18-sep-2026, 19 de los 42 mensajes acumulados eran viejos y
+  el segundo puesto lo ocupaba un `3D000: no existe la base de datos "TRX004"` de
+  ML027-ADM del 27 de agosto, arreglado hacía tres semanas. El número que se muestra
+  sigue siendo el acumulado histórico (el modelo no guarda el desglose por día); lo que
+  filtra la ventana es qué mensajes siguen apareciendo, y el encabezado lo aclara para
+  que nadie lea "x500" como "500 veces esta semana".
 - `/mantenimiento` aplica el mismo filtro que `ventana_mantenimiento_activa`
   (`activo=True` más el rango `desde`/`hasta`) y resuelve el destino con
   `resolver_estaciones`, el mismo punto que usa el motor: mostrar algo distinto de lo
