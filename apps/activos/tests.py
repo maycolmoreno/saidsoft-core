@@ -733,7 +733,7 @@ class AnomaliasRedActivoTests(TestCase):
 
 class ActivosPorVencerGarantiaTests(TestCase):
     def test_incluye_vencida_y_por_vencer_dentro_de_la_ventana(self):
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         vencida = Activo.objects.create(
             codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, vencimiento_garantia=hoy - datetime.timedelta(days=5),
         )
@@ -749,7 +749,7 @@ class ActivosPorVencerGarantiaTests(TestCase):
         self.assertNotIn(lejos, resultado)
 
     def test_excluye_dados_de_baja_y_sin_fecha(self):
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         Activo.objects.create(
             codigo='CR-DSK-0001', tipo=Activo.Tipo.DESKTOP, estado=Activo.Estado.DADO_DE_BAJA,
             vencimiento_garantia=hoy - datetime.timedelta(days=5),

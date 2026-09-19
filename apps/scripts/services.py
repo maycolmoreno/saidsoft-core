@@ -134,7 +134,9 @@ def generar_ejecucion_programada(*, programado):
         grupos=programado.grupos.all(), farmacias=programado.farmacias.all(),
         estaciones=programado.estaciones.all(), usuario=programado.creado_por, programado=programado,
     )
-    hoy = timezone.now().date()
+    # localdate(): con now().date() la fecha sale en UTC y, despues de las 19:00 hora
+    # local, la proxima ejecucion quedaba agendada un dia mas tarde de lo pedido.
+    hoy = timezone.localdate()
     programado.fecha_ultima_ejecucion = hoy
     programado.fecha_proxima_ejecucion = hoy + timedelta(days=programado.frecuencia_dias)
     programado.save(update_fields=['fecha_ultima_ejecucion', 'fecha_proxima_ejecucion'])
@@ -150,7 +152,8 @@ def generar_ejecuciones_vencidas() -> int:
     from .models import ScriptProgramado
 
     with transaction.atomic():
-        hoy = timezone.now().date()
+        # Mismo motivo: en UTC, los programados de la noche se disparan un dia antes.
+        hoy = timezone.localdate()
         vencidos = ScriptProgramado.objects.filter(activo=True, fecha_proxima_ejecucion__lte=hoy)
         total = 0
         for programado in vencidos:

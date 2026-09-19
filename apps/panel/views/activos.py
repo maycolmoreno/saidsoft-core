@@ -428,5 +428,6 @@ def activos_avisos(request):
     return render(request, 'panel/activos_avisos.html', {
         'garantias': garantias, 'stock_bajo': stock_bajo,
         'dados_de_baja_conectados': dados_de_baja_conectados, 'movidos_sin_registro': movidos_sin_registro,
-        'hoy': timezone.now().date(),
+        # localdate(): la plantilla compara contra esta fecha para pintar vencidos.
+        'hoy': timezone.localdate(),
     })

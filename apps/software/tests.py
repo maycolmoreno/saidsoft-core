@@ -242,11 +242,11 @@ class GenerarEscaneoProgramadoTests(_BaseSoftwareTests):
         self.estacion = self._crear_estacion('ML001-A')
         self.programado = InventarioProgramado.objects.create(
             unidad_negocio=self.sg, destino_tipo=DestinoTipo.CADENA,
-            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.now().date(), creado_por=self.usuario,
+            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.localdate(), creado_por=self.usuario,
         )
 
     def test_dispara_el_comando_y_avanza_fechas(self):
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         with patch('apps.catalogo.services.enviar_comando', return_value=True) as mock_enviar:
             enviados = generar_escaneo_programado(programado=self.programado)
 
@@ -268,7 +268,7 @@ class GenerarEscaneoProgramadoTests(_BaseSoftwareTests):
 
         futuro = InventarioProgramado.objects.create(
             unidad_negocio=self.sg, destino_tipo=DestinoTipo.CADENA,
-            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.now().date() + timedelta(days=5),
+            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.localdate() + timedelta(days=5),
             creado_por=self.usuario,
         )
         with patch('apps.catalogo.services.enviar_comando', return_value=True):

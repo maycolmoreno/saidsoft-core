@@ -574,7 +574,9 @@ def activos_por_vencer_garantia(dias=30):
     """Activos con garantía ya vencida o por vencer dentro de `dias`. Incluye ambos
     casos (no solo "por vencer") — el panel los distingue por color según si la fecha
     ya pasó o no."""
-    limite = timezone.now().date() + datetime.timedelta(days=dias)
+    # localdate(): en UTC el limite se corre un dia y una garantia entra o sale del
+    # aviso antes de tiempo.
+    limite = timezone.localdate() + datetime.timedelta(days=dias)
     return Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA).filter(
         vencimiento_garantia__isnull=False, vencimiento_garantia__lte=limite,
     ).select_related('marca', 'bodega_actual', 'colaborador_actual').order_by('vencimiento_garantia')

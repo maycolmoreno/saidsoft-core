@@ -164,7 +164,9 @@ def generar_escaneo_programado(*, programado) -> int:
         if enviar_comando(estacion, 'consultar_software_instalado'):
             enviados += 1
 
-    hoy = timezone.now().date()
+    # localdate(), igual que en apps.scripts.services: en UTC la proxima corrida
+    # quedaba un dia corrida despues de las 19:00 hora local.
+    hoy = timezone.localdate()
     programado.fecha_ultima_ejecucion = hoy
     programado.fecha_proxima_ejecucion = hoy + timedelta(days=programado.frecuencia_dias)
     programado.save(update_fields=['fecha_ultima_ejecucion', 'fecha_proxima_ejecucion'])
@@ -182,7 +184,7 @@ def generar_escaneos_vencidos() -> int:
     from .models import InventarioProgramado
 
     with transaction.atomic():
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         vencidos = InventarioProgramado.objects.filter(activo=True, fecha_proxima_ejecucion__lte=hoy)
         total = 0
         for programado in vencidos:

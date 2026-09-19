@@ -26,11 +26,11 @@ class GenerarEjecucionProgramadaTests(TestCase):
         )
         self.programado = ScriptProgramado.objects.create(
             script=self.script, unidad_negocio=self.sg, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
-            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.now().date(), creado_por=self.usuario,
+            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.localdate(), creado_por=self.usuario,
         )
 
     def test_genera_ejecucion_y_avanza_fechas(self):
-        hoy = timezone.now().date()
+        hoy = timezone.localdate()
         ejecucion = generar_ejecucion_programada(programado=self.programado)
 
         self.assertEqual(ejecucion.script, self.script)
@@ -44,7 +44,7 @@ class GenerarEjecucionProgramadaTests(TestCase):
     def test_comando_solo_recoge_las_vencidas(self):
         futuro = ScriptProgramado.objects.create(
             script=self.script, unidad_negocio=self.sg, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
-            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.now().date() + timedelta(days=5),
+            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.localdate() + timedelta(days=5),
             creado_por=self.usuario,
         )
         call_command('generar_ejecuciones_programadas')
@@ -99,7 +99,7 @@ class RegistrarEjecucionScriptAprobacionTests(TestCase):
     def test_ejecucion_programada_no_requiere_aprobacion_aunque_el_destino_sea_amplio(self):
         programado = ScriptProgramado.objects.create(
             script=self.script, unidad_negocio=self.sg, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
-            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.now().date(), creado_por=self.creador,
+            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.localdate(), creado_por=self.creador,
         )
         ejecucion = generar_ejecucion_programada(programado=programado)
         self.assertNotEqual(ejecucion.estado, EjecucionScript.Estado.PENDIENTE_APROBACION)
@@ -167,7 +167,7 @@ class GenerarEjecucionesProgramadasTaskTests(TestCase):
         )
         programado = ScriptProgramado.objects.create(
             script=script, unidad_negocio=sg, destino_tipo=EjecucionScript.DestinoTipo.CADENA,
-            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.now().date(), creado_por=usuario,
+            frecuencia_dias=7, fecha_proxima_ejecucion=timezone.localdate(), creado_por=usuario,
         )
 
         resultado = generar_ejecuciones_programadas_task.delay()

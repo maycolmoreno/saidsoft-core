@@ -57,7 +57,11 @@ class ActividadCumplimiento(models.Model):
 
     @property
     def vencida(self):
-        return timezone.now().date() > self.fecha_limite
+        # localdate() y no now().date(): este ultimo devuelve la fecha en UTC, y con
+        # TIME_ZONE='America/Guayaquil' (UTC-5) eso marca vencida una actividad cinco
+        # horas antes — entre las 19:00 y medianoche del dia limite, en UTC ya es el
+        # dia siguiente. Mismo error que se corrigio en mantenimiento (commit 9f9ba9a).
+        return timezone.localdate() > self.fecha_limite
 
 
 class ResultadoCumplimientoEstacion(models.Model):

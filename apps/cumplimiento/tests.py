@@ -1,3 +1,4 @@
+import datetime
 from datetime import date
 
 from django.contrib.auth.models import User
@@ -129,3 +130,112 @@ class ResolverObjetivosTests(TestCase):
             nombre='Sin objetivos', tipo_objetivo=TipoObjetivoCumplimiento.FARMACIAS, fecha_limite=date(2026, 10, 7),
         )
         self.assertIsNone(calcular_avance(actividad))
+
+
+class FechaLocalVsUtcTests(TestCase):
+    """Todo lo que un humano lee como "hoy" tiene que ser hoy EN ECUADOR.
+
+    `timezone.now().date()` devuelve la fecha en UTC. Con TIME_ZONE='America/Guayaquil'
+    (UTC-5), entre las 19:00 y medianoche hora local en UTC ya es el dia siguiente: cinco
+    de cada veinticuatro horas, todo calculo de "hoy" daba un dia de mas.
+
+    Ya se habia corregido en mantenimiento (commit 9f9ba9a, 23-ago-2026) y quedo sin
+    corregir en otros siete lugares. Estos tests fijan el comportamiento en la franja
+    exacta donde se rompe — de dia pasan igual con el bug presente, por eso nadie lo
+    noto.
+    """
+
+    # 18-sep-2026 02:30 UTC = 17-sep-2026 21:30 en Guayaquil. Para una persona en la
+    # farmacia es todavia el 17.
+    NOCHE_UTC = datetime.datetime(2026, 9, 18, 2, 30, tzinfo=datetime.timezone.utc)
+
+    def test_la_franja_elegida_es_la_que_rompe(self):
+        """Si esto falla, el resto de la clase no prueba lo que dice probar."""
+        from django.utils import timezone as tz
+
+        self.assertEqual(self.NOCHE_UTC.date(), datetime.date(2026, 9, 18), 'en UTC ya es 18')
+        self.assertEqual(tz.localtime(self.NOCHE_UTC).date(), datetime.date(2026, 9, 17),
+                         'en Ecuador todavia es 17')
+
+    def test_una_actividad_de_cumplimiento_no_vence_antes_de_tiempo(self):
+        """Con fecha limite HOY (17) y siendo las 21:30 del 17, no puede estar vencida."""
+        from unittest.mock import patch
+
+        from apps.cumplimiento.models import ActividadCumplimiento
+
+        actividad = ActividadCumplimiento(
+            nombre='Revision', fecha_limite=datetime.date(2026, 9, 17),
+        )
+        with patch('django.utils.timezone.now', return_value=self.NOCHE_UTC):
+            self.assertFalse(
+                actividad.vencida,
+                'a las 21:30 del dia limite todavia queda el dia: en UTC ya seria manana',
+            )
+
+    def test_una_actividad_si_vence_al_dia_siguiente(self):
+        """El contraste: el arreglo no puede volverla eterna."""
+        from unittest.mock import patch
+
+        from apps.cumplimiento.models import ActividadCumplimiento
+
+        actividad = ActividadCumplimiento(
+            nombre='Revision', fecha_limite=datetime.date(2026, 9, 16),
+        )
+        with patch('django.utils.timezone.now', return_value=self.NOCHE_UTC):
+            self.assertTrue(actividad.vencida)
+
+    def test_un_script_programado_agenda_desde_la_fecha_local(self):
+        """Con frecuencia 7 y corriendo la noche del 17, la proxima es el 24 — no el 25."""
+        from unittest.mock import patch
+
+        from apps.catalogo.models import Grupo, UnidadNegocio
+        from apps.scripts.models import Script, ScriptProgramado
+        from apps.scripts.services import generar_ejecucion_programada
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        usuario = User.objects.create_user(username='u_huso', password='x')
+        Grupo.objects.create(codigo='TRX996')
+        script = Script.objects.create(
+            nombre='Limpieza', tipo='powershell', contenido='echo hola',
+            unidad_negocio=sg, creado_por=usuario,
+        )
+        programado = ScriptProgramado.objects.create(
+            script=script, destino_tipo='cadena', unidad_negocio=sg, frecuencia_dias=7,
+            fecha_proxima_ejecucion=datetime.date(2026, 9, 17), creado_por=usuario,
+        )
+
+        with patch('django.utils.timezone.now', return_value=self.NOCHE_UTC):
+            generar_ejecucion_programada(programado=programado)
+
+        programado.refresh_from_db()
+        self.assertEqual(programado.fecha_ultima_ejecucion, datetime.date(2026, 9, 17),
+                         'corrio la noche del 17, no el 18')
+        self.assertEqual(programado.fecha_proxima_ejecucion, datetime.date(2026, 9, 24),
+                         '17 + 7 = 24; con UTC habria quedado el 25')
+
+    def test_los_avisos_de_garantia_usan_el_limite_local(self):
+        from unittest.mock import patch
+
+        from apps.activos.models import Activo, Marca
+        from apps.activos.services import activos_por_vencer_garantia
+        from apps.catalogo.models import UnidadNegocio
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        marca = Marca.objects.create(nombre='MarcaPrueba')
+        # Vence justo en el borde: 17 + 30 dias = 17 de octubre.
+        Activo.objects.create(
+            codigo='CR-TST-0001', tipo=Activo.Tipo.DESKTOP, marca=marca, unidad_negocio=sg,
+            vencimiento_garantia=datetime.date(2026, 10, 17),
+        )
+        # Y uno un dia despues del limite local, que NO debe entrar.
+        Activo.objects.create(
+            codigo='CR-TST-0002', tipo=Activo.Tipo.DESKTOP, marca=marca, unidad_negocio=sg,
+            vencimiento_garantia=datetime.date(2026, 10, 18),
+        )
+
+        with patch('django.utils.timezone.now', return_value=self.NOCHE_UTC):
+            codigos = set(activos_por_vencer_garantia(dias=30).values_list('codigo', flat=True))
+
+        self.assertIn('CR-TST-0001', codigos)
+        self.assertNotIn('CR-TST-0002', codigos,
+                         'con UTC el limite se corria un dia y este entraba de mas')
