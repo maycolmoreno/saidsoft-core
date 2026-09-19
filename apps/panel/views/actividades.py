@@ -9,6 +9,9 @@ from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from apps.auditoria.models import registrar_evento
+from apps.cuentas.services import (
+    scope_opcional_por_unidad_negocio_activa, verificar_acceso,
+)
 from apps.mantenimiento import services as mantenimiento_services
 from apps.mantenimiento.forms import ActividadPlanificadaForm, CompletarActividadForm
 from apps.mantenimiento.models import ActividadPlanificada
@@ -17,8 +20,13 @@ from apps.mantenimiento.models import ActividadPlanificada
 @login_required
 @permission_required('mantenimiento.view_actividadplanificada', raise_exception=True)
 def actividades_planificadas_lista(request):
-    actividades = ActividadPlanificada.objects.filter(activo=True).select_related(
-        'tecnico', 'equipo', 'ubicacion',
+    # `scope_opcional_*` y no el estricto: las actividades internas (sin unidad) tienen
+    # que seguir viendose, igual que un Script global. El estricto las ocultaria a todos.
+    actividades = scope_opcional_por_unidad_negocio_activa(
+        ActividadPlanificada.objects.filter(activo=True).select_related(
+            'tecnico', 'equipo', 'ubicacion',
+        ),
+        request, 'unidad_negocio',
     ).order_by('fecha_inicio')
 
     tecnico = request.GET.get('tecnico')
@@ -46,7 +54,7 @@ def actividad_planificada_crear(request):
                 tecnico=d['tecnico'], creado_por=request.user, titulo=d['titulo'], descripcion=d['descripcion'],
                 tipo_actividad=d['tipo_actividad'], prioridad=d['prioridad'], fecha_inicio=d['fecha_inicio'],
                 fecha_fin=d['fecha_fin'], tiempo_estimado_minutos=d['tiempo_estimado_minutos'],
-                equipo=d['equipo'], ubicacion=d['ubicacion'],
+                equipo=d['equipo'], ubicacion=d['ubicacion'], unidad_negocio=d['unidad_negocio'],
             )
             registrar_evento(
                 usuario=request.user, accion='actividad_planificada.crear', objeto=actividad, request=request,
@@ -65,6 +73,9 @@ def actividad_planificada_crear(request):
 @permission_required('mantenimiento.change_actividadplanificada', raise_exception=True)
 def actividad_planificada_completar(request, pk):
     actividad = get_object_or_404(ActividadPlanificada, pk=pk)
+    # Sin esto, cambiar el id en la URL dejaba cerrar la actividad de otro cliente.
+    if actividad.unidad_negocio_id is not None:
+        verificar_acceso(request.user, actividad.unidad_negocio)
     if request.method == 'POST':
         form = CompletarActividadForm(request.POST)
         if form.is_valid():

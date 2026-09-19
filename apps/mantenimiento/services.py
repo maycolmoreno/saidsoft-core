@@ -431,13 +431,13 @@ def registrar_repuesto_utilizado(*, mantenimiento, tipo_consumible, cantidad, us
 
 def crear_actividad_planificada(*, tecnico, creado_por, titulo, descripcion, tipo_actividad, fecha_inicio, fecha_fin,
                                  prioridad=None, mantenimiento=None, mantenimiento_programado=None, equipo=None,
-                                 ubicacion=None, tiempo_estimado_minutos=None):
+                                 ubicacion=None, tiempo_estimado_minutos=None, unidad_negocio=None):
     return ActividadPlanificada.objects.create(
         tecnico=tecnico, creado_por=creado_por, titulo=titulo, descripcion=descripcion,
         tipo_actividad=tipo_actividad, prioridad=prioridad or PrioridadActividad.NORMAL,
         fecha_inicio=fecha_inicio, fecha_fin=fecha_fin, mantenimiento=mantenimiento,
         mantenimiento_programado=mantenimiento_programado, equipo=equipo, ubicacion=ubicacion,
-        tiempo_estimado_minutos=tiempo_estimado_minutos,
+        tiempo_estimado_minutos=tiempo_estimado_minutos, unidad_negocio=unidad_negocio,
     )
 
 

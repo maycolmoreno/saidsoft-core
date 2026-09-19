@@ -4,7 +4,7 @@ from django.urls import reverse_lazy
 
 from apps.activos.models import Activo, Bodega, Colaborador, TipoConsumible, Ubicacion
 
-from apps.catalogo.models import Farmacia
+from apps.catalogo.models import Farmacia, UnidadNegocio
 from apps.cuentas.services import scope_opcional_por_unidad_negocio
 
 from .models import (
@@ -268,10 +268,22 @@ class ActividadPlanificadaForm(TecnicoAutoAsignadoMixin, forms.Form):
         queryset=Ubicacion.objects.filter(activo=True), required=False,
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
+    unidad_negocio = forms.ModelChoiceField(
+        queryset=UnidadNegocio.objects.none(), required=False,
+        label='Cliente', help_text='Vacío = actividad interna, visible para todos.',
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
 
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._autoasignar_tecnico(user)
+        # Acotado a lo que el usuario puede ver, mismo criterio que VisitaTecnicaForm:
+        # sin esto el desplegable ofreceria clientes ajenos y alcanzaria con elegir uno
+        # para crear trabajo en la agenda de otra unidad.
+        from apps.cuentas.services import unidades_negocio_visibles
+        self.fields['unidad_negocio'].queryset = (
+            unidades_negocio_visibles(user) if user is not None else UnidadNegocio.objects.none()
+        )
 
 
 class CompletarActividadForm(forms.Form):

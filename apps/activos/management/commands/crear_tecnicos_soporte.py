@@ -109,10 +109,25 @@ class Command(BaseCommand):
             '--archivo-passwords', default='credenciales_tecnicos.txt',
             help='Dónde guardar las contraseñas generadas para logins nuevos (nunca se imprimen en pantalla).',
         )
-        parser.add_argument('--dry-run', action='store_true', help='No escribe nada, solo muestra qué haría.')
+        # `--aplicar` y no `--dry-run`: la diferencia es cual es el DEFAULT. Con
+        # --dry-run habia que acordarse de pedir el simulacro, asi que correr el comando
+        # sin flags creaba nueve colaboradores y nueve usuarios con login al panel. CLAUDE.md lo fija al reves —
+        # "simulan por defecto y exigen --aplicar"— justamente para que el descuido sea
+        # inofensivo. `--dry-run` se sigue aceptando por compatibilidad: ya no hace falta,
+        # porque simular es lo que pasa solo.
+        parser.add_argument(
+            '--aplicar', action='store_true',
+            help='Escribe los cambios. Sin esto solo muestra qué haría.',
+        )
+        parser.add_argument(
+            '--dry-run', action='store_true',
+            help='Redundante: simular ya es el comportamiento por defecto. Se acepta para no '
+                 'romper invocaciones viejas.',
+        )
 
     def handle(self, *args, **options):
-        dry_run = options.pop('dry_run')
+        options.pop('dry_run', None)
+        dry_run = not options.pop('aplicar')
         with transaction.atomic():
             sp = transaction.savepoint()
             self._crear_todos(dry_run=dry_run, **options)
@@ -122,7 +137,7 @@ class Command(BaseCommand):
                 transaction.savepoint_commit(sp)
 
     def _crear_todos(self, *, dry_run, **options):
-        prefijo = '[DRY RUN] ' if dry_run else ''
+        prefijo = '[SIMULACRO] ' if dry_run else ''
         try:
             grupo_soporte = Group.objects.get(name='Soporte Técnico')
         except Group.DoesNotExist:

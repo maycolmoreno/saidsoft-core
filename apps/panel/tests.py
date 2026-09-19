@@ -5354,3 +5354,86 @@ class EnlacesKpiFiltrablesTests(TestCase):
                 sin_filtro.context[clave], len(filtrado.context['filas']),
                 f'el KPI "{clave}" no coincide con lo que lista ?estado={filtro}',
             )
+
+
+class ActividadPlanificadaPorUnidadTests(TestCase):
+    """La agenda de un cliente no se ve ni se cierra desde otro.
+
+    El modelo no tenia unidad_negocio, asi que la lista mostraba las de TODOS los
+    clientes y completar aceptaba cualquier id. Hoy no hay fuga real (0 actividades y
+    los 3 usuarios con el permiso tienen acceso global), pero se arma sola el dia que el
+    modulo se use con un usuario acotado.
+    """
+
+    def setUp(self):
+        from apps.cuentas.models import PerfilUsuario
+        from apps.mantenimiento.models import ActividadPlanificada
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.tecnico = User.objects.create_user(username='tec_act', password='x')
+
+        self.de_sg = ActividadPlanificada.objects.create(
+            tecnico=self.tecnico, creado_por=self.tecnico, titulo='Trabajo de SG',
+            tipo_actividad='revision', fecha_inicio=date(2026, 9, 18), fecha_fin=date(2026, 9, 19),
+            unidad_negocio=self.sg,
+        )
+        self.de_mia = ActividadPlanificada.objects.create(
+            tecnico=self.tecnico, creado_por=self.tecnico, titulo='Trabajo de MIA',
+            tipo_actividad='revision', fecha_inicio=date(2026, 9, 18), fecha_fin=date(2026, 9, 19),
+            unidad_negocio=self.mia,
+        )
+        self.interna = ActividadPlanificada.objects.create(
+            tecnico=self.tecnico, creado_por=self.tecnico, titulo='Trabajo interno',
+            tipo_actividad='revision', fecha_inicio=date(2026, 9, 18), fecha_fin=date(2026, 9, 19),
+        )
+
+        self.usuario_sg = User.objects.create_user(username='solo_sg', password='x')
+        perfil = PerfilUsuario.objects.create(usuario=self.usuario_sg, acceso_todas_unidades=False)
+        perfil.unidades_negocio.add(self.sg)
+        for codename in ('view_actividadplanificada', 'change_actividadplanificada'):
+            self.usuario_sg.user_permissions.add(
+                Permission.objects.get(content_type__app_label='mantenimiento', codename=codename),
+            )
+
+    def test_un_usuario_de_sg_no_ve_la_actividad_de_mia(self):
+        self.client.force_login(self.usuario_sg)
+        respuesta = self.client.get(reverse('panel:actividades_planificadas_lista'))
+        titulos = [a.titulo for a in respuesta.context['actividades']]
+        self.assertIn('Trabajo de SG', titulos)
+        self.assertNotIn('Trabajo de MIA', titulos)
+
+    def test_las_actividades_internas_las_ve_todo_el_mundo(self):
+        """Sin unidad = interna. El scope estricto las habria ocultado a todos."""
+        self.client.force_login(self.usuario_sg)
+        respuesta = self.client.get(reverse('panel:actividades_planificadas_lista'))
+        titulos = [a.titulo for a in respuesta.context['actividades']]
+        self.assertIn('Trabajo interno', titulos)
+
+    def test_no_se_puede_completar_la_actividad_de_otra_unidad(self):
+        """Lo que antes alcanzaba con cambiar el id en la URL."""
+        self.client.force_login(self.usuario_sg)
+        respuesta = self.client.post(
+            reverse('panel:actividad_planificada_completar', args=[self.de_mia.pk]),
+            {'tiempo_real_minutos': 30},
+        )
+        self.assertIn(respuesta.status_code, (403, 404))
+        self.de_mia.refresh_from_db()
+        self.assertNotEqual(self.de_mia.estado, self.de_mia.Estado.COMPLETADA)
+
+    def test_si_se_puede_completar_la_propia(self):
+        self.client.force_login(self.usuario_sg)
+        self.client.post(
+            reverse('panel:actividad_planificada_completar', args=[self.de_sg.pk]),
+            {'tiempo_real_minutos': 30},
+        )
+        self.de_sg.refresh_from_db()
+        self.assertEqual(self.de_sg.estado, self.de_sg.Estado.COMPLETADA)
+
+    def test_el_formulario_no_ofrece_clientes_ajenos(self):
+        from apps.mantenimiento.forms import ActividadPlanificadaForm
+
+        form = ActividadPlanificadaForm(user=self.usuario_sg)
+        codigos = set(form.fields['unidad_negocio'].queryset.values_list('codigo', flat=True))
+        self.assertIn('SG', codigos)
+        self.assertNotIn('MIA', codigos)

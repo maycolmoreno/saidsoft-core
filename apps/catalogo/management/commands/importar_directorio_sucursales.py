@@ -14,7 +14,8 @@ comparar texto) — correr `crear_tecnicos_soporte` antes de este comando.
 
 Uso:
     python manage.py importar_directorio_sucursales directorio_sucursal_Agosto.xlsx
-    python manage.py importar_directorio_sucursales directorio_sucursal_Agosto.xlsx --dry-run
+    python manage.py importar_directorio_sucursales directorio_sucursal_Agosto.xlsx            # simulacro
+    python manage.py importar_directorio_sucursales directorio_sucursal_Agosto.xlsx --aplicar
 """
 import datetime
 
@@ -66,13 +67,27 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('xlsx_path')
-        parser.add_argument('--dry-run', action='store_true', help='No escribe nada, solo muestra qué haría.')
+        # `--aplicar` y no `--dry-run`: la diferencia es cual es el DEFAULT. Con
+        # --dry-run habia que acordarse de pedir el simulacro, asi que correr el comando
+        # sin flags reescribia los datos de las 700 farmacias. CLAUDE.md lo fija al reves —
+        # "simulan por defecto y exigen --aplicar"— justamente para que el descuido sea
+        # inofensivo. `--dry-run` se sigue aceptando por compatibilidad: ya no hace falta,
+        # porque simular es lo que pasa solo.
+        parser.add_argument(
+            '--aplicar', action='store_true',
+            help='Escribe los cambios. Sin esto solo muestra qué haría.',
+        )
+        parser.add_argument(
+            '--dry-run', action='store_true',
+            help='Redundante: simular ya es el comportamiento por defecto. Se acepta para no '
+                 'romper invocaciones viejas.',
+        )
 
     def handle(self, *args, **options):
         import openpyxl
 
         ruta = options['xlsx_path']
-        dry_run = options['dry_run']
+        dry_run = not options['aplicar']
         try:
             libro = openpyxl.load_workbook(ruta, data_only=True)
         except (OSError, KeyError) as exc:
@@ -163,7 +178,7 @@ class Command(BaseCommand):
             else:
                 transaction.savepoint_commit(sp)
 
-        prefijo = '[DRY RUN] ' if dry_run else ''
+        prefijo = '[SIMULACRO] ' if dry_run else ''
         self.stdout.write(self.style.SUCCESS(f'{prefijo}{len(actualizadas)} farmacia(s) enriquecida(s).'))
         if sin_farmacia:
             self.stdout.write(self.style.ERROR(

@@ -61,3 +61,6 @@ db.sqlite3
 # Bases SQLite descartables de pruebas locales (demo-local.sqlite3, test-smoke.sqlite3...).
 # db.sqlite3 ya estaba arriba; esto cubre las que se crean al probar con otro nombre.
 *.sqlite3
+
+# Contrasenas generadas por crear_tecnicos_soporte: nunca se versionan.
+credenciales_tecnicos.txt

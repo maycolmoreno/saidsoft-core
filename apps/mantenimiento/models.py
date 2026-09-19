@@ -6,6 +6,7 @@ from django.db import models
 from django.utils import timezone
 
 from apps.activos.models import Activo, Bodega, CategoriaEquipo, Colaborador, TipoConsumible, Ubicacion
+from apps.catalogo.models import UnidadNegocio
 
 # Radio dentro del cual se considera que el técnico estuvo EN la farmacia. 200 m
 # cubre el error típico del GPS en zona urbana (10-50 m, peor bajo techo) más el
@@ -515,6 +516,20 @@ class ActividadPlanificada(models.Model):
         COMPLETADA = 'completada', 'Completada'
         CANCELADA = 'cancelada', 'Cancelada'
 
+    # De que cliente es este trabajo. Vacio = actividad interna, visible para todos —
+    # mismo criterio "global o del cliente" que ReglaAlerta y Script.
+    #
+    # El modelo no lo tenia, y como el resto del sistema scopea por unidad en cada vista,
+    # esta quedaba afuera: `actividades_planificadas_lista` listaba las de TODOS los
+    # clientes y `actividad_planificada_completar` dejaba cerrar cualquiera cambiando el
+    # id en la URL. Hoy no hay fuga real (0 actividades cargadas y los 3 usuarios con el
+    # permiso tienen acceso a todas las unidades), pero se arma sola el dia que el modulo
+    # se empiece a usar con un usuario acotado.
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='actividades_planificadas',
+        help_text='Cliente al que corresponde. Vacío = actividad interna, visible para todos.',
+    )
     tecnico = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='actividades_planificadas',
     )

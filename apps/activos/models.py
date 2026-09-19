@@ -137,6 +137,9 @@ class Colaborador(models.Model):
     )
     unidad_negocio = models.ForeignKey(
         UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='colaboradores',
+        help_text='Vacío = personal administrativo de CRESIO, visible para todas las unidades. '
+                  'No hay administrativos propios de MIA o SG: el nulo es el valor correcto para '
+                  'ellos, no un dato pendiente de llenar.',
     )
     sucursal = models.CharField(max_length=100, blank=True)
     zona = models.CharField(max_length=100, blank=True)

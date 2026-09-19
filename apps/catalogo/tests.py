@@ -577,7 +577,9 @@ class ImportarDirectorioSucursalesTests(TestCase):
 
     def _correr(self, **kwargs):
         salida = io.StringIO()
-        call_command('importar_directorio_sucursales', self._libro_de_prueba(**kwargs), stdout=salida)
+        call_command(
+            'importar_directorio_sucursales', self._libro_de_prueba(**kwargs), '--aplicar', stdout=salida,
+        )
         return salida.getvalue()
 
     def test_enriquece_la_farmacia_existente_con_todos_los_campos(self):
@@ -630,7 +632,7 @@ class ImportarDirectorioSucursalesTests(TestCase):
             'importar_directorio_sucursales', self._libro_de_prueba(tipo_sucursal='PROPIA'),
             dry_run=True, stdout=salida,
         )
-        self.assertIn('[DRY RUN] 1 farmacia', salida.getvalue())
+        self.assertIn('[SIMULACRO] 1 farmacia', salida.getvalue())
         self.farmacia.refresh_from_db()
         self.assertEqual(self.farmacia.tipo_sucursal, Farmacia.TipoSucursal.ASOCIADO)  # sin cambios
 

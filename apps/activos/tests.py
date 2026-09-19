@@ -121,7 +121,7 @@ class CrearTecnicosSoporteTests(TestCase):
         self.archivo_passwords = tempfile.NamedTemporaryFile(suffix='.txt', delete=False).name
 
     def _correr(self):
-        call_command('crear_tecnicos_soporte', archivo_passwords=self.archivo_passwords)
+        call_command('crear_tecnicos_soporte', '--aplicar', archivo_passwords=self.archivo_passwords)
 
     def test_crea_los_9_colaboradores_con_login_y_grupo_correcto(self):
         self._correr()
@@ -143,7 +143,10 @@ class CrearTecnicosSoporteTests(TestCase):
     def test_escribe_las_contrasenas_generadas_en_el_archivo_no_en_pantalla(self):
         import io
         buffer_salida = io.StringIO()
-        call_command('crear_tecnicos_soporte', archivo_passwords=self.archivo_passwords, stdout=buffer_salida)
+        call_command(
+            'crear_tecnicos_soporte', '--aplicar',
+            archivo_passwords=self.archivo_passwords, stdout=buffer_salida,
+        )
         salida = buffer_salida.getvalue()
         with open(self.archivo_passwords, encoding='utf-8') as f:
             contenido = f.read()
@@ -159,7 +162,7 @@ class CrearTecnicosSoporteTests(TestCase):
         self._correr()
 
         otro_archivo = self.archivo_passwords + '.2'
-        call_command('crear_tecnicos_soporte', archivo_passwords=otro_archivo)
+        call_command('crear_tecnicos_soporte', '--aplicar', archivo_passwords=otro_archivo)
 
         self.assertEqual(Colaborador.objects.count(), 9)
         self.assertEqual(User.objects.count(), 9)
@@ -1891,3 +1894,70 @@ class AdminAltaDeActivoTests(TestCase):
         activo.refresh_from_db()
         self.assertEqual(activo.codigo, 'CR-IMP-0003')
         self.assertEqual(activo.modelo, 'cambiado')
+
+
+class ComandosSimulanPorDefectoTests(TestCase):
+    """CLAUDE.md: "los comandos que escriben en masa simulan por defecto y exigen
+    --aplicar".
+
+    Dos lo tenian al reves con --dry-run, y la diferencia es cual es el DEFAULT: habia
+    que acordarse de pedir el simulacro. Correr `crear_tecnicos_soporte` sin flags creaba
+    nueve colaboradores y nueve usuarios CON LOGIN AL PANEL.
+    """
+
+    def setUp(self):
+        # El comando exige el grupo "Soporte Técnico", que siembra seed_permisos.
+        call_command('seed_permisos', stdout=io.StringIO())
+
+    def test_crear_tecnicos_sin_flags_no_escribe_nada(self):
+        from apps.activos.models import Colaborador
+
+        antes_colab = Colaborador.objects.count()
+        antes_users = User.objects.count()
+        salida = io.StringIO()
+        call_command('crear_tecnicos_soporte', stdout=salida)
+
+        self.assertEqual(Colaborador.objects.count(), antes_colab)
+        self.assertEqual(User.objects.count(), antes_users, 'no puede crear logins sin --aplicar')
+        self.assertIn('SIMULACRO', salida.getvalue())
+
+    def test_crear_tecnicos_con_aplicar_si_escribe(self):
+        import tempfile
+
+        from apps.activos.models import Colaborador
+
+        # Con `--archivo-passwords` a un temporal: el default del comando es
+        # `credenciales_tecnicos.txt` en el directorio de trabajo, asi que correr el
+        # test sin pasarlo dejaba un archivo de contrasenas en la raiz del repo, que
+        # es publico.
+        salida = io.StringIO()
+        archivo = tempfile.NamedTemporaryFile(suffix='.txt', delete=False).name
+        call_command('crear_tecnicos_soporte', '--aplicar', archivo_passwords=archivo, stdout=salida)
+        self.assertGreater(Colaborador.objects.count(), 0)
+
+    def test_dry_run_se_sigue_aceptando_y_no_escribe(self):
+        """Compatibilidad: una invocacion vieja no puede fallar, solo volverse redundante."""
+        from apps.activos.models import Colaborador
+
+        antes = Colaborador.objects.count()
+        salida = io.StringIO()
+        call_command('crear_tecnicos_soporte', '--dry-run', stdout=salida)
+        self.assertEqual(Colaborador.objects.count(), antes)
+
+    def test_ningun_comando_que_escribe_queda_con_el_default_invertido(self):
+        """Guarda para los que vengan: --dry-run como unico flag vuelve a invertir el
+        default, que es justo lo que CLAUDE.md prohibe."""
+        import re
+        from pathlib import Path
+
+        from django.conf import settings
+
+        escribe = re.compile(r'\.save\(|\.create\(|\.update\(|bulk_create|get_or_create|update_or_create')
+        invertidos = []
+        for archivo in sorted(Path(settings.BASE_DIR, 'apps').glob('*/management/commands/*.py')):
+            texto = archivo.read_text(encoding='utf-8')
+            if not escribe.search(texto) or archivo.name.startswith('run_'):
+                continue
+            if '--dry-run' in texto and '--aplicar' not in texto:
+                invertidos.append(archivo.name)
+        self.assertEqual(invertidos, [], f'usan --dry-run sin --aplicar: {invertidos}')
