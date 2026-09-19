@@ -984,6 +984,17 @@ enterara). El agente ahora lo monitorea:
   fecha, se relee desde el principio). Reusa `--pos-carpeta-instalacion` que ya
   existía — sin argumento nuevo obligatorio (`--pos-log-relativo` es opcional, default
   `Logs\GeneraXML.txt`).
+- **La posición solo avanza cuando el reporte salió** (agente 0.24). Antes se guardaba
+  dentro de la lectura, *antes* de publicar: si el broker no estaba —y el agente se
+  reconecta varias veces al día— esos errores se perdían para siempre, porque con QoS 0
+  paho descarta el mensaje sin avisar y la posición ya había pasado de largo. Además de
+  perder el dato, `evaluar_regla_pos_errores` nunca los contaba, así que una alerta de
+  errores del POS podía no dispararse por un corte de conexión. Ahora, si el envío falla,
+  el ciclo siguiente relee desde el mismo punto y reintenta.
+
+  El riesgo inverso es duplicar, si el mensaje sí salió y el agente muere antes de
+  guardar la posición. Se elige duplicar a propósito: un contador inflado se nota y se
+  corrige, un error del POS que nunca llegó no deja rastro en ningún lado.
 - Solo reporta niveles **ERROR/FATAL** (INFO/WARN se ignoran — son trazabilidad
   rutinaria, no problemas). Agrupa por mensaje **exacto** dentro de la ventana leída
   (`{mensaje, nivel, cantidad}`) — el resto del stack trace se descarta, no viaja al

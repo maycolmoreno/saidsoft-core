@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.23'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.24'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -1001,9 +1001,29 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
                 continue
             if errores is None:
                 continue  # no se pudo leer (archivo ausente todavía, etc.) — no reportar nada
-            self._publicar(f'/saidsof/agente/{self.args.codigo}/pos_errores/', {
+            errores, posicion_nueva = errores
+            enviado = self._publicar(f'/saidsof/agente/{self.args.codigo}/pos_errores/', {
                 'token': self._token(), 'errores': errores,
             })
+            if not enviado:
+                # La posición NO avanza: en el próximo ciclo se relee desde donde estaba y
+                # estos errores se reintentan. Antes se guardaba dentro de la lectura,
+                # antes de publicar, así que un broker caído —que pasa: el agente se
+                # reconecta varias veces al día— se llevaba esos errores para siempre. Y
+                # con QoS 0 paho descarta el mensaje sin avisar (ver `_publicar`), así
+                # que nada quedaba para reintentar.
+                #
+                # El riesgo al revés es duplicar si el mensaje sí salió y el agente muere
+                # antes de guardar: se elige duplicar. Un contador inflado se nota y se
+                # corrige; un error del POS que nunca llegó no deja rastro en ningún lado
+                # y la alerta correspondiente no se abre.
+                logging.warning(
+                    'Errores del POS no enviados (%d tipo(s)) — se reintentan en el próximo ciclo.',
+                    len(errores),
+                )
+                continue
+            self.identidad['pos_log_posicion'] = posicion_nueva
+            self._guardar_identidad()
             if errores:
                 logging.info('Errores del POS reportados: %d tipo(s) distinto(s)', len(errores))
 
@@ -1013,9 +1033,14 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
     def _leer_errores_nuevos_pos(self):
         """Lee desde la última posición guardada (identidad['pos_log_posicion']),
         agrupa por mensaje exacto los niveles ERROR/FATAL, y devuelve
-        [{mensaje, nivel, cantidad}, ...]. None si el archivo no existe todavía (POS
-        recién instalado, o nunca generó el log) — distinto de [] (se leyó, sin
-        errores nuevos), para no pisar en falso la posición guardada."""
+        `([{mensaje, nivel, cantidad}, ...], posicion_nueva)`. None si el archivo no
+        existe todavía (POS recién instalado, o nunca generó el log) — distinto de []
+        (se leyó, sin errores nuevos), para no pisar en falso la posición guardada.
+
+        **No persiste la posición**: la devuelve para que `bucle_log_pos` la guarde
+        recién cuando el reporte se haya publicado. Guardarla acá daba por leído lo que
+        todavía no había salido del equipo, y con el broker caído eso se perdía sin
+        dejar rastro."""
         ruta = self._ruta_log_pos()
         if not os.path.exists(ruta):
             return None
@@ -1043,10 +1068,10 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
                         item['cantidad'] += 1
                 # Líneas que no matchean (continuación de stack trace) se ignoran —
                 # ya se contó la entrada por su primera línea.
-            self.identidad['pos_log_posicion'] = f.tell()
-        self._guardar_identidad()
+            posicion_nueva = f.tell()
 
-        return [{'mensaje': m, 'nivel': d['nivel'], 'cantidad': d['cantidad']} for m, d in conteos.items()]
+        errores = [{'mensaje': m, 'nivel': d['nivel'], 'cantidad': d['cantidad']} for m, d in conteos.items()]
+        return errores, posicion_nueva
 
     # --- scripts (RMM) ---
     def _manejar_comando(self, payload):
