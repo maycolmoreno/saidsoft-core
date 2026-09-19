@@ -352,7 +352,16 @@ class EventoMantenimiento(models.Model):
         CERRADO = 'cerrado', 'Cerrado'
         CANCELADO = 'cancelado', 'Cancelado'
 
-    mantenimiento = models.ForeignKey(Mantenimiento, on_delete=models.CASCADE, related_name='eventos')
+    # PROTECT y no CASCADE, mismo criterio que EventoEnlaceFarmacia: un Mantenimiento no
+    # tiene NINGUN PROTECT apuntándole, así que era más fácil de borrar que una farmacia
+    # — y se llevaba su historial con él.
+    #
+    # Lo que lo vuelve claramente un error y no una decisión: este modelo declara
+    # `delete()` como NotImplementedError unas líneas más abajo, o sea que se define a sí
+    # mismo como inmutable. Un CASCADE evadía esa garantía por completo, porque Django no
+    # instancia los hijos al cascadear: emite un DELETE masivo en SQL y ese `delete()`
+    # nunca llega a ejecutarse.
+    mantenimiento = models.ForeignKey(Mantenimiento, on_delete=models.PROTECT, related_name='eventos')
     tipo_evento = models.CharField(max_length=25, choices=TipoEvento.choices)
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     detalle = models.JSONField(default=dict, blank=True)

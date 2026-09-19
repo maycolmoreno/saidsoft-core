@@ -793,7 +793,17 @@ class EventoEnlaceFarmacia(models.Model):
     `fin` vacío = la caída sigue en curso.
     """
 
-    farmacia = models.ForeignKey(Farmacia, on_delete=models.CASCADE, related_name='eventos_enlace')
+    # PROTECT y no CASCADE: este historial es la evidencia para discutir un SLA con el
+    # proveedor, y con CASCADE borrar una farmacia se lo llevaba en silencio. Medido el
+    # 18-sep-2026: 690 de las 700 farmacias no tenian ningun hijo que las protegiera
+    # —solo 10 tienen estaciones— asi que el 99% del historial (1038 de 1046 eventos)
+    # dependia de que nadie tocara "eliminar" en el admin. El docstring de esta clase ya
+    # decia "si esa base se pierde, se pierden meses de evidencia"; ahora el codigo lo
+    # cumple.
+    #
+    # Dar de baja una farmacia NO es borrarla: para eso esta `Farmacia.activa`, que es el
+    # camino que el resto del sistema ya usa y que conserva el historial.
+    farmacia = models.ForeignKey(Farmacia, on_delete=models.PROTECT, related_name='eventos_enlace')
     inicio = models.DateTimeField(db_index=True)
     fin = models.DateTimeField(null=True, blank=True)
     circuito_proveedor = models.CharField(

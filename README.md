@@ -643,6 +643,26 @@ le llegaba una advertencia sin que hubiera pasado nada en su POS.
   veces el síntoma fue el mismo: un estado permanente disfrazado de incidente, inflando
   el número que el operador usa para decidir a dónde ir.
 
+### El historial de caídas no se borra con la farmacia
+
+`EventoEnlaceFarmacia.farmacia` usa `on_delete=PROTECT`. Antes era `CASCADE`, y eso
+contradecía lo que el propio modelo declara: *"es la línea base de disponibilidad real
+por sitio para discutir un SLA (…) si esa base se pierde, se pierden meses de evidencia"*.
+
+Medido el 18-sep-2026 antes de cambiarlo: **690 de las 700 farmacias** no tenían ningún
+hijo con `PROTECT` que las frenara —solo 10 tienen estaciones—, así que **el 99% del
+historial (1038 de 1046 eventos)** dependía de que nadie tocara "eliminar" en el admin.
+
+Dar de baja una farmacia no es borrarla: para eso está `Farmacia.activa`, que conserva
+el historial. Una farmacia sin eventos se sigue pudiendo borrar, así que cargar una por
+error tiene arreglo.
+
+Lo mismo en `EventoMantenimiento.mantenimiento`, donde era peor: `Mantenimiento` no tenía
+**ningún** `PROTECT` apuntándole. Y ese modelo define `delete()` como
+`NotImplementedError` —se declara inmutable—, garantía que el `CASCADE` evadía por
+completo: Django no instancia los hijos al cascadear, emite un DELETE masivo en SQL y ese
+`delete()` nunca corre.
+
 ### Umbrales editables sin desplegar
 
 `ConfiguracionMonitoreo` (admin: **Monitoreo → Configuración del monitoreo**) tiene los

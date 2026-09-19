@@ -91,9 +91,28 @@ fi
 # tres días después, cuando algo no funcione por un motivo que parece no tener relación.
 echo
 echo "==> Verificación"
-PENDIENTES=$(docker compose exec -T web python manage.py showmigrations --plan 2>/dev/null | grep -c '^\[ \]' || true)
+
+# Se espera a que el entrypoint TERMINE de migrar antes de mirar si quedó algo pendiente.
+# `up -d` devuelve apenas los contenedores arrancan, así que sin esta espera la
+# comprobación corre mientras `migrate` sigue trabajando y reporta como "sin aplicar"
+# migraciones que se están aplicando en ese mismo momento — pasó el 18-sep-2026 con 0027
+# y 0028, que el aviso dio por pendientes y estaban las dos listas medio minuto después.
+#
+# Un falso positivo acá cuesta caro: manda a revisar a mano una base que está sana, y la
+# próxima vez que el aviso sea real nadie lo va a creer.
+printf '   esperando a que terminen las migraciones'
+PENDIENTES=1
+for _ in $(seq 1 24); do
+    PENDIENTES=$(docker compose exec -T web python manage.py showmigrations --plan 2>/dev/null | grep -c '^\[ \]' || true)
+    if [ "$PENDIENTES" -eq 0 ]; then
+        break
+    fi
+    printf '.'
+    sleep 5
+done
+echo
 if [ "$PENDIENTES" -gt 0 ]; then
-    echo "AVISO: quedan $PENDIENTES migración(es) sin aplicar:"
+    echo "AVISO: quedan $PENDIENTES migración(es) sin aplicar tras 2 minutos de espera:"
     docker compose exec -T web python manage.py showmigrations --plan 2>/dev/null | grep '^\[ \]'
     exit 1
 fi

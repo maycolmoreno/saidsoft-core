@@ -5042,3 +5042,91 @@ class ConfiguracionMonitoreoTests(TestCase):
         config.fallas_consecutivas_enlace = 0
         with self.assertRaises(ValidationError):
             config.full_clean()
+
+
+class HistorialProtegidoTests(TestCase):
+    """El historial de caidas no se puede perder por borrar su farmacia.
+
+    Medido el 18-sep-2026: 690 de 700 farmacias no tenian ningun hijo con PROTECT (solo
+    10 tienen estaciones), asi que el 99% del historial de SLA —1038 de 1046 eventos—
+    dependia de que nadie tocara "eliminar" en el admin. El propio docstring de
+    EventoEnlaceFarmacia decia que ese dato es la evidencia para discutir con el
+    proveedor y que no se puede reconstruir.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX995')
+        self.farmacia = Farmacia.objects.create(
+            codigo='TSTH01', grupo=self.grupo, unidad_negocio=self.sg, ip_router='10.4.0.1')
+
+    def test_no_se_puede_borrar_una_farmacia_con_historial(self):
+        from django.db.models import ProtectedError
+
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        EventoEnlaceFarmacia.objects.create(
+            farmacia=self.farmacia, inicio=timezone.now() - timedelta(hours=2))
+        with self.assertRaises(ProtectedError):
+            self.farmacia.delete()
+
+    def test_el_historial_sobrevive_al_intento(self):
+        """Lo que importa no es que falle, sino que el dato siga ahi despues."""
+        from django.db.models import ProtectedError
+
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        EventoEnlaceFarmacia.objects.create(
+            farmacia=self.farmacia, inicio=timezone.now() - timedelta(hours=2))
+        try:
+            self.farmacia.delete()
+        except ProtectedError:
+            pass
+        self.assertEqual(EventoEnlaceFarmacia.objects.count(), 1)
+
+    def test_una_farmacia_sin_historial_se_sigue_pudiendo_borrar(self):
+        """PROTECT no puede convertirse en "nada se borra nunca": una farmacia cargada
+        por error, que todavia no acumulo nada, tiene que poder eliminarse."""
+        codigo = self.farmacia.pk
+        self.farmacia.delete()
+        self.assertFalse(Farmacia.objects.filter(pk=codigo).exists())
+
+    def test_dar_de_baja_es_el_camino_y_conserva_el_historial(self):
+        """`activa=False` es lo que el resto del sistema ya usa para una farmacia que
+        deja de operar. No toca el historial, que es justamente el punto."""
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        EventoEnlaceFarmacia.objects.create(
+            farmacia=self.farmacia, inicio=timezone.now() - timedelta(hours=2))
+        self.farmacia.activa = False
+        self.farmacia.save(update_fields=['activa'])
+
+        self.farmacia.refresh_from_db()
+        self.assertFalse(self.farmacia.activa)
+        self.assertEqual(EventoEnlaceFarmacia.objects.filter(farmacia=self.farmacia).count(), 1)
+
+    def test_el_historial_de_mantenimiento_tambien_esta_protegido(self):
+        """Mantenimiento no tenia NINGUN PROTECT apuntandole: era mas facil de borrar que
+        una farmacia."""
+        from django.db.models import ProtectedError
+
+        from apps.activos.models import Cargo, Colaborador, Departamento
+        from apps.mantenimiento.models import EventoMantenimiento, Mantenimiento
+
+        usuario = User.objects.create_user(username='u_prot', password='x')
+        departamento = Departamento.objects.create(nombre='TI prueba')
+        cargo = Cargo.objects.create(nombre='Tecnico prueba', departamento=departamento)
+        colaborador = Colaborador.objects.create(
+            nombre='Colaborador prueba', cedula='0999999999', cargo=cargo,
+            unidad_negocio=self.sg,
+        )
+        mantenimiento = Mantenimiento.objects.create(
+            cliente=colaborador, descripcion='Falla', fecha_programada=timezone.now(),
+        )
+        EventoMantenimiento.objects.create(
+            mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.PROGRAMADO,
+            usuario=usuario, detalle={'origen': 'prueba'},
+        )
+        with self.assertRaises(ProtectedError):
+            mantenimiento.delete()
+        self.assertEqual(EventoMantenimiento.objects.count(), 1)
