@@ -2479,3 +2479,34 @@ que esa afirmación quedó desactualizada el 11-sep.
 O sea que la tarea "obsoleta" es la que funciona, y la que la "reemplaza" estaba muerta
 por el punto 2. Con el sondeo vía agente ya arreglado, hay que decidir si las dos siguen
 corriendo en paralelo o si la directa se espacia.
+
+### Corrección: el Postgres local nunca fue un túnel a producción (19-sep-2026)
+
+Los mensajes de los commits `ce887a7` y `f256fd3` afirman que la suite no pudo correr
+contra PostgreSQL porque "el túnel SSH al Postgres de pruebas está caído". **Eso es
+falso**, y como los mensajes de commit no se reescriben, queda corregido acá.
+
+`127.0.0.1:5433` es el contenedor `db` **local** que documenta `deploy/README-local.md`,
+no un túnel. La confusión salió de que el servidor publica su propia base en el mismo
+puerto (`"127.0.0.1:5433:5432"` en `docker-compose.yml`): al ver ese puerto en los dos
+lados se dedujo un túnel que nunca existió. La suite local **jamás** corrió contra la
+base de producción, y el `DROP DATABASE test_bd_saidsof` de esa jornada fue sobre la
+base local.
+
+Lo que había pasado es mucho más simple: **Docker Desktop estaba detenido** (la distro
+WSL `docker-desktop` en `Stopped`), así que el contenedor `db` no existía y el puerto no
+respondía. Arrancando Docker, el contenedor volvió solo por su `restart: unless-stopped`.
+
+Lección para la próxima: antes de construir una explicación sobre por qué un puerto no
+responde, mirar si el proceso que debería escucharlo está corriendo.
+
+**Suite completa contra PostgreSQL: 1537 tests OK.** Cubre todo lo desplegado ese día —
+la alerta de reloj, la acción por Telegram con su RBAC, el paso de las diarias a crontab
+y `CONN_MAX_AGE=60`. Verificado además a mano contra la base de producción, porque es
+lo que más podía divergir entre motores:
+
+- El índice único parcial de `PerfilUsuario.telegram_chat_id` existe con el predicado
+  correcto (`WHERE NOT (telegram_chat_id = '')`) y se comporta bien: varios perfiles con
+  chat vacío conviven, un `chat_id` duplicado se rechaza. Probado en una transacción
+  revertida.
+- `CONN_MAX_AGE=60` está activo y las conexiones quedaron en 20 de 100.
