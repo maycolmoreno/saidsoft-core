@@ -499,6 +499,71 @@ Los números de cabecera salen de `resumen_operacion` (en `apps/monitoreo/servic
 **el mismo servicio que alimenta `/estado` del bot de Telegram**: antes cada uno tenía su
 copia de las agregaciones, que es la forma segura de que algún día digan cosas distintas.
 
+## Cómo se diseñan las gráficas del panel
+
+**Leé esto antes de agregar una gráfica nueva.** El criterio se fijó el 19-sep-2026
+(PLAN_MODERNIZACION §10-AK) porque las gráficas de monitoreo obligaban a abrir el detalle
+para saber si lo que mostraban estaba bien o mal: `/monitoreo/` eran cinco números crudos
+por estación, el detalle dibujaba cada serie de un color distinto —RAM en verde, latencia
+en ámbar— y "Eje 0–100%" te decía la escala, no el límite.
+
+La regla de fondo: **una gráfica tiene que decir si algo está bien o mal sin hover y sin
+abrir nada.** El hover puede dar más detalle; el estado no puede depender de él.
+
+Dónde vive:
+
+| Qué | Dónde |
+| --- | --- |
+| Matemática del dibujo (puntos, umbrales, tendencia) | `apps/monitoreo/graficos.py` |
+| Armado de un indicador (valor + estado + umbral + serie) | `apps/panel/indicadores.py` |
+| Resolución de umbrales (ReglaAlerta → defecto) | `apps/panel/umbrales.py` |
+| Tarjeta | `templates/panel/_indicador.html` |
+| Sparkline con umbrales | `templates/panel/_sparkline.html` |
+| Distintivo de estado | `templates/panel/_estado_chip.html` |
+| Clases | `static_src/components.css`, sección "INDICADORES" |
+
+Las reglas, y por qué cada una:
+
+1. **Patrón "stat tile".** Etiqueta + valor actual grande + flecha de tendencia con
+   palabra + sparkline de contexto. Se arma con `{% include "panel/_indicador.html" %}`,
+   no a mano.
+2. **El umbral se dibuja.** Si el dato tiene un límite conocido, va como línea de
+   referencia sobre el gráfico y el valor se colorea según de qué lado cayó. Así la
+   distancia entre la curva y la línea *es* el margen que queda, y nadie tiene que saber
+   de memoria cuánto es mucho.
+3. **El umbral no se reinventa.** Sale de la `ReglaAlerta` activa —el mismo número con el
+   que se abre la alerta que llega por Telegram— y solo si no hay regla, del defecto de
+   `apps/panel/umbrales.py`. Con varias unidades de negocio a la vista se toma el límite
+   que dispara primero. Si no hay ni regla ni defecto, la tarjeta muestra el valor **sin
+   color** y dice que no hay umbral: pintar de verde algo contra lo que no hay con qué
+   comparar es afirmar lo que nadie verificó.
+4. **Los colores de estado son reservados.** `--good` / `--warning` / `--critical` se usan
+   solo para estado, nunca para distinguir series o categorías; la curva va siempre en
+   `--serie` (gris azulado). Y nunca van solos: siempre con icono y palabra, porque los
+   tres colores se parecen bastante bajo daltonismo — verde-ámbar y ámbar-rojo se acercan
+   con deuteranopía y protanopía. Por eso cada estado tiene además una **forma** distinta
+   (círculo con tilde, triángulo, octógono) y la línea de advertencia va punteada mientras
+   la de crítico va entera. *Pendiente de validar con un simulador de daltonismo sobre la
+   pantalla real: la separación se eligió por forma y texto, no medida.*
+5. **Nunca doble eje.** Dos métricas de escala distinta van como dos gráficas chicas lado
+   a lado (*small multiples*), que es lo que hacen el detalle de estación y la tendencia.
+6. **La etiqueta va sobre el dato, no en el eje.** El valor actual es lo más grande de la
+   tarjeta y el último punto del sparkline queda marcado con un punto del color del estado,
+   para que se lean como la misma cosa. Los umbrales llevan su número al costado de la
+   línea (advertencia a la izquierda, crítico a la derecha: con 75% y 90% sobre un eje
+   0–100 las dos líneas quedan a 8 px y apiladas del mismo lado se pisarían). No se
+   etiqueta punto por punto: satura y deja de leerse.
+7. **No toda tabla merece ser una gráfica.** Para un valor sin serie temporal —el consumo
+   de una farmacia contra su ancho contratado, las estaciones en línea sobre el total— se
+   usa `.medidor`, una barra con marcas de umbral. Dice de qué lado del límite está sin
+   inventar una historia que no existe.
+8. **Modo oscuro y claro.** Los tokens de color ya cubren los dos; no metas colores
+   literales en un template.
+9. **Ojo con los porcentajes en atributos.** El proyecto corre en `es-EC`, así que Django
+   imprime `98.57` como `98,57`. Dentro de `style="width:…%"` eso es CSS inválido y el
+   elemento no se dibuja — le pasó a la barra de consumo del modal de enlaces, que nunca
+   se vio. Todo número que va a un atributo se envuelve en `{% localize off %}`.
+
 ## Monitoreo de servidores
 
 Migra y unifica el monitoreo del sistema viejo (`log_servidor_memoria` + `log_servidor_cpu`,
@@ -526,9 +591,12 @@ que eran dos tablas/tópicos) en una sola muestra por instante:
   disponible de forma genérica. *(Nota histórica: hasta el 16-ago-2026 este pipeline solo
   existía del lado servidor — pensado originalmente para el agente C# ya reemplazado — sin que
   ningún agente real lo alimentara; ver PLAN_MODERNIZACION.md §9, fase R8.)*
-- El panel (`/monitoreo/`) grafica las últimas ~60 muestras por servidor como **SVG inline**
-  (sin CDN), con auto-refresco HTMX cada 10s y stat tiles que cambian de color por umbral
-  (CPU/RAM/disco comparten el mismo patrón de tarjeta + gráfico).
+- El panel grafica **SVG inline** (sin CDN), con auto-refresco HTMX cada 10 s en el detalle
+  de una estación y las últimas ~60 muestras por servidor. El listado `/monitoreo/` muestra
+  las cinco métricas de cada estación con el patrón de indicador (valor + estado + umbral
+  dibujado + sparkline de los últimos 20 minutos, en una sola consulta para toda la
+  pantalla; ver `apps/panel/indicadores.py::series_por_estacion`). Las cinco pantallas de
+  monitoreo siguen el mismo criterio — ver "Cómo se diseñan las gráficas del panel".
 - **Retención**: el comando `purgar_metricas --dias 30` (para cron) borra muestras viejas,
   reemplazando el `vaciar_logs` del sistema viejo (que borraba TODO cada domingo). En
   producción, esta tabla va sobre **TimescaleDB** con retención nativa.
@@ -597,7 +665,10 @@ resto del panel (por estación, o listados planos), esta vista agrega las últim
 semanas para responder "¿cómo viene la salud general de la flota?" — alertas
 abiertas/resueltas por semana (por severidad) y promedio de CPU/RAM/disco de los
 servidores monitoreados, con los mismos gráficos SVG inline (`apps/monitoreo/graficos.py`)
-que ya se usan por estación individual. El top de errores del POS que muestra es el
+que ya se usan por estación individual. Los promedios de recursos llevan dibujada la
+misma línea de umbral que abre la alerta en cada equipo; las series de alertas son
+conteos, no medidores, así que en vez de un umbral llevan la media de las 12 semanas
+como referencia y no se colorean (ver "Cómo se diseñan las gráficas del panel"). El top de errores del POS que muestra es el
 mismo "acumulado actual" de `/alertas/errores-pos/` (no una tendencia semanal:
 `PosErrorDetectado` no guarda cuándo ocurrió cada reporte, solo un contador de por
 vida — decisión explícita del usuario ante ese gap de datos).
@@ -752,6 +823,7 @@ duración (calco de `run_meshcentral_worker`: latido propio y apagado limpio) y
 | `/estado` | Estaciones en línea, alertas por severidad, enlaces caídos, servicios del POS y frescura del último sondeo |
 | `/alertas` | Alertas sin resolver, con severidad, estación y antigüedad |
 | `/farmacia ML016` | Enlace, tráfico SNMP, estaciones y sus servicios del POS caídos |
+| `/reconocer 42` | **Acción.** Avisa que estás mirando esa alerta y corta el reenvío por escalamiento |
 | `/criticas` | Solo las alertas de severidad crítica |
 | `/mantenimiento` | Ventanas de mantenimiento en curso: qué alertas están silenciadas y hasta cuándo |
 | `/toperrores` | Errores del POS más repetidos en TODA la flota (últimos 7 días), con en cuántas estaciones aparece cada uno |

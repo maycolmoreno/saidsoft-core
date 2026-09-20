@@ -605,14 +605,23 @@ def notificar_alerta(alerta, *, escalamiento=False):
     # y el arreglo ya no se puede hacer en remoto. Sin el botón, el aviso llega al
     # teléfono y obliga a abrir la computadora para dar un clic.
     #
-    # `pedirsync:` y no `sync:`: el botón pide confirmación, no ejecuta. Un roce sobre
-    # una notificación no puede accionar sobre una caja.
-    teclado_alerta = None
+    # `pedirsync:`/`pedirack:` y no `sync:`/`ack:`: los botones piden confirmación, no
+    # ejecutan. Un roce sobre una notificación no puede accionar sobre una caja.
+    #
+    # "Reconocer" va en TODA alerta, no solo en las de reloj: no arregla nada —cambia una
+    # fila— pero corta el reenvío por escalamiento, y el momento en que eso importa es
+    # justo cuando nadie va a abrir la computadora. Sin el botón, la única forma de decir
+    # "ya la vi" a las 3 de la mañana era entrar al panel.
+    botones = [{
+        'text': '✔ Reconocer',
+        'callback_data': f'pedirack:{alerta.pk}',
+    }]
     if alerta.regla.metrica == Metrica.DESFASE_RELOJ:
-        teclado_alerta = [[{
+        botones.append({
             'text': f'🕐 Sincronizar {alerta.estacion.codigo}',
             'callback_data': f'pedirsync:{alerta.estacion.codigo}',
-        }]]
+        })
+    teclado_alerta = [botones]
     for canal in canales_telegram_para(unidad):
         _enviar_telegram(canal.destino, texto_telegram, teclado=teclado_alerta)
 

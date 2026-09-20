@@ -7,6 +7,7 @@ from django.db.models import Max
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.formats import number_format
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion
 from apps.cuentas.services import (
@@ -14,36 +15,42 @@ from apps.cuentas.services import (
 )
 from apps.monitoreo.forms import VentanaMantenimientoForm
 from apps.monitoreo.models import MuestraMetrica, VentanaMantenimiento
-from ..umbrales import (
-    RED_FARMACIA_UMBRAL_CRITICAL_KBPS, RED_FARMACIA_UMBRAL_WARNING_KBPS,
-    UMBRAL_CPU_CRITICAL_PCT, UMBRAL_CPU_WARNING_PCT, UMBRAL_DISCO_CRITICAL_PCT,
-    UMBRAL_DISCO_WARNING_PCT, UMBRAL_RAM_CRITICAL_PCT, UMBRAL_RAM_WARNING_PCT, clasificar,
+from ..indicadores import (
+    METRICAS_RECURSOS, estado_de, indicadores_de_recursos, series_por_estacion,
 )
+from ..umbrales import umbrales_de_reglas
 
 
-def estados_de_recursos(muestra):
+def estados_de_recursos(muestra, reglas=None):
     """Los tres colores de una muestra de recursos, calculados en un solo lugar.
 
     Se devuelven juntos y no de a uno a propósito: el problema no era el valor de cada
     umbral sino que hubiera dos caminos para llegar al color. Con esto, la lista y el
     detalle no pueden divergir ni aunque alguien toque uno solo.
 
+    Desde el rediseño de gráficas (19-sep-2026) ese "único lugar" es
+    `apps.panel.indicadores`: el color de este número y el color del punto en su
+    sparkline salen de la misma función, así que tampoco pueden divergir entre el valor
+    y su propia curva. Los umbrales de defecto siguen viviendo en
+    `apps/panel/umbrales.py`, y los pisa la ReglaAlerta activa que llegue en `reglas`.
+
     `muestra` puede ser None (estación sin métricas todavía): los tres salen 'sin_dato'.
     """
     return {
-        'estado_cpu': clasificar(
-            muestra.cpu_carga_pct if muestra else None,
-            UMBRAL_CPU_WARNING_PCT, UMBRAL_CPU_CRITICAL_PCT,
-        ),
-        'estado_ram': clasificar(
-            muestra.ram_usada_pct if muestra else None,
-            UMBRAL_RAM_WARNING_PCT, UMBRAL_RAM_CRITICAL_PCT,
-        ),
-        'estado_disco': clasificar(
-            muestra.disco_usado_pct if muestra else None,
-            UMBRAL_DISCO_WARNING_PCT, UMBRAL_DISCO_CRITICAL_PCT,
-        ),
+        'estado_cpu': estado_de('cpu_carga_pct', muestra.cpu_carga_pct if muestra else None, reglas),
+        'estado_ram': estado_de('ram_usada_pct', muestra.ram_usada_pct if muestra else None, reglas),
+        'estado_disco': estado_de('disco_usado_pct', muestra.disco_usado_pct if muestra else None, reglas),
     }
+
+
+def valores_actuales(muestra):
+    """El valor "de ahora" de cada métrica, tomado de la última muestra recibida.
+
+    No se usa el último punto del sparkline: esa ventana son 20 minutos y la última
+    muestra puede ser más vieja si la estación se apagó. El número grande tiene que ser
+    el mismo que muestra el resto de la pantalla.
+    """
+    return {m.clave: getattr(muestra, m.clave, None) if muestra else None for m in METRICAS_RECURSOS}
 
 
 @login_required
@@ -97,6 +104,12 @@ def monitoreo_lista(request):
         marca['total'] += 1
         marca['criticos'] += 1 if estado.critico else 0
 
+    # Umbrales configurados y series recientes: DOS consultas fijas para toda la
+    # pantalla, no una por tarjeta. Sin ellas la tarjeta mostraba cinco números crudos y
+    # había que abrir el detalle de la estación para saber si alguno estaba mal.
+    reglas = umbrales_de_reglas(unidades_negocio_en_foco(request))
+    series = series_por_estacion(ids)
+
     tarjetas = []
     for estacion in servidores:
         ultima = por_estacion.get(estacion.pk)
@@ -104,7 +117,11 @@ def monitoreo_lista(request):
             'estacion': estacion,
             'ultima': ultima,
             'servicios_caidos': caidos.get(estacion.pk),
-            **estados_de_recursos(ultima),
+            'indicadores': indicadores_de_recursos(
+                series.get(estacion.pk, {}), reglas, ancho=120, alto=26,
+                valores=valores_actuales(ultima),
+            ),
+            **estados_de_recursos(ultima, reglas),
         })
     return render(request, 'panel/monitoreo_lista.html', {'tarjetas': tarjetas})
 
@@ -123,20 +140,43 @@ def monitoreo_detalle(request, pk):
 @login_required
 @permission_required('monitoreo.view_muestrametrica', raise_exception=True)
 def monitoreo_detalle_partial(request, pk):
-    from apps.monitoreo.graficos import construir_grafico
-
     estacion = get_object_or_404(Estacion, pk=pk, monitorear_recursos=True)
     verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     # Últimas 60 muestras en orden cronológico (más viejo → más nuevo) para graficar.
     muestras = list(estacion.metricas.all()[:60])[::-1]
-
-    ram_pct = [m.ram_usada_pct for m in muestras]
-    cpu = [m.cpu_carga_pct for m in muestras]
-    disco_pct = [m.disco_usado_pct for m in muestras]
-    latencia = [m.latencia_ms for m in muestras]
-    red = [m.red_total_kbps for m in muestras]
-
     ultima = muestras[-1] if muestras else None
+
+    series = {
+        m.clave: [getattr(muestra, m.clave) for muestra in muestras]
+        for m in METRICAS_RECURSOS
+    }
+    # Los umbrales de ESTA estación: los de su cliente más los globales. Acá se puede
+    # ser preciso porque hay una sola unidad de negocio a la vista, a diferencia del
+    # listado, que muestra varias juntas y tiene que quedarse con el límite más estricto.
+    reglas = umbrales_de_reglas([estacion.farmacia.unidad_negocio])
+
+    # El pie de cada tarjeta: el dato absoluto que el porcentaje esconde. "RAM 88%" no
+    # dice si son 7 GB de 8 o 900 MB de 1 GB, y la acción no es la misma.
+    #
+    # `number_format` y no interpolación directa: el texto lo arma Python, así que sin
+    # esto saldría con punto decimal ("20.0 GB") mientras el resto del panel —que pasa
+    # por los filtros de Django— usa la coma de es-EC. Y a un decimal, porque el agente
+    # manda `disco_libre_gb` como 16.043524498578883 y quince decimales en un pie de
+    # 10 px son ruido que además parte el texto en dos renglones.
+    notas = {}
+    if ultima and ultima.ram_total:
+        notas['ram_usada_pct'] = '%s de %s MB' % (ultima.ram_usada, ultima.ram_total)
+    if ultima and ultima.disco_total_gb:
+        notas['disco_usado_pct'] = '%s GB libres de %s GB' % (
+            number_format(ultima.disco_libre_gb or 0, decimal_pos=1),
+            number_format(ultima.disco_total_gb, decimal_pos=1),
+        )
+    if ultima and ultima.red_total_kbps is not None:
+        notas['red_total_kbps'] = '%s kbps de bajada / %s de subida' % (
+            number_format(ultima.red_recibido_kbps or 0, decimal_pos=1),
+            number_format(ultima.red_enviado_kbps or 0, decimal_pos=1),
+        )
+
     return render(request, 'panel/monitoreo_detalle_partial.html', {
         'estacion': estacion,
         # Fuera del `if ultima` del template: una estación sin muestras de recursos puede
@@ -144,12 +184,10 @@ def monitoreo_detalle_partial(request, pk):
         'servicios_pos': estacion.servicios_pos.all(),
         'ultima': ultima,
         'total_muestras': len(muestras),
-        'g_cpu': construir_grafico(cpu, escala_fija=100),
-        'g_ram': construir_grafico(ram_pct, escala_fija=100),
-        'g_disco': construir_grafico(disco_pct, escala_fija=100),
-        'g_latencia': construir_grafico(latencia),
-        'g_red': construir_grafico(red),
-        **estados_de_recursos(ultima),
+        'indicadores': indicadores_de_recursos(
+            series, reglas, valores=valores_actuales(ultima), notas=notas,
+        ),
+        **estados_de_recursos(ultima, reglas),
     })
 
 

@@ -1,0 +1,41 @@
+{% comment %}
+Distintivo de estado: color + ICONO + palabra, nunca color solo.
+
+Los tres colores de estado del sistema (--good / --warning / --critical) son verde,
+ámbar y rojo, y para una parte de la gente esos tres son dos: verde-ámbar y ámbar-rojo
+se acercan bajo deuteranopía y protanopía. Por eso cada estado tiene además una FORMA
+distinta —círculo con tilde, triángulo, octógono— y una palabra. Quitando el color, el
+distintivo se sigue leyendo.
+
+Parámetros:
+  estado       ok | warning | critical | sin_dato | sin_umbral
+  solo_icono   True para las tarjetas compactas del listado, donde no entra la palabra.
+               El texto sigue estando para el lector de pantalla y en el title.
+{% endcomment %}
+{% if estado == 'ok' %}
+<span class="estado-chip est-ok{% if solo_icono %} solo-icono{% endif %}" title="Dentro del umbral">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.8"/></svg>
+    <span{% if solo_icono %} class="sr-only"{% endif %}>Normal</span>
+</span>
+{% elif estado == 'warning' %}
+<span class="estado-chip est-warning{% if solo_icono %} solo-icono{% endif %}" title="Pasó el umbral de advertencia">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4.5"/><path d="M12 17.2h.01"/></svg>
+    <span{% if solo_icono %} class="sr-only"{% endif %}>Advertencia</span>
+</span>
+{% elif estado == 'critical' %}
+<span class="estado-chip est-critical{% if solo_icono %} solo-icono{% endif %}" title="Pasó el umbral crítico">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.2 2.5h7.6l5.7 5.7v7.6l-5.7 5.7H8.2l-5.7-5.7V8.2Z"/><path d="M9.3 9.3l5.4 5.4"/><path d="M14.7 9.3l-5.4 5.4"/></svg>
+    <span{% if solo_icono %} class="sr-only"{% endif %}>Crítico</span>
+</span>
+{% elif estado == 'sin_umbral' %}
+{% comment %} Ni regla ni defecto: el número se muestra, pero nadie puede afirmar que esté bien. {% endcomment %}
+<span class="estado-chip est-neutro{% if solo_icono %} solo-icono{% endif %}" title="No hay ninguna regla de alerta activa para esta métrica: el valor se muestra sin juzgarlo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.3 2.4c-.6.2-.9.8-.9 1.4v.4"/><path d="M12 17.2h.01"/></svg>
+    <span{% if solo_icono %} class="sr-only"{% endif %}>Sin umbral</span>
+</span>
+{% else %}
+<span class="estado-chip est-neutro{% if solo_icono %} solo-icono{% endif %}" title="No hay medición: no es lo mismo que estar bien">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" stroke-dasharray="3.2 3"/><path d="M8.5 12h7"/></svg>
+    <span{% if solo_icono %} class="sr-only"{% endif %}>Sin dato</span>
+</span>
+{% endif %}

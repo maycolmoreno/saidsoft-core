@@ -1,0 +1,40 @@
+{% load l10n %}{% comment %}
+Sparkline con líneas de umbral y el último punto marcado.
+
+Tres decisiones que no son obvias mirando el markup:
+
+1. **`{% localize off %}` alrededor de todo lo que va a un atributo.** El proyecto corre
+   en es-EC, así que Django imprime `98.57` como `98,57`. Metido en `left:…%` eso es CSS
+   inválido y el elemento se va al borde (el mismo error silencioso que tenía la barra de
+   consumo del modal de enlaces, que nunca se dibujaba).
+2. **El punto final y las etiquetas van en HTML, no adentro del `<svg>`.** El SVG usa
+   `preserveAspectRatio="none"` para estirar la curva al ancho de la tarjeta; eso deforma
+   igual cualquier texto o círculo que viva adentro. Por eso `construir_grafico` devuelve
+   la posición en porcentaje además de la coordenada.
+3. **La curva va en `--serie`, nunca en un color de estado.** Verde/ámbar/rojo están
+   reservados para "cómo está esto"; usarlos para distinguir series es lo que hacía que
+   una RAM al 95% se viera verde.
+
+Parámetros: g (Grafico), estado, compacto (sin etiquetas de umbral, para el listado).
+{% endcomment %}
+{% localize off %}
+<div class="spark{% if compacto %} spark-sm{% endif %}">
+    {% if g.puntos %}
+    <svg viewBox="0 0 {{ g.ancho }} {{ g.alto }}" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+        {% for m in g.marcas %}{% if m.dentro %}
+        <line x1="0" y1="{{ m.y }}" x2="{{ g.ancho }}" y2="{{ m.y }}"
+              class="spark-umbral um-{{ m.nivel }}" vector-effect="non-scaling-stroke"/>
+        {% endif %}{% endfor %}
+        <polyline points="{{ g.area }}" class="spark-area"/>
+        <polyline points="{{ g.puntos }}" class="spark-linea" vector-effect="non-scaling-stroke"/>
+    </svg>
+    {% if not compacto %}{% for m in g.marcas %}{% if m.dentro and m.etiqueta %}
+    <span class="spark-umbral-lbl um-{{ m.nivel }}" style="top:{{ m.pct_y }}%">{{ m.etiqueta }}</span>
+    {% endif %}{% endfor %}{% endif %}
+    <span class="spark-punto est-bg-{{ estado }}"
+          style="left:{{ g.ultimo_pct_x }}%; top:{{ g.ultimo_pct_y }}%"></span>
+    {% else %}
+    <div class="spark-vacio">sin muestras en la ventana</div>
+    {% endif %}
+</div>
+{% endlocalize %}

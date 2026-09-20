@@ -40,6 +40,10 @@
   --info:          #3B82F6;
   --info-dim:      #3B82F633;
   --accent:        #8B5CF6;
+  /* Color de SERIE: la curva de todo sparkline. Deliberadamente fuera de la
+     paleta de estado — verde/ambar/rojo quedan reservados para "como esta esto". */
+  --serie:         #94A3B8;
+  --serie-dim:     #94A3B82E;
   --accent-2:      #5B3FD9;
   --accent-dim:    #8B5CF622;
   --accent-shadow: #8B5CF680;
@@ -79,6 +83,8 @@
     --info:          #2563EB;
     --info-dim:      #2563EB1A;
     --accent:        #7C3AED;
+    --serie:         #64748B;
+    --serie-dim:     #64748B24;
     --accent-2:      #6D28D9;
     --accent-dim:    #7C3AED17;
     --accent-shadow: #7C3AED4D;
@@ -106,6 +112,7 @@
   --warning:#F59E0B; --warning-dim:#F59E0B22;
   --info:#3B82F6; --info-dim:#3B82F633;
   --accent:#8B5CF6; --accent-2:#5B3FD9; --accent-dim:#8B5CF622; --accent-shadow:#8B5CF680;
+  --serie:#94A3B8; --serie-dim:#94A3B82E;
   --overlay-hover:rgba(255,255,255,.05); --overlay-faint:rgba(255,255,255,.025);
   --track-bg:rgba(255,255,255,.06); --sheen:rgba(255,255,255,.08);
   --skel-1:#1c2740; --skel-2:#24304c;
@@ -123,6 +130,7 @@
   --warning:#B45309; --warning-dim:#D977061A;
   --info:#2563EB; --info-dim:#2563EB1A;
   --accent:#7C3AED; --accent-2:#6D28D9; --accent-dim:#7C3AED17; --accent-shadow:#7C3AED4D;
+  --serie:#64748B; --serie-dim:#64748B24;
   --overlay-hover:rgba(15,23,42,.045); --overlay-faint:rgba(15,23,42,.028);
   --track-bg:rgba(15,23,42,.07); --sheen:rgba(255,255,255,.6);
   --skel-1:#E7ECF3; --skel-2:#F4F7FB;

@@ -1,17 +1,29 @@
-"""Consultas por Telegram (/enlaces, /estado, /alertas, /farmacia, /hora) y una sola
-acción: /sincronizar.
+"""Consultas por Telegram (/enlaces, /estado, /alertas, /farmacia, /hora) y dos
+acciones: /reconocer y /sincronizar.
 
 Complementa la notificación saliente (ver `notificar_alerta` y
 `notificar_cambios_enlaces`): eso avisa cuando algo pasa, esto responde cuando alguien
 pregunta.
 
-**Por qué hay una acción, si esto nació de solo lectura.** La regla original era que
+**Por qué hay acciones, si esto nació de solo lectura.** La regla original era que
 nada de acá modificara nada, porque el canal de entrada de un bot público no es el lugar
-para accionar sobre 1.800 equipos. Sigue valiendo. `/sincronizar` es la excepción y no
-la puerta de entrada a más: corrige el reloj de UNA estación, es idempotente, y es
-exactamente lo que la alerta que llega por este mismo chat te está pidiendo que hagas.
-Sin eso el aviso te llega al teléfono y te obliga a abrir la computadora para dar un
-clic. Cualquier otra acción tiene que discutirse de nuevo — no hereda este permiso.
+para accionar sobre 1.800 equipos. Sigue valiendo, y cada excepción se aprueba sola
+contra cuatro criterios: una estación, idempotente, acción única y obvia, y que sea lo
+que la alerta que llegó por este mismo chat está pidiendo.
+
+- `/sincronizar` corrige el reloj de UNA estación. Sin esto el aviso llega al teléfono y
+  obliga a abrir la computadora para un clic.
+- `/reconocer` no arregla nada: cambia una fila. Pero corta el reenvío por escalamiento
+  (`escalar_alertas_abiertas` solo mira las que siguen en ABIERTA), así que deja decir
+  "ya la vi, estoy en eso" a las 3 de la mañana. Es la acción de menor riesgo del
+  sistema y la que más cambia cómo se vive una guardia.
+
+Lo que NO está y se decidió que no esté: reiniciar una estación (el radio de daño es un
+cliente en el mostrador), ver la clave de BitLocker (un secreto por un canal que no
+controlamos), aprobar enrolamientos, y **resolver** una alerta — que es distinto de
+reconocerla: afirma "esto ya está arreglado" y eso no se verifica desde un teléfono.
+Cualquier acción nueva se discute contra los mismos cuatro criterios; ninguna hereda
+este permiso.
 
 **Dos autorizaciones distintas, y conviene no confundirlas.**
 
@@ -24,7 +36,8 @@ cuándo) es exactamente el mapa que alguien necesitaría para atacar la red.
 
 *Accionar* exige además que el chat esté atado a un usuario del panel
 (`PerfilUsuario.telegram_chat_id`), y se resuelve con el RBAC que ya existe: el permiso
-`scripts.add_ejecucionscript` y acceso a la unidad de negocio de esa estación. Una lista
+que esa misma acción exige en el panel (`scripts.add_ejecucionscript` para sincronizar,
+`monitoreo.change_alerta` para reconocer) más acceso a la unidad de negocio. Una lista
 de chats no alcanza para escribir: no dice quién es cada uno, así que el historial no
 podría nombrar a nadie y revocarle la acción a una persona le quitaría también la
 consulta. Con el vínculo, `EjecucionScript.creado_por` queda con una persona real y dar
@@ -197,11 +210,13 @@ def _comando_alertas(*, solo_criticas: bool = False) -> str:
         # que dos personas salgan a atender lo mismo.
         marca = ' (reconocida)' if alerta.estado == Alerta.Estado.RECONOCIDA else ''
         lineas.append(
-            f'{emoji} {alerta.estacion.codigo} — {alerta.regla.nombre}{marca}\n'
+            f'{emoji} #{alerta.pk} {alerta.estacion.codigo} — {alerta.regla.nombre}{marca}\n'
             f'    hace {_texto_duracion(alerta.abierta_en)}'
         )
     if len(abiertas) > _MAX_FILAS:
         lineas.append(f'… y {len(abiertas) - _MAX_FILAS} más')
+    if any(a.estado == Alerta.Estado.ABIERTA for a in abiertas):
+        lineas += ['', 'Para avisar que la estás mirando: /reconocer <número>']
     return '\n'.join(lineas)
 
 
@@ -400,11 +415,121 @@ _AYUDA = '\n'.join([
     '',
     'Acciones:',
     '',
+    '/reconocer 42 — avisá que estás mirando esa alerta y corta el escalamiento',
     '/sincronizar ML002-B — corrige el reloj de esa estación (pide confirmación)',
     '',
     'Todo lo demás es solo lectura. La acción se ejecuta con TUS permisos y queda a tu '
     'nombre en el historial, así que tu chat tiene que estar atado a tu usuario del panel.',
 ])
+
+
+# --- Reconocer una alerta ---
+    #
+# Segunda accion de escritura del bot, y la que menos hace: cambia una fila y no toca
+# ninguna caja. Justamente por eso es la de mejor relacion valor/riesgo.
+    #
+# Lo que gana es el escalamiento: `escalar_alertas_abiertas` solo reenvia las que
+# siguen en ABIERTA, asi que reconocer corta la insistencia. A las 3 de la manana eso
+# es la diferencia entre decir "ya la vi, estoy en eso" desde el telefono y tener que
+# abrir la computadora — que es exactamente el momento en que nadie la abre.
+    #
+# Reconocer NO es resolver, y el bot deliberadamente no ofrece lo segundo: resolver
+# afirma "esto ya esta arreglado", y eso no se puede verificar desde un telefono.
+
+def _pedir_confirmacion_reconocer(alerta_id):
+    """Paso intermedio, igual que /sincronizar: un toque no alcanza para accionar."""
+    from .models import Alerta, ReglaAlerta
+
+    try:
+        alerta = (
+            Alerta.objects.select_related('regla', 'estacion', 'estacion__farmacia')
+            .get(pk=int(alerta_id))
+        )
+    except (Alerta.DoesNotExist, TypeError, ValueError):
+        return f'No encuentro la alerta #{alerta_id}.', _TECLADO_PRINCIPAL
+
+    if alerta.estado != Alerta.Estado.ABIERTA:
+        # Ya la reconocio alguien, o se resolvio sola porque el servicio volvio. Decirlo
+        # evita que dos personas salgan a atender lo mismo, que es justo lo que reconocer
+        # viene a resolver.
+        quien = alerta.reconocida_por.username if alerta.reconocida_por_id else 'el sistema'
+        return (
+            f'La alerta #{alerta.pk} ya no esta abierta ({alerta.get_estado_display()}).\n'
+            f'La atendio {quien}.'
+        ), _TECLADO_PRINCIPAL
+
+    emoji = '🔴' if alerta.regla.severidad == ReglaAlerta.Severidad.CRITICAL else '🟡'
+    texto = (
+        f'{emoji} Reconocer la alerta #{alerta.pk}\n\n'
+        f'{alerta.estacion.codigo} ({alerta.estacion.farmacia.codigo})\n'
+        f'{alerta.regla.nombre}\n'
+        f'Abierta hace {_texto_duracion(alerta.abierta_en)}.\n\n'
+        'Reconocer NO la resuelve: deja constancia de que alguien la esta mirando y corta '
+        'el reenvio por escalamiento. Queda a tu nombre.'
+    )
+    teclado = [[
+        {'text': f'Reconocer #{alerta.pk}', 'callback_data': f'ack:{alerta.pk}'},
+        {'text': 'Cancelar', 'callback_data': 'menu:principal'},
+    ]]
+    return texto, teclado
+
+
+def _reconocer_alerta(alerta_id, chat_id) -> str:
+    """Marca la alerta como RECONOCIDA a nombre de la persona atada a este chat.
+
+    Mismos tres controles que `_ejecutar_sincronizar`, y el mismo permiso que exige el
+    panel (`monitoreo.change_alerta`): no se inventa un criterio nuevo para la misma
+    accion segun por donde entre.
+    """
+    from apps.auditoria.models import registrar_evento
+    from apps.cuentas.services import usuario_de_chat_telegram, usuario_puede_ver
+
+    from .models import Alerta
+
+    usuario = usuario_de_chat_telegram(chat_id)
+    if usuario is None:
+        return (
+            'Este chat puede consultar, pero no accionar.\n\n'
+            'Para habilitarlo, un administrador tiene que poner tu chat_id '
+            f'({chat_id}) en tu perfil de usuario del panel. Asi la alerta queda '
+            'reconocida a tu nombre y no a nombre de nadie.'
+        )
+    if not usuario.has_perm('monitoreo.change_alerta'):
+        return f'{usuario.username}: no tenes permiso para reconocer alertas.'
+
+    try:
+        alerta = (
+            Alerta.objects.select_related('regla', 'estacion', 'estacion__farmacia__unidad_negocio')
+            .get(pk=int(alerta_id))
+        )
+    except (Alerta.DoesNotExist, TypeError, ValueError):
+        return f'No encuentro la alerta #{alerta_id}.'
+
+    unidad = alerta.estacion.farmacia.unidad_negocio
+    if not usuario_puede_ver(usuario, unidad):
+        return f'{usuario.username}: no tenes acceso a {unidad.codigo}.'
+
+    if alerta.estado != Alerta.Estado.ABIERTA:
+        quien = alerta.reconocida_por.username if alerta.reconocida_por_id else 'el sistema'
+        return f'La alerta #{alerta.pk} ya no estaba abierta: la atendio {quien}.'
+
+    alerta.estado = Alerta.Estado.RECONOCIDA
+    alerta.reconocida_en = timezone.now()
+    alerta.reconocida_por = usuario
+    alerta.save(update_fields=['estado', 'reconocida_en', 'reconocida_por'])
+# Sin `request`: no hay uno. La IP queda vacia y el origen va en el detalle, que es
+# el dato que de verdad importa para entender de donde salio la accion.
+    registrar_evento(
+        usuario=usuario, accion='alerta.reconocer', objeto=alerta,
+        detalle={'origen': 'telegram'},
+    )
+    logger.info('Telegram: %s reconocio la alerta #%s.', usuario.username, alerta.pk)
+    return (
+        f'✔ Alerta #{alerta.pk} reconocida a nombre de {usuario.username}.\n\n'
+        f'{alerta.estacion.codigo} — {alerta.regla.nombre}\n\n'
+        'Deja de reenviarse por escalamiento. Sigue abierta hasta que se resuelva: '
+        'la mayoria se cierra sola cuando el servicio vuelve.'
+    )
 
 
 # --- Reloj: consultar y corregir ---
@@ -644,6 +769,11 @@ def responder_a_callback(data: str, chat_id=None):
     data = (data or '').strip()
     if data == 'menu:principal':
         return _AYUDA, _TECLADO_PRINCIPAL
+    if data.startswith('pedirack:'):
+        # Viene con la notificacion de la alerta: pide confirmacion, no reconoce.
+        return _pedir_confirmacion_reconocer(data.split(':', 1)[1])
+    if data.startswith('ack:'):
+        return _reconocer_alerta(data.split(':', 1)[1], chat_id), _TECLADO_PRINCIPAL
     if data.startswith('pedirsync:'):
         # Botón que viene con la alerta de reloj: no ejecuta, pide confirmación. Que
         # llegue un aviso al teléfono y un roce accidental accione sobre una caja no
@@ -712,6 +842,10 @@ def responder_a(texto: str, chat_id=None):
         return _comando_toperrores()
     if comando == '/farmacia':
         return _comando_farmacia(argumento)
+    if comando == '/reconocer':
+        if not argumento.strip():
+            return 'Decime cuál: /reconocer 42 (el número sale de /alertas).'
+        return _pedir_confirmacion_reconocer(argumento.strip().lstrip('#'))
     if comando == '/hora':
         return _comando_hora()
     if comando == '/sincronizar':

@@ -1,4 +1,5 @@
 {% extends "panel/base.html" %}
+{% load l10n %}
 {% block title %}Estado de enlaces · SAIDSOFT{% endblock %}
 {% block content %}
 {% comment %}
@@ -58,17 +59,26 @@ con una búsqueda anterior. La tarjeta activa queda resaltada y su enlace vuelve
         <div class="text-xs text-[var(--text-faint)]">ver todos</div>
     </a>
     <a href="{% if filtros.estado == 'activos' %}?{% else %}?estado=activos{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtros.estado == 'activos' %}style="outline:2px solid var(--good);"{% endif %}>
-        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Activos</div>
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-[var(--text-faint)] text-xs uppercase tracking-wide">Activos</span>
+            {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+        </div>
         <div class="text-2xl font-semibold num" style="color:var(--good);">{{ activas }}</div>
         <div class="text-xs text-[var(--text-faint)]">{% widthratio activas total 100 %}% del total</div>
     </a>
     <a href="{% if filtros.estado == 'caidos' %}?{% else %}?estado=caidos{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtros.estado == 'caidos' %}style="outline:2px solid var(--critical);"{% elif caidas %}style="border-left:3px solid var(--critical);"{% endif %}>
-        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Caídos</div>
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-[var(--text-faint)] text-xs uppercase tracking-wide">Caídos</span>
+            {% if caidas %}{% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}{% endif %}
+        </div>
         <div class="text-2xl font-semibold num" {% if caidas %}style="color:var(--critical);"{% endif %}>{{ caidas }}</div>
         <div class="text-xs text-[var(--text-faint)]">{% if filtros.estado == 'caidos' %}quitar filtro{% else %}ver cuáles{% endif %}</div>
     </a>
     <a href="{% if filtros.estado == 'nunca' %}?{% else %}?estado=nunca{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtros.estado == 'nunca' %}style="outline:2px solid var(--warning);"{% elif nunca_respondieron %}style="border-left:3px solid var(--warning);"{% endif %}>
-        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Nunca respondieron</div>
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-[var(--text-faint)] text-xs uppercase tracking-wide">Nunca respondieron</span>
+            {% if nunca_respondieron %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% endif %}
+        </div>
         <div class="text-2xl font-semibold num" {% if nunca_respondieron %}style="color:var(--warning);"{% endif %}>{{ nunca_respondieron }}</div>
         <div class="text-xs text-[var(--text-faint)]">no son caídas: revisar ruta o IP</div>
     </a>
@@ -221,9 +231,27 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
                 </td>
                 <td class="px-3 py-2.5 text-right num text-xs">
                     {% if fila.total_kbps is not None %}
-                    <span {% if fila.estado_bw == 'critical' %}style="color:var(--critical);"{% elif fila.estado_bw == 'warning' %}style="color:var(--warning);"{% endif %}>
-                        {{ fila.total_kbps|floatformat:0 }} kbps
-                    </span>
+                    <div class="flex items-center justify-end gap-1.5">
+                        <span class="est-fg-{{ fila.estado_bw }}">{{ fila.total_kbps|floatformat:0 }} kbps</span>
+                        {% if fila.estado_bw == 'warning' or fila.estado_bw == 'critical' %}
+                        {% include "panel/_estado_chip.html" with estado=fila.estado_bw solo_icono=True %}
+                        {% endif %}
+                    </div>
+                    {% comment %}
+                    El medidor solo aparece donde se conoce el ancho contratado: es lo
+                    unico que convierte "831 kbps" en "poco" o "mucho". Sin ese dato el
+                    numero se muestra igual, pero sin barra — inventar una escala tipica
+                    haria que mintiera justo en las farmacias de las que menos se sabe.
+                    {% endcomment %}
+                    {% if fila.pct_contratado is not None %}
+                    {% localize off %}
+                    <div class="medidor mt-1" style="height:5px;"
+                         title="{{ fila.pct_contratado }}% de los {{ fila.farmacia.ancho_contratado_mbps }} Mbps contratados">
+                        <span class="relleno est-bg-{{ fila.estado_bw }}" style="width:{{ fila.pct_contratado }}%;"></span>
+                        <span class="tic um-critical" style="left:90%;"></span>
+                    </div>
+                    {% endlocalize %}
+                    {% endif %}
                     {% else %}<span class="text-[var(--text-faint)]">sin SNMP</span>{% endif %}
                 </td>
                 <td class="px-3 py-2.5 mono text-[var(--text-faint)] truncate" style="font-size:11px; max-width:200px;"

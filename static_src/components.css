@@ -411,3 +411,129 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
   .modal-card{ max-height:calc(100vh - 24px); }
   .modal-cancelar{ margin-left:0; }
 }
+
+/* ============================= INDICADORES =============================
+   El vocabulario de las gráficas de monitoreo. Todas las pantallas de monitoreo
+   usan estas clases; ver apps/panel/indicadores.py y README §"Cómo se diseñan las
+   gráficas del panel" antes de agregar una gráfica nueva.
+
+   Regla que gobierna todo el bloque: --good / --warning / --critical son colores
+   de ESTADO y no se usan para nada más. La curva de cualquier serie va en
+   --serie (gris azulado), y el color de estado aparece solo en tres lugares —el
+   valor, el distintivo y el punto final del sparkline—, siempre acompañado de un
+   icono o una palabra, nunca solo. */
+
+/* ---------- Distintivo de estado ---------- */
+.estado-chip{
+  display:inline-flex; align-items:center; gap:4px; flex:none;
+  font-size:9.5px; font-weight:700; letter-spacing:.3px; text-transform:uppercase;
+  padding:2px 7px 2px 5px; border-radius:99px; line-height:1.5;
+}
+.estado-chip svg{ width:11px; height:11px; flex:none; }
+.estado-chip.solo-icono{ padding:2px; gap:0; }
+.estado-chip.solo-icono svg{ width:12px; height:12px; }
+.estado-chip.est-ok{ background:var(--good-dim); color:var(--good); }
+.estado-chip.est-warning{ background:var(--warning-dim); color:var(--warning); }
+.estado-chip.est-critical{ background:var(--critical-dim); color:var(--critical); }
+.estado-chip.est-neutro{ background:var(--overlay-hover); color:var(--text-faint); }
+
+/* Color de estado aplicado a texto y a fondo. `sin_dato`/`sin_umbral` quedan en el
+   color de texto normal: un número que nadie puede juzgar no se pinta de verde. */
+.est-fg-ok{ color:var(--good); }
+.est-fg-warning{ color:var(--warning); }
+.est-fg-critical{ color:var(--critical); }
+.est-fg-sin_dato,.est-fg-sin_umbral{ color:var(--text); }
+.est-bg-ok{ background:var(--good); }
+.est-bg-warning{ background:var(--warning); }
+.est-bg-critical{ background:var(--critical); }
+.est-bg-sin_dato,.est-bg-sin_umbral{ background:var(--serie); }
+
+/* ---------- Tarjeta de indicador ---------- */
+.indicador{ display:flex; flex-direction:column; gap:7px; min-width:0; }
+.ind-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.ind-label{
+  font-size:11.5px; font-weight:600; color:var(--text-dim); letter-spacing:.2px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.ind-valor-row{ display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+.ind-valor{ font-size:27px; font-weight:700; line-height:1.05; letter-spacing:-.6px; }
+.ind-valor small{ font-size:13px; font-weight:600; letter-spacing:0; color:var(--text-faint); margin-left:1px; }
+.ind-trend{ display:inline-flex; align-items:center; gap:4px; font-size:10.5px; color:var(--text-dim); white-space:nowrap; }
+/* La flecha va NEUTRA a propósito: el color de estado ya lo lleva el valor, y teñir
+   también la flecha codificaría dos cosas distintas con el mismo color (¿el rojo es
+   "está mal" o "va empeorando"?). Lo que desambigua es la palabra que va al lado. */
+.ind-trend .flecha{ font-size:9px; line-height:1; color:var(--text-faint); }
+.ind-pie{
+  display:flex; flex-direction:column; gap:2px;
+  font-size:10.5px; color:var(--text-faint); line-height:1.4;
+}
+
+/* Versión compacta: las cinco métricas dentro de la tarjeta de una estación. */
+.indicador.compacto{ gap:3px; }
+.indicador.compacto .ind-label{ font-size:9.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--text-faint); }
+.indicador.compacto .ind-valor{ font-size:17px; letter-spacing:-.3px; }
+.indicador.compacto .ind-valor small{ font-size:10px; }
+
+/* ---------- Sparkline ---------- */
+.spark{ position:relative; height:64px; }
+.spark.spark-sm{ height:26px; }
+.spark svg{ display:block; width:100%; height:100%; }
+.spark-linea{ fill:none; stroke:var(--serie); stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+.spark-area{ fill:var(--serie); fill-opacity:.13; stroke:none; }
+
+.spark-umbral{ fill:none; stroke-width:1; }
+/* Advertencia punteada y crítico entero: el trazo distingue las dos líneas aunque el
+   color no se distinga (ámbar y rojo se acercan bajo deuteranopía). */
+.spark-umbral.um-warning{ stroke:var(--warning); stroke-dasharray:4 3; opacity:.8; }
+.spark-umbral.um-critical{ stroke:var(--critical); opacity:.75; }
+.spark-umbral.um-referencia{ stroke:var(--text-faint); stroke-dasharray:2 4; opacity:.85; }
+
+.spark-umbral-lbl{
+  position:absolute; transform:translateY(-50%); pointer-events:none;
+  font-size:9px; font-weight:700; line-height:1.3; letter-spacing:.2px;
+  padding:0 3px; border-radius:3px; background:var(--card);
+  font-variant-numeric:tabular-nums; white-space:nowrap; z-index:1;
+}
+/* Una etiqueta a cada lado. Con 75% y 90% sobre un eje 0–100 las dos líneas quedan a
+   8 px de distancia: apiladas del mismo lado se pisan siempre. El crítico se corre
+   28 px del borde derecho para dejarle lugar al punto del valor actual. */
+.spark-umbral-lbl.um-warning{ left:0; color:var(--warning); }
+.spark-umbral-lbl.um-critical{ right:28px; color:var(--critical); }
+.spark-umbral-lbl.um-referencia{ left:0; color:var(--text-faint); font-weight:600; }
+
+/* El punto del valor actual: es lo que une el número grande de arriba con la curva.
+   El anillo del color de la tarjeta lo despega de la línea de umbral cuando el valor
+   está justo encima de ella — que es cuando más importa verlo. */
+.spark-punto{
+  position:absolute; width:8px; height:8px; border-radius:50%; z-index:2;
+  transform:translate(-50%,-50%); box-shadow:0 0 0 2px var(--card);
+}
+.spark-sm .spark-punto{ width:6px; height:6px; box-shadow:0 0 0 1.5px var(--card); }
+.spark-vacio{
+  display:flex; align-items:center; justify-content:center; height:100%;
+  font-size:10.5px; color:var(--text-faint);
+  border:1px dashed var(--border-soft); border-radius:var(--radius-sm);
+}
+
+/* ---------- Medidor con marcas de umbral ("bullet") ----------
+   Para un valor único sin serie temporal (el consumo de una farmacia contra su ancho
+   contratado, las estaciones en línea sobre el total). Dice lo mismo que un sparkline
+   —de qué lado del límite está— sin necesitar historia. */
+.medidor{ position:relative; height:8px; border-radius:99px; background:var(--track-bg); }
+.medidor .relleno{ position:absolute; left:0; top:0; bottom:0; border-radius:99px; min-width:2px; }
+.medidor .tic{ position:absolute; top:-2px; bottom:-2px; width:2px; border-radius:1px; z-index:1; }
+.medidor .tic.um-warning{ background:var(--warning); }
+.medidor .tic.um-critical{ background:var(--critical); }
+.medidor-leyenda{
+  display:flex; align-items:center; gap:10px; margin-top:4px;
+  font-size:10px; color:var(--text-faint); font-variant-numeric:tabular-nums;
+}
+.medidor-leyenda .marca{ display:inline-flex; align-items:center; gap:3px; }
+.medidor-leyenda .marca::before{ content:""; width:2px; height:9px; border-radius:1px; background:currentColor; }
+.medidor-leyenda .marca.um-warning{ color:var(--warning); }
+.medidor-leyenda .marca.um-critical{ color:var(--critical); }
+
+/* ---------- Grilla de las cinco métricas de una estación ----------
+   auto-fit por el mismo motivo que .kpi-strip: con `grid-cols-5` fijas, un código de
+   farmacia largo o un valor de cuatro cifras en kbps desbordaban la celda. */
+.metricas-grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(96px, 1fr)); gap:12px 14px; }

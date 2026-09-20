@@ -25,78 +25,39 @@
     </div>
 </div>
 
-<h2 class="text-sm font-semibold text-[var(--text-dim)] uppercase tracking-wide mb-3">Alertas por semana</h2>
+{% comment %}
+Alertas por semana. Son CONTEOS, no medidores: no existe un número acordado de "alertas
+críticas por semana" que esté bien, así que la tarjeta no inventa un estado ni pinta el
+número. Lo que sí se puede afirmar —y es lo que faltaba— es cómo viene esta semana
+respecto de lo habitual: por eso cada gráfico lleva una línea punteada en la media de las
+12 semanas, y la flecha dice "mejorando"/"empeorando" según la métrica ("resueltas" es la
+única donde subir es bueno).
+
+Antes "Resueltas" se dibujaba en verde: el color decía "bien" aunque la serie estuviera
+cayendo en picada.
+{% endcomment %}
+<h2 class="text-sm font-semibold text-[var(--text-dim)] uppercase tracking-wide mb-1">Alertas por semana</h2>
+<p class="text-xs text-[var(--text-faint)] mb-3" style="max-width:70ch;">
+    El valor grande es la semana en curso (parcial). La línea punteada es la media de las 12 semanas:
+    sirve para ver si esta semana está por encima o por debajo de lo normal para esta flota.
+</p>
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8">
-    <div class="card p-4">
-        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">Abiertas · Advertencia</div>
-        <svg viewBox="0 0 {{ g_abiertas_warning.ancho }} {{ g_abiertas_warning.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_abiertas_warning.area }}" fill="var(--warning)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_abiertas_warning.puntos }}" fill="none" stroke="var(--warning)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">Esta semana: {{ g_abiertas_warning.ultimo_valor|default:"0" }}</div>
-    </div>
-    <div class="card p-4">
-        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">Abiertas · Crítica</div>
-        <svg viewBox="0 0 {{ g_abiertas_critical.ancho }} {{ g_abiertas_critical.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_abiertas_critical.area }}" fill="var(--critical)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_abiertas_critical.puntos }}" fill="none" stroke="var(--critical)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">Esta semana: {{ g_abiertas_critical.ultimo_valor|default:"0" }}</div>
-    </div>
-    <div class="card p-4">
-        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">Resueltas</div>
-        <svg viewBox="0 0 {{ g_resueltas.ancho }} {{ g_resueltas.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_resueltas.area }}" fill="var(--good)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_resueltas.puntos }}" fill="none" stroke="var(--good)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">Esta semana: {{ g_resueltas.ultimo_valor|default:"0" }}</div>
-    </div>
+    {% for i in indicadores_alertas %}
+    <div class="card p-4">{% include "panel/_indicador.html" with i=i %}</div>
+    {% endfor %}
 </div>
 
-<h2 class="text-sm font-semibold text-[var(--text-dim)] uppercase tracking-wide mb-3">
+<h2 class="text-sm font-semibold text-[var(--text-dim)] uppercase tracking-wide mb-1">
     Promedio de recursos de la flota (servidores monitoreados)
 </h2>
+<p class="text-xs text-[var(--text-faint)] mb-3" style="max-width:70ch;">
+    Las líneas de umbral son las mismas que abren una alerta en cada estación
+    (la ReglaAlerta activa, o el defecto del panel si no hay ninguna configurada).
+</p>
 <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-8">
-    <div class="card p-4">
-        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">CPU promedio</div>
-        <svg viewBox="0 0 {{ g_cpu.ancho }} {{ g_cpu.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_cpu.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_cpu.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">
-            {% if cpu_semana_actual is not None %}Esta semana: {{ cpu_semana_actual|floatformat:1 }}%{% else %}Sin datos esta semana{% endif %}
-        </div>
-    </div>
-    <div class="card p-4">
-        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">RAM usada promedio</div>
-        <svg viewBox="0 0 {{ g_ram.ancho }} {{ g_ram.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_ram.area }}" fill="var(--good)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_ram.puntos }}" fill="none" stroke="var(--good)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">
-            {% if ram_semana_actual is not None %}Esta semana: {{ ram_semana_actual|floatformat:1 }}%{% else %}Sin datos esta semana{% endif %}
-        </div>
-    </div>
-    <div class="card p-4">
-        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">Disco usado promedio</div>
-        <svg viewBox="0 0 {{ g_disco.ancho }} {{ g_disco.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_disco.area }}" fill="var(--accent)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_disco.puntos }}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">
-            {% if disco_semana_actual is not None %}Esta semana: {{ disco_semana_actual|floatformat:1 }}%{% else %}Sin datos esta semana{% endif %}
-        </div>
-    </div>
-    <div class="card p-4">
-        <div class="text-sm font-medium text-[var(--text-dim)] mb-2">Red promedio (por estación)</div>
-        <svg viewBox="0 0 {{ g_red.ancho }} {{ g_red.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_red.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_red.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">
-            {% if red_semana_actual is not None %}Esta semana: {{ red_semana_actual|floatformat:1 }} kbps{% else %}Sin datos esta semana{% endif %}
-        </div>
-    </div>
+    {% for i in indicadores_recursos %}
+    <div class="card p-4">{% include "panel/_indicador.html" with i=i %}</div>
+    {% endfor %}
 </div>
 
 <div class="flex items-center justify-between mb-3">

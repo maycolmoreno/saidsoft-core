@@ -1,4 +1,4 @@
-{% comment %}
+{% load l10n %}{% comment %}
 Ficha del enlace de una farmacia. Se inyecta en #modal-info-content (ver base.html) y el
 POST de "Pedir lectura" devuelve este mismo fragmento, así el operador no pierde la
 ventana al disparar la consulta.
@@ -104,26 +104,52 @@ pedir una lectura.
         </div>
 
         <div class="tab-enlace-panel" data-tab="trafico">
+            {% comment %}
+            Una sola tarjeta desde el 19-sep-2026. Antes eran dos: el valor actual arriba
+            y, debajo, el gráfico de las últimas lecturas con sus propias referencias al
+            50% y 90% escritas a mano (`y1="32"`, `y1="10"`, que dependían de que nadie
+            tocara el alto ni el `pad` del SVG). Ahora el valor, su estado y su curva son
+            el mismo indicador —panel/_indicador.html, el patrón de todo el panel— y las
+            líneas de umbral las calcula `construir_grafico` a partir de los mismos kbps
+            que colorean el número (ver `umbrales.limites_de_enlace`).
+            {% endcomment %}
             <div class="card p-3 mb-3">
-                <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Consumo actual</div>
+                {% include "panel/_indicador.html" with i=consumo %}
+
                 {% if ultima %}
-                <div class="text-xl font-semibold num" {% if estado_bw == 'critical' %}style="color:var(--critical);"{% elif estado_bw == 'warning' %}style="color:var(--warning);"{% endif %}>
-                    {{ ultima.red_total_kbps|floatformat:0 }} kbps
-                </div>
-                <div class="text-xs text-[var(--text-faint)] mt-1">
+                <div class="text-xs text-[var(--text-faint)] mt-2">
                     ↓ {{ ultima.red_recibido_kbps|floatformat:0 }} bajada ·
                     ↑ {{ ultima.red_enviado_kbps|floatformat:0 }} subida ·
                     {{ ultima.timestamp|date:"d/m H:i" }}
                 </div>
+
                 {% if ultima.porcentaje_del_contratado is not None %}
-                <div class="mt-2">
-                    <div class="rank-row"><span class="track"><span class="fill"
-                        style="width:{% if ultima.porcentaje_del_contratado > 100 %}100{% else %}{{ ultima.porcentaje_del_contratado }}{% endif %}%;
-                               background:{% if ultima.porcentaje_del_contratado >= 90 %}var(--critical){% elif ultima.porcentaje_del_contratado >= 70 %}var(--warning){% else %}var(--good){% endif %};"></span></span></div>
-                    <div class="text-xs text-[var(--text-faint)] mt-1">
-                        {{ ultima.porcentaje_del_contratado }}% de los {{ farmacia.ancho_contratado_mbps }} Mbps contratados
-                        {% if farmacia.tipo_enlace %}a {{ farmacia.tipo_enlace }}{% endif %}
+                {% comment %}
+                El medidor dice lo mismo que la curva pero en la unidad con la que se
+                habla con el proveedor: "% de lo contratado". Las dos marcas son los
+                mismos umbrales que las líneas del gráfico.
+
+                `localize off` no es opcional: el proyecto corre en es-EC y
+                `porcentaje_del_contratado` es un float, así que Django lo imprimía
+                "12,4" — dentro de `width:…%` eso es CSS inválido y la barra no se
+                dibujaba nunca. El error estaba desde que se agregó la barra.
+                {% endcomment %}
+                {% localize off %}
+                <div class="mt-3">
+                    <div class="medidor">
+                        <span class="relleno est-bg-{{ estado_bw }}"
+                              style="width:{% if ultima.porcentaje_del_contratado > 100 %}100{% else %}{{ ultima.porcentaje_del_contratado }}{% endif %}%;"></span>
+                        <span class="tic um-warning" style="left:{{ bw_umbral_warning_pct }}%;"
+                              title="Umbral de advertencia"></span>
+                        <span class="tic um-critical" style="left:{{ bw_umbral_critical_pct }}%;"
+                              title="Umbral crítico"></span>
                     </div>
+                </div>
+                {% endlocalize %}
+                <div class="medidor-leyenda">
+                    <span>{{ ultima.porcentaje_del_contratado }}% de los {{ farmacia.ancho_contratado_mbps }} Mbps contratados{% if farmacia.tipo_enlace %} a {{ farmacia.tipo_enlace }}{% endif %}</span>
+                    <span class="marca um-warning">{{ bw_umbral_warning_pct }}%</span>
+                    <span class="marca um-critical">{{ bw_umbral_critical_pct }}%</span>
                 </div>
                 {% elif not farmacia.ancho_contratado_mbps %}
                 {% comment %}
@@ -136,38 +162,13 @@ pedir una lectura.
                     enlace representa.
                 </div>
                 {% endif %}
-                {% else %}
-                <div class="text-sm text-[var(--text-faint)]">Sin lecturas todavía</div>
                 {% endif %}
-            </div>
 
-            {% if total_muestras > 1 %}
-            <div class="card p-3 mb-3">
-                <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Últimas {{ total_muestras }} lecturas</div>
-                {% comment %}
-                construir_grafico devuelve los puntos ya calculados, no markup: el <svg> se arma acá.
-                El eje Y va de 0 al ancho contratado cuando se conoce (ver la vista): así la altura
-                de la curva significa "qué parte del enlace se está usando" y no "qué parte del pico
-                de esta ventana", que es lo que mostraba antes.
-                {% endcomment %}
-                <div class="flex gap-2">
-                    <div class="flex flex-col justify-between text-xs text-[var(--text-faint)] num" style="height:64px;">
-                        <span>{% if escala_kbps %}{{ farmacia.ancho_contratado_mbps }} Mbps{% else %}{{ g_red.max_valor|floatformat:0 }}{% endif %}</span>
-                        <span>0</span>
-                    </div>
-                    <svg viewBox="0 0 {{ g_red.ancho }} {{ g_red.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-                        {% if escala_kbps %}
-                        {% comment %} Referencias al 50% y al 90% del contratado, para ubicar la curva sin medir a ojo. {% endcomment %}
-                        <line x1="0" y1="32" x2="{{ g_red.ancho }}" y2="32" stroke="var(--border-soft)" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>
-                        <line x1="0" y1="10" x2="{{ g_red.ancho }}" y2="10" stroke="var(--warning)" stroke-width="1" stroke-dasharray="3 3" stroke-opacity="0.5" vector-effect="non-scaling-stroke"/>
-                        {% endif %}
-                        <polyline points="{{ g_red.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
-                        <polyline points="{{ g_red.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-                    </svg>
-                </div>
-                <div class="text-xs text-[var(--text-faint)] mt-1">
+                {% if total_muestras > 1 %}
+                <div class="text-xs text-[var(--text-faint)] mt-2" style="line-height:1.45;">
+                    Últimas {{ total_muestras }} lecturas ·
                     {% if escala_kbps %}
-                        Escala 0 a {{ farmacia.ancho_contratado_mbps }} Mbps contratados · línea punteada al 50% y 90%
+                        escala 0 a {{ farmacia.ancho_contratado_mbps }} Mbps contratados
                         · pico {{ pico_kbps|floatformat:0 }} kbps
                         {% if pico_kbps > escala_kbps %}<span style="color:var(--critical);">(superó lo contratado)</span>{% endif %}
                     {% else %}
@@ -175,8 +176,8 @@ pedir una lectura.
                         Sirve para ver la forma, no cuánto del enlace se usa — para eso falta cargar el ancho contratado.
                     {% endif %}
                 </div>
+                {% endif %}
             </div>
-            {% endif %}
 
             {% if puede_solicitar %}
             <form method="post" action="{% url 'panel:enlace_farmacia_solicitar' farmacia.pk %}"

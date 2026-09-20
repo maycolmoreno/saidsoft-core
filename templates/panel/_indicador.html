@@ -1,0 +1,49 @@
+{% comment %}
+Tarjeta de una métrica: etiqueta, valor grande, estado, tendencia y sparkline con el
+umbral dibujado. Es el patrón que siguen TODAS las gráficas de monitoreo desde el
+rediseño del 19-sep-2026 — ver apps/panel/indicadores.py para el porqué de cada parte, y
+README §"Cómo se diseñan las gráficas del panel" antes de agregar una nueva.
+
+Parámetros:
+  i          Indicador (apps.panel.indicadores)
+  compacto   True para las cinco métricas dentro de una tarjeta de estación en el
+             listado: mismo contenido, sin etiquetas de umbral ni palabra de estado,
+             que a ese tamaño no entran y se pisan entre sí.
+{% endcomment %}
+<div class="indicador{% if compacto %} compacto{% endif %}">
+    <div class="ind-head">
+        <span class="ind-label">{{ i.etiqueta }}</span>
+        {% comment %} Los conteos (alertas por semana) no llevan distintivo: no tienen umbral contra el que juzgarlos. {% endcomment %}
+        {% if i.mostrar_estado %}{% include "panel/_estado_chip.html" with estado=i.estado solo_icono=compacto %}{% endif %}
+    </div>
+
+    <div class="ind-valor-row">
+        <span class="ind-valor num {% if i.mostrar_estado %}est-fg-{{ i.estado }}{% else %}est-fg-sin_umbral{% endif %}">
+            {% if i.valor is not None %}{{ i.valor|floatformat:i.decimales }}<small>{{ i.unidad }}</small>{% else %}—{% endif %}
+        </span>
+        {% if i.flecha %}
+        <span class="ind-trend" title="Comparado con el promedio de la ventana graficada">
+            <span class="flecha" aria-hidden="true">{{ i.flecha }}</span>{% if not compacto %} {{ i.tendencia_texto }}{% endif %}
+            <span class="sr-only">{{ i.tendencia_texto }}</span>
+        </span>
+        {% endif %}
+    </div>
+
+    {% include "panel/_sparkline.html" with g=i.grafico estado=i.estado compacto=compacto %}
+
+    {% if not compacto %}
+    <div class="ind-pie">
+        {% if i.umbral_fuera_de_escala %}
+        {% comment %}
+        El umbral no entra en el eje: decirlo con un número en vez de pegar la línea al
+        borde. floatformat:"-1" y no los decimales de la métrica porque los umbrales son
+        redondos: "500,0 ms" no dice más que "500 ms".
+        {% endcomment %}
+        <span>Umbral fuera del rango graficado{% if i.critical %} (crítico en {{ i.critical|floatformat:"-1" }}{{ i.unidad }}){% elif i.warning %} (advertencia en {{ i.warning|floatformat:"-1" }}{{ i.unidad }}){% endif %}.</span>
+        {% elif i.estado == 'sin_umbral' and i.mostrar_estado %}
+        <span>Sin regla de alerta activa para esta métrica: se muestra el valor, no un juicio.</span>
+        {% endif %}
+        {% if i.nota %}<span>{{ i.nota }}</span>{% endif %}
+    </div>
+    {% endif %}
+</div>

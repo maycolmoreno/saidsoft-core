@@ -5262,12 +5262,16 @@ class AlertaDesfaseRelojTests(TestCase):
         self.assertEqual(enviar.call_count, 1)
         teclado = enviar.call_args.kwargs['teclado']
         botones = [b for fila in teclado for b in fila]
-        self.assertEqual(botones[0]['callback_data'], 'pedirsync:ML900-A')
-        self.assertIn('ML900-A', botones[0]['text'])
+        datos = [b['callback_data'] for b in botones]
+        # Reconocer primero: es el que aplica siempre y el que se toca mas seguido.
+        self.assertTrue(datos[0].startswith('pedirack:'), datos)
+        self.assertIn('pedirsync:ML900-A', datos)
 
     @override_settings(TELEGRAM_BOT_TOKEN='TOKEN-DE-PRUEBA')
-    def test_las_otras_alertas_siguen_sin_boton(self):
-        """El botón es la excepción, no el nuevo default de toda notificación."""
+    def test_toda_alerta_trae_reconocer_pero_solo_la_de_reloj_trae_sincronizar(self):
+        """Reconocer va en todas: no arregla nada, pero corta el escalamiento, y eso
+        importa en cualquier alerta. Sincronizar solo donde hay algo que sincronizar —
+        un botón que no aplica es peor que ninguno."""
         from apps.monitoreo.services import abrir_o_mantener_alerta
 
         CanalNotificacion.objects.create(
@@ -5280,10 +5284,11 @@ class AlertaDesfaseRelojTests(TestCase):
         )
 
         with patch('apps.monitoreo.services._enviar_telegram', return_value=True) as enviar:
-            abrir_o_mantener_alerta(regla_disco, self.estacion, 99)
+            alerta = abrir_o_mantener_alerta(regla_disco, self.estacion, 99)
 
-        self.assertEqual(enviar.call_count, 1)
-        self.assertIsNone(enviar.call_args.kwargs['teclado'])
+        botones = [b for fila in enviar.call_args.kwargs['teclado'] for b in fila]
+        datos = [b['callback_data'] for b in botones]
+        self.assertEqual(datos, [f'pedirack:{alerta.pk}'])
 
 
 class SincronizarHoraPorTelegramTests(TestCase):
@@ -5953,3 +5958,244 @@ class CatalogoServiciosPosValidacionTests(TestCase):
         self.assertEqual(fila['host'], '10.0.0.9')
         self.assertEqual(fila['puerto'], '5433')
         self.assertEqual(fila['bdd'], 'facturacion')
+
+class ReconocerAlertaPorTelegramTests(TestCase):
+    """Segunda acción de escritura del bot, y la de menor riesgo: cambia una fila.
+
+    Lo que gana es el escalamiento. `escalar_alertas_abiertas` solo reenvía las que siguen
+    en ABIERTA, así que reconocer corta la insistencia — y el momento en que eso importa
+    es justo aquel en que nadie va a abrir la computadora.
+    """
+
+    def setUp(self):
+        from apps.cuentas.models import PerfilUsuario
+        from apps.monitoreo.models import Alerta, Metrica, ReglaAlerta
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX950')
+        farmacia = Farmacia.objects.create(codigo='ML950', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML950-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        autor = User.objects.create_user(username='autor_ack', password='x')
+        self.regla = ReglaAlerta.objects.create(
+            nombre='Disco lleno', metrica=Metrica.DISCO_USADO_PCT, umbral=95,
+            duracion_minutos=0, severidad=ReglaAlerta.Severidad.CRITICAL, creado_por=autor,
+        )
+        self.alerta = Alerta.objects.create(
+            regla=self.regla, estacion=self.estacion, valor_disparador=99,
+        )
+
+        # Quien sí puede: permiso de cambiar alertas y acceso a SG.
+        self.operador = User.objects.create_user(username='op_ack', password='x')
+        self.operador.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='change_alerta'),
+        )
+        perfil = PerfilUsuario.objects.create(
+            usuario=self.operador, acceso_todas_unidades=False, telegram_chat_id='111',
+        )
+        perfil.unidades_negocio.add(self.sg)
+
+    def _reconocer(self, alerta_id, chat_id):
+        from apps.monitoreo.telegram_bot import _reconocer_alerta
+
+        return _reconocer_alerta(alerta_id, chat_id)
+
+    # --- lo que NO tiene que poder hacerse ---
+
+    def test_un_chat_sin_usuario_atado_no_reconoce(self):
+        from apps.monitoreo.models import Alerta
+
+        respuesta = self._reconocer(self.alerta.pk, '999')
+
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.estado, Alerta.Estado.ABIERTA)
+        self.assertIn('no accionar', respuesta)
+        self.assertIn('999', respuesta)
+
+    def test_sin_el_permiso_de_cambiar_alertas_no_reconoce(self):
+        from apps.cuentas.models import PerfilUsuario
+        from apps.monitoreo.models import Alerta
+
+        miron = User.objects.create_user(username='miron_ack', password='x')
+        PerfilUsuario.objects.create(
+            usuario=miron, acceso_todas_unidades=True, telegram_chat_id='222',
+        )
+
+        respuesta = self._reconocer(self.alerta.pk, '222')
+
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.estado, Alerta.Estado.ABIERTA)
+        self.assertIn('permiso', respuesta)
+
+    def test_no_se_puede_reconocer_una_alerta_de_otra_unidad(self):
+        """El mismo aislamiento multi-tenant del panel, no uno paralelo."""
+        from apps.cuentas.models import PerfilUsuario
+        from apps.monitoreo.models import Alerta
+
+        ajeno = User.objects.create_user(username='ajeno_ack', password='x')
+        ajeno.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='change_alerta'),
+        )
+        perfil = PerfilUsuario.objects.create(
+            usuario=ajeno, acceso_todas_unidades=False, telegram_chat_id='333',
+        )
+        perfil.unidades_negocio.add(self.mia)
+
+        respuesta = self._reconocer(self.alerta.pk, '333')
+
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.estado, Alerta.Estado.ABIERTA)
+        self.assertIn('SG', respuesta)
+
+    def test_un_usuario_desactivado_no_reconoce(self):
+        from apps.monitoreo.models import Alerta
+
+        self.operador.is_active = False
+        self.operador.save(update_fields=['is_active'])
+
+        self._reconocer(self.alerta.pk, '111')
+
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.estado, Alerta.Estado.ABIERTA)
+
+    # --- lo que sí ---
+
+    def test_quien_tiene_todo_reconoce_y_queda_A_SU_NOMBRE(self):
+        from apps.monitoreo.models import Alerta
+
+        respuesta = self._reconocer(self.alerta.pk, '111')
+
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.estado, Alerta.Estado.RECONOCIDA)
+        self.assertEqual(self.alerta.reconocida_por, self.operador)
+        self.assertIsNotNone(self.alerta.reconocida_en)
+        self.assertIn('op_ack', respuesta)
+
+    def test_queda_auditado_con_el_origen(self):
+        """Sin `request` no hay IP, así que el origen es lo único que dice de dónde
+        salió la acción — y esa distinción importa cuando alguien revisa el historial."""
+        from apps.auditoria.models import EventoAuditoria
+
+        self._reconocer(self.alerta.pk, '111')
+
+        evento = EventoAuditoria.objects.filter(accion='alerta.reconocer').latest('id')
+        self.assertEqual(evento.usuario, self.operador)
+        self.assertEqual(evento.detalle.get('origen'), 'telegram')
+
+    def test_reconocer_CORTA_el_escalamiento(self):
+        """El punto de toda la función. `escalar_alertas_abiertas` solo reenvía las que
+        siguen en ABIERTA."""
+        from apps.monitoreo.models import Alerta
+        from apps.monitoreo.services import escalar_alertas_abiertas
+
+        # Vieja como para escalar.
+        Alerta.objects.filter(pk=self.alerta.pk).update(
+            abierta_en=timezone.now() - timedelta(hours=3),
+        )
+        self._reconocer(self.alerta.pk, '111')
+
+        with patch('apps.monitoreo.services.notificar_alerta') as notificar:
+            escaladas = escalar_alertas_abiertas()
+
+        self.assertEqual(escaladas, 0)
+        notificar.assert_not_called()
+
+    def test_una_alerta_sin_reconocer_SI_escala(self):
+        """El contraste: si esto no pasara, el test de arriba no probaría nada."""
+        from apps.monitoreo.models import Alerta
+        from apps.monitoreo.services import escalar_alertas_abiertas
+
+        Alerta.objects.filter(pk=self.alerta.pk).update(
+            abierta_en=timezone.now() - timedelta(hours=3),
+        )
+        with patch('apps.monitoreo.services.notificar_alerta'):
+            self.assertEqual(escalar_alertas_abiertas(), 1)
+
+    # --- bordes ---
+
+    def test_reconocer_dos_veces_no_pisa_a_quien_la_atendio_primero(self):
+        """Dos personas mirando el mismo aviso es el caso normal, no el raro."""
+        from apps.cuentas.models import PerfilUsuario
+        from apps.monitoreo.models import Alerta
+
+        otro = User.objects.create_user(username='otro_ack', password='x')
+        otro.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='change_alerta'),
+        )
+        PerfilUsuario.objects.create(
+            usuario=otro, acceso_todas_unidades=True, telegram_chat_id='444',
+        )
+
+        self._reconocer(self.alerta.pk, '111')
+        respuesta = self._reconocer(self.alerta.pk, '444')
+
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.reconocida_por, self.operador, 'gana el primero')
+        self.assertIn('op_ack', respuesta, 'y al segundo se le dice quién la tomó')
+
+    def test_una_alerta_inexistente_no_revienta(self):
+        self.assertIn('No encuentro', self._reconocer(99999, '111'))
+
+    def test_un_id_que_no_es_numero_no_revienta(self):
+        self.assertIn('No encuentro', self._reconocer('DROP TABLE', '111'))
+
+    # --- flujo desde el chat ---
+
+    def test_escribir_el_comando_NO_reconoce_solo_pide_confirmacion(self):
+        from apps.monitoreo.models import Alerta
+        from apps.monitoreo.telegram_bot import responder_a
+
+        texto, teclado = responder_a(f'/reconocer {self.alerta.pk}', '111')
+
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.estado, Alerta.Estado.ABIERTA)
+        botones = [b for fila in teclado for b in fila]
+        self.assertEqual(botones[0]['callback_data'], f'ack:{self.alerta.pk}')
+
+    def test_acepta_el_numeral_que_muestra_el_listado(self):
+        """El listado imprime "#42", así que copiarlo tal cual tiene que funcionar."""
+        from apps.monitoreo.telegram_bot import responder_a
+
+        texto, _ = responder_a(f'/reconocer #{self.alerta.pk}', '111')
+        self.assertIn(str(self.alerta.pk), texto)
+
+    def test_el_boton_de_la_alerta_pide_confirmacion_no_reconoce(self):
+        from apps.monitoreo.models import Alerta
+        from apps.monitoreo.telegram_bot import responder_a_callback
+
+        responder_a_callback(f'pedirack:{self.alerta.pk}', '111')
+
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.estado, Alerta.Estado.ABIERTA)
+
+    def test_confirmar_desde_un_chat_sin_usuario_tampoco_reconoce(self):
+        """La confirmación no es la autorización: se vuelve a chequear al ejecutar."""
+        from apps.monitoreo.models import Alerta
+        from apps.monitoreo.telegram_bot import responder_a_callback
+
+        responder_a_callback(f'ack:{self.alerta.pk}', '999')
+
+        self.alerta.refresh_from_db()
+        self.assertEqual(self.alerta.estado, Alerta.Estado.ABIERTA)
+
+    def test_el_listado_muestra_el_id_para_poder_referirse_a_una(self):
+        from apps.monitoreo.telegram_bot import _comando_alertas
+
+        salida = _comando_alertas()
+        self.assertIn(f'#{self.alerta.pk}', salida)
+        self.assertIn('/reconocer', salida)
+
+    def test_si_ya_no_hay_ninguna_abierta_no_ofrece_reconocer(self):
+        from apps.monitoreo.models import Alerta
+        from apps.monitoreo.telegram_bot import _comando_alertas
+
+        Alerta.objects.filter(pk=self.alerta.pk).update(estado=Alerta.Estado.RECONOCIDA)
+        self.assertNotIn('/reconocer', _comando_alertas())
+
+    def test_reconocer_sin_numero_pide_el_numero(self):
+        from apps.monitoreo.telegram_bot import responder_a
+
+        self.assertIn('/reconocer 42', responder_a('/reconocer', '111'))

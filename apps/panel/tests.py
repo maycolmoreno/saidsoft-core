@@ -1456,6 +1456,19 @@ class TendenciaFlotaTests(TestCase):
         )
         self.client.force_login(self.usuario)
 
+    def _indicador(self, resp, clave):
+        """El indicador de una métrica en la respuesta.
+
+        El contexto dejó de exponer `g_cpu` / `cpu_semana_actual` sueltos: cada métrica
+        es ahora un `Indicador` (valor actual + estado + umbral + gráfico), el mismo
+        objeto que pinta la tarjeta. Se busca por clave para que estas pruebas sigan
+        verificando el número que ve el usuario y no una variable intermedia.
+        """
+        indicadores = list(resp.context['indicadores_alertas']) + list(resp.context['indicadores_recursos'])
+        por_clave = {i.clave: i for i in indicadores}
+        self.assertIn(clave, por_clave, 'la pantalla no muestra la métrica %s' % clave)
+        return por_clave[clave]
+
     def test_cuenta_alertas_abiertas_de_esta_semana_por_severidad(self):
         regla_warning = ReglaAlerta.objects.create(
             nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90,
@@ -1470,8 +1483,8 @@ class TendenciaFlotaTests(TestCase):
 
         resp = self.client.get(reverse('panel:tendencia_flota'))
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.context['g_abiertas_warning'].ultimo_valor, 1)
-        self.assertEqual(resp.context['g_abiertas_critical'].ultimo_valor, 1)
+        self.assertEqual(self._indicador(resp, 'abiertas_warning').valor, 1)
+        self.assertEqual(self._indicador(resp, 'abiertas_critical').valor, 1)
         self.assertEqual(resp.context['total_abiertas_periodo'], 2)
 
     def test_alerta_vieja_sigue_en_el_periodo_pero_no_en_la_semana_actual(self):
@@ -1482,21 +1495,21 @@ class TendenciaFlotaTests(TestCase):
         Alerta.objects.filter(pk=alerta.pk).update(abierta_en=timezone.now() - timedelta(weeks=3))
 
         resp = self.client.get(reverse('panel:tendencia_flota'))
-        self.assertEqual(resp.context['g_abiertas_warning'].ultimo_valor, 0)
+        self.assertEqual(self._indicador(resp, 'abiertas_warning').valor, 0)
         self.assertEqual(resp.context['total_abiertas_periodo'], 1)
 
     def test_promedio_de_cpu_de_la_flota_esta_semana(self):
         MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=80)
         MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=60)
         resp = self.client.get(reverse('panel:tendencia_flota'))
-        self.assertEqual(resp.context['g_cpu'].ultimo_valor, 70)
+        self.assertEqual(self._indicador(resp, 'cpu_carga_pct').valor, 70)
 
     def test_promedio_de_red_de_la_flota_esta_semana(self):
         MuestraMetrica.objects.create(estacion=self.estacion, red_recibido_kbps=1000, red_enviado_kbps=200)
         MuestraMetrica.objects.create(estacion=self.estacion, red_recibido_kbps=2000, red_enviado_kbps=400)
         resp = self.client.get(reverse('panel:tendencia_flota'))
         # promedio recibido=(1000+2000)/2=1500, enviado=(200+400)/2=300 -> total 1800
-        self.assertEqual(resp.context['g_red'].ultimo_valor, 1800)
+        self.assertEqual(self._indicador(resp, 'red_total_kbps').valor, 1800)
 
     def test_sin_muestras_esta_semana_no_muestra_el_promedio_de_una_semana_vieja(self):
         # Regresión: construir_grafico().ultimo_valor es el último valor NO NULO de la
@@ -1507,10 +1520,11 @@ class TendenciaFlotaTests(TestCase):
         MuestraMetrica.objects.filter(pk=vieja.pk).update(timestamp=timezone.now() - timedelta(weeks=3))
 
         resp = self.client.get(reverse('panel:tendencia_flota'))
-        self.assertIsNone(resp.context['cpu_semana_actual'])
-        self.assertEqual(resp.context['g_cpu'].ultimo_valor, 55)  # el gráfico sí sigue mostrando el dato viejo
+        cpu = self._indicador(resp, 'cpu_carga_pct')
+        self.assertIsNone(cpu.valor)
+        self.assertEqual(cpu.grafico.ultimo_valor, 55)  # el gráfico sí sigue mostrando el dato viejo
         self.assertContains(resp, 'Sin datos esta semana')
-        self.assertNotContains(resp, 'Esta semana: 55')
+        self.assertNotContains(resp, '>55<')
 
     def test_estacion_no_monitoreada_no_afecta_el_promedio(self):
         otra = Estacion.objects.create(
@@ -1520,7 +1534,7 @@ class TendenciaFlotaTests(TestCase):
         MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=80)
         MuestraMetrica.objects.create(estacion=otra, cpu_carga_pct=0)
         resp = self.client.get(reverse('panel:tendencia_flota'))
-        self.assertEqual(resp.context['g_cpu'].ultimo_valor, 80)
+        self.assertEqual(self._indicador(resp, 'cpu_carga_pct').valor, 80)
 
     def test_top_errores_del_pos_reusa_la_misma_agregacion_que_pos_errores_flota(self):
         PosErrorDetectado.objects.create(estacion=self.estacion, mensaje='no existe la relación X', cantidad_total=40)
@@ -4206,11 +4220,18 @@ class UmbralesDeRecursosTests(TestCase):
 
     def test_cambiar_un_umbral_cambia_las_dos_pantallas_a_la_vez(self):
         """El objetivo real del cambio: que no exista un segundo camino al color. Si
-        alguien vuelve a poner literales en una vista, esta prueba falla."""
-        from apps.panel.views import monitoreo as vistas
+        alguien vuelve a poner literales en una vista, esta prueba falla.
+
+        Se sustituye el umbral en `apps.panel.indicadores` y no en la vista: desde el
+        rediseño de gráficas (19-sep-2026) el color del número y la línea de umbral que
+        se dibuja sobre su sparkline salen los dos de ahí. Que las vistas NO redefinan
+        los umbrales lo sigue vigilando
+        `DivisionDeVistasTests.test_los_umbrales_de_color_viven_en_un_solo_lugar`.
+        """
+        from apps.panel import indicadores
 
         self._muestra(50, 10, 10)  # con los umbrales reales, 50% de CPU es 'ok'
-        with patch.object(vistas, 'UMBRAL_CPU_WARNING_PCT', 40):
+        with patch.object(indicadores, 'UMBRAL_CPU_WARNING_PCT', 40):
             en_lista, en_detalle = self._colores_de_ambas_pantallas()
         self.assertEqual(en_lista['estado_cpu'], 'warning')
         self.assertEqual(en_detalle['estado_cpu'], 'warning')
@@ -5703,3 +5724,322 @@ class ResumenOperacionCompartidoTests(TestCase):
         self.assertIn('2 crítica(s), 5 advertencia(s)', salida)
         self.assertIn('Enlaces caídos: 4', salida)
         self.assertIn('Servicios del POS sin responder: 4', salida)  # 1 critico + 3 no
+
+
+class GraficoConUmbralesTests(TestCase):
+    """La matemática de `construir_grafico` cuando hay umbrales que dibujar.
+
+    Es lo que hace que una gráfica se entienda sin abrir el detalle (rediseño del
+    19-sep-2026, PLAN_MODERNIZACION §10-AK): si la línea de umbral no cae donde
+    corresponde, el gráfico miente con más convicción que el que no la tenía.
+    """
+
+    def _grafico(self, valores, **kwargs):
+        from apps.monitoreo.graficos import construir_grafico
+
+        return construir_grafico(valores, **kwargs)
+
+    def test_el_umbral_cae_en_la_altura_que_le_toca(self):
+        """Con eje 0–100 y alto 64 (pad 4), el 50% tiene que quedar justo al medio."""
+        g = self._grafico([10, 20, 30], escala_fija=100, marcas=[(50, 'warning', '50%')])
+        self.assertEqual(len(g.marcas), 1)
+        self.assertAlmostEqual(g.marcas[0].y, 32.0, places=1)
+        self.assertAlmostEqual(g.marcas[0].pct_y, 50.0, places=1)
+        self.assertTrue(g.marcas[0].dentro)
+
+    def test_sin_umbral_configurado_no_se_dibuja_ninguna_linea(self):
+        """`None` es "no hay umbral", no "umbral en cero": una línea en el piso diría
+        que todo está mal."""
+        g = self._grafico([10, 20], escala_fija=100, marcas=[(None, 'warning', '')])
+        self.assertEqual(g.marcas, [])
+
+    def test_el_eje_se_estira_para_que_entre_el_umbral(self):
+        """Con autoescala pura, una serie tranquila llena igual la tarjeta y el umbral
+        queda fuera del dibujo — justo el caso en que el gráfico tiene que mostrar
+        cuánto margen queda."""
+        g = self._grafico([10, 12, 11], marcas=[(20, 'critical', '20')])
+        self.assertGreater(g.max_valor, 20)
+        self.assertTrue(g.marcas[0].dentro)
+
+    def test_un_umbral_lejisimos_no_aplasta_la_curva(self):
+        """Una regla de latencia en 500 ms sobre una ventana que no pasa de 40: estirar
+        el eje dejaría la curva pegada al piso y el gráfico no mostraría nada. Se marca
+        fuera de escala y la tarjeta lo dice con un número."""
+        g = self._grafico([30, 40, 35], marcas=[(500, 'critical', '500 ms')])
+        self.assertEqual(g.max_valor, 40)
+        self.assertFalse(g.marcas[0].dentro)
+
+    def test_el_ultimo_punto_trae_su_posicion_en_porcentaje(self):
+        """El marcador del valor actual se posiciona con HTML sobre el SVG, porque el
+        SVG va estirado (`preserveAspectRatio="none"`) y deformaría un `<circle>`."""
+        g = self._grafico([0, 50, 100], escala_fija=100)
+        self.assertAlmostEqual(g.ultimo_pct_y, 6.25, places=2)   # y = pad = 4 sobre 64
+        self.assertGreater(g.ultimo_pct_x, 95)
+
+    def test_la_tendencia_compara_contra_el_promedio_de_la_ventana(self):
+        g = self._grafico([10, 10, 10, 90], escala_fija=100)
+        self.assertEqual(g.tendencia, 'sube')
+        g = self._grafico([90, 90, 90, 10], escala_fija=100)
+        self.assertEqual(g.tendencia, 'baja')
+
+    def test_una_oscilacion_chica_no_mueve_la_flecha(self):
+        """Con muestras cada 30 s, una flecha que se da vuelta en cada refresco es
+        ruido: por debajo del 2% de la escala la tendencia es 'estable'."""
+        g = self._grafico([50, 50, 50, 51], escala_fija=100)
+        self.assertEqual(g.tendencia, 'estable')
+
+    def test_una_serie_vacia_no_rompe(self):
+        g = self._grafico([None, None], escala_fija=100, marcas=[(75, 'warning', '75%')])
+        self.assertEqual(g.puntos, '')
+        self.assertIsNone(g.ultimo_valor)
+        self.assertEqual(g.marcas, [])
+
+
+class UmbralesDesdeReglaAlertaTests(TestCase):
+    """El umbral que se dibuja es el que abre la alerta, no una segunda verdad.
+
+    Hasta el 19-sep-2026 el panel coloreaba con las constantes de `umbrales.py` (CPU
+    75/90) mientras el motor de alertas usaba la `ReglaAlerta` configurada: con la regla
+    en 85, la tarjeta se ponía amarilla antes que el sistema y no había forma de saber
+    cuál de los dos números era el bueno.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.autor = User.objects.create_user(username='u_reglas_umbral', password='x')
+
+    def _regla(self, **kwargs):
+        datos = dict(
+            nombre='r', metrica=Metrica.CPU_CARGA_PCT, umbral=85,
+            severidad=ReglaAlerta.Severidad.WARNING, creado_por=self.autor,
+        )
+        datos.update(kwargs)
+        return ReglaAlerta.objects.create(**datos)
+
+    def test_la_regla_activa_pisa_el_defecto_del_panel(self):
+        from apps.panel.indicadores import estado_de
+        from apps.panel.umbrales import umbrales_de_reglas
+
+        # Sin reglas cargadas manda el defecto del panel (CPU: advertencia en 75).
+        self.assertEqual(estado_de('cpu_carga_pct', 65), 'ok')
+        self._regla(umbral=60)
+        reglas = umbrales_de_reglas([self.sg])
+        self.assertEqual(estado_de('cpu_carga_pct', 65, reglas), 'warning')
+
+    def test_con_varias_unidades_a_la_vista_gana_el_limite_que_dispara_primero(self):
+        """El panel muestra las dos juntas: pintar de verde algo que ya abrió alerta para
+        uno de los clientes es peor que pintar de amarillo algo que para el otro todavía
+        está bien."""
+        from apps.panel.umbrales import umbrales_de_reglas
+
+        self._regla(umbral=80, unidad_negocio=self.sg)
+        self._regla(umbral=60, unidad_negocio=self.mia)
+        reglas = umbrales_de_reglas([self.sg, self.mia])
+        self.assertEqual(reglas['cpu_carga_pct']['warning'], 60)
+
+    def test_una_regla_apagada_no_pinta_nada(self):
+        from apps.panel.umbrales import umbrales_de_reglas
+
+        self._regla(umbral=60, activo=False)
+        self.assertEqual(umbrales_de_reglas([self.sg]), {})
+
+    def test_una_regla_de_otro_cliente_no_se_cuela(self):
+        from apps.panel.umbrales import umbrales_de_reglas
+
+        self._regla(umbral=60, unidad_negocio=self.mia)
+        self.assertEqual(umbrales_de_reglas([self.sg]), {})
+
+    def test_las_reglas_globales_aplican_siempre(self):
+        from apps.panel.umbrales import umbrales_de_reglas
+
+        self._regla(umbral=60, unidad_negocio=None)
+        self.assertEqual(umbrales_de_reglas([self.sg])['cpu_carga_pct']['warning'], 60)
+
+    def test_una_regla_menor_o_igual_se_ignora(self):
+        """Las tarjetas de recursos son medidores donde MÁS es peor. Una regla "≤"
+        necesitaría el coloreado invertido; mezclarla pintaría al revés."""
+        from apps.panel.umbrales import umbrales_de_reglas
+
+        self._regla(umbral=60, operador=ReglaAlerta.Operador.LTE)
+        self.assertEqual(umbrales_de_reglas([self.sg]), {})
+
+    def test_una_metrica_sin_regla_ni_defecto_no_se_juzga(self):
+        """Latencia y red por estación no tienen defecto. Pintarlas de verde afirmaría
+        que están bien sobre una comparación que nadie hizo."""
+        from apps.panel.indicadores import estado_de
+
+        self.assertEqual(estado_de('latencia_ms', 4000), 'sin_umbral')
+
+    def test_el_limite_del_enlace_sale_del_ancho_contratado_cuando_se_conoce(self):
+        from apps.panel.umbrales import (
+            RED_FARMACIA_UMBRAL_CRITICAL_KBPS, RED_FARMACIA_UMBRAL_WARNING_KBPS,
+            limites_de_enlace,
+        )
+
+        self.assertEqual(limites_de_enlace(10), (7000, 9000))  # 70% y 90% de 10 Mbps
+        self.assertEqual(
+            limites_de_enlace(None),
+            (RED_FARMACIA_UMBRAL_WARNING_KBPS, RED_FARMACIA_UMBRAL_CRITICAL_KBPS),
+        )
+
+
+class IndicadoresDeMonitoreoTests(TestCase):
+    """Las pantallas de monitoreo, vistas como "¿se entiende sin abrir nada?"."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=self.sg,
+            ip_router='10.20.30.1', ancho_contratado_mbps=10,
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-SRV', farmacia=self.farmacia, monitorear_recursos=True,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_indicadores', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_muestrametrica'),
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _muestra(self, cpu=50, ram_pct=50, disco_pct=50, latencia=20, rx=100):
+        return MuestraMetrica.objects.create(
+            estacion=self.estacion, cpu_carga_pct=cpu,
+            ram_total=1000, ram_usada=int(ram_pct * 10),
+            disco_total_gb=100.0, disco_libre_gb=100.0 - disco_pct,
+            latencia_ms=latencia, red_recibido_kbps=rx, red_enviado_kbps=0,
+        )
+
+    def _indicadores(self, resp):
+        return {i.clave: i for i in resp.context['indicadores']}
+
+    def test_el_detalle_dibuja_el_umbral_de_cada_recurso(self):
+        self._muestra(cpu=95)
+        resp = self.client.get(reverse('panel:monitoreo_detalle_partial', args=[self.estacion.pk]))
+        cpu = self._indicadores(resp)['cpu_carga_pct']
+        self.assertEqual(cpu.estado, 'critical')
+        # Dos marcas dibujadas —advertencia y crítico— y las dos dentro del eje 0–100.
+        self.assertEqual([m.nivel for m in cpu.grafico.marcas], ['warning', 'critical'])
+        self.assertTrue(all(m.dentro for m in cpu.grafico.marcas))
+
+    def test_la_latencia_sin_regla_se_muestra_sin_juzgarla(self):
+        self._muestra(latencia=900)
+        resp = self.client.get(reverse('panel:monitoreo_detalle_partial', args=[self.estacion.pk]))
+        latencia = self._indicadores(resp)['latencia_ms']
+        self.assertEqual(latencia.estado, 'sin_umbral')
+        self.assertEqual(latencia.grafico.marcas, [])
+        self.assertContains(resp, 'Sin regla de alerta activa')
+
+    def test_con_regla_de_latencia_la_tarjeta_pasa_a_juzgarla(self):
+        ReglaAlerta.objects.create(
+            nombre='Latencia', metrica=Metrica.LATENCIA_MS, umbral=200,
+            severidad=ReglaAlerta.Severidad.CRITICAL, creado_por=self.usuario,
+        )
+        self._muestra(latencia=900)
+        resp = self.client.get(reverse('panel:monitoreo_detalle_partial', args=[self.estacion.pk]))
+        self.assertEqual(self._indicadores(resp)['latencia_ms'].estado, 'critical')
+
+    def test_el_valor_grande_es_el_de_la_ultima_muestra_no_el_de_la_ventana(self):
+        """La ventana del sparkline del listado son 20 minutos; la última muestra puede
+        ser más vieja si la estación se apagó. El número tiene que seguir siendo el que
+        muestra el resto de la pantalla."""
+        vieja = self._muestra(cpu=77)
+        MuestraMetrica.objects.filter(pk=vieja.pk).update(
+            timestamp=timezone.now() - timedelta(hours=4),
+        )
+        resp = self.client.get(reverse('panel:monitoreo_lista'))
+        tarjeta = resp.context['tarjetas'][0]
+        indicadores = {i.clave: i for i in tarjeta['indicadores']}
+        self.assertEqual(indicadores['cpu_carga_pct'].valor, 77)
+        # ...y el sparkline, que solo mira la ventana, queda vacío en vez de inventar.
+        self.assertEqual(indicadores['cpu_carga_pct'].grafico.puntos, '')
+
+    def test_el_color_del_numero_y_el_del_punto_del_grafico_son_el_mismo(self):
+        """El punto final del sparkline se pinta con `indicador.estado`, el mismo que
+        colorea el valor: no puede haber un número rojo sobre un punto verde."""
+        self._muestra(cpu=95)
+        resp = self.client.get(reverse('panel:monitoreo_detalle_partial', args=[self.estacion.pk]))
+        self.assertEqual(self._indicadores(resp)['cpu_carga_pct'].estado, resp.context['estado_cpu'])
+
+    def test_la_lista_trae_las_series_en_una_sola_consulta(self):
+        """Los sparklines del listado no pueden ser una consulta por tarjeta: la
+        pantalla muestra todas las estaciones monitoreadas."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self._muestra()
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get(reverse('panel:monitoreo_lista'))
+        con_una = len(ctx.captured_queries)
+
+        for i in range(4):
+            otra = Estacion.objects.create(
+                codigo='ML001-X%d' % i, farmacia=self.farmacia, monitorear_recursos=True,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            )
+            MuestraMetrica.objects.create(
+                estacion=otra, cpu_carga_pct=30, ram_total=1000, ram_usada=300,
+                disco_total_gb=100.0, disco_libre_gb=60.0,
+            )
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get(reverse('panel:monitoreo_lista'))
+        self.assertEqual(len(ctx.captured_queries), con_una)
+
+    def test_las_series_del_listado_calculan_los_mismos_porcentajes_que_el_modelo(self):
+        """`series_por_estacion` no instancia modelos (a 1.800 equipos son 18.000 objetos
+        por carga), así que repite la fórmula de las properties de MuestraMetrica. Si una
+        de las dos cambia, esta prueba lo dice."""
+        from apps.panel.indicadores import series_por_estacion
+
+        muestra = self._muestra(cpu=33, ram_pct=41, disco_pct=62, rx=17)
+        series = series_por_estacion([self.estacion.pk])[self.estacion.pk]
+        self.assertEqual(series['ram_usada_pct'][-1], muestra.ram_usada_pct)
+        self.assertEqual(series['disco_usado_pct'][-1], muestra.disco_usado_pct)
+        self.assertEqual(series['red_total_kbps'][-1], muestra.red_total_kbps)
+
+    def test_ningun_porcentaje_sale_con_coma_decimal_en_un_atributo(self):
+        """Regresión del bug que tenía la barra de consumo del modal de enlaces: el
+        proyecto corre en es-EC, Django imprime 12.4 como "12,4" y dentro de
+        `style="width:…%"` eso es CSS inválido, así que el elemento no se dibujaba."""
+        import re
+
+        MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia, bytes_recibidos=1, bytes_enviados=1,
+            red_recibido_kbps=1234.5, red_enviado_kbps=200.5,
+        )
+        MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia, bytes_recibidos=2, bytes_enviados=2,
+            red_recibido_kbps=1500.5, red_enviado_kbps=210.5,
+        )
+        self._muestra(cpu=42.7, ram_pct=63.3, disco_pct=71.9, latencia=18.4, rx=812.3)
+
+        paginas = [
+            self.client.get(reverse('panel:monitoreo_lista')),
+            self.client.get(reverse('panel:monitoreo_detalle_partial', args=[self.estacion.pk])),
+            self.client.get(reverse('panel:enlaces_farmacias_lista')),
+            self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.farmacia.pk])),
+        ]
+        # Un número con coma decimal dentro de width/left/top de un style inline.
+        sospechoso = re.compile(r'(?:width|left|top)\s*:\s*[0-9]+,[0-9]')
+        for resp in paginas:
+            self.assertEqual(resp.status_code, 200)
+            hallados = sospechoso.findall(resp.content.decode('utf-8'))
+            self.assertEqual(hallados, [], 'CSS inválido por localización: %s' % hallados)
+
+    def test_el_consumo_del_enlace_usa_un_solo_criterio_de_color(self):
+        """El número y la barra de abajo salían de umbrales distintos —absoluto en kbps
+        contra % del contratado—, así que la misma lectura se veía verde arriba y roja
+        abajo."""
+        MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia, bytes_recibidos=1, bytes_enviados=1,
+            red_recibido_kbps=9500.0, red_enviado_kbps=0.0,
+        )
+        resp = self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.farmacia.pk]))
+        # 9.500 kbps sobre 10 Mbps contratados = 95%: crítico por el % del contratado,
+        # aunque esté por debajo del umbral absoluto de 15.000 kbps.
+        self.assertEqual(resp.context['estado_bw'], 'critical')
+        self.assertEqual(resp.context['consumo'].estado, 'critical')

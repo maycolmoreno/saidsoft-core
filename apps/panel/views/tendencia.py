@@ -8,14 +8,16 @@ from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import render
 from django.utils import timezone
 from apps.catalogo.models import Estacion
-from apps.cuentas.services import scope_por_unidad_negocio_activa
+from apps.cuentas.services import scope_por_unidad_negocio_activa, unidades_negocio_en_foco
 from apps.monitoreo.models import Alerta, MuestraMetrica, ReglaAlerta
 from .alertas import _top_mensajes_pos_errores
-from ..umbrales import (
-    RED_FARMACIA_UMBRAL_CRITICAL_KBPS, RED_FARMACIA_UMBRAL_WARNING_KBPS,
-    UMBRAL_CPU_CRITICAL_PCT, UMBRAL_CPU_WARNING_PCT, UMBRAL_DISCO_CRITICAL_PCT,
-    UMBRAL_DISCO_WARNING_PCT, UMBRAL_RAM_CRITICAL_PCT, UMBRAL_RAM_WARNING_PCT, clasificar,
-)
+from ..indicadores import METRICAS_ALERTAS, indicador_de_conteo, indicadores_de_recursos
+from ..umbrales import umbrales_de_reglas
+
+# Lo que dice el pie de una tarjeta de recursos cuando la semana en curso todavía no
+# tiene ninguna muestra. El gráfico sí sigue mostrando las semanas viejas: lo que no se
+# puede es rotular un promedio de hace tres semanas como si fuera el de ahora.
+SIN_DATO_SEMANA = 'Sin datos esta semana'
 
 
 def _semanas_recientes(n=12):
@@ -169,8 +171,6 @@ def tendencia_flota(request):
     número exacto que el `Avg` semanal de antes. Promediar los promedios de cada día
     daría distinto cuando los días tienen distinta cantidad de muestras.
     """
-    from apps.monitoreo.graficos import construir_grafico
-
     semanas = _semanas_recientes(12)
 
     alertas = scope_por_unidad_negocio_activa(
@@ -190,22 +190,47 @@ def tendencia_flota(request):
 
     filas_pos, _detectados = _top_mensajes_pos_errores(request)
 
+    # Mismos umbrales que el detalle de una estación: la línea que se dibuja sobre el
+    # promedio de la flota tiene que ser la misma que abre la alerta en cada equipo. Con
+    # varias unidades de negocio a la vista se toma la más estricta (ver
+    # `umbrales.umbrales_de_reglas`).
+    reglas = umbrales_de_reglas(unidades_negocio_en_foco(request))
+
+    series_recursos = {
+        'cpu_carga_pct': cpu_prom, 'ram_usada_pct': ram_prom,
+        'disco_usado_pct': disco_prom, 'red_total_kbps': red_prom,
+    }
+    # `valores` explícito y no el último punto del gráfico: `Grafico.ultimo_valor` es el
+    # último valor NO NULO de la serie —puede venir de una semana vieja si la actual
+    # todavía no tiene muestras— y la tarjeta lo rotula como el de ahora.
+    valores = {clave: serie[-1] for clave, serie in series_recursos.items()}
+    valores['latencia_ms'] = None
+    notas = {clave: SIN_DATO_SEMANA for clave, v in valores.items() if v is None}
+
+    indicadores_recursos = [
+        i for i in indicadores_de_recursos(
+            series_recursos, reglas, valores=valores, notas=notas,
+            etiquetas={
+                'cpu_carga_pct': 'CPU promedio', 'ram_usada_pct': 'RAM usada promedio',
+                'disco_usado_pct': 'Disco usado promedio', 'red_total_kbps': 'Red promedio',
+            },
+        )
+        # La latencia no se agrega por semana en `_series_semanales`: no hay serie que
+        # mostrar, y una tarjeta vacía en la fila se lee como un dato que falta.
+        if i.clave != 'latencia_ms'
+    ]
+
+    series_alertas = {
+        'abiertas_warning': abiertas_warning,
+        'abiertas_critical': abiertas_critical,
+        'resueltas': resueltas,
+    }
     return render(request, 'panel/tendencia_flota.html', {
-        'g_abiertas_warning': construir_grafico(abiertas_warning),
-        'g_abiertas_critical': construir_grafico(abiertas_critical),
-        'g_resueltas': construir_grafico(resueltas),
-        'g_cpu': construir_grafico(cpu_prom, escala_fija=100),
-        'g_ram': construir_grafico(ram_prom, escala_fija=100),
-        'g_disco': construir_grafico(disco_prom, escala_fija=100),
-        'g_red': construir_grafico(red_prom),
-        # Explícito en vez de g_cpu.ultimo_valor: ese es el ÚLTIMO VALOR NO NULO de la
-        # serie (puede venir de una semana vieja si la actual todavía no tiene
-        # muestras), y el template lo etiqueta "Esta semana" — con .ultimo_valor
-        # mostraría un dato de hace 3 semanas rotulado como si fuera de ahora.
-        'cpu_semana_actual': cpu_prom[-1],
-        'ram_semana_actual': ram_prom[-1],
-        'disco_semana_actual': disco_prom[-1],
-        'red_semana_actual': red_prom[-1],
+        'indicadores_alertas': [
+            indicador_de_conteo(m, series_alertas[m.clave], 'media 12 sem')
+            for m in METRICAS_ALERTAS
+        ],
+        'indicadores_recursos': indicadores_recursos,
         'total_abiertas_periodo': sum(abiertas_warning) + sum(abiertas_critical),
         'total_resueltas_periodo': sum(resueltas),
         'semana_desde': semanas[0][0],

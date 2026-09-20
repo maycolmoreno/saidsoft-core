@@ -1,95 +1,30 @@
 {% comment %}
-Gráficos SVG inline (sin CDN). Cada gráfico es UNA sola serie temporal, así que no
-compiten colores de series: CPU=info, RAM=good, latencia=warning (tokens del sistema
-de diseño NOC, un solo hue por serie). Los puntos del polyline vienen pre-calculados
-desde apps/monitoreo/graficos.py.
+Gráficos SVG inline (sin CDN). Todas las tarjetas usan el mismo patrón —
+panel/_indicador.html— y los puntos vienen pre-calculados desde apps/monitoreo/graficos.py.
+
+Qué cambió el 19-sep-2026 y por qué (ver PLAN_MODERNIZACION §10-AK):
+
+- Antes cada serie tenía SU color (CPU=info, RAM=good, disco=accent, latencia=warning).
+  Eso usaba los colores de estado para distinguir series: una RAM al 95% se dibujaba en
+  verde y la latencia se veía ámbar aunque estuviera perfecta. Ahora la curva va siempre
+  en --serie (neutro) y el color solo aparece donde significa estado.
+- Antes el pie decía "Eje 0–100%", que es la escala, no el umbral. Ahora la línea de
+  advertencia y la de crítico se dibujan sobre el gráfico, en el valor que de verdad
+  abre la alerta (ReglaAlerta activa, o el defecto de apps/panel/umbrales.py).
+- Latencia y red no tenían color ninguno. Ahora se colorean si hay regla, y si no la hay
+  lo dicen en vez de fingir que el número está bien.
 {% endcomment %}
 {% if total_muestras == 0 %}
     <div class="card px-4 py-10 text-center text-[var(--text-faint)] text-sm">
         Sin métricas recibidas todavía. El agente reporta cada ~30s si la estación está marcada para monitoreo.
     </div>
 {% else %}
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-    {% comment %} --- CPU --- {% endcomment %}
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+    {% for i in indicadores %}
     <div class="card p-4">
-        <div class="flex items-baseline justify-between mb-2">
-            <span class="text-sm font-medium text-[var(--text-dim)]">CPU</span>
-            <span class="text-2xl font-semibold" style="color:{% if estado_cpu == 'critical' %}var(--critical){% elif estado_cpu == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
-                {{ ultima.cpu_carga_pct|default:"—" }}{% if ultima.cpu_carga_pct is not None %}%{% endif %}
-            </span>
-        </div>
-        <svg viewBox="0 0 {{ g_cpu.ancho }} {{ g_cpu.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_cpu.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_cpu.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">Eje 0–100%</div>
+        {% include "panel/_indicador.html" with i=i %}
     </div>
-
-    {% comment %} --- RAM --- {% endcomment %}
-    <div class="card p-4">
-        <div class="flex items-baseline justify-between mb-2">
-            <span class="text-sm font-medium text-[var(--text-dim)]">RAM usada</span>
-            <span class="text-2xl font-semibold" style="color:{% if estado_ram == 'critical' %}var(--critical){% elif estado_ram == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
-                {{ ultima.ram_usada_pct|default:"—" }}{% if ultima.ram_usada_pct is not None %}%{% endif %}
-            </span>
-        </div>
-        <svg viewBox="0 0 {{ g_ram.ancho }} {{ g_ram.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_ram.area }}" fill="var(--good)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_ram.puntos }}" fill="none" stroke="var(--good)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">
-            {% if ultima.ram_total %}{{ ultima.ram_usada }} / {{ ultima.ram_total }} MB{% else %}Eje 0–100%{% endif %}
-        </div>
-    </div>
-
-    {% comment %} --- Disco --- {% endcomment %}
-    <div class="card p-4">
-        <div class="flex items-baseline justify-between mb-2">
-            <span class="text-sm font-medium text-[var(--text-dim)]">Disco usado</span>
-            <span class="text-2xl font-semibold" style="color:{% if estado_disco == 'critical' %}var(--critical){% elif estado_disco == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
-                {{ ultima.disco_usado_pct|default:"—" }}{% if ultima.disco_usado_pct is not None %}%{% endif %}
-            </span>
-        </div>
-        <svg viewBox="0 0 {{ g_disco.ancho }} {{ g_disco.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_disco.area }}" fill="var(--accent)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_disco.puntos }}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">
-            {% if ultima.disco_total_gb %}{{ ultima.disco_libre_gb }} GB libres de {{ ultima.disco_total_gb }} GB{% else %}Eje 0–100%{% endif %}
-        </div>
-    </div>
-
-    {% comment %} --- Latencia --- {% endcomment %}
-    <div class="card p-4">
-        <div class="flex items-baseline justify-between mb-2">
-            <span class="text-sm font-medium text-[var(--text-dim)]">Latencia</span>
-            <span class="text-2xl font-semibold">
-                {{ ultima.latencia_ms|default:"—" }}{% if ultima.latencia_ms is not None %}ms{% endif %}
-            </span>
-        </div>
-        <svg viewBox="0 0 {{ g_latencia.ancho }} {{ g_latencia.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_latencia.area }}" fill="var(--warning)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_latencia.puntos }}" fill="none" stroke="var(--warning)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">Pico {{ g_latencia.max_valor|floatformat:0 }}ms</div>
-    </div>
-
-    {% comment %} --- Red --- {% endcomment %}
-    <div class="card p-4">
-        <div class="flex items-baseline justify-between mb-2">
-            <span class="text-sm font-medium text-[var(--text-dim)]">Red</span>
-            <span class="text-2xl font-semibold">
-                {{ ultima.red_total_kbps|default:"—" }}{% if ultima.red_total_kbps is not None %} kbps{% endif %}
-            </span>
-        </div>
-        <svg viewBox="0 0 {{ g_red.ancho }} {{ g_red.alto }}" class="w-full" style="height:64px" preserveAspectRatio="none">
-            <polyline points="{{ g_red.area }}" fill="var(--info)" fill-opacity="0.1" stroke="none"/>
-            <polyline points="{{ g_red.puntos }}" fill="none" stroke="var(--info)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-        </svg>
-        <div class="text-xs text-[var(--text-faint)] mt-1">
-            Pico {{ g_red.max_valor|floatformat:0 }} kbps · {{ ultima.red_recibido_kbps|default:"—" }} bajada / {{ ultima.red_enviado_kbps|default:"—" }} subida
-        </div>
-    </div>
+    {% endfor %}
 </div>
 
 {% comment %} --- Detalle de memoria/swap de la última muestra --- {% endcomment %}

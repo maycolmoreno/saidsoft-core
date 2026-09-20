@@ -8,17 +8,22 @@
         <a href="{% url 'panel:tendencia_flota' %}" class="btn secondary">Tendencia de flota</a>
     </div>
 </div>
-<p class="text-sm text-[var(--text-faint)] mb-6">Recursos de las estaciones marcadas para monitoreo. Cada tarjeta muestra la última muestra recibida.</p>
+<p class="text-sm text-[var(--text-faint)] mb-6" style="max-width:74ch;">
+    Recursos de las estaciones marcadas para monitoreo. Cada métrica muestra su valor
+    actual, si pasó el umbral que tiene configurado y cómo viene en los últimos minutos —
+    sin tener que abrir el detalle para saber si algo está mal.
+</p>
 
 <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
 {% for t in tarjetas %}
     <a href="{% url 'panel:monitoreo_detalle' t.estacion.pk %}" class="card hoverable block p-4">
-        <div class="flex items-center justify-between mb-3">
-            <div>
-                <div class="font-medium">{{ t.estacion.codigo }}</div>
-                <div class="text-xs text-[var(--text-faint)]">{{ t.estacion.farmacia.codigo }} · {{ t.estacion.farmacia.grupo.codigo }}</div>
+        <div class="flex items-start justify-between gap-2 mb-3">
+            <div class="min-w-0">
+                {% comment %} truncate + shrink-0: hay códigos largos (MC014-SRV-PRINCIPAL) que empujaban los distintivos de estado fuera de la tarjeta. {% endcomment %}
+                <div class="font-medium truncate">{{ t.estacion.codigo }}</div>
+                <div class="text-xs text-[var(--text-faint)] truncate">{{ t.estacion.farmacia.codigo }} · {{ t.estacion.farmacia.grupo.codigo }}</div>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 shrink-0">
                 {% comment %}
                 Servicios del POS caidos, de un vistazo a nivel flota. Solo se muestran los
                 chequeos vigentes: una estacion apagada deja su ultimo resultado congelado
@@ -36,37 +41,16 @@
             </div>
         </div>
         {% if t.ultima %}
-        <div class="grid grid-cols-5 gap-2 text-center">
-            <div>
-                <div class="text-xs text-[var(--text-faint)] uppercase">CPU</div>
-                <div class="text-lg font-semibold" style="color:{% if t.estado_cpu == 'critical' %}var(--critical){% elif t.estado_cpu == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
-                    {{ t.ultima.cpu_carga_pct|default:"—" }}{% if t.ultima.cpu_carga_pct is not None %}%{% endif %}
-                </div>
-            </div>
-            <div>
-                <div class="text-xs text-[var(--text-faint)] uppercase">RAM</div>
-                <div class="text-lg font-semibold" style="color:{% if t.estado_ram == 'critical' %}var(--critical){% elif t.estado_ram == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
-                    {{ t.ultima.ram_usada_pct|default:"—" }}{% if t.ultima.ram_usada_pct is not None %}%{% endif %}
-                </div>
-            </div>
-            <div>
-                <div class="text-xs text-[var(--text-faint)] uppercase">Disco</div>
-                <div class="text-lg font-semibold" style="color:{% if t.estado_disco == 'critical' %}var(--critical){% elif t.estado_disco == 'warning' %}var(--warning){% else %}var(--text){% endif %};">
-                    {{ t.ultima.disco_usado_pct|default:"—" }}{% if t.ultima.disco_usado_pct is not None %}%{% endif %}
-                </div>
-            </div>
-            <div>
-                <div class="text-xs text-[var(--text-faint)] uppercase">Latencia</div>
-                <div class="text-lg font-semibold">
-                    {{ t.ultima.latencia_ms|default:"—" }}{% if t.ultima.latencia_ms is not None %}ms{% endif %}
-                </div>
-            </div>
-            <div>
-                <div class="text-xs text-[var(--text-faint)] uppercase">Red</div>
-                <div class="text-lg font-semibold">
-                    {{ t.ultima.red_total_kbps|default:"—" }}{% if t.ultima.red_total_kbps is not None %} kbps{% endif %}
-                </div>
-            </div>
+        {% comment %}
+        Las cinco métricas con el MISMO patrón que el detalle y la tendencia
+        (panel/_indicador.html, versión compacta). Antes eran cinco números sueltos y
+        solo tres tenían color: latencia y red se mostraban en gris pase lo que pasase,
+        así que un enlace saturado se veía igual que uno sano.
+        {% endcomment %}
+        <div class="metricas-grid">
+            {% for i in t.indicadores %}
+                {% include "panel/_indicador.html" with i=i compacto=True %}
+            {% endfor %}
         </div>
         <div class="text-xs text-[var(--text-faint)] mt-3">Última muestra: {{ t.ultima.timestamp|date:"d/m H:i:s" }}</div>
         {% else %}

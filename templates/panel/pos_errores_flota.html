@@ -54,8 +54,16 @@
                     <div style="font-family:var(--font-mono);font-size:12px;background:var(--overlay-faint);border:1px solid var(--border-soft);border-radius:6px;padding:4px 8px;display:inline-block;overflow-wrap:break-word;">{{ fila.mensaje }}</div>
                 </td>
                 <td class="px-4 py-3">
+                    {% comment %}
+                    La barra va en el color de serie, no en rojo/ámbar. Antes la primera
+                    fila se pintaba de --critical y el resto de --warning: eso codificaba
+                    el PUESTO en el ranking con los colores que en todo el panel
+                    significan "esto está mal", así que el mensaje más frecuente se veía
+                    crítico aunque afectara a dos estaciones. El largo de la barra ya dice
+                    cuál pesa más.
+                    {% endcomment %}
                     <div class="rank-row">
-                        <span class="track"><span class="fill" style="width:{{ fila.pct_barra }}%;background:{% if forloop.first %}var(--critical){% else %}var(--warning){% endif %};"></span></span>
+                        <span class="track"><span class="fill" style="width:{{ fila.pct_barra }}%;background:var(--serie);"></span></span>
                         <span class="num" style="font-weight:700;">{{ fila.n_estaciones }}</span>
                     </div>
                 </td>

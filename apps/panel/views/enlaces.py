@@ -10,11 +10,11 @@ from django.views.decorators.http import require_POST
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Farmacia
 from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
+from ..indicadores import Metrica, indicador
 from ..paginacion import paginar
 from ..umbrales import (
-    RED_FARMACIA_UMBRAL_CRITICAL_KBPS, RED_FARMACIA_UMBRAL_WARNING_KBPS,
-    UMBRAL_CPU_CRITICAL_PCT, UMBRAL_CPU_WARNING_PCT, UMBRAL_DISCO_CRITICAL_PCT,
-    UMBRAL_DISCO_WARNING_PCT, UMBRAL_RAM_CRITICAL_PCT, UMBRAL_RAM_WARNING_PCT, clasificar,
+    BW_CONTRATADO_UMBRAL_CRITICAL_PCT, BW_CONTRATADO_UMBRAL_WARNING_PCT, clasificar,
+    limites_de_enlace,
 )
 
 
@@ -155,8 +155,18 @@ def enlaces_farmacias_lista(request):
             # enlace que nunca estuvo arriba.
             'nunca_respondio': bool(estado and estado.nunca_respondio),
             'total_kbps': total_kbps,
-            'estado_bw': clasificar(total_kbps, RED_FARMACIA_UMBRAL_WARNING_KBPS,
-                                     RED_FARMACIA_UMBRAL_CRITICAL_KBPS),
+            # Mismo criterio que el modal de esta farmacia: % de SU ancho contratado
+            # cuando se conoce, y recién si no, el umbral absoluto en kbps. Antes la
+            # columna usaba siempre el absoluto y el modal el porcentaje, así que la
+            # misma farmacia salía verde en la tabla y roja al abrirla.
+            'estado_bw': clasificar(total_kbps, *limites_de_enlace(farmacia.ancho_contratado_mbps)),
+            # Qué parte del enlace contratado es ese consumo, para el medidor de la
+            # columna. None cuando no se sabe el contratado: sin eso no hay medidor,
+            # solo el número.
+            'pct_contratado': (
+                min(round(100 * total_kbps / (farmacia.ancho_contratado_mbps * 1000)), 100)
+                if total_kbps is not None and farmacia.ancho_contratado_mbps else None
+            ),
         })
 
     # Las caídas en curso se listan completas pero la plantilla las trae colapsadas: 154
@@ -191,7 +201,6 @@ def _render_enlace_modal(request, farmacia):
     profundidad: en el listado de 700 filas solo interesa "responde o no", y mirar el
     tráfico es algo que se hace de a una farmacia, cuando ya sospechás de esa.
     """
-    from apps.monitoreo.graficos import construir_grafico
     from apps.monitoreo.models import EventoEnlaceFarmacia, MuestraRedFarmacia, ReinicioEquipoBorde
 
     muestras = list(MuestraRedFarmacia.objects.filter(farmacia=farmacia)[:40])[::-1]
@@ -217,6 +226,29 @@ def _render_enlace_modal(request, farmacia):
     # juzgar cuánto se está usando.
     escala_kbps = farmacia.ancho_contratado_mbps * 1000 if farmacia.ancho_contratado_mbps else None
 
+    # Los límites en kbps de ESTA farmacia. Se pasan como `limites_fijos` porque no
+    # salen de una ReglaAlerta global sino del contrato de cada sitio: 8 Mbps de consumo
+    # son el 80% de un enlace de 10 y el 200% de uno de 4.
+    limites_kbps = limites_de_enlace(farmacia.ancho_contratado_mbps)
+    consumo = indicador(
+        Metrica('red_total_kbps', 'Consumo actual', ' kbps', escala_fija=escala_kbps),
+        [m.red_total_kbps for m in muestras],
+        valor=ultima.red_total_kbps if ultima else None,
+        limites_fijos=limites_kbps,
+        # Sin ancho contratado el eje es el pico de la ventana —una escala distinta en
+        # cada farmacia—, así que la línea de umbral no se dibuja: significaría algo
+        # distinto en cada modal. El color del número sí sale del umbral absoluto, que es
+        # lo único que queda, y el pie de la tarjeta lo aclara.
+        dibujar_umbrales=bool(escala_kbps),
+        # Solo cuando hay algo que colorear: con la tarjeta en "sin dato", explicar de
+        # dónde sale un color que no se está mostrando confunde más de lo que aclara.
+        nota=(
+            'Sin ancho contratado cargado: el color sale del umbral general en kbps, no '
+            'de qué parte de ESTE enlace se está usando.'
+            if ultima and not escala_kbps else ''
+        ),
+    )
+
     return render(request, 'panel/enlace_farmacia_modal.html', {
         'farmacia': farmacia,
         'estado': getattr(farmacia, 'estado_enlace', None),
@@ -226,11 +258,13 @@ def _render_enlace_modal(request, farmacia):
         # El pico REAL de la ventana, aparte del tope del eje: si supera lo contratado, el
         # gráfico lo recorta arriba y hace falta decirlo con un número.
         'pico_kbps': max((m.red_total_kbps for m in muestras if m.red_total_kbps is not None), default=None),
-        'g_red': construir_grafico([m.red_total_kbps for m in muestras], escala_fija=escala_kbps),
-        'estado_bw': clasificar(
-            ultima.red_total_kbps if ultima else None,
-            RED_FARMACIA_UMBRAL_WARNING_KBPS, RED_FARMACIA_UMBRAL_CRITICAL_KBPS,
-        ),
+        'consumo': consumo,
+        # Mismo objeto Grafico que usa la tarjeta: el modal lo sigue exponiendo con este
+        # nombre porque la escala del eje es parte del contrato de esta pantalla.
+        'g_red': consumo.grafico,
+        'estado_bw': clasificar(ultima.red_total_kbps if ultima else None, *limites_kbps),
+        'bw_umbral_warning_pct': BW_CONTRATADO_UMBRAL_WARNING_PCT,
+        'bw_umbral_critical_pct': BW_CONTRATADO_UMBRAL_CRITICAL_PCT,
         'estacion_sondeadora': estacion_sondeadora,
         'caidas_recientes': EventoEnlaceFarmacia.objects.filter(farmacia=farmacia)[:5],
         'reinicios_recientes': ReinicioEquipoBorde.objects.filter(farmacia=farmacia)[:5],

@@ -6,27 +6,60 @@ abierta todo el día y algo que llama la atención cada minuto se vuelve ruido.
 {% endcomment %}
 <div class="centro-fade">
 
-{# --- Resumen: todo count(), sin traer objetos --- #}
+{% comment %}
+Resumen: todo count(), sin traer objetos.
+
+Las cinco tarjetas comunicaban el estado SOLO con el color del número (rojo = hay
+críticas, ámbar = hay advertencias). Desde el 19-sep-2026 llevan además el distintivo
+con icono del resto del panel: los tres colores de estado se parecen bastante bajo
+daltonismo, y esta es la pantalla que se deja abierta todo el día.
+
+No llevan sparkline: `resumen_operacion` es un conteo del momento, no una serie. Para
+una tendencia de estos números haría falta guardar el histórico del resumen, que hoy no
+existe — anotado como pendiente en PLAN_MODERNIZACION §10-AK.
+{% endcomment %}
 <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
     <div class="card p-4">
         <div class="text-xs text-[var(--text-faint)] mb-1">Estaciones en línea</div>
         <div class="text-2xl font-semibold">{{ r.estaciones_en_linea }}<span class="text-base text-[var(--text-faint)]">/{{ r.estaciones_total }}</span></div>
+        {% comment %}
+        La barra es la proporción, no un umbral: nadie definió a partir de qué
+        porcentaje de estaciones caídas hay que actuar, así que va en el color neutro de
+        serie. Lo que aporta es que "412/700" se lea sin dividir mentalmente.
+        {% endcomment %}
+        {% if r.estaciones_total %}
+        <div class="medidor mt-2" style="height:5px;">
+            <span class="relleno est-bg-sin_umbral" style="width:{% widthratio r.estaciones_en_linea r.estaciones_total 100 %}%;"></span>
+        </div>
+        {% endif %}
         {% if r.estaciones_fuera %}<div class="text-xs text-[var(--warning)] mt-1">{{ r.estaciones_fuera }} sin reportar</div>{% endif %}
     </div>
     <div class="card p-4">
-        <div class="text-xs text-[var(--text-faint)] mb-1">Alertas críticas</div>
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-xs text-[var(--text-faint)]">Alertas críticas</span>
+            {% if r.alertas_criticas %}{% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
+        </div>
         <div class="text-2xl font-semibold {% if r.alertas_criticas %}text-[var(--critical)]{% endif %}">{{ r.alertas_criticas }}</div>
     </div>
     <div class="card p-4">
-        <div class="text-xs text-[var(--text-faint)] mb-1">Advertencias</div>
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-xs text-[var(--text-faint)]">Advertencias</span>
+            {% if r.alertas_advertencias %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
+        </div>
         <div class="text-2xl font-semibold {% if r.alertas_advertencias %}text-[var(--warning)]{% endif %}">{{ r.alertas_advertencias }}</div>
     </div>
     <div class="card p-4">
-        <div class="text-xs text-[var(--text-faint)] mb-1">Enlaces caídos</div>
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-xs text-[var(--text-faint)]">Enlaces caídos</span>
+            {% if r.enlaces_caidos %}{% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
+        </div>
         <div class="text-2xl font-semibold {% if r.enlaces_caidos %}text-[var(--critical)]{% endif %}">{{ r.enlaces_caidos }}</div>
     </div>
     <div class="card p-4">
-        <div class="text-xs text-[var(--text-faint)] mb-1">Servicios del POS</div>
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-xs text-[var(--text-faint)]">Servicios del POS</span>
+            {% if r.pos_criticos %}{% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}{% elif r.pos_no_criticos %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
+        </div>
         <div class="text-2xl font-semibold {% if r.pos_criticos %}text-[var(--critical)]{% elif r.pos_no_criticos %}text-[var(--warning)]{% endif %}">{{ r.pos_criticos }}<span class="text-base text-[var(--text-faint)]"> + {{ r.pos_no_criticos }}</span></div>
         <div class="text-xs text-[var(--text-faint)] mt-1">críticos + no críticos</div>
     </div>

@@ -2625,3 +2625,135 @@ Ayuda tenía únicamente `catalogo.estacion:view`, así que se le agregó en `se
 con el mismo criterio que el precedente de 'Operador RMM': un rol no puede implicar una
 pantalla que sus permisos le cierran. `view` y nada más — primera línea diagnostica, no
 reconoce ni cierra alertas.
+
+## §10-AK — Gráficas autosuficientes en las pantallas de monitoreo (19-sep-2026)
+
+**El problema, en una línea**: varias gráficas de monitoreo obligaban a abrir el detalle
+para saber si lo que mostraban estaba bien o mal.
+
+El inventario previo encontró gráficas en cinco pantallas, todas SVG inline generado por
+`apps/monitoreo/graficos.py` (el proyecto no tiene ninguna librería de gráficos y no se
+agregó ninguna). Lo que fallaba en cada una:
+
+| Pantalla | Qué no comunicaba |
+| --- | --- |
+| `monitoreo_lista` | Cinco números crudos por estación, sin umbral ni contexto. Latencia y red, además, **sin color**: un enlace saturado se veía igual que uno sano. |
+| `monitoreo_detalle_partial` | Cada serie con su propio color **de estado** (CPU=info, RAM=`--good`, disco=`--accent`, latencia=`--warning`): una RAM al 95% se dibujaba en verde y la latencia se veía ámbar aunque estuviera perfecta. El pie decía "Eje 0–100%", que es la escala, no el límite. Latencia y red autoescalaban al pico de la ventana, así que la curva llenaba la tarjeta siempre. |
+| `tendencia_flota` | El valor de la semana en curso vivía en una línea de 11 px debajo del gráfico. "Resueltas" en verde — el color decía "bien" aunque la serie estuviera cayendo. Sin umbral y sin referencia de qué es normal. |
+| `enlace_farmacia_modal` | Dos criterios para el mismo número: el consumo se coloreaba con los umbrales absolutos en kbps y, tres líneas abajo, la barra con el % del contratado. Las referencias al 50%/90% eran `y1="32"` y `y1="10"` escritos a mano contra el alto del SVG. |
+| `enlaces_farmacias_lista`, `centro_monitoreo_partial` | Estado comunicado **solo con color** (número verde/ámbar/rojo, sin icono ni palabra). |
+| `pos_errores_flota` | La barra de ranking pintaba la primera fila de `--critical` y el resto de `--warning`: codificaba el **puesto** con los colores que en el resto del panel significan "esto está mal", así que el mensaje más frecuente se veía crítico aunque afectara a dos estaciones. |
+
+**Lo que se construyó** es un patrón único en vez de seis tarjetas distintas:
+`apps/panel/indicadores.py` (valor + estado + umbral + serie, con `Metrica` y `Indicador`),
+`templates/panel/_indicador.html`, `_sparkline.html` y `_estado_chip.html`, y la sección
+"INDICADORES" de `static_src/components.css`. El criterio completo, con el porqué de cada
+regla, quedó en **README §"Cómo se diseñan las gráficas del panel"** — se documentó ahí y
+no acá porque es lo que hay que leer antes de agregar la próxima gráfica.
+
+**La decisión de fondo: el umbral que se dibuja es el que abre la alerta.** Hasta ahora el
+panel coloreaba con las constantes de `apps/panel/umbrales.py` (CPU 75/90) mientras el
+motor de alertas usaba la `ReglaAlerta` configurada; con la regla en 85, la tarjeta se
+ponía amarilla antes que el sistema y no había forma de saber cuál de los dos números era
+el bueno. Ahora `umbrales.umbrales_de_reglas()` lee las reglas activas (globales + las de
+las unidades en foco, quedándose con el límite que dispara primero) y las constantes
+quedaron como **defecto**, no como verdad. Una consulta fija por pantalla.
+
+**Y donde no hay umbral, no se inventa uno.** Latencia y red por estación no tienen
+constante de defecto: sin una `ReglaAlerta` la tarjeta muestra el número sin color, sin
+línea, y dice por qué. Pintar de verde algo contra lo que no hay con qué comparar es
+afirmar lo que nadie verificó — el mismo criterio que ya tenía `clasificar(None)` para un
+recurso sin medir. Lo mismo con los conteos de alertas por semana: no son medidores, así
+que no llevan estado; llevan la media de las 12 semanas como línea de referencia.
+
+**Dos errores latentes que aparecieron haciendo esto:**
+
+1. **Los porcentajes en atributos de estilo se rompían con la localización.** El proyecto
+   corre en `es-EC` y Django imprime `12.4` como `12,4`; dentro de `style="width:…%"` eso
+   es CSS inválido. La barra de consumo de `enlace_farmacia_modal` nunca se dibujó desde
+   que se agregó. Todo número que va a un atributo ahora se envuelve en
+   `{% localize off %}`.
+2. **Los umbrales del modal de enlaces estaban escritos en la plantilla** (`>= 90`,
+   `>= 70`) al lado de un valor coloreado con otro criterio. Se movieron a
+   `umbrales.limites_de_enlace()`, que resuelve un único par en kbps: % del ancho
+   contratado cuando se conoce, y el absoluto solo si no.
+
+**Sobre el eje automático**: cuando hay umbral y la escala es automática, el eje se estira
+para que la línea entre en el dibujo — salvo que el umbral esté a más de 3× el pico de la
+serie, en que aplastaría la curva contra el piso. En ese caso no se dibuja y la tarjeta lo
+dice con un número (`Grafico.Marca.dentro`).
+
+**Sobre daltonismo**: la separación de verde/ámbar/rojo se reforzó con forma (círculo con
+tilde, triángulo, octógono), con trazo (advertencia punteada, crítico entero) y con texto
+en cada distintivo. **Queda pendiente validarlo con un simulador sobre la pantalla real**:
+se eligió por construcción, no medido.
+
+**Costo del sparkline en el listado**: `indicadores.series_por_estacion` trae las series de
+todas las estaciones en **una** consulta acotada por ventana (20 min) y por cantidad de
+filas, y calcula los porcentajes sin instanciar modelos. Las pruebas que fijan que
+`monitoreo_lista` no crece con la flota siguen pasando. Aparte: **esa pantalla no está
+paginada** y a 700 farmacias son 700 tarjetas — no se tocó acá, pero es el próximo cuello
+de botella de esa vista.
+
+**Lo que NO se hizo, a propósito** (no se cambió qué datos se muestran, solo cómo):
+
+- El resumen del Centro de Monitoreo no tiene sparkline: `resumen_operacion` es un conteo
+  del momento y no existe histórico. Para una tendencia de "cuántas alertas críticas hay"
+  habría que persistir el resumen — modelo nuevo, decisión del usuario.
+- `tendencia_flota` no grafica latencia: `_series_semanales` no la agrega por semana.
+- Los errores del POS siguen sin tendencia por lo que ya explica §9 (`PosErrorDetectado`
+  guarda un contador de por vida).
+- La barra de conformidad del **dashboard** también comunica su estado solo con color
+  (verde/ámbar/rojo según `pct_conforme`, sin icono). No se tocó porque el dashboard no
+  es una pantalla de monitoreo y estaba fuera del alcance pedido, pero le falta lo mismo
+  que se corrigió acá.
+- `/monitoreo/` **no está paginada**: a 700 farmacias son 700 tarjetas. El sparkline
+  nuevo no empeora eso (una consulta acotada para toda la pantalla), pero la paginación
+  es el próximo cuello de botella de esa vista.
+
+## Reconocer alertas desde Telegram (19-sep-2026)
+
+Segunda acción de escritura del bot, después de `/sincronizar`. Salió de un plan que
+evaluó todo el inventario de acciones del sistema contra los cuatro criterios con que se
+aprobó la primera: una estación, idempotente, acción única y obvia, y que sea lo que la
+alerta que llegó por ese mismo chat está pidiendo.
+
+**Ganó la que menos hace.** `/reconocer` no arregla nada: cambia una fila. Pero
+`escalar_alertas_abiertas` solo reenvía las que siguen en `ABIERTA`, así que reconocer
+corta la insistencia — y el momento en que eso importa es exactamente aquel en que nadie
+va a abrir la computadora. Es la acción de menor riesgo del sistema y la que más cambia
+cómo se vive una guardia.
+
+Reusa todo: el permiso que el panel ya exige (`monitoreo.change_alerta`), `verificar_acceso`
+a la unidad, el vínculo `telegram_chat_id`, la confirmación de dos toques y
+`registrar_evento` para la auditoría. Sin `request` no hay IP, así que el origen va en
+`detalle={'origen': 'telegram'}` — que es el dato que importa para entender de dónde
+salió la acción.
+
+**El botón "✔ Reconocer" va ahora en TODA alerta** que sale por Telegram, no solo en las
+de reloj: aplica siempre. `🕐 Sincronizar` sigue apareciendo solo donde hay algo que
+sincronizar, porque un botón que no aplica es peor que ninguno. Eso invalidó a propósito
+el test `test_las_otras_alertas_siguen_sin_boton`, que fijaba el diseño anterior
+("el botón es la excepción"); se reemplazó por uno que fija el nuevo.
+
+Dos bordes que se cubrieron porque son el caso normal y no el raro: **reconocer dos veces
+no pisa a quien la atendió primero** (dos personas mirando el mismo aviso es lo habitual,
+y al segundo se le dice quién la tomó), y un id que no es un número no revienta.
+
+### El resto del plan, para cuando se retome
+
+**Nivel 1, pendientes**: `/info <ESTACION>` (refrescar hardware y BitLocker; Mesa de
+Ayuda ya tiene `catalogo.consultar_info_estacion`) y `/escanear <ESTACION>` (Windows
+Update, que solo escanea).
+
+**Nivel 2, con una decisión antes**: `/silenciar <ESTACION> <horas>` — crear una ventana
+de mantenimiento es utilísimo pero silencia incidentes reales, así que necesita tope de
+duración; y `/limpiar <ESTACION>` para la alerta de disco lleno, que primero necesita un
+script de limpieza que todavía no existe.
+
+**Descartado explícitamente**: reiniciar una estación (el radio de daño es un cliente en
+el mostrador a mitad de una venta), ver la clave de BitLocker (un secreto por un canal
+que no controlamos), aprobar enrolamientos, actualizar el agente o desplegar (afectan a
+la flota), `configurar_nodo_pos`, y **resolver** una alerta — distinto de reconocerla:
+afirma "esto ya está arreglado" y eso no se verifica desde un teléfono; además la mayoría
+se cierra sola cuando el servicio vuelve.
