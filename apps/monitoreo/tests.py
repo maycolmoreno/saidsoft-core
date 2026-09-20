@@ -5466,3 +5466,149 @@ class SincronizarHoraPorTelegramTests(TestCase):
 
         self.assertIn('ML901-A', salida)
         self.assertNotIn('ML902-A', salida)
+
+class ComposeServiciosClasificadosTests(ComposeMeshCentralTests):
+    """Guarda estructural: un servicio nuevo en el compose no puede quedar sin clasificar.
+
+    El 19-sep-2026 la MISMA clase de fallo mordió dos veces en el mismo día:
+    `celery_worker` sin `MESHCENTRAL_API_*` dejó `agente_caido_red_viva` sin disparar
+    nunca, y `telegram_bot` sin las `MQTT_*` hizo que `/sincronizar` creara la
+    EjecucionScript y el publish muriera con ConnectionRefused (ejecución #46 a ML002-B,
+    que quedó en `error` y nunca recibió el script).
+
+    Ya existían tests para esto, pero escritos a mano —variable por variable, servicio
+    por servicio— así que solo cubrían lo que alguien se acordó de agregar. Cuando el bot
+    de Telegram pasó de solo-lectura a publicar por MQTT, nadie extendió el guarda.
+
+    Estos tests invierten la carga: en vez de enumerar lo que sí hay que revisar, fallan
+    cuando aparece algo sin revisar. Agregar un servicio al compose obliga a decir si
+    publica MQTT o no, y esa decisión queda escrita acá.
+    """
+
+    # servicio del compose -> ¿corre código que puede publicar por MQTT?
+    SERVICIOS_DJANGO = {
+        'web': True,                  # el panel publica comandos, scripts y despliegues
+        'worker': True,               # run_mqtt_worker: publica respuestas y actualizaciones
+        'celery_worker': True,        # sondeos, despliegues y actualizaciones de agente
+        'telegram_bot': True,         # /sincronizar dispara un script a una estación
+        'meshcentral_worker': False,  # habla con MeshCentral por websocket, no con EMQX
+        'celery_beat': False,         # solo agenda: nunca publica
+    }
+
+    VARIABLES_MQTT = ('MQTT_HOST', 'MQTT_PORT', 'MQTT_USERNAME', 'MQTT_PASSWORD',
+                      'MQTT_USE_TLS', 'MQTT_CA_CERT')
+
+    def _servicios_que_corren_django(self):
+        """Los servicios del compose cuyo `command` arranca un proceso de Django."""
+        from django.conf import settings
+
+        ruta = settings.BASE_DIR / 'deploy' / 'docker-compose.yml'
+        encontrados = set()
+        servicio = None
+        for linea in ruta.read_text(encoding='utf-8').splitlines():
+            if linea.startswith('  ') and not linea.startswith('   ') and linea.rstrip().endswith(':'):
+                servicio = linea.strip().rstrip(':')
+            elif servicio and linea.strip().startswith('command:'):
+                comando = linea.split('command:', 1)[1]
+                if any(p in comando for p in ('manage.py', 'gunicorn', 'celery')):
+                    encontrados.add(servicio)
+        return encontrados
+
+    def test_no_hay_servicios_django_sin_clasificar(self):
+        """Este es el test que evita la tercera vez.
+
+        Si alguien agrega un servicio al compose y no lo clasifica acá, falla. No se
+        puede sumar un proceso nuevo sin decidir, explícitamente, si publica MQTT.
+        """
+        del_compose = self._servicios_que_corren_django()
+        clasificados = set(self.SERVICIOS_DJANGO)
+        self.assertEqual(
+            del_compose, clasificados,
+            'el compose y SERVICIOS_DJANGO no coinciden.\n'
+            f'  sin clasificar: {sorted(del_compose - clasificados)}\n'
+            f'  clasificados que ya no existen: {sorted(clasificados - del_compose)}',
+        )
+
+    def test_todo_servicio_que_publica_mqtt_tiene_sus_variables(self):
+        for servicio, publica in sorted(self.SERVICIOS_DJANGO.items()):
+            if not publica:
+                continue
+            entorno = self._entorno_del_servicio(servicio)
+            faltantes = [v for v in self.VARIABLES_MQTT if v not in entorno]
+            self.assertEqual(
+                faltantes, [],
+                f'{servicio} publica por MQTT pero le faltan {faltantes} en el compose. '
+                'Sin ellas el publish va contra el localhost:1883 del default y muere '
+                'con ConnectionRefused, dejando la acción registrada pero sin efecto.',
+            )
+
+    def test_el_bot_de_telegram_usa_la_credencial_del_panel(self):
+        """Publica comandos hacia los agentes, igual que el panel — no consume la
+        telemetría que sube la flota, así que no le corresponde la del worker."""
+        from django.conf import settings
+
+        ruta = settings.BASE_DIR / 'deploy' / 'docker-compose.yml'
+        contenido = ruta.read_text(encoding='utf-8')
+        bloque = contenido.split('  telegram_bot:', 1)[1].split('\n  redis:', 1)[0]
+        self.assertIn('MQTT_USERNAME_PANEL', bloque)
+        self.assertNotIn('MQTT_USERNAME_WORKER', bloque)
+
+
+class TareasDiariasConCrontabTests(TestCase):
+    """Una tarea diaria tiene que usar `crontab`, nunca un intervalo de 86400 segundos.
+
+    Un `schedule` numérico es RELATIVO al arranque de beat, y beat guarda su estado en
+    `celerybeat-schedule` dentro del contenedor, sin volumen. Cada despliegue recrea el
+    contenedor, se pierde el estado y la cuenta regresiva vuelve a empezar: una tarea de
+    86400 s solo dispara si pasan 24 h enteras sin desplegar.
+
+    Medido en producción el 19-sep-2026: `EventoMonitoreo` tenía filas de 33 días con una
+    retención de 30, y ese día se desplegó tres veces. Ocho tareas estaban así, entre
+    ellas las tres purgas y la generación de ejecuciones programadas. La única diaria que
+    sí disparaba era el resumen de Telegram, justamente porque ya usaba crontab.
+
+    Nada fallaba. Las cosas simplemente no pasaban — que es el modo de falla más caro de
+    encontrar.
+    """
+
+    # Un día en segundos. Cualquier intervalo de este orden es una diaria disfrazada.
+    UN_DIA = 60 * 60 * 24
+
+    def test_ninguna_tarea_diaria_usa_un_intervalo_numerico(self):
+        from django.conf import settings
+
+        culpables = []
+        for nombre, entrada in settings.CELERY_BEAT_SCHEDULE.items():
+            schedule = entrada['schedule']
+            if isinstance(schedule, (int, float)) and schedule >= self.UN_DIA:
+                culpables.append(f'{nombre} ({schedule}s)')
+        self.assertEqual(
+            culpables, [],
+            'estas tareas usan un intervalo de un día o más, que se reinicia en cada '
+            f'despliegue y puede no dispararse nunca: {culpables}. Usá crontab().',
+        )
+
+    def test_las_purgas_siguen_programadas(self):
+        """Son la única retención que existe: los hypertables de TimescaleDB nunca se
+        crearon (ver el docstring de purgar_metricas_antiguas)."""
+        from django.conf import settings
+
+        tareas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
+        for tarea in ('apps.monitoreo.tasks.purgar_metricas_task',
+                      'apps.monitoreo.tasks.purgar_eventos_monitoreo_task',
+                      'apps.monitoreo.tasks.purgar_muestras_red_task'):
+            self.assertIn(tarea, tareas)
+
+    def test_las_purgas_corren_de_madrugada_y_escalonadas(self):
+        """Tres DELETE grandes contra la misma base en el mismo segundo no hacen falta."""
+        from django.conf import settings
+
+        minutos = []
+        for entrada in settings.CELERY_BEAT_SCHEDULE.values():
+            if 'purgar' not in entrada['task']:
+                continue
+            schedule = entrada['schedule']
+            horas = {int(h) for h in schedule.hour}
+            self.assertEqual(horas, {3}, 'las purgas van a las 3 AM, fuera de horario comercial')
+            minutos.extend(int(m) for m in schedule.minute)
+        self.assertEqual(len(minutos), len(set(minutos)), 'dos purgas arrancan en el mismo minuto')

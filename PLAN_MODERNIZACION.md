@@ -2407,3 +2407,75 @@ Diez management commands no aparecen fuera de sus tests, pero son de ejecución 
 quedan como confianza MEDIA sin mover: `armar_paquete_agente` y `seed_reglas_alerta` se
 corrieron **hoy mismo**, lo que confirma que la ausencia de referencias en el código no
 significa desuso.
+
+### Lo que se arregló de esa auditoría (19-sep-2026)
+
+Cuatro cambios, ninguno de los cuales es "optimización": tres son correctitud y el
+cuarto es higiene barata.
+
+**1. Las ocho tareas diarias pasaron de intervalo a `crontab`.** El arreglo no fue
+montarle un volumen a beat sino eliminar la clase de problema: un crontab es absoluto y
+no le importa cuándo arrancó el proceso. Las purgas quedan a las 3:00, 3:10 y 3:20
+(escalonadas para no largar tres DELETE grandes en el mismo segundo),
+`vincular-activos-por-serie` a las 4:00, las tres de generación entre 6:00 y 6:30 —antes
+de que abran las farmacias— y el aviso de vencimiento de mantenimientos a las 7:00, para
+que esté en la bandeja cuando alguien abre el correo. Como efecto lateral se gana algo
+que el intervalo no daba: elegir la hora.
+
+`TareasDiariasConCrontabTests` impide la regresión: falla si cualquier tarea del schedule
+vuelve a usar un intervalo de un día o más.
+
+**2. `telegram_bot` y `celery_worker` recibieron las variables MQTT.** El segundo no
+estaba en el diagnóstico original: lo encontró el test estructural del punto 3, al
+correrlo por primera vez.
+
+- `telegram_bot`: `/sincronizar` creaba la `EjecucionScript` y el publish moría con
+  ConnectionRefused (ejecución #46 → ML002-B → `error`).
+- `celery_worker`: `solicitar_sondeo_red_farmacias_via_agente_task` devolvía
+  `'0 estación(es) recibieron el pedido de sondeo de red'` en 0,025 s **cada cinco
+  minutos**, con 8 estaciones candidatas esperando. Idéntico en el log a "no había nada
+  que pedir". Lo mismo `solicitar_sondeo_activos_task` cada 15 min.
+
+Los dos usan la credencial del PANEL: publican comandos hacia los agentes, no consumen
+la telemetría que sube la flota.
+
+**3. Guarda estructural contra la clase de bug, no contra sus instancias.** Es la tercera
+vez que el mismo fallo aparece (`MESHCENTRAL_API_*` el 17-sep, `MQTT_*` en dos servicios
+el 19-sep): código correcto, contenedor sin la variable que ese código lee, falla
+silenciosa. Ya había tests, pero escritos a mano variable por variable, así que solo
+cubrían lo que alguien se acordó de agregar.
+
+`ComposeServiciosClasificadosTests` invierte la carga: mantiene un mapa
+`servicio -> ¿publica MQTT?` y **falla si el compose tiene un servicio Django que no está
+en el mapa**. Agregar un proceso nuevo obliga a decidir, explícitamente, si publica. La
+primera corrida encontró el `celery_worker` del punto 2 — la prueba de que el enfoque
+sirve es que halló algo que la revisión manual no había visto.
+
+**4. `CONN_MAX_AGE` de 0 a 60.** Conexiones persistentes en vez de abrir y cerrar una por
+request. Ganancia chica y así se documenta: no arregla ninguna lentitud.
+
+### Lo que NO se tocó, y por qué
+
+- **`CACHES` sigue en `LocMemCache`.** Se iba a mover a Redis hasta comprobar que **nada
+  usa el framework de caché**: los dos únicos resultados del grep son diccionarios
+  locales llamados `*_cache`. Cambiar el backend no mejoraría nada medible. Es una trampa
+  latente para el día que alguien use `cache.set()` con tres workers de gunicorn, no un
+  problema de hoy.
+- **No se instaló profiling.** No se encontró lentitud del lado del servidor, así que una
+  herramienta para buscarla mediría lo que ya se sabe que está bien. Lo que falta medir
+  es el navegador del usuario.
+
+### Hallazgo nuevo, sin resolver: `sincronizar-ancho-banda-farmacias` tarda 210 s
+
+Corre cada 300 s y tarda 210-213 s sondeando 22 farmacias por SNMP: ocupa un worker de
+Celery el 70% de su propio ciclo.
+
+Además su comentario en `CELERY_BEAT_SCHEDULE` dice que "hoy nunca logra sondear nada
+(solo loguea warnings)" porque el servidor no tendría ruta a las farmacias. **Eso es
+falso**: reporta `'22 farmacia(s) sondeada(s) por SNMP'` y es la tarea que realmente
+está produciendo las `MuestraRedFarmacia` (242 en la última hora). CLAUDE.md ya advertía
+que esa afirmación quedó desactualizada el 11-sep.
+
+O sea que la tarea "obsoleta" es la que funciona, y la que la "reemplaza" estaba muerta
+por el punto 2. Con el sondeo vía agente ya arreglado, hay que decidir si las dos siguen
+corriendo en paralelo o si la directa se espacia.

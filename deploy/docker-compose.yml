@@ -383,10 +383,28 @@ services:
       # Sin esta lista el bot no le responde a nadie: un bot de Telegram es publico y
       # cualquiera que adivine su usuario puede escribirle.
       TELEGRAM_CHAT_IDS_AUTORIZADOS: ${TELEGRAM_CHAT_IDS_AUTORIZADOS:-}
+      # MQTT con la credencial del PANEL, no la del worker: este proceso publica
+      # comandos hacia los agentes (lo mismo que hace el panel cuando alguien aprieta un
+      # botón), no consume la telemetría que sube la flota.
+      #
+      # Sin esto, `/sincronizar` creaba la EjecucionScript y el publish moría con
+      # ConnectionRefused contra el `localhost:1883` del default — la ejecución quedaba
+      # en `error` y el script no llegaba nunca a la estación. Pasó de verdad el
+      # 19-sep-2026 con la ejecución #46 a ML002-B. Es la segunda vez en el mismo día que
+      # un servicio corre código correcto sin la variable que ese código lee: el otro fue
+      # celery_worker sin MESHCENTRAL_API_*.
+      MQTT_HOST: emqx
+      MQTT_PORT: "8883"
+      MQTT_USERNAME: ${MQTT_USERNAME_PANEL}
+      MQTT_PASSWORD: ${MQTT_PASSWORD_PANEL}
+      MQTT_USE_TLS: "True"
+      MQTT_CA_CERT: /app/deploy/certs/cert.pem
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     depends_on:
       db:
+        condition: service_healthy
+      emqx:
         condition: service_healthy
 
   redis:
@@ -447,6 +465,23 @@ services:
       MESHCENTRAL_API_PASSWORD: ${MESHCENTRAL_API_PASSWORD}
       MESHCENTRAL_API_CA_CERT: ${MESHCENTRAL_API_CA_CERT}
       MESHCENTRAL_API_VERIFICAR_TLS: ${MESHCENTRAL_API_VERIFICAR_TLS:-True}
+      # MQTT con la credencial del PANEL: acá corren dos tareas periódicas que le PIDEN
+      # algo a un agente — `solicitar_sondeo_activos_task` (cada 15 min) y
+      # `solicitar_sondeo_red_farmacias_via_agente_task` (cada 5 min). Publican comandos
+      # igual que el panel; no consumen la telemetría que sube la flota.
+      #
+      # Sin esto el publish iba contra el `localhost:1883` del default y moría con
+      # ConnectionRefused. La tarea no fallaba: devolvía '0 estación(es) recibieron el
+      # pedido de sondeo de red' en 0,025 s, cada cinco minutos, indistinguible en el log
+      # de "no había nada que pedir" — con 8 estaciones candidatas esperando. Encontrado
+      # el 19-sep-2026, y es la MISMA firma que el '0 nodo(s) sincronizado(s)' de
+      # MESHCENTRAL_* de dos días antes.
+      MQTT_HOST: emqx
+      MQTT_PORT: "8883"
+      MQTT_USERNAME: ${MQTT_USERNAME_PANEL}
+      MQTT_PASSWORD: ${MQTT_PASSWORD_PANEL}
+      MQTT_USE_TLS: "True"
+      MQTT_CA_CERT: /app/deploy/certs/cert.pem
       # Correo saliente. Sin estas variables `send_mail` intenta autenticarse contra
       # smtp.gmail.com con usuario y clave vacios, falla, y como TODO el proyecto usa
       # fail_silently=True (para que un SMTP caido no tumbe la ingesta de metricas) el
@@ -479,6 +514,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      emqx:
+        condition: service_healthy
 
   celery_beat:
     <<: *app-build

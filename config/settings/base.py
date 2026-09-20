@@ -102,6 +102,19 @@ ASGI_APPLICATION = 'config.asgi.application'
 DATABASES = {
     'default': env.db('DATABASE_URL', default=f'sqlite:///{BASE_DIR / "db.sqlite3"}'),
 }
+# Conexiones persistentes. El default de Django es 0: abrir y cerrar una conexión a
+# Postgres en CADA request. Con 60 s la conexión se reusa entre requests del mismo
+# worker de gunicorn y se recicla antes de que a nadie le moleste una conexión vieja.
+#
+# Ganancia medida: chica. Una pantalla del panel renderiza en 16-36 ms (auditoría del
+# 19-sep-2026) y el handshake local es de milisegundos — esto no arregla ninguna
+# lentitud, y no hay que venderlo como si lo hiciera. Se cambia porque el default no
+# tiene defensa cuando el costo de cambiarlo es una línea.
+#
+# No subirlo sin pensar: cada worker retiene su conexión el tiempo que diga esto, así
+# que `workers de gunicorn x procesos de Celery` tiene que seguir entrando cómodo en el
+# max_connections de Postgres (100 hoy, con 16 en uso).
+DATABASES['default']['CONN_MAX_AGE'] = env.int('CONN_MAX_AGE', default=60)
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
@@ -361,17 +374,36 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.catalogo.tasks.marcar_estaciones_offline_task',
         'schedule': 60.0,  # cada minuto — mismo umbral que el comando manual (5 min sin heartbeat)
     },
+    # --- Diarias: crontab y NO un intervalo de 86400 segundos ---
+    #
+    # Un `schedule` numerico es un intervalo RELATIVO al arranque de beat, y beat guarda
+    # su estado en `celerybeat-schedule` dentro del contenedor, sin volumen. Cada
+    # despliegue recrea el contenedor, se pierde el estado y la cuenta regresiva vuelve a
+    # empezar: una tarea de 86400 s solo dispara si pasan 24 h enteras sin desplegar.
+    #
+    # No es teoria. Medido el 19-sep-2026: `EventoMonitoreo` tenia filas de 33 dias con
+    # una retencion de 30, y ese dia se desplego tres veces. Ocho tareas diarias estaban
+    # en esa situacion, entre ellas las tres purgas y la generacion de ejecuciones
+    # programadas. La unica que si disparaba era 'resumen-diario-telegram', justamente
+    # porque ya usaba crontab.
+    #
+    # Un crontab es ABSOLUTO: se cumple a la hora que dice, sin importar cuando arranco
+    # beat. Ademas deja elegir la hora, que con un intervalo era "cuando toque".
+    # CELERY_TIMEZONE = TIME_ZONE = 'America/Guayaquil', asi que estas son horas locales.
+    #
+    # Se escalonan de a 10 minutos para no largar tres DELETE grandes contra la misma
+    # base en el mismo segundo.
     'purgar-metricas-viejas': {
         'task': 'apps.monitoreo.tasks.purgar_metricas_task',
-        'schedule': 60.0 * 60 * 24,  # diario
+        'schedule': crontab(hour=3, minute=0),
     },
     'purgar-eventos-monitoreo-viejos': {
         'task': 'apps.monitoreo.tasks.purgar_eventos_monitoreo_task',
-        'schedule': 60.0 * 60 * 24,  # diario
+        'schedule': crontab(hour=3, minute=10),
     },
     'purgar-muestras-red-viejas': {
         'task': 'apps.monitoreo.tasks.purgar_muestras_red_task',
-        'schedule': 60.0 * 60 * 24,  # diario
+        'schedule': crontab(hour=3, minute=20),
     },
     'sondear-activos-sin-agente': {
         'task': 'apps.monitoreo.tasks.solicitar_sondeo_activos_task',
@@ -400,23 +432,30 @@ CELERY_BEAT_SCHEDULE = {
     },
     'generar-ejecuciones-programadas': {
         'task': 'apps.scripts.tasks.generar_ejecuciones_programadas_task',
-        'schedule': 60.0 * 60 * 24,  # diario — el propio filtro por fecha lo hace seguro de repetir
+        # 6:00, antes de que abran las farmacias: un script programado tiene que estar
+        # encolado cuando empieza el dia, no a media tarde. El propio filtro por fecha lo
+        # hace seguro de repetir.
+        'schedule': crontab(hour=6, minute=0),
     },
     'generar-mantenimientos-programados': {
         'task': 'apps.mantenimiento.tasks.generar_mantenimientos_programados_task',
-        'schedule': 60.0 * 60 * 24,  # diario
+        'schedule': crontab(hour=6, minute=15),
     },
     'notificar-mantenimientos-vencimiento': {
         'task': 'apps.mantenimiento.tasks.notificar_mantenimientos_vencimiento_task',
-        'schedule': 60.0 * 60 * 24,  # diario
+        # 7:00: el aviso tiene que estar en la bandeja cuando la persona abre el correo,
+        # no llegarle cuando ya armo su dia.
+        'schedule': crontab(hour=7, minute=0),
     },
     'generar-escaneos-programados': {
         'task': 'apps.software.tasks.generar_escaneos_programados_task',
-        'schedule': 60.0 * 60 * 24,  # diario — el propio filtro por fecha lo hace seguro de repetir
+        # El propio filtro por fecha lo hace seguro de repetir.
+        'schedule': crontab(hour=6, minute=30),
     },
     'vincular-activos-por-serie': {
         'task': 'apps.activos.tasks.vincular_activos_por_serie_task',
-        'schedule': 60.0 * 60 * 24,  # diario — un cruce por número de serie no cambia cada minuto
+        # 4:00, despues de las purgas: un cruce por numero de serie no cambia cada minuto.
+        'schedule': crontab(hour=4, minute=0),
     },
     'escalar-alertas-abiertas': {
         'task': 'apps.monitoreo.tasks.escalar_alertas_task',
