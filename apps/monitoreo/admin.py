@@ -3,11 +3,7 @@ from django.contrib import admin
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_por_unidad_negocio
 
 from .models import (
-    Alerta, CanalNotificacion, ConfiguracionMonitoreo, DispositivoDetectado,
-    EquipoBordeFarmacia, EstadoDispositivo,
-    EstadoServicioPos,
-    EstadoEnlaceFarmacia, EventoEnlaceFarmacia, EventoMonitoreo, MuestraMetrica, MuestraRedFarmacia,
-    PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
+    Alerta, CanalNotificacion, ConfiguracionMonitoreo, DispositivoDetectado, EquipoBordeFarmacia, EstadoDispositivo, EstadoEnlaceFarmacia, EstadoServicioPos, EventoEnlaceFarmacia, EventoMonitoreo, MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, ServicioPosMonitoreado, VentanaMantenimiento,
 )
 
 
@@ -397,3 +393,76 @@ class ConfiguracionMonitoreoAdmin(admin.ModelAdmin):
         # Quién lo tocó explica por qué el sistema empezó a avisar más o menos que antes.
         obj.actualizado_por = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(ServicioPosMonitoreado)
+class ServicioPosMonitoreadoAdmin(admin.ModelAdmin):
+    """Acá se agrega una plataforma nueva para monitorear, sin tocar código ni desplegar.
+
+    A diferencia de los otros ModelAdmin de este módulo —que son de solo lectura porque
+    los escribe el agente— este es el único donde se EDITA de verdad: es la fuente de
+    verdad de qué chequea la flota.
+
+    Guardar publica el catálogo a las estaciones (ver `publicar_catalogo_servicios_pos`).
+    No hace falta un paso aparte ni esperar a nada: el mensaje queda retenido en el
+    broker y una estación apagada lo recibe al encender.
+    """
+
+    list_display = ('nombre', 'clave', 'tipo', 'destino_o_descubierto', 'critico', 'activo', 'actualizado_en')
+    list_filter = ('activo', 'critico', 'tipo', 'origen')
+    search_fields = ('clave', 'nombre', 'destino', 'nota')
+    list_editable = ('critico', 'activo')
+    readonly_fields = ('actualizado_en',)
+    fieldsets = (
+        (None, {'fields': ('clave', 'nombre', 'activo', 'critico')}),
+        ('Qué se chequea', {
+            'fields': ('origen', 'tipo', 'destino', 'puerto', 'base_datos'),
+            'description': (
+                'Si el agente lo descubre del <code>.exe.Config</code> del POS, elegí ese '
+                'origen y dejá el destino vacío. Para una IP o URL fija, "Definido acá". '
+                '<strong>Nunca pongas usuario ni contraseña en el destino</strong>: esto '
+                'se publica a todas las estaciones y se ve en el panel.'
+            ),
+        }),
+        ('Para la mesa de ayuda', {'fields': ('nota', 'actualizado_en')}),
+    )
+
+    @admin.display(description='Destino', ordering='destino')
+    def destino_o_descubierto(self, obj):
+        if obj.origen == ServicioPosMonitoreado.Origen.CONFIG_POS:
+            return 'del .exe.Config de cada POS'
+        if obj.tipo == ServicioPosMonitoreado.Tipo.POSTGRES:
+            return '%s:%s/%s' % (obj.destino, obj.puerto or 5432, obj.base_datos)
+        return obj.destino
+
+    def save_model(self, request, obj, form, change):
+        """Publicar acá y no en una señal del modelo: una migración de datos o un test que
+        cree filas no tiene por qué hablar con el broker. Lo que dispara la publicación es
+        que una PERSONA haya editado el catálogo."""
+        super().save_model(request, obj, form, change)
+        self._publicar(request)
+
+    def delete_model(self, request, obj):
+        super().delete_model(request, obj)
+        self._publicar(request)
+
+    def delete_queryset(self, request, queryset):
+        super().delete_queryset(request, queryset)
+        self._publicar(request)
+
+    def _publicar(self, request):
+        from django.contrib import messages
+
+        from .servicios_pos import publicar_catalogo_servicios_pos
+
+        cuantos, ok = publicar_catalogo_servicios_pos()
+        if ok:
+            messages.info(request, f'Catálogo publicado a la flota: {cuantos} servicio(s) activo(s).')
+        else:
+            # Que el guardado haya funcionado y la publicación no es exactamente el modo
+            # de falla silenciosa que este proyecto ya sufrió tres veces. Se avisa.
+            messages.warning(
+                request,
+                'El catálogo se guardó pero NO se pudo publicar por MQTT: las estaciones '
+                'siguen con la lista anterior. Revisá el log del panel y volvé a guardar.',
+            )

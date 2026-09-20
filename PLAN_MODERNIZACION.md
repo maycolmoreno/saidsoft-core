@@ -2510,3 +2510,77 @@ lo que más podía divergir entre motores:
   chat vacío conviven, un `chat_id` duplicado se rechaza. Probado en una transacción
   revertida.
 - `CONN_MAX_AGE=60` está activo y las conexiones quedaron en 20 de 100.
+
+## Catálogo administrable de servicios del POS (19-sep-2026)
+
+Qué se monitorea en cada estación dejó de ser un `TextChoices` fijo en código y pasó a
+ser una tabla editable desde el admin: `ServicioPosMonitoreado`. Agregar una IP nueva
+—una balanza, un servidor de facturación— es una fila, no un deploy.
+
+### Transporte elegido: MQTT retenido en un tópico global
+
+`/saidsof/catalogo/servicios_pos/`, y se eligió sobre un endpoint HTTP por tres razones:
+
+1. **El patrón ya existe.** Los agentes se suscriben a `/saidsof/software/global/` y
+   `/saidsof/despliegue/global/` desde siempre. Un catálogo que es uno solo para las
+   ~1.800 estaciones encaja ahí sin inventar nada: un publish y lo tienen todas.
+2. **Retenido resuelve las estaciones apagadas sin código extra**, igual que
+   `enviar_actualizacion_agente`. Las farmacias apagan los equipos al cerrar, así que
+   "todas conectadas a la vez" no pasa nunca. Con HTTP habría que escribir polling en el
+   agente, elegir un intervalo y aceptar esa latencia.
+3. **El transporte ya está abierto.** Sumar una suscripción son dos líneas; un endpoint
+   HTTP sumaría un camino de red nuevo, con su auth y su firma, para un dato no secreto.
+
+Contra honesto: un retenido no confirma entrega, así que no se sabe qué estación tiene
+qué versión del catálogo. Para esto alcanza; si algún día importa, el agente ya manda su
+`version_agente` en cada latido y se podría sumar la del catálogo.
+
+**La ACL de EMQX es el punto que rompe esto en silencio** — autoriza por lista explícita
+y deniega sin decir nada. La regla ya está en `_reglas_para`, con un test que lo fija.
+Las estaciones aprovisionadas antes necesitan `reaplicar_acls_mqtt --aplicar`.
+
+### Dos orígenes en una sola tabla
+
+Los cuatro originales (dos Postgres, Odoo, recargas) **no tienen destino fijo**: cada
+estación los descubre del `.exe.Config` de su propio POS, porque el servidor y la base
+cambian de farmacia en farmacia. Su fila del catálogo existe para nombrarlos, fijar la
+criticidad, poder darlos de baja y dejar la nota de mesa de ayuda — `origen=config_pos`.
+Los que se agregan desde el admin llevan destino y se chequean tal cual —
+`origen=catalogo`.
+
+El agente mezcla las dos listas: si una clave viene de las dos, gana el `.exe.Config`
+porque ahí está el host real de esa farmacia. La criticidad, en cambio, gana siempre la
+del servidor: es lo que permite decidir desde el admin que algo dejó de ser crítico sin
+redistribuir el ejecutable.
+
+### Migración de datos, sin pérdida
+
+`0032_sembrar_catalogo_servicios_pos` crea las cuatro claves exactas que ya guardaban los
+`EstadoServicioPos` existentes (`pg_local`, `pg_central`, `odoo`, `recargas_soap`).
+Explícita y reversible; la reversa borra solo esas cuatro y solo si siguen con
+`origen=config_pos`, para no llevarse puestas las que alguien haya cargado a mano.
+
+**No se convirtió `EstadoServicioPos.servicio` en ForeignKey.** Sigue siendo texto: una
+FK obligaría a migrar el historial y dejaría huérfano cualquier estado cuyo servicio se
+borre del catálogo — justo lo que el campo `activo` existe para evitar. Lo que sí se hizo
+fue quitarle el `choices`, y mover la lista blanca a `registrar_servicios_pos`, que ahora
+valida contra las filas ACTIVAS del catálogo. Sigue sin aceptar claves inventadas.
+
+`odoo` se sembró **desactivado**: está de baja y no había respondido ni una vez en las 9
+estaciones con agente (ver la nota del 18-sep-2026).
+
+### Por qué no hizo falta tocar el motor de alertas
+
+`evaluar_regla_servicio_pos` **nunca leyó `servicio` como choices** — decide por
+`critico`, que es un booleano. Una entrada agregada desde el admin abre exactamente la
+misma alerta que las cuatro originales, sin una línea de código nuevo. Hay tests que lo
+fijan en las dos severidades.
+
+### Pendiente: el agente
+
+El lado servidor está completo y desplegable solo; el catálogo no le hace daño a un
+agente que no lo entiende (se suscribe a un tópico que ignora). Pero **el chequeo de los
+destinos nuevos no ocurre hasta reconstruir el `.exe` y hacer el rollout**: el agente
+0.24 en la flota no conoce el tópico ni el tipo `ping` para servicios del POS. Mismo
+patrón que el hallazgo 2 de la auditoría — el código commiteado no cambia nada en las
+farmacias hasta que el binario llegue.

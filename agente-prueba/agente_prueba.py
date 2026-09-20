@@ -284,6 +284,10 @@ class AgentePrueba:
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/actualizar_agente/')
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/software/')
         client.subscribe('/saidsof/software/global/')
+        # Catalogo de que servicios del POS chequear. Retenido y global: se recibe apenas
+        # se conecta, aunque el servidor lo haya publicado hace dias con esta estacion
+        # apagada. Ver apps/monitoreo/servicios_pos.py.
+        client.subscribe('/saidsof/catalogo/servicios_pos/')
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/despliegue/')
         client.subscribe('/saidsof/despliegue/global/')
         if self.identidad.get('farmacia'):
@@ -352,6 +356,8 @@ class AgentePrueba:
                 self._manejar_respuesta_enrolamiento(payload)
             elif msg.topic == f'/saidsof/agente/{self.args.codigo}/comando/':
                 self._manejar_comando(payload)
+            elif msg.topic == '/saidsof/catalogo/servicios_pos/':
+                self._aplicar_catalogo_servicios(payload)
             elif msg.topic == f'/saidsof/agente/{self.args.codigo}/actualizar_agente/':
                 # verificar_ventana=False: este tópico es retenido, puede llegar horas
                 # o días después de publicado (ver _on_connect) -- el SHA-256 sigue
@@ -746,6 +752,93 @@ class AgentePrueba:
         )
         return servicios
 
+    # --- Catalogo de servicios, enviado por el servidor ---
+    #
+    # Hasta aca la lista de que chequear salia UNICAMENTE del .exe.Config del POS, asi
+    # que agregar un destino nuevo —una balanza, un servidor de facturacion— exigia tocar
+    # el codigo del agente y redistribuir el .exe a ~1.800 estaciones. Ahora el servidor
+    # manda un catalogo y esto lo mezcla con lo que el agente descubre solo.
+    #
+    # Las dos fuentes conviven a proposito: los Postgres y las URLs del POS cambian de
+    # farmacia en farmacia y solo el .exe.Config local sabe cuales son; los destinos fijos
+    # (una IP igual en todas las farmacias) solo los sabe el servidor.
+
+    def _aplicar_catalogo_servicios(self, payload: dict):
+        """Guarda el catalogo que llego por MQTT. No chequea nada acá: solo lo deja
+        disponible para el proximo ciclo de bucle_servicios_pos.
+
+        Se persiste en `identidad.json` para que sobreviva a un reinicio del servicio: el
+        mensaje es retenido, asi que igual llegaria al reconectar, pero entre el arranque
+        y esa reconexion habria un ciclo chequeando la lista vieja.
+        """
+        catalogo = {
+            'servicios': payload.get('servicios') or [],
+            'criticidad': payload.get('criticidad') or {},
+            'desactivados': payload.get('desactivados') or [],
+        }
+        self.identidad['catalogo_servicios_pos'] = catalogo
+        self._guardar_identidad()
+        logging.info(
+            'Catalogo de servicios recibido: %d con destino fijo, %d desactivado(s).',
+            len(catalogo['servicios']), len(catalogo['desactivados']),
+        )
+
+    def _catalogo_servicios(self) -> dict:
+        return self.identidad.get('catalogo_servicios_pos') or {
+            'servicios': [], 'criticidad': {}, 'desactivados': [],
+        }
+
+    def _servicios_a_chequear(self) -> list:
+        """Lo descubierto del .exe.Config MAS lo que mando el servidor, ya filtrado.
+
+        Orden de precedencia, y cada regla existe por un motivo:
+
+        - Un servicio DESACTIVADO en el catalogo no se chequea, aunque el .exe.Config lo
+          siga nombrando. Es el caso de Odoo: esta de baja, sigue en la config de las 9
+          estaciones, y cada una abria una alerta por algo que nadie iba a arreglar.
+        - La criticidad la manda SIEMPRE el servidor si la conoce. Es lo que permite
+          decidir desde el admin que un servicio dejo de ser critico sin redistribuir el
+          ejecutable.
+        - Si una clave viene de las dos fuentes, gana la del .exe.Config: ahi esta el host
+          real de ESTA farmacia, que el servidor no puede saber.
+        """
+        catalogo = self._catalogo_servicios()
+        desactivados = set(catalogo['desactivados'])
+        criticidad = catalogo['criticidad']
+
+        servicios = []
+        vistos = set()
+        for servicio in self._leer_servicios_pos():
+            if servicio['servicio'] in desactivados:
+                continue
+            if servicio['servicio'] in criticidad:
+                servicio = dict(servicio, critico=bool(criticidad[servicio['servicio']]))
+            servicios.append(servicio)
+            vistos.add(servicio['servicio'])
+
+        for servicio in catalogo['servicios']:
+            clave = servicio.get('servicio')
+            if not clave or clave in desactivados or clave in vistos:
+                continue
+            servicios.append(dict(servicio))
+        return servicios
+
+    def _chequear_ping(self, servicio: dict):
+        """(disponible, latencia_ms, mensaje). Nunca lanza.
+
+        Reusa `_pingear`, la misma primitiva del sondeo de activos sin agente: no hace
+        falta una segunda forma de preguntar "estas vivo?" en el mismo ejecutable.
+
+        Es el chequeo mas debil de los tres —un equipo puede responder ICMP con el
+        servicio caido— y por eso el catalogo permite elegir HTTP o PostgreSQL cuando hay
+        algo mejor que preguntar. Para una balanza o una impresora de red, ping es lo
+        unico que hay.
+        """
+        responde, ms = self._pingear(servicio.get('host', ''))
+        if responde:
+            return True, ms, 'responde al ping'
+        return False, None, 'sin respuesta al ping'
+
     def _chequear_postgres(self, servicio: dict):
         """(disponible, latencia_ms, mensaje). Nunca lanza.
 
@@ -805,6 +898,8 @@ class AgentePrueba:
         """
         if servicio['tipo'] == 'postgres':
             return '%s:%s/%s' % (servicio['host'], servicio['puerto'] or '5432', servicio['bdd'])
+        if servicio['tipo'] == 'ping':
+            return servicio.get('host', '')[:200]
         return servicio['url'][:200]
 
     def bucle_servicios_pos(self):
@@ -820,13 +915,16 @@ class AgentePrueba:
                 logging.exception('No se pudieron chequear los servicios del POS')
 
     def _reportar_servicios_pos(self):
-        servicios = self._leer_servicios_pos()
+        # Lo que descubre del .exe.Config MAS lo que mando el servidor por el catalogo.
+        servicios = self._servicios_a_chequear()
         if not servicios:
             return
         resultados = []
         for servicio in servicios:
             if servicio['tipo'] == 'postgres':
                 disponible, ms, mensaje = self._chequear_postgres(servicio)
+            elif servicio['tipo'] == 'ping':
+                disponible, ms, mensaje = self._chequear_ping(servicio)
             else:
                 disponible, ms, mensaje = self._chequear_http(servicio)
             resultados.append({

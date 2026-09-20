@@ -2770,7 +2770,7 @@ class ServiciosPosTests(TestCase):
         from apps.monitoreo.models import EstadoServicioPos
 
         self.assertEqual(
-            self._registrar(self._resultado('pg_local'), self._resultado('odoo')), 2,
+            self._registrar(self._resultado('pg_local'), self._resultado('recargas_soap')), 2,
         )
         self.assertEqual(EstadoServicioPos.objects.count(), 2)
 
@@ -2845,14 +2845,14 @@ class ServiciosPosTests(TestCase):
         from apps.monitoreo.models import Alerta, ReglaAlerta
 
         self._regla(ReglaAlerta.Severidad.CRITICAL)
-        self._registrar(self._resultado('odoo', disponible=False, critico=False))
+        self._registrar(self._resultado('recargas_soap', disponible=False, critico=False))
         self.assertFalse(Alerta.objects.exists())
 
     def test_un_servicio_no_critico_dispara_la_regla_de_advertencia(self):
         from apps.monitoreo.models import Alerta, ReglaAlerta
 
         regla = self._regla(ReglaAlerta.Severidad.WARNING)
-        self._caer(self._resultado('odoo', critico=False))
+        self._caer(self._resultado('recargas_soap', critico=False))
         self.assertTrue(Alerta.objects.filter(regla=regla, estado=Alerta.Estado.ABIERTA).exists())
 
     def test_al_volver_el_servicio_la_alerta_se_resuelve_sola(self):
@@ -2878,7 +2878,7 @@ class ServiciosPosTests(TestCase):
 
         self._regla(ReglaAlerta.Severidad.WARNING)
         self._caer(
-            self._resultado('odoo', critico=False),
+            self._resultado('recargas_soap', critico=False),
             self._resultado('pg_central', critico=False),
         )
         self.assertTrue(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).exists())
@@ -2891,7 +2891,7 @@ class ServiciosPosTests(TestCase):
         )
 
         # Vuelven todos: recien ahi se resuelve.
-        self._registrar(self._resultado('odoo', disponible=True, critico=False))
+        self._registrar(self._resultado('recargas_soap', disponible=True, critico=False))
         self.assertFalse(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).exists())
 
     def test_un_no_critico_caido_no_deja_abierta_la_alerta_critica(self):
@@ -2903,7 +2903,7 @@ class ServiciosPosTests(TestCase):
         self._regla(ReglaAlerta.Severidad.WARNING)
         self._caer(
             self._resultado('pg_local'),
-            self._resultado('odoo', critico=False),
+            self._resultado('recargas_soap', critico=False),
         )
         self.assertEqual(Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).count(), 2)
 
@@ -5612,3 +5612,344 @@ class TareasDiariasConCrontabTests(TestCase):
             self.assertEqual(horas, {3}, 'las purgas van a las 3 AM, fuera de horario comercial')
             minutos.extend(int(m) for m in schedule.minute)
         self.assertEqual(len(minutos), len(set(minutos)), 'dos purgas arrancan en el mismo minuto')
+
+class CatalogoServiciosPosMigracionTests(TestCase):
+    """Los cuatro servicios que vivían en el TextChoices tienen que existir como filas
+    del catálogo, con la misma clave, para que el historial ya acumulado siga colgando
+    de algo administrable.
+
+    La migración corre sola antes de los tests, así que acá se verifica su RESULTADO.
+    """
+
+    def test_los_cuatro_originales_estan_en_el_catalogo(self):
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        claves = set(ServicioPosMonitoreado.objects.values_list('clave', flat=True))
+        self.assertEqual(claves, {'pg_local', 'pg_central', 'odoo', 'recargas_soap'})
+
+    def test_las_claves_coinciden_exacto_con_el_choices_viejo(self):
+        """Si difirieran aunque sea en un caracter, los EstadoServicioPos existentes
+        quedarían apuntando a un catálogo que no los reconoce."""
+        from apps.monitoreo.models import ServicioPos, ServicioPosMonitoreado
+
+        del_choices = {v for v, _ in ServicioPos.choices}
+        del_catalogo = set(ServicioPosMonitoreado.objects.values_list('clave', flat=True))
+        self.assertEqual(del_choices, del_catalogo)
+
+    def test_solo_la_base_local_nace_critica(self):
+        """Replica lo que el agente ya venía mandando: sin la base local la caja no
+        vende; sin la central sigue vendiendo y sincroniza después."""
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        criticos = set(
+            ServicioPosMonitoreado.objects.filter(critico=True).values_list('clave', flat=True)
+        )
+        self.assertEqual(criticos, {'pg_local'})
+
+    def test_odoo_nace_desactivado(self):
+        """Está de baja y nunca respondió en ninguna de las 9 estaciones con agente.
+        Sembrarlo activo repetiría la tanda de alertas del 18-sep-2026."""
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        self.assertFalse(ServicioPosMonitoreado.objects.get(clave='odoo').activo)
+
+    def test_los_originales_no_llevan_destino_fijo(self):
+        """Su host lo descubre cada estación de su propio .exe.Config: el servidor no
+        puede saberlo porque cambia de farmacia en farmacia."""
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        for servicio in ServicioPosMonitoreado.objects.all():
+            self.assertEqual(servicio.origen, ServicioPosMonitoreado.Origen.CONFIG_POS, servicio.clave)
+            self.assertEqual(servicio.destino, '', servicio.clave)
+
+    def test_ningun_estado_existente_quedo_huerfano(self):
+        """El punto de toda la migración: los EstadoServicioPos guardados antes siguen
+        siendo válidos después."""
+        from apps.monitoreo.models import EstadoServicioPos, ServicioPosMonitoreado
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX930')
+        farmacia = Farmacia.objects.create(codigo='ML930', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML930-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        EstadoServicioPos.objects.create(
+            estacion=estacion, servicio='pg_local', disponible=True,
+            ultima_verificacion=timezone.now(),
+        )
+        claves = set(ServicioPosMonitoreado.objects.values_list('clave', flat=True))
+        for estado in EstadoServicioPos.objects.all():
+            self.assertIn(estado.servicio, claves)
+
+
+class CatalogoServiciosPosAdministrableTests(TestCase):
+    """Lo que el usuario pidió: agregar una plataforma desde el admin y que el resto del
+    sistema la trate igual que a las cuatro que ya existían, sin un solo cambio de código.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX931')
+        self.farmacia = Farmacia.objects.create(codigo='ML931', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML931-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        usuario = User.objects.create_user(username='u_cat', password='x')
+        # Las dos reglas que ya existen en producción, una por severidad.
+        self.regla_critica = ReglaAlerta.objects.create(
+            nombre='Servicio critico del POS sin responder', metrica=Metrica.SERVICIO_POS_CAIDO,
+            umbral=0, duracion_minutos=0, severidad=ReglaAlerta.Severidad.CRITICAL,
+            creado_por=usuario,
+        )
+        self.regla_warning = ReglaAlerta.objects.create(
+            nombre='Servicio del POS sin responder (no critico)', metrica=Metrica.SERVICIO_POS_CAIDO,
+            umbral=0, duracion_minutos=0, severidad=ReglaAlerta.Severidad.WARNING,
+            creado_por=usuario,
+        )
+        # La plataforma nueva: exactamente el caso del usuario.
+        self.balanza = ServicioPosMonitoreado.objects.create(
+            clave='balanza', nombre='Balanza electrónica',
+            tipo=ServicioPosMonitoreado.Tipo.PING,
+            origen=ServicioPosMonitoreado.Origen.CATALOGO,
+            destino='192.168.102.201', critico=False, activo=True,
+        )
+
+    def _reportar(self, clave, *, disponible, critico=False):
+        from apps.monitoreo.services import registrar_servicios_pos
+
+        return registrar_servicios_pos(estacion=self.estacion, resultados=[{
+            'servicio': clave, 'disponible': disponible, 'latencia_ms': 5 if disponible else None,
+            'mensaje': 'responde al ping' if disponible else 'sin respuesta al ping',
+            'endpoint': '192.168.102.201', 'critico': critico,
+        }])
+
+    def test_una_entrada_nueva_del_admin_se_acepta_sin_tocar_codigo(self):
+        """Antes, `validos` salía de ServicioPos.choices y esto se descartaba con un
+        warning en el log."""
+        from apps.monitoreo.models import EstadoServicioPos
+
+        guardados = self._reportar('balanza', disponible=True)
+
+        self.assertEqual(guardados, 1)
+        estado = EstadoServicioPos.objects.get(estacion=self.estacion, servicio='balanza')
+        self.assertTrue(estado.disponible)
+
+    def test_una_clave_que_no_esta_en_el_catalogo_se_sigue_rechazando(self):
+        """El catálogo reemplaza al choices como lista blanca, no la elimina: un agente
+        no puede inventar servicios."""
+        from apps.monitoreo.models import EstadoServicioPos
+
+        guardados = self._reportar('inventado_por_el_agente', disponible=True)
+
+        self.assertEqual(guardados, 0)
+        self.assertFalse(EstadoServicioPos.objects.filter(servicio='inventado_por_el_agente').exists())
+
+    def test_desactivar_una_entrada_deja_de_aceptar_sus_reportes(self):
+        """Sin esperar a que el agente se entere del catálogo nuevo."""
+        self.balanza.activo = False
+        self.balanza.save(update_fields=['activo'])
+
+        self.assertEqual(self._reportar('balanza', disponible=False), 0)
+
+    def test_desactivar_NO_borra_el_historial_ya_acumulado(self):
+        """Es el motivo de que `activo` exista en vez de borrar la fila."""
+        from apps.monitoreo.models import EstadoServicioPos
+
+        self._reportar('balanza', disponible=True)
+        self.balanza.activo = False
+        self.balanza.save(update_fields=['activo'])
+
+        self.assertTrue(EstadoServicioPos.objects.filter(servicio='balanza').exists())
+
+    def test_la_entrada_nueva_abre_alerta_igual_que_las_viejas(self):
+        """Requisito 5: `evaluar_regla_servicio_pos` la trata igual sin cambios de código.
+
+        Funciona porque esa función nunca miró `servicio` como choices — decide por
+        `critico`, que es un booleano.
+        """
+        # Primero responde (para que no cuente como "nunca respondió", que se excluye a
+        # propósito), después se cae.
+        self._reportar('balanza', disponible=True, critico=False)
+        self._reportar('balanza', disponible=False, critico=False)
+
+        alerta = Alerta.objects.get()
+        self.assertEqual(alerta.regla, self.regla_warning)
+        self.assertEqual(alerta.estado, Alerta.Estado.ABIERTA)
+
+    def test_una_entrada_nueva_marcada_critica_abre_la_alerta_CRITICA(self):
+        self._reportar('balanza', disponible=True, critico=True)
+        self._reportar('balanza', disponible=False, critico=True)
+
+        self.assertEqual(Alerta.objects.get().regla, self.regla_critica)
+
+    def test_si_nunca_respondio_no_abre_alerta(self):
+        """Mismo criterio que ya regía para Odoo: eso es configuración pendiente, no una
+        caída, y tratarlo como incidente crea una alerta que se reabre para siempre."""
+        self._reportar('balanza', disponible=False, critico=False)
+
+        self.assertEqual(Alerta.objects.count(), 0)
+
+
+class CatalogoServiciosPosPublicacionTests(TestCase):
+    """Qué viaja a la flota y qué no."""
+
+    def setUp(self):
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        self.ServicioPosMonitoreado = ServicioPosMonitoreado
+        ServicioPosMonitoreado.objects.create(
+            clave='balanza', nombre='Balanza', tipo=ServicioPosMonitoreado.Tipo.PING,
+            origen=ServicioPosMonitoreado.Origen.CATALOGO, destino='192.168.102.201',
+        )
+
+    def test_los_descubiertos_del_config_no_viajan_como_destino(self):
+        """Mandarle a la estación `pg_local` sin host sería decirle algo que ya sabe, y
+        peor: sin el dato que varía entre farmacias."""
+        from apps.monitoreo.servicios_pos import catalogo_para_agentes
+
+        claves = {s['servicio'] for s in catalogo_para_agentes()}
+        self.assertEqual(claves, {'balanza'})
+
+    def test_la_criticidad_SI_viaja_para_todos_incluidos_los_descubiertos(self):
+        """Es lo que permite cambiar la criticidad desde el admin sin redistribuir el
+        ejecutable a 1.800 estaciones."""
+        from apps.monitoreo.servicios_pos import criticidad_para_agentes
+
+        criticidad = criticidad_para_agentes()
+        self.assertIn('pg_local', criticidad)
+        self.assertTrue(criticidad['pg_local'])
+        self.assertIn('balanza', criticidad)
+
+    def test_los_desactivados_viajan_explicitos(self):
+        """No se deducen por ausencia: el agente descubre servicios por su cuenta, así
+        que "no está en la lista" no significa "dejá de mirarlo". Sin esto, desactivar
+        Odoo en el admin no apagaría el chequeo en ninguna estación."""
+        from apps.monitoreo.servicios_pos import payload_catalogo
+
+        self.assertIn('odoo', payload_catalogo()['desactivados'])
+
+    def test_se_publica_retenido_en_el_topico_global(self):
+        from apps.monitoreo.servicios_pos import TOPICO_CATALOGO, publicar_catalogo_servicios_pos
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            cuantos, enviado = publicar_catalogo_servicios_pos()
+
+        self.assertTrue(enviado)
+        self.assertEqual(cuantos, 1)
+        topico, cuerpo = publicar.call_args.args[0], publicar.call_args.args[1]
+        self.assertEqual(topico, TOPICO_CATALOGO)
+        self.assertTrue(publicar.call_args.kwargs['retain'])
+        self.assertIn('192.168.102.201', cuerpo)
+
+    def test_si_el_broker_no_responde_lo_dice_en_vez_de_fingir_exito(self):
+        """Un guardado que parece exitoso y no llegó a la flota es el modo de falla que
+        este proyecto ya sufrió tres veces este mes."""
+        from apps.monitoreo.servicios_pos import publicar_catalogo_servicios_pos
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=False):
+            _, enviado = publicar_catalogo_servicios_pos()
+        self.assertFalse(enviado)
+
+    def test_el_topico_esta_en_la_ACL_de_EMQX(self):
+        """EMQX autoriza por lista explícita y DENIEGA EN SILENCIO: sin esta regla el
+        agente se suscribe, no recibe nada, y ningún log lo dice."""
+        from apps.monitoreo.servicios_pos import TOPICO_CATALOGO
+        from apps.mqtt_worker.emqx_admin import _reglas_para
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX932')
+        farmacia = Farmacia.objects.create(codigo='ML932', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML932-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        topicos = {r['topic'] for r in _reglas_para(estacion) if r['action'] in ('subscribe', 'all')}
+        self.assertIn(TOPICO_CATALOGO, topicos)
+
+    def test_el_comando_simula_por_defecto(self):
+        import io
+
+        salida = io.StringIO()
+        with patch('apps.catalogo.services._publicar_mqtt') as publicar:
+            call_command('publicar_catalogo_servicios_pos', stdout=salida)
+        publicar.assert_not_called()
+        self.assertIn('SIMULACRO', salida.getvalue())
+
+    def test_el_comando_con_aplicar_si_publica(self):
+        import io
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            call_command('publicar_catalogo_servicios_pos', '--aplicar', stdout=io.StringIO())
+        publicar.assert_called_once()
+
+
+class CatalogoServiciosPosValidacionTests(TestCase):
+    """El destino se publica a toda la flota y se muestra en el panel: no puede llevar
+    credenciales. Es la misma regla que ya tenía EstadoServicioPos.endpoint."""
+
+    def _servicio(self, **kwargs):
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        datos = {
+            'clave': 'x', 'nombre': 'X', 'tipo': ServicioPosMonitoreado.Tipo.PING,
+            'origen': ServicioPosMonitoreado.Origen.CATALOGO, 'destino': '10.0.0.1',
+        }
+        datos.update(kwargs)
+        return ServicioPosMonitoreado(**datos)
+
+    def test_un_destino_con_credenciales_se_rechaza(self):
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaises(ValidationError) as ctx:
+            self._servicio(destino='usuario:clave@10.0.0.1').full_clean()
+        self.assertIn('destino', ctx.exception.message_dict)
+
+    def test_destino_fijo_sin_destino_se_rechaza(self):
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaises(ValidationError):
+            self._servicio(destino='').full_clean()
+
+    def test_http_exige_url_completa(self):
+        from django.core.exceptions import ValidationError
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        with self.assertRaises(ValidationError):
+            self._servicio(tipo=ServicioPosMonitoreado.Tipo.HTTP, destino='10.0.0.1').full_clean()
+
+    def test_postgres_exige_base_de_datos(self):
+        from django.core.exceptions import ValidationError
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        with self.assertRaises(ValidationError):
+            self._servicio(tipo=ServicioPosMonitoreado.Tipo.POSTGRES, base_datos='').full_clean()
+
+    def test_un_descubierto_del_config_no_necesita_destino(self):
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        self._servicio(
+            origen=ServicioPosMonitoreado.Origen.CONFIG_POS, destino='',
+        ).full_clean()  # no debe lanzar
+
+    def test_el_ping_viaja_al_agente_con_la_forma_que_el_agente_espera(self):
+        """Las claves tienen que ser las mismas que usa `_leer_servicios_pos`, o el
+        agente no sabría leerlas."""
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        fila = self._servicio(clave='balanza').como_lo_lee_el_agente()
+        self.assertEqual(fila, {
+            'servicio': 'balanza', 'tipo': 'ping', 'critico': False, 'host': '10.0.0.1',
+        })
+
+    def test_el_postgres_viaja_con_host_puerto_y_base(self):
+        from apps.monitoreo.models import ServicioPosMonitoreado
+
+        fila = self._servicio(
+            clave='factura', tipo=ServicioPosMonitoreado.Tipo.POSTGRES,
+            destino='10.0.0.9', puerto=5433, base_datos='facturacion',
+        ).como_lo_lee_el_agente()
+        self.assertEqual(fila['host'], '10.0.0.9')
+        self.assertEqual(fila['puerto'], '5433')
+        self.assertEqual(fila['bdd'], 'facturacion')

@@ -936,6 +936,195 @@ class EstadoRedActivo(models.Model):
         return round((timezone.now() - self.ultima_respuesta).total_seconds() / 3600, 1)
 
 
+# Nombres del catalogo, cacheados unos segundos. Sin esto, `get_servicio_display()`
+# haria una consulta por fila: en la ficha de una estacion son cuatro, pero en el
+# changelist del admin serian tantas como filas se muestren.
+#
+# TTL y no invalidacion explicita a proposito: son varios procesos (3 workers de gunicorn
+# + Celery + el worker MQTT), asi que invalidar en uno no alcanza, y montar invalidacion
+# entre procesos por un NOMBRE PARA MOSTRAR es desproporcionado. Sesenta segundos de
+# desfase en una etiqueta no le hacen daño a nadie.
+_CACHE_NOMBRES_SERVICIO = {'expira': None, 'valor': {}}
+_TTL_NOMBRES_SERVICIO_SEGUNDOS = 60
+
+
+def nombres_de_servicios_pos() -> dict:
+    """`{clave: nombre}` de TODO el catalogo, activos e inactivos.
+
+    Incluye los inactivos porque el historial de un servicio dado de baja se sigue
+    mirando, y mostrarlo como `odoo` en vez de `Odoo` seria un retroceso frente al
+    TextChoices que esto reemplazo.
+    """
+    ahora = timezone.now()
+    cache = _CACHE_NOMBRES_SERVICIO
+    if cache['expira'] is None or ahora >= cache['expira']:
+        cache['valor'] = dict(ServicioPosMonitoreado.objects.values_list('clave', 'nombre'))
+        cache['expira'] = ahora + timedelta(seconds=_TTL_NOMBRES_SERVICIO_SEGUNDOS)
+    return cache['valor']
+
+
+class ServicioPosMonitoreado(models.Model):
+    """Catálogo GLOBAL de qué se chequea desde cada estación de POS.
+
+    Existe para que agregar una plataforma nueva —una IP de balanza, un servidor de
+    facturación, lo que aparezca— sea una fila en el admin y no un deploy. Hasta acá la
+    lista vivía en `ServicioPos`, un TextChoices fijo en código, y sumar un destino
+    exigía tocar el modelo, el agente, y redistribuir el ejecutable a la flota.
+
+    **Global y no por farmacia**, a propósito: el chequeo lo hace cada estación contra su
+    PROPIA red local, así que "la balanza" o "el servidor de facturación" son el mismo
+    concepto en las 700 farmacias aunque la IP concreta cambie. Un catálogo por sitio
+    multiplicaría por 700 el mantenimiento para expresar lo mismo.
+
+    ## Dos orígenes, y la diferencia importa
+
+    Los cuatro servicios originales (los dos Postgres, Odoo, recargas) **no tienen host
+    fijo**: cada estación los descubre leyendo el `.exe.Config` real de su POS, porque el
+    servidor y la base cambian de farmacia en farmacia. Para esos, la fila de este
+    catálogo no dice a dónde apuntar —eso lo sabe el agente— sino cómo se llaman, si son
+    críticos, si se siguen mirando, y qué tiene que saber quien atiende la alerta.
+
+    Los que se agreguen desde el admin sí llevan destino: una IP o una URL que el agente
+    chequea tal cual, igual en todas las estaciones.
+
+    Mezclar los dos en una sola tabla y distinguirlos con `origen` es deliberado: son la
+    misma pregunta operativa ("¿qué mira el agente y qué tan grave es que falle?") y
+    quien administra el monitoreo quiere verlos juntos, no en dos pantallas.
+
+    ## Por qué no es una FK desde EstadoServicioPos
+
+    `EstadoServicioPos.servicio` sigue siendo la clave en texto y NO se convirtió en
+    ForeignKey. Convertirla obligaría a migrar las filas históricas y dejaría huérfano
+    cualquier estado cuyo servicio se borre del catálogo — justo el historial que el
+    campo `activo` existe para preservar. Con `clave` como contrato de texto, desactivar
+    una entrada deja de pedirle el chequeo al agente y no toca una sola fila de historial.
+    """
+
+    class Tipo(models.TextChoices):
+        """Solo lo que el agente YA sabe hacer.
+
+        No se agrega TCP crudo aunque sería la opción obvia para un puerto arbitrario: el
+        agente no tiene esa primitiva (`_pingear`, `_chequear_http` y `_chequear_postgres`
+        son las tres que existen) y sumarla es un cambio de agente, no de catálogo.
+        """
+
+        PING = 'ping', 'Ping (ICMP)'
+        HTTP = 'http', 'HTTP/HTTPS'
+        POSTGRES = 'postgres', 'PostgreSQL'
+
+    class Origen(models.TextChoices):
+        CONFIG_POS = 'config_pos', 'Descubierto del .exe.Config del POS'
+        CATALOGO = 'catalogo', 'Definido acá, con destino fijo'
+
+    clave = models.SlugField(
+        max_length=20, unique=True,
+        help_text='Identificador corto y estable (ej. "balanza", "facturacion"). Es lo '
+                  'que viaja en cada reporte del agente y lo que guarda '
+                  'EstadoServicioPos.servicio, así que cambiarlo después desconecta el '
+                  'historial ya acumulado. Máximo 20 caracteres.',
+    )
+    nombre = models.CharField(
+        max_length=100,
+        help_text='Cómo se lee en el panel y en la alerta, ej. "Balanza electrónica".',
+    )
+    tipo = models.CharField(max_length=10, choices=Tipo.choices, default=Tipo.PING)
+    origen = models.CharField(
+        max_length=12, choices=Origen.choices, default=Origen.CATALOGO,
+        help_text='"Descubierto" = el agente lo encuentra en el .exe.Config de su POS y '
+                  'el destino de abajo se ignora. "Definido acá" = se chequea el destino '
+                  'que diga esta fila, igual en todas las estaciones.',
+    )
+    destino = models.CharField(
+        max_length=200, blank=True,
+        help_text='IP, hostname o URL completa según el tipo: "192.168.102.201" para '
+                  'ping, "http://192.168.102.201:8080/estado" para HTTP, '
+                  '"192.168.102.201" para PostgreSQL (la base va en el campo de abajo). '
+                  'NUNCA credenciales: esto se publica a la flota y se guarda en '
+                  'EstadoServicioPos.endpoint, que es visible en el panel.',
+    )
+    puerto = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='Solo para PostgreSQL (5432 si se deja vacío). Ping no usa puerto y en '
+                  'HTTP va dentro de la URL.',
+    )
+    base_datos = models.CharField(
+        max_length=100, blank=True,
+        help_text='Solo para PostgreSQL: contra qué base correr el SELECT 1.',
+    )
+    critico = models.BooleanField(
+        default=False,
+        help_text='Si sin este servicio la caja NO puede vender. Decide si la alerta que '
+                  'se abre es crítica o una advertencia: es el mismo campo que ya usa '
+                  'evaluar_regla_servicio_pos. Por defecto NO crítico — que una caja no '
+                  'pueda pesar es molesto, que no pueda cobrar es otra cosa.',
+    )
+    activo = models.BooleanField(
+        default=True,
+        help_text='Desactivar deja de pedirle el chequeo al agente y NO borra nada: los '
+                  'EstadoServicioPos y MuestraServicioPos ya acumulados quedan intactos '
+                  'para poder mirar el historial.',
+    )
+    nota = models.TextField(
+        blank=True,
+        help_text='Para quien atiende la alerta: por qué importa este servicio, a quién '
+                  'avisar, qué mirar primero. Nunca credenciales.',
+    )
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'servicio_pos_monitoreado'
+        ordering = ['-critico', 'nombre']
+        verbose_name = 'Servicio del POS monitoreado'
+        verbose_name_plural = 'Catálogo de servicios del POS monitoreados'
+
+    def __str__(self):
+        return self.nombre
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errores = {}
+        if self.origen == self.Origen.CATALOGO and not self.destino:
+            errores['destino'] = (
+                'Una entrada con destino fijo necesita a dónde apuntar. Si el agente lo '
+                'descubre solo del .exe.Config, elegí ese origen.'
+            )
+        if self.tipo == self.Tipo.HTTP and self.destino and not self.destino.startswith(('http://', 'https://')):
+            errores['destino'] = 'Para HTTP el destino tiene que ser la URL completa, con http:// o https://.'
+        if self.tipo == self.Tipo.POSTGRES and self.origen == self.Origen.CATALOGO and not self.base_datos:
+            errores['base_datos'] = 'PostgreSQL necesita saber contra qué base correr el SELECT 1.'
+        # Una credencial acá se publica a toda la flota y queda en el panel. El "@" de un
+        # user:pass@host es la forma en que esto se colaría sin que nadie lo note.
+        if '@' in self.destino:
+            errores['destino'] = (
+                'El destino no puede llevar "@": si estás poniendo usuario y contraseña, '
+                'no van acá. Esto se publica a todas las estaciones y se ve en el panel.'
+            )
+        if errores:
+            raise ValidationError(errores)
+
+    def como_lo_lee_el_agente(self) -> dict:
+        """La fila tal como viaja en el catálogo que se publica a la flota.
+
+        Las claves son las mismas que ya usa `_leer_servicios_pos` del agente para los
+        servicios descubiertos, para que el agente pueda mezclar las dos listas sin
+        traducir nada.
+        """
+        fila = {
+            'servicio': self.clave,
+            'tipo': self.tipo,
+            'critico': self.critico,
+        }
+        if self.tipo == self.Tipo.HTTP:
+            fila['url'] = self.destino
+        else:
+            fila['host'] = self.destino
+            if self.tipo == self.Tipo.POSTGRES:
+                fila['puerto'] = str(self.puerto or 5432)
+                fila['bdd'] = self.base_datos
+        return fila
+
+
 class ServicioPos(models.TextChoices):
     """Los servicios externos de los que depende el punto de venta para vender.
 
@@ -982,7 +1171,16 @@ class EstadoServicioPos(models.Model):
     estacion = models.ForeignKey(
         Estacion, on_delete=models.CASCADE, related_name='servicios_pos',
     )
-    servicio = models.CharField(max_length=20, choices=ServicioPos.choices)
+    # Sin `choices`: que claves son validas dejo de estar fijo en codigo y vive en
+    # ServicioPosMonitoreado, editable desde el admin. `registrar_servicios_pos` valida
+    # contra el catalogo ACTIVO antes de escribir, asi que un agente sigue sin poder
+    # inventar servicios; lo que se gana es agregar uno sin un deploy.
+    servicio = models.CharField(
+        max_length=20,
+        help_text='Clave del ServicioPosMonitoreado que se chequeo. Texto y no ForeignKey '
+                  'a proposito: dar de baja una entrada del catalogo no puede dejar '
+                  'huerfano el historial ya acumulado.',
+    )
 
     disponible = models.BooleanField(default=False)
     latencia_ms = models.PositiveIntegerField(null=True, blank=True)
@@ -1019,6 +1217,18 @@ class EstadoServicioPos(models.Model):
         ]
         verbose_name = 'Estado de un servicio del POS'
         verbose_name_plural = 'Estados de los servicios del POS'
+
+    def get_servicio_display(self) -> str:
+        """Django genera este metodo solo cuando el campo tiene `choices`, y este dejo de
+        tenerlos al pasar la lista al catalogo. Se reimplementa a mano porque lo llaman el
+        panel, el diagnostico por IA y este mismo `__str__`: sin el, la ficha de la
+        estacion mostraba el nombre VACIO y el diagnostico reventaba con AttributeError.
+
+        Resolver contra el catalogo es ademas mejor que lo anterior: una entrada agregada
+        desde el admin muestra su nombre de verdad, no su clave. El fallback a la clave
+        cubre el historial de un servicio borrado del catalogo.
+        """
+        return nombres_de_servicios_pos().get(self.servicio, self.servicio)
 
     def __str__(self):
         return '%s / %s: %s' % (
@@ -1072,7 +1282,16 @@ class MuestraServicioPos(models.Model):
     estacion = models.ForeignKey(
         Estacion, on_delete=models.CASCADE, related_name='muestras_servicios_pos',
     )
-    servicio = models.CharField(max_length=20, choices=ServicioPos.choices)
+    # Sin `choices`: que claves son validas dejo de estar fijo en codigo y vive en
+    # ServicioPosMonitoreado, editable desde el admin. `registrar_servicios_pos` valida
+    # contra el catalogo ACTIVO antes de escribir, asi que un agente sigue sin poder
+    # inventar servicios; lo que se gana es agregar uno sin un deploy.
+    servicio = models.CharField(
+        max_length=20,
+        help_text='Clave del ServicioPosMonitoreado que se chequeo. Texto y no ForeignKey '
+                  'a proposito: dar de baja una entrada del catalogo no puede dejar '
+                  'huerfano el historial ya acumulado.',
+    )
     latencia_ms = models.PositiveIntegerField()
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
 

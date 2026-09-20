@@ -103,6 +103,12 @@ def _reglas_para(estacion):
         {'topic': '/saidsof/enrolamiento/solicitar/', 'permission': 'allow', 'action': 'publish'},
         {'topic': '/saidsof/despliegue/global/', 'permission': 'allow', 'action': 'subscribe'},
         {'topic': '/saidsof/software/global/', 'permission': 'allow', 'action': 'subscribe'},
+        # Catalogo de que servicios del POS chequear (ver apps.monitoreo.servicios_pos).
+        # Global como los dos de arriba porque el catalogo es uno solo para toda la flota.
+        # Sin esta regla el agente se suscribe, EMQX deniega EN SILENCIO y el catalogo no
+        # llega nunca -- no hay error en ningun log, simplemente las estaciones siguen
+        # chequeando la lista vieja para siempre.
+        {'topic': '/saidsof/catalogo/servicios_pos/', 'permission': 'allow', 'action': 'subscribe'},
     ]
     farmacia = estacion.farmacia
     reglas.append({

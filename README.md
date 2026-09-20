@@ -1081,6 +1081,58 @@ Se ve en la ficha de la estación (`/monitoreo/<pk>/`, que ya se refresca sola p
 como indicador de flota en `/monitoreo/`. Se distribuye con la auto-actualización de
 agente que ya existe: no hay instalador ni tarea programada nueva.
 
+
+### Agregar una plataforma nueva al monitoreo (sin deploy)
+
+Hasta el 19-sep-2026 la lista de qué se chequea era un `TextChoices` fijo en código:
+sumar un destino exigía tocar el modelo, tocar el agente y redistribuir el `.exe` a la
+flota. Ahora es una fila en el admin.
+
+**Cómo se hace**, en `Monitoreo → Catálogo de servicios del POS monitoreados → Agregar`:
+
+| Campo | Qué poner |
+|---|---|
+| Clave | Identificador corto y estable, ej. `balanza`. Es lo que guarda el historial, así que cambiarlo después lo desconecta. Máximo 20 caracteres |
+| Nombre | Cómo se lee en el panel y en la alerta, ej. "Balanza electrónica" |
+| Origen | **Definido acá** para una IP/URL fija. **Descubierto** solo para los que el agente encuentra en el `.exe.Config` del POS |
+| Tipo | `Ping` para "¿está vivo?", `HTTP` para un servicio web, `PostgreSQL` para una base |
+| Destino | `192.168.102.201` para ping y Postgres; la URL completa (`http://…`) para HTTP |
+| Puerto / Base de datos | Solo PostgreSQL |
+| Crítico | Marcalo **solo si sin eso la caja no puede vender**. Decide si la alerta es crítica o advertencia |
+| Nota | Para quien atiende la alerta: por qué importa, a quién avisar |
+
+Guardar **publica el catálogo a toda la flota automáticamente** y el admin lo confirma
+con un aviso. No hay un paso aparte. Una estación apagada lo recibe al encender, porque
+el mensaje queda retenido en el broker.
+
+**Nunca pongas usuario ni contraseña en el destino.** Se publica a todas las estaciones
+y se muestra en el panel; el modelo rechaza cualquier destino con `@` justamente para
+que no se cuele un `usuario:clave@host`.
+
+**Para dar de baja un chequeo**, desmarcá *activo* en vez de borrar la fila: el historial
+de `EstadoServicioPos` y `MuestraServicioPos` queda intacto y se puede seguir mirando.
+Así está Odoo desde el 19-sep-2026 — el servicio está de baja, sigue apareciendo en el
+`.exe.Config` de las 9 estaciones con agente, y desactivarlo es lo que corta la alerta
+que ninguna de ellas iba a poder resolver.
+
+**Tipos de chequeo: solo ping, HTTP y PostgreSQL.** No hay TCP crudo porque el agente no
+tiene esa primitiva; agregarla es un cambio de agente con su rebuild y su rollout, no una
+fila del catálogo.
+
+**Cómo llega el catálogo al agente**: MQTT retenido en el tópico global
+`/saidsof/catalogo/servicios_pos/` (ver `apps/monitoreo/servicios_pos.py` para por qué se
+eligió eso y no un endpoint HTTP). Si hiciera falta reenviarlo a mano —tras un `migrate`,
+o si el broker estaba caído al guardar:
+
+```sh
+python manage.py publicar_catalogo_servicios_pos             # muestra qué se enviaría
+python manage.py publicar_catalogo_servicios_pos --aplicar
+```
+
+**Ojo**: el tópico tiene que estar en la ACL de EMQX o el agente se suscribe y no recibe
+nada, sin error en ningún log. Ya está en `apps/mqtt_worker/emqx_admin.py`; en una
+estación aprovisionada antes de este cambio hay que correr `reaplicar_acls_mqtt --aplicar`.
+
 ## Scripts RMM y parcheo
 
 `apps/scripts` — biblioteca de scripts PowerShell que corren sobre el mismo canal de

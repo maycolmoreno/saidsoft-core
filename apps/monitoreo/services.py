@@ -819,9 +819,23 @@ def registrar_servicios_pos(*, estacion, resultados: list) -> int:
     La muestra de latencia se guarda solo si respondió. Una latencia nula no es un punto
     en la curva, y graficarla como cero diría que contestó instantáneamente.
     """
-    from .models import EstadoServicioPos, MuestraServicioPos, ServicioPos
+    from .models import EstadoServicioPos, MuestraServicioPos, ServicioPosMonitoreado
 
-    validos = {v for v, _ in ServicioPos.choices}
+    # Las claves validas salen del catalogo ACTIVO, no de un choices fijo en codigo: ese
+    # es el cambio que permite agregar una plataforma desde el admin sin un deploy.
+    #
+    # Se sigue validando —no se acepta cualquier cosa que mande un agente— por dos
+    # motivos: una clave inventada crearia filas de EstadoServicioPos que nadie
+    # administra, y `servicio` tiene 20 caracteres, asi que un valor largo reventaria el
+    # insert en PostgreSQL (en SQLite entraria igual, que es como este tipo de bug se
+    # escapa hasta produccion).
+    #
+    # Se filtra por `activo`: desactivar una entrada tiene que dejar de aceptar reportes
+    # de inmediato, sin esperar a que el agente se entere del catalogo nuevo. El historial
+    # ya guardado no se toca.
+    validos = set(
+        ServicioPosMonitoreado.objects.filter(activo=True).values_list('clave', flat=True)
+    )
     ahora = timezone.now()
     guardados = 0
 
