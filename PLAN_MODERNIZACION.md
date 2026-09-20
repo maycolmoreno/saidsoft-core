@@ -2319,3 +2319,91 @@ ancho, porque centrar la tarjeta y dejar el `<h1>` suelto se lee torcido.
 Cubierto por `apps.panel.tests.DialogosCentradosTests`, que verifica el **CSS fuente**:
 no hay manera de que una prueba de vista note un diálogo descentrado. Es la segunda vez
 que este bug aparece y la primera vez costó una captura del usuario para encontrarlo.
+
+## Auditoría de rendimiento y código muerto (19-sep-2026)
+
+Barrido completo del repo en dos frentes: por qué el panel se percibe lento, y qué
+archivos/interfaces quedaron sin uso. Se midió contra el servidor real (`10.111.6.20`),
+no sobre supuestos.
+
+### Lo que se midió, y por qué el resultado sorprende
+
+**No se encontró ningún cuello de botella del lado del servidor.** Los números:
+
+| Qué | Medido | Esperado si fuera el problema |
+|---|---|---|
+| Base de datos completa | **31 MB** | GB |
+| Tabla más grande (`muestra_red_farmacia`) | 4.992 kB / 26.254 filas | millones de filas |
+| Render de una pantalla del panel | **16–36 ms**, 12–20 queries | segundos, cientos de queries |
+| End-to-end por nginx+TLS (`/login/`) | **5–13 ms**, 3 kB | > 1 s |
+| Estáticos totales | **88 kB** (1 CSS + 1 JS) | MB, librerías duplicadas |
+| Carga del host | **0,32** sobre 8 núcleos | > 8 |
+
+No hay N+1 en las vistas revisadas (`dashboard`, `estaciones_lista`, `monitoreo_lista`,
+`tendencia_flota`, `enlaces_farmacias_lista`, `activos_lista`), los índices compuestos
+`(estacion_id, timestamp DESC)` existen en las cuatro tablas de series, y los estáticos
+se sirven con hash de contenido, `immutable` y gzip.
+
+**Conclusión: si el panel se siente lento, la causa no está en el servidor.** Queda por
+medir desde el navegador del usuario (el NUC sale por WiFi, `wlo1`).
+
+### Sospecha descartada: las purgas por antigüedad
+
+`purgar_metricas_task`, `purgar_eventos_monitoreo_task` y `purgar_muestras_red_task`
+**sí** están en `CELERY_BEAT_SCHEDULE`. Y aunque no corrieran, con 31 MB de base no
+explicarían ninguna lentitud.
+
+### Hallazgo real que salió buscando eso: las tareas DIARIAS nunca corren
+
+`celery_beat` guarda su estado en `celerybeat-schedule` **dentro del contenedor, sin
+volumen** (`docker inspect deploy-celery_beat-1` no reporta ningún mount). Cada
+despliegue recrea el contenedor y reinicia la cuenta regresiva de toda tarea definida
+por intervalo. Una tarea con `schedule: 60.0*60*24` solo dispara 24 h después de que
+beat arranca: **si se despliega más seguido que una vez por día, no dispara nunca.**
+
+Evidencia: `EventoMonitoreo` tiene filas de **33 días** con una retención de 30.
+`MuestraMetrica` y `MuestraRedFarmacia` están en 29 días, pero eso solo prueba cuándo
+empezó a recolectarse cada una.
+
+Afecta a ocho tareas: las tres purgas, `generar-ejecuciones-programadas`,
+`generar-mantenimientos-programados`, `notificar-mantenimientos-vencimiento`,
+`generar-escaneos-programados` y `vincular-activos-por-serie`. `resumen-diario-telegram`
+se salva porque usa `crontab(hour=8)`, que es absoluto y no depende del arranque.
+
+### Otros hallazgos, sin aplicar
+
+- **`CONN_MAX_AGE = 0`**: cada request abre y cierra su conexión a Postgres.
+- **`CACHES` es `LocMemCache`** con Redis disponible y sin usar: caché por proceso, tres
+  workers de gunicorn con tres cachés distintos y nada compartido.
+- **`telegram_bot` no tiene las variables MQTT** en `deploy/docker-compose.yml`, así que
+  `/sincronizar` crea la `EjecucionScript` y el publish falla con `ConnectionRefused`
+  (ejecución #46 → ML002-B → `error`). Misma familia que el `celery_worker` sin
+  `MESHCENTRAL_API_*`.
+- **Sin herramientas de profiling**: no hay `django-debug-toolbar` ni `django-silk`.
+
+### Código muerto: no se encontró nada
+
+Barrido con evidencia, no intuición. **Cero candidatos de confianza ALTA, así que no se
+movió ningún archivo y no se creó `_sin_uso/`.**
+
+| Categoría | Revisados | Sin uso |
+|---|---|---|
+| Plantillas | 86 | 0 |
+| Estáticos | 1 CSS + 1 JS | 0 |
+| Vistas | 169 | 0 |
+| URLs con nombre | 156 | 0 |
+| Módulos Python no convencionales | 66 | 0 |
+| Artefactos de build versionados | — | 0 |
+
+Cuatro módulos aparecieron como huérfanos en el primer barrido y los cuatro son falsos
+positivos: `panel_extras.py` y `form_extras.py` se cargan con `{% load %}`,
+`servicio_windows.py` lo compila `agente_prueba.spec:59`, y `sonda_enlaces.py` está
+documentada en `README.md:893`. Vale anotarlo para la próxima: un barrido que solo mire
+`import` marca como sobrantes cosas que se cargan por convención — mismo error que el
+inventario de "huérfanos" que casi borra el agente vigente (ver "Cómo se trabaja acá" en
+CLAUDE.md).
+
+Diez management commands no aparecen fuera de sus tests, pero son de ejecución manual y
+quedan como confianza MEDIA sin mover: `armar_paquete_agente` y `seed_reglas_alerta` se
+corrieron **hoy mismo**, lo que confirma que la ausencia de referencias en el código no
+significa desuso.
