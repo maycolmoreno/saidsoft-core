@@ -2,13 +2,16 @@ from datetime import timedelta
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
+from django.views.decorators.http import require_GET
 from django.db.models import Max
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion
-from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
+from apps.cuentas.services import (
+    scope_por_unidad_negocio_activa, unidades_negocio_en_foco, verificar_acceso,
+)
 from apps.monitoreo.forms import VentanaMantenimientoForm
 from apps.monitoreo.models import MuestraMetrica, VentanaMantenimiento
 from ..umbrales import (
@@ -178,4 +181,143 @@ def ventana_mantenimiento_crear(request):
     return render(request, 'panel/ventana_mantenimiento_form.html', {
         'form': form, 'titulo': 'Nueva ventana de mantenimiento',
         'volver_url': reverse('panel:ventanas_mantenimiento_lista'),
+    })
+
+
+# Cuántas filas de detalle entran en cada bloque del Centro de Monitoreo. Mismo criterio
+# que `_MAX_FILAS` del bot: con 700 farmacias, una lista completa no se lee y además
+# convierte cada refresco en una consulta cara que varios agentes disparan todo el día.
+# El total sí va completo, porque es el número que decide si hay que actuar.
+_MAX_FILAS_CENTRO = 15
+
+# Cada cuánto se refresca la pantalla sola.
+#
+# Sesenta segundos y no diez, que es lo que usan las pantallas de detalle: éstas se abren
+# un rato para seguir un despliegue puntual, el Centro lo dejan abierto TODO EL DÍA varios
+# agentes a la vez, así que cada refresco se multiplica por gente y por horas.
+#
+# Sesenta es además la cadencia real más rápida del backend: `marcar-estaciones-offline`
+# corre cada 60 s y el sondeo de enlaces cada 2 min (ver CELERY_BEAT_SCHEDULE). Pollear
+# cada 10 s mostraría nueve veces el mismo dato. Lo único que llega en tiempo real son las
+# alertas, que se abren al ingerir el mensaje MQTT — y un minuto de demora para que
+# aparezcan en un tablero de triage es aceptable, porque la notificación por Telegram y
+# correo ya salió en el momento.
+SEGUNDOS_REFRESCO_CENTRO = 60
+
+
+@login_required
+@permission_required('monitoreo.view_alerta', raise_exception=True)
+@require_GET
+def centro_monitoreo(request):
+    """El marco de la pantalla. El contenido lo trae el parcial y se refresca solo.
+
+    Se separa en dos vistas —marco y parcial— por el mismo motivo que `monitoreo_detalle`:
+    el polling de HTMX reemplaza el interior sin volver a pedir la navegación, el CSS ni
+    la cabecera. A un refresco por minuto por agente, mandar la página entera cada vez es
+    trabajo puro.
+
+    `monitoreo.view_alerta` es la puerta y no un permiso nuevo: es el mismo que ya decide
+    si se ve el menú de Alertas en `base.html`, y esta pantalla es exactamente esa
+    información puesta junto al resto. Inventar `ver_centro_monitoreo` habría creado un
+    esquema paralelo para responder la pregunta que ese permiso ya responde.
+    """
+    return render(request, 'panel/centro_monitoreo.html', {
+        'segundos_refresco': SEGUNDOS_REFRESCO_CENTRO,
+    })
+
+
+@login_required
+@permission_required('monitoreo.view_alerta', raise_exception=True)
+@require_GET
+def centro_monitoreo_partial(request):
+    """Todo lo que la pantalla muestra, en una sola respuesta.
+
+    De SOLO LECTURA, igual que el bot de Telegram y por el mismo motivo: es una pantalla
+    de triage que se deja abierta, y una acción destructiva a un clic de distancia en algo
+    que se mira de reojo es una mala idea. Cada fila enlaza al detalle donde esa acción ya
+    existe.
+    """
+    from apps.monitoreo.enlaces import _agrupar_por_proveedor
+    from apps.monitoreo.models import (
+        Alerta, EstadoRedActivo, EstadoServicioPos, EventoEnlaceFarmacia,
+        ReglaAlerta, VentanaMantenimiento,
+    )
+    from apps.monitoreo.services import (
+        TOLERANCIA_FRESCURA_MINUTOS, fuente_desactualizada, resumen_operacion,
+    )
+
+    unidades = unidades_negocio_en_foco(request)
+    resumen = resumen_operacion(unidades)
+
+    alertas = (
+        Alerta.objects.filter(
+            estado=Alerta.Estado.ABIERTA, estacion__farmacia__unidad_negocio__in=unidades,
+        )
+        .select_related('regla', 'estacion', 'estacion__farmacia')
+        .order_by('-abierta_en')
+    )
+    criticas = list(alertas.filter(regla__severidad=ReglaAlerta.Severidad.CRITICAL)[:_MAX_FILAS_CENTRO])
+    advertencias = list(alertas.filter(regla__severidad=ReglaAlerta.Severidad.WARNING)[:_MAX_FILAS_CENTRO])
+
+    # El evento abierto y no EstadoEnlaceFarmacia: el evento sabe CUÁNDO empezó la caída
+    # (el primer fallo, no el sondeo que la confirmó) y trae el circuito denormalizado,
+    # que es lo que `_agrupar_por_proveedor` necesita. Se reusa esa función en vez de
+    # reimplementar el corte del circuito, que ya tiene su propia sutileza documentada.
+    eventos = list(
+        EventoEnlaceFarmacia.objects
+        .filter(fin__isnull=True, farmacia__unidad_negocio__in=unidades)
+        .exclude(farmacia__estado_enlace__respondio_alguna_vez=False)
+        .select_related('farmacia')
+        .order_by('inicio')[:_MAX_FILAS_CENTRO]
+    )
+    enlaces_por_proveedor = _agrupar_por_proveedor(eventos)
+
+    servicios = (
+        EstadoServicioPos.objects
+        .filter(
+            disponible=False, ultima_respuesta__isnull=False,
+            estacion__farmacia__unidad_negocio__in=unidades,
+        )
+        .select_related('estacion', 'estacion__farmacia')
+        .order_by('-critico', 'estacion__codigo')
+    )
+    pos_criticos = list(servicios.filter(critico=True)[:_MAX_FILAS_CENTRO])
+    pos_no_criticos = list(servicios.filter(critico=False)[:_MAX_FILAS_CENTRO])
+
+    # "Silencio" y no "caído": un equipo que dejó de ser sondeado no está reportando nada,
+    # y eso el tablero lo tiene que distinguir de uno que responde "no".
+    corte = timezone.now() - timedelta(hours=EstadoRedActivo.HORAS_VERIFICACION_VIGENTE)
+    sin_sondeo = list(
+        EstadoRedActivo.objects
+        .filter(ultima_verificacion__lt=corte, activo__unidad_negocio__in=unidades)
+        .select_related('activo', 'activo__farmacia')
+        .order_by('ultima_verificacion')[:_MAX_FILAS_CENTRO]
+    )
+
+    # Aparte y NO mezcladas con lo crítico: algo caído dentro de una ventana es esperado.
+    # Verlo en la misma lista que un incidente real es lo que entrena a la mesa de ayuda a
+    # ignorar el tablero.
+    ahora = timezone.now()
+    ventanas = list(
+        VentanaMantenimiento.objects
+        .filter(activo=True, desde__lte=ahora, hasta__gte=ahora, unidad_negocio__in=unidades)
+        .select_related('unidad_negocio')
+        .order_by('hasta')
+    )
+
+    return render(request, 'panel/centro_monitoreo_partial.html', {
+        'r': resumen,
+        'criticas': criticas,
+        'advertencias': advertencias,
+        'enlaces_por_proveedor': enlaces_por_proveedor,
+        'pos_criticos': pos_criticos,
+        'pos_no_criticos': pos_no_criticos,
+        'sin_sondeo': sin_sondeo,
+        'ventanas': ventanas,
+        'max_filas': _MAX_FILAS_CENTRO,
+        # Por bloque, para poder marcar viejo solo lo que lo está en vez de teñir toda la
+        # pantalla cuando una sola tarea de fondo se cae.
+        'stale_enlaces': fuente_desactualizada(resumen['ultimo_sondeo_red'], 'red_farmacias'),
+        'tolerancia': TOLERANCIA_FRESCURA_MINUTOS,
+        'ahora': ahora,
     })

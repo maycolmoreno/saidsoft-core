@@ -5437,3 +5437,269 @@ class ActividadPlanificadaPorUnidadTests(TestCase):
         codigos = set(form.fields['unidad_negocio'].queryset.values_list('codigo', flat=True))
         self.assertIn('SG', codigos)
         self.assertNotIn('MIA', codigos)
+
+class CentroMonitoreoTests(TestCase):
+    """La pantalla de triage que la mesa de ayuda deja abierta todo el turno.
+
+    Solo lectura y consolidada: no reemplaza las pantallas de detalle, las enlaza.
+    """
+
+    def setUp(self):
+        from apps.cuentas.models import PerfilUsuario
+        from apps.monitoreo.models import Alerta, EstadoServicioPos, Metrica, ReglaAlerta
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+
+        grupo = Grupo.objects.create(codigo='TRX940')
+        self.farmacia_sg = Farmacia.objects.create(
+            codigo='ML940', grupo=grupo, unidad_negocio=self.sg, ip_router='10.1.1.254',
+            circuito_proveedor='telconet-ml940',
+        )
+        self.farmacia_mia = Farmacia.objects.create(
+            codigo='MM940', grupo=grupo, unidad_negocio=self.mia, ip_router='10.2.2.254',
+        )
+        self.estacion_sg = Estacion.objects.create(
+            codigo='ML940-A', farmacia=self.farmacia_sg,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.estacion_mia = Estacion.objects.create(
+            codigo='MM940-A', farmacia=self.farmacia_mia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+        autor = User.objects.create_user(username='autor_centro', password='x')
+        self.regla_critica = ReglaAlerta.objects.create(
+            nombre='Disco lleno', metrica=Metrica.DISCO_USADO_PCT, umbral=95,
+            duracion_minutos=0, severidad=ReglaAlerta.Severidad.CRITICAL, creado_por=autor,
+        )
+        self.regla_warning = ReglaAlerta.objects.create(
+            nombre='CPU saturada', metrica=Metrica.CPU_CARGA_PCT, umbral=90,
+            duracion_minutos=0, severidad=ReglaAlerta.Severidad.WARNING, creado_por=autor,
+        )
+        Alerta.objects.create(regla=self.regla_critica, estacion=self.estacion_sg, valor_disparador=99)
+        Alerta.objects.create(regla=self.regla_warning, estacion=self.estacion_sg, valor_disparador=95)
+        Alerta.objects.create(regla=self.regla_critica, estacion=self.estacion_mia, valor_disparador=99)
+
+        # Mesa de ayuda: el rol real, con el permiso que el seed le da.
+        self.mesa = User.objects.create_user(username='mesa', password='x')
+        self.mesa.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
+        PerfilUsuario.objects.create(usuario=self.mesa, acceso_todas_unidades=True)
+
+        # Alguien autenticado pero SIN el rol.
+        self.curioso = User.objects.create_user(username='curioso', password='x')
+        PerfilUsuario.objects.create(usuario=self.curioso, acceso_todas_unidades=True)
+
+    def _datos(self, usuario=None):
+        self.client.force_login(usuario or self.mesa)
+        return self.client.get(reverse('panel:centro_monitoreo_partial'))
+
+    # --- permisos ---
+
+    def test_la_mesa_de_ayuda_entra(self):
+        self.client.force_login(self.mesa)
+        self.assertEqual(self.client.get(reverse('panel:centro_monitoreo')).status_code, 200)
+
+    def test_un_autenticado_sin_el_rol_NO_entra(self):
+        """El resto del panel no está abierto a cualquier usuario logueado y esta
+        pantalla tampoco: muestra el mapa completo de qué está caído y dónde."""
+        self.client.force_login(self.curioso)
+        self.assertEqual(self.client.get(reverse('panel:centro_monitoreo')).status_code, 403)
+
+    def test_sin_loguearse_redirige_al_login(self):
+        resp = self.client.get(reverse('panel:centro_monitoreo'))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp.url)
+
+    def test_el_parcial_tambien_esta_protegido(self):
+        """Si solo se protegiera el marco, el dato se pediría directo por la URL del
+        parcial y la restricción sería decorativa."""
+        self.client.force_login(self.curioso)
+        self.assertEqual(self.client.get(reverse('panel:centro_monitoreo_partial')).status_code, 403)
+
+    def test_el_seed_le_da_a_mesa_de_ayuda_el_permiso_que_la_pantalla_exige(self):
+        """Si no, el rol existiría y su pantalla le quedaría cerrada — que es justo lo
+        que había pasado con 'Operador RMM'."""
+        from django.contrib.auth.models import Group
+
+        call_command('seed_permisos')
+        codenames = set(
+            Group.objects.get(name='Mesa de Ayuda').permissions.values_list('codename', flat=True)
+        )
+        self.assertIn('view_alerta', codenames)
+
+    # --- filtro por unidad de negocio ---
+
+    def test_un_usuario_acotado_a_SG_no_ve_las_alertas_de_MIA(self):
+        from apps.cuentas.models import PerfilUsuario
+
+        solo_sg = User.objects.create_user(username='solo_sg_centro', password='x')
+        solo_sg.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
+        perfil = PerfilUsuario.objects.create(usuario=solo_sg, acceso_todas_unidades=False)
+        perfil.unidades_negocio.add(self.sg)
+
+        resp = self._datos(solo_sg)
+
+        self.assertContains(resp, 'ML940-A')
+        self.assertNotContains(resp, 'MM940-A')
+        self.assertEqual(resp.context['r']['alertas_criticas'], 1)
+
+    def test_con_acceso_total_se_ven_las_dos_unidades(self):
+        resp = self._datos()
+        self.assertEqual(resp.context['r']['alertas_criticas'], 2)
+
+    # --- ventanas de mantenimiento ---
+
+    def test_una_ventana_activa_saca_la_alerta_de_criticas_y_se_muestra_aparte(self):
+        """Lo importante no es que la ventana se vea, sino que lo cubierto por ella NO
+        aparezca como incidente: mezclarlos entrena a la mesa de ayuda a ignorar la
+        pantalla.
+
+        La alerta no se abre siquiera —`abrir_o_mantener_alerta` la silencia— así que lo
+        que se verifica es el estado resultante con la ventana puesta.
+        """
+        from apps.monitoreo.models import Alerta, VentanaMantenimiento
+        from apps.monitoreo.services import abrir_o_mantener_alerta
+
+        Alerta.objects.all().delete()
+        ventana = VentanaMantenimiento.objects.create(
+            motivo='Cambio de switch', unidad_negocio=self.sg,
+            destino_tipo='estaciones', desde=timezone.now() - timedelta(minutes=5),
+            hasta=timezone.now() + timedelta(hours=1), activo=True,
+            creado_por=self.regla_critica.creado_por,
+        )
+        ventana.estaciones.add(self.estacion_sg)
+
+        creada = abrir_o_mantener_alerta(self.regla_critica, self.estacion_sg, 99)
+
+        self.assertIsNone(creada, 'la ventana tiene que silenciar la alerta')
+        resp = self._datos()
+        self.assertEqual(resp.context['r']['alertas_criticas'], 0)
+        self.assertEqual(len(resp.context['criticas']), 0)
+        self.assertIn(ventana, resp.context['ventanas'])
+        self.assertContains(resp, 'Cambio de switch')
+
+    def test_una_ventana_de_otra_unidad_no_aparece(self):
+        from apps.cuentas.models import PerfilUsuario
+        from apps.monitoreo.models import VentanaMantenimiento
+
+        VentanaMantenimiento.objects.create(
+            motivo='Mantenimiento de MIA', unidad_negocio=self.mia, destino_tipo='cadena',
+            desde=timezone.now() - timedelta(minutes=5), hasta=timezone.now() + timedelta(hours=1),
+            activo=True, creado_por=self.regla_critica.creado_por,
+        )
+        solo_sg = User.objects.create_user(username='solo_sg_v', password='x')
+        solo_sg.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
+        perfil = PerfilUsuario.objects.create(usuario=solo_sg, acceso_todas_unidades=False)
+        perfil.unidades_negocio.add(self.sg)
+
+        self.assertEqual(len(self._datos(solo_sg).context['ventanas']), 0)
+
+    # --- contenido y acotado ---
+
+    def test_los_enlaces_caidos_se_agrupan_por_proveedor(self):
+        """Reusa `_agrupar_por_proveedor`, la misma del correo: es como se abre el
+        ticket, un reclamo por proveedor y no uno por farmacia."""
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        EstadoEnlaceFarmacia.objects.create(
+            farmacia=self.farmacia_sg, alcanzable=False, respondio_alguna_vez=True,
+            ultima_verificacion=timezone.now(),
+        )
+        EventoEnlaceFarmacia.objects.create(
+            farmacia=self.farmacia_sg, inicio=timezone.now() - timedelta(minutes=30),
+            circuito_proveedor='telconet-ml940',
+        )
+
+        resp = self._datos()
+
+        self.assertIn('telconet', resp.context['enlaces_por_proveedor'])
+        self.assertEqual(resp.context['r']['enlaces_caidos'], 1)
+
+    def test_un_enlace_que_nunca_respondio_no_cuenta_como_caido(self):
+        """No es una caída sino configuración pendiente; contarlo infla el tablero con
+        algo que nadie va a resolver hoy. Mismo criterio que el resto del sistema."""
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        EstadoEnlaceFarmacia.objects.create(
+            farmacia=self.farmacia_sg, alcanzable=False, respondio_alguna_vez=False,
+            ultima_verificacion=timezone.now(),
+        )
+        self.assertEqual(self._datos().context['r']['enlaces_caidos'], 0)
+
+    def test_los_servicios_del_pos_se_separan_por_criticidad(self):
+        from apps.monitoreo.models import EstadoServicioPos
+
+        ahora = timezone.now()
+        EstadoServicioPos.objects.create(
+            estacion=self.estacion_sg, servicio='pg_local', disponible=False, critico=True,
+            ultima_verificacion=ahora, ultima_respuesta=ahora - timedelta(hours=1),
+        )
+        EstadoServicioPos.objects.create(
+            estacion=self.estacion_sg, servicio='recargas_soap', disponible=False, critico=False,
+            ultima_verificacion=ahora, ultima_respuesta=ahora - timedelta(hours=1),
+        )
+
+        resp = self._datos()
+
+        self.assertEqual(resp.context['r']['pos_criticos'], 1)
+        self.assertEqual(resp.context['r']['pos_no_criticos'], 1)
+
+    def test_es_de_solo_lectura(self):
+        """Coherente con el bot de Telegram: una pantalla que se mira de reojo no puede
+        tener una acción destructiva a un clic."""
+        self.client.force_login(self.mesa)
+        for url in (reverse('panel:centro_monitoreo'), reverse('panel:centro_monitoreo_partial')):
+            self.assertIn(self.client.post(url).status_code, (403, 405))
+
+    def test_enlaza_al_detalle_en_vez_de_reemplazarlo(self):
+        resp = self._datos()
+        self.assertContains(resp, reverse('panel:monitoreo_detalle', args=[self.estacion_sg.pk]))
+        self.assertContains(resp, reverse('panel:enlaces_farmacias_lista'))
+
+    def test_marca_el_dato_viejo_en_vez_de_mostrar_todo_verde(self):
+        """Un tablero en verde con datos congelados es peor que no tener tablero."""
+        resp = self._datos()
+        self.assertTrue(resp.context['stale_enlaces'], 'sin muestras de red, el bloque es viejo')
+        self.assertContains(resp, 'dato posiblemente viejo')
+
+    def test_el_polling_no_es_mas_rapido_que_el_backend(self):
+        """Pollear cada 10 s un dato que se recalcula cada 60 mostraría seis veces lo
+        mismo, multiplicado por cada agente que deja la pantalla abierta."""
+        from apps.panel.views.monitoreo import SEGUNDOS_REFRESCO_CENTRO
+
+        self.assertGreaterEqual(SEGUNDOS_REFRESCO_CENTRO, 60)
+        self.client.force_login(self.mesa)
+        self.assertContains(
+            self.client.get(reverse('panel:centro_monitoreo')),
+            f'every {SEGUNDOS_REFRESCO_CENTRO}s',
+        )
+
+
+class ResumenOperacionCompartidoTests(TestCase):
+    """El bot de Telegram y el Centro tienen que contestar lo mismo, porque ahora sale del
+    mismo servicio. Hasta el 19-sep-2026 cada uno tenía su copia de las agregaciones."""
+
+    def test_el_bot_usa_el_servicio_y_no_su_propia_copia(self):
+        from apps.monitoreo.telegram_bot import _comando_estado
+
+        with patch('apps.monitoreo.services.resumen_operacion') as resumen:
+            resumen.return_value = {
+                'estaciones_total': 10, 'estaciones_en_linea': 7, 'estaciones_fuera': 3,
+                'alertas_criticas': 2, 'alertas_advertencias': 5, 'enlaces_caidos': 4,
+                'pos_criticos': 1, 'pos_no_criticos': 3, 'activos_sin_sondeo': 0,
+                'ultimo_sondeo_red': None, 'calculado_en': timezone.now(),
+            }
+            salida = _comando_estado()
+
+        resumen.assert_called_once()
+        self.assertIn('7/10', salida)
+        self.assertIn('2 crítica(s), 5 advertencia(s)', salida)
+        self.assertIn('Enlaces caídos: 4', salida)
+        self.assertIn('Servicios del POS sin responder: 4', salida)  # 1 critico + 3 no

@@ -1,0 +1,196 @@
+{% load panel_extras %}
+{% comment %}
+Cada refresco reemplaza este bloque entero. La animación suave de entrada es lo único
+que marca "esto se actualizó": sin sonido y sin parpadeo, porque la pantalla se deja
+abierta todo el día y algo que llama la atención cada minuto se vuelve ruido.
+{% endcomment %}
+<div class="centro-fade">
+
+{# --- Resumen: todo count(), sin traer objetos --- #}
+<div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
+    <div class="card p-4">
+        <div class="text-xs text-[var(--text-faint)] mb-1">Estaciones en línea</div>
+        <div class="text-2xl font-semibold">{{ r.estaciones_en_linea }}<span class="text-base text-[var(--text-faint)]">/{{ r.estaciones_total }}</span></div>
+        {% if r.estaciones_fuera %}<div class="text-xs text-[var(--warning)] mt-1">{{ r.estaciones_fuera }} sin reportar</div>{% endif %}
+    </div>
+    <div class="card p-4">
+        <div class="text-xs text-[var(--text-faint)] mb-1">Alertas críticas</div>
+        <div class="text-2xl font-semibold {% if r.alertas_criticas %}text-[var(--critical)]{% endif %}">{{ r.alertas_criticas }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-xs text-[var(--text-faint)] mb-1">Advertencias</div>
+        <div class="text-2xl font-semibold {% if r.alertas_advertencias %}text-[var(--warning)]{% endif %}">{{ r.alertas_advertencias }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-xs text-[var(--text-faint)] mb-1">Enlaces caídos</div>
+        <div class="text-2xl font-semibold {% if r.enlaces_caidos %}text-[var(--critical)]{% endif %}">{{ r.enlaces_caidos }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-xs text-[var(--text-faint)] mb-1">Servicios del POS</div>
+        <div class="text-2xl font-semibold {% if r.pos_criticos %}text-[var(--critical)]{% elif r.pos_no_criticos %}text-[var(--warning)]{% endif %}">{{ r.pos_criticos }}<span class="text-base text-[var(--text-faint)]"> + {{ r.pos_no_criticos }}</span></div>
+        <div class="text-xs text-[var(--text-faint)] mt-1">críticos + no críticos</div>
+    </div>
+</div>
+
+{% comment %}
+Ventanas de mantenimiento: PRIMERO y aparte. Va arriba de todo a propósito: si hay una
+ventana activa, lo que sigue puede estar caído por diseño. Verlo después de la lista de
+incidentes es verlo tarde.
+{% endcomment %}
+{% if ventanas %}
+<div class="card p-4 mb-5" style="border-left:3px solid var(--info);">
+    <div class="text-sm font-medium mb-2">🔧 Mantenimiento programado en curso</div>
+    <p class="text-xs text-[var(--text-faint)] mb-3">
+        Lo que esté caído en estos destinos es <strong>esperado</strong>. Las alertas de
+        estas estaciones están silenciadas y no aparecen abajo.
+    </p>
+    {% for v in ventanas %}
+    <div class="flex items-center justify-between text-sm py-1">
+        <span>{{ v.motivo|default:"Sin motivo cargado" }} <span class="text-[var(--text-faint)]">· {{ v.unidad_negocio.codigo|default:"todas" }}</span></span>
+        <span class="pill info">hasta {{ v.hasta|date:"H:i" }}</span>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{# --- Alertas críticas --- #}
+<div class="card p-4 mb-4">
+    <div class="flex items-center justify-between mb-3">
+        <div class="text-sm font-medium">Alertas críticas</div>
+        <a href="{% url 'panel:alertas_lista' %}" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">ver todas →</a>
+    </div>
+    {% for a in criticas %}
+    <div class="flex items-center justify-between gap-3 text-sm py-1.5" style="border-top:1px solid var(--border-soft);">
+        <div class="min-w-0">
+            <a href="{% url 'panel:monitoreo_detalle' a.estacion.pk %}" class="font-medium hover:underline">{{ a.estacion.codigo }}</a>
+            <span class="text-[var(--text-faint)]">· {{ a.estacion.farmacia.codigo }}</span>
+            <div class="text-xs text-[var(--text-dim)] truncate">{{ a.regla.nombre }}</div>
+        </div>
+        <span class="pill critical shrink-0">hace {{ a.abierta_en|timesince }}</span>
+    </div>
+    {% empty %}
+    <div class="text-sm text-[var(--text-faint)]">Ninguna. </div>
+    {% endfor %}
+    {% if r.alertas_criticas > max_filas %}
+    <div class="text-xs text-[var(--text-faint)] mt-2">Se muestran {{ max_filas }} de {{ r.alertas_criticas }}. Ver el listado completo.</div>
+    {% endif %}
+</div>
+
+{# --- Advertencias --- #}
+<div class="card p-4 mb-4">
+    <div class="text-sm font-medium mb-3">Advertencias</div>
+    {% for a in advertencias %}
+    <div class="flex items-center justify-between gap-3 text-sm py-1.5" style="border-top:1px solid var(--border-soft);">
+        <div class="min-w-0">
+            <a href="{% url 'panel:monitoreo_detalle' a.estacion.pk %}" class="font-medium hover:underline">{{ a.estacion.codigo }}</a>
+            <div class="text-xs text-[var(--text-dim)] truncate">{{ a.regla.nombre }}</div>
+        </div>
+        <span class="pill warning shrink-0">hace {{ a.abierta_en|timesince }}</span>
+    </div>
+    {% empty %}
+    <div class="text-sm text-[var(--text-faint)]">Ninguna.</div>
+    {% endfor %}
+</div>
+
+{% comment %}
+Enlaces caídos, agrupados por proveedor: es como se abre el ticket, un reclamo por
+proveedor y no uno por farmacia. Reusa `_agrupar_por_proveedor`, la misma función del
+correo de enlaces.
+{% endcomment %}
+<div class="card p-4 mb-4">
+    <div class="flex items-center justify-between mb-3">
+        <div class="text-sm font-medium">
+            Enlaces caídos por proveedor
+            {% if stale_enlaces %}
+            <span class="pill warning ml-2" title="El último sondeo de red es más viejo de lo que su tarea periódica permite: este bloque puede estar mostrando datos congelados.">dato posiblemente viejo</span>
+            {% endif %}
+        </div>
+        <a href="{% url 'panel:enlaces_farmacias_lista' %}" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">ver todos →</a>
+    </div>
+    {% for proveedor, eventos in enlaces_por_proveedor.items %}
+    <div class="mb-2">
+        <div class="text-xs font-medium text-[var(--text-dim)] mb-1">{{ proveedor }} ({{ eventos|length }})</div>
+        {% for e in eventos %}
+        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
+            <div class="min-w-0">
+                <span class="font-medium">{{ e.farmacia.codigo }}</span>
+                <span class="mono text-xs text-[var(--text-faint)]">{{ e.farmacia.ip_router }}</span>
+            </div>
+            <span class="pill critical shrink-0">hace {{ e.inicio|timesince }}</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% empty %}
+    <div class="text-sm text-[var(--text-faint)]">Ningún enlace caído.</div>
+    {% endfor %}
+    <div class="text-xs text-[var(--text-faint)] mt-2">
+        Último sondeo de red: {% if r.ultimo_sondeo_red %}hace {{ r.ultimo_sondeo_red|timesince }}{% else %}sin datos{% endif %}
+    </div>
+</div>
+
+{# --- Servicios del POS --- #}
+<div class="card p-4 mb-4">
+    <div class="text-sm font-medium mb-3">Servicios que consume el POS</div>
+    {% if pos_criticos %}
+    <div class="text-xs font-medium text-[var(--critical)] mb-1">Críticos — la caja no puede vender</div>
+    {% for s in pos_criticos %}
+    <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
+        <div class="min-w-0">
+            <a href="{% url 'panel:monitoreo_detalle' s.estacion.pk %}" class="font-medium hover:underline">{{ s.estacion.codigo }}</a>
+            <span class="text-[var(--text-faint)]">· {{ s.get_servicio_display }}</span>
+            <div class="mono text-xs text-[var(--text-faint)] truncate">{{ s.endpoint }}</div>
+        </div>
+        <span class="pill critical shrink-0">sin responder</span>
+    </div>
+    {% endfor %}
+    {% endif %}
+    {% for s in pos_no_criticos %}
+    {% if forloop.first %}<div class="text-xs font-medium text-[var(--text-dim)] mt-3 mb-1">No críticos — la caja sigue vendiendo</div>{% endif %}
+    <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
+        <div class="min-w-0">
+            <a href="{% url 'panel:monitoreo_detalle' s.estacion.pk %}" class="font-medium hover:underline">{{ s.estacion.codigo }}</a>
+            <span class="text-[var(--text-faint)]">· {{ s.get_servicio_display }}</span>
+        </div>
+        <span class="pill warning shrink-0">sin responder</span>
+    </div>
+    {% endfor %}
+    {% if not pos_criticos and not pos_no_criticos %}
+    <div class="text-sm text-[var(--text-faint)]">Todos responden.</div>
+    {% endif %}
+</div>
+
+{% comment %}
+Silencio: equipos que dejaron de ser sondeados. Distinto de "caído" — acá el equipo no
+contesta que no, directamente nadie lo está preguntando. Un tablero que solo mira caídas
+no ve este caso.
+{% endcomment %}
+<div class="card p-4">
+    <div class="text-sm font-medium mb-3">
+        Equipos sin sondeo reciente
+        <span class="text-xs font-normal text-[var(--text-faint)]">— silencio, no caída</span>
+    </div>
+    {% for e in sin_sondeo %}
+    <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
+        <div class="min-w-0">
+            <span class="font-medium">{{ e.activo.codigo }}</span>
+            <span class="mono text-xs text-[var(--text-faint)]">{{ e.ip_sondeada }}</span>
+        </div>
+        <span class="pill neutral shrink-0">hace {{ e.ultima_verificacion|timesince }}</span>
+    </div>
+    {% empty %}
+    <div class="text-sm text-[var(--text-faint)]">Todos se sondearon hace poco.</div>
+    {% endfor %}
+</div>
+
+<div class="text-xs text-[var(--text-faint)] mt-4 text-right">
+    Calculado {{ r.calculado_en|date:"H:i:s" }}
+</div>
+</div>
+
+<style>
+/* Entrada suave en cada refresco: alcanza para notar que la pantalla se actualizó sin
+   pedir atención. Sin sonido, que se descartó, y sin parpadeo, que a un minuto de
+   cadencia durante ocho horas sería insoportable. */
+.centro-fade { animation: centro-entra .35s ease-out; }
+@keyframes centro-entra { from { opacity: .55; } to { opacity: 1; } }
+</style>

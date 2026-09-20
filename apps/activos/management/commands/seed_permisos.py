@@ -52,6 +52,13 @@ ROLES = {
     # acciones quedan atribuidas vía apps.auditoria.registrar_evento.
     'Mesa de Ayuda': [
         ('catalogo', 'estacion', ['view']),
+        # Sin esto el Centro de Monitoreo —la pantalla de triage que este rol deja
+        # abierta todo el turno— le queda cerrada, y con ella el menu de Alertas. Mismo
+        # caso que 'Operador RMM' arriba: el rol implicaba una pantalla que sus permisos
+        # no le daban. `view` y nada mas: primera linea diagnostica, no reconoce ni
+        # cierra alertas.
+        ('monitoreo', 'alerta', ['view']),
+        ('monitoreo', 'estadoenlacefarmacia', ['view']),
     ],
     'Soporte Técnico': [
         ('scripts', 'script', ['view', 'add']),

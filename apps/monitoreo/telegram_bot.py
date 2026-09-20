@@ -138,38 +138,29 @@ def _comando_enlaces() -> str:
 
 
 def _comando_estado() -> str:
-    """El "¿cómo está todo?" de un vistazo."""
-    from datetime import timedelta
+    """El "¿cómo está todo?" de un vistazo.
 
-    from apps.catalogo.models import Estacion
+    Los números salen de `resumen_operacion`, el mismo servicio que alimenta el Centro de
+    Monitoreo del panel. Hasta el 19-sep-2026 esta función tenía su propia copia de las
+    agregaciones: dos lugares calculando "cuántos enlaces están caídos" es una garantía
+    de que algún día digan cosas distintas, y el que se equivoca es siempre el que nadie
+    mira.
 
-    from .models import Alerta, EstadoEnlaceFarmacia, EstadoServicioPos, MuestraRedFarmacia, ReglaAlerta
+    Sin filtrar por unidad de negocio: el chat autorizado es el equipo interno, que ve
+    todo. El scope por cliente lo aplica el panel, que sí tiene un usuario detrás.
+    """
+    from .services import resumen_operacion
 
-    ahora = timezone.now()
-    aprobadas = Estacion.objects.filter(estado_aprobacion='aprobada')
-    total_est = aprobadas.count()
-    en_linea = aprobadas.filter(ultimo_heartbeat__gte=ahora - timedelta(minutes=10)).count()
-
-    abiertas = Alerta.objects.filter(estado=Alerta.Estado.ABIERTA).select_related('regla')
-    criticas = sum(1 for a in abiertas if a.regla.severidad == ReglaAlerta.Severidad.CRITICAL)
-    avisos = abiertas.count() - criticas
-
-    estados = EstadoEnlaceFarmacia.objects.all()
-    caidos = sum(1 for e in estados.filter(alcanzable=False) if not e.nunca_respondio)
-
-    pos_caidos = EstadoServicioPos.objects.filter(disponible=False).count()
-
-    # Si el sondeo dejó de correr, todo lo de arriba queda congelado sin avisar: el dato
-    # más viejo delata que las tareas de fondo se cayeron.
-    ultima = MuestraRedFarmacia.objects.order_by('-timestamp').first()
-    frescura = _texto_duracion(ultima.timestamp) if ultima else 'sin datos'
+    r = resumen_operacion()
+    frescura = _texto_duracion(r['ultimo_sondeo_red']) if r['ultimo_sondeo_red'] else 'sin datos'
+    pos_caidos = r['pos_criticos'] + r['pos_no_criticos']
 
     return '\n'.join([
         '📊 Estado de SAIDSOFT',
         '',
-        f'Estaciones: {en_linea}/{total_est} en línea',
-        f'Alertas abiertas: {criticas} crítica(s), {avisos} advertencia(s)',
-        f'Enlaces caídos: {caidos}',
+        f"Estaciones: {r['estaciones_en_linea']}/{r['estaciones_total']} en línea",
+        f"Alertas abiertas: {r['alertas_criticas']} crítica(s), {r['alertas_advertencias']} advertencia(s)",
+        f"Enlaces caídos: {r['enlaces_caidos']}",
         f'Servicios del POS sin responder: {pos_caidos}',
         '',
         f'Último sondeo SNMP: hace {frescura}',

@@ -922,3 +922,131 @@ def evaluar_regla_servicio_pos(estacion, estado) -> None:
             abrir_o_mantener_alerta(regla, estacion, valor=0)
         else:
             resolver_condicion(regla, estacion)
+
+
+# --- Resumen de operación (Centro de Monitoreo y /estado del bot) ---
+#
+# Vive acá y no en la vista ni en el bot porque los dos responden la misma pregunta
+# —"¿cómo está todo ahora?"— y tenerla escrita dos veces garantiza que un día difieran.
+# `_comando_estado` de telegram_bot.py consumía su propia copia hasta el 19-sep-2026.
+
+# Cuánto puede tardar cada fuente en refrescarse antes de que su dato se considere viejo.
+# Salen de CELERY_BEAT_SCHEDULE, con margen: el sondeo de enlaces corre cada 2 min, así
+# que a los 6 ya se saltearon dos vueltas y eso no es demora, es que algo dejó de correr.
+#
+# Existen porque un tablero en verde con datos viejos es peor que no tener tablero: el
+# agente de mesa de ayuda concluye "no hay nada que atender" de una pantalla que en
+# realidad dejó de mirar.
+TOLERANCIA_FRESCURA_MINUTOS = {
+    'enlaces': 6,           # sondear-enlaces-farmacias, cada 2 min
+    'red_farmacias': 15,    # sondear-red-farmacias-via-agente, cada 5 min
+    'estaciones': 10,       # heartbeat del agente (~30 s) + marcar-estaciones-offline (60 s)
+    'servicios_pos': 30,    # lo reporta el agente en su propio bucle, no una tarea de Beat
+}
+
+
+def _unidades_a_filtrar(unidades):
+    """`None` = sin filtrar (todas las que el llamador ya decidió mostrar)."""
+    return None if unidades is None else list(unidades)
+
+
+def _por_unidad(queryset, unidades, lookup):
+    unidades = _unidades_a_filtrar(unidades)
+    if unidades is None:
+        return queryset
+    return queryset.filter(**{f'{lookup}__in': unidades})
+
+
+def resumen_operacion(unidades=None) -> dict:
+    """Los números de cabecera, con consultas AGREGADAS.
+
+    `unidades` = iterable de UnidadNegocio, o None para todas. El llamador decide el
+    alcance (la vista con el scope del usuario, el bot con todo), esta función no lee
+    la sesión ni el request.
+
+    Todo sale de `count()` y no de traer objetos: esta pantalla la dejan abierta varios
+    agentes todo el día, así que cada refresco es carga real. Las listas de detalle, que
+    sí traen filas, están acotadas aparte por `_MAX_FILAS_CENTRO`.
+    """
+    from datetime import timedelta
+
+    from apps.catalogo.models import Estacion
+
+    from .models import (
+        Alerta, EstadoEnlaceFarmacia, EstadoRedActivo, EstadoServicioPos,
+        MuestraRedFarmacia, ReglaAlerta,
+    )
+
+    ahora = timezone.now()
+
+    estaciones = _por_unidad(
+        Estacion.objects.filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA),
+        unidades, 'farmacia__unidad_negocio',
+    )
+    total_estaciones = estaciones.count()
+    en_linea = estaciones.filter(
+        ultimo_heartbeat__gte=ahora - timedelta(minutes=TOLERANCIA_FRESCURA_MINUTOS['estaciones']),
+    ).count()
+
+    abiertas = _por_unidad(
+        Alerta.objects.filter(estado=Alerta.Estado.ABIERTA),
+        unidades, 'estacion__farmacia__unidad_negocio',
+    )
+    criticas = abiertas.filter(regla__severidad=ReglaAlerta.Severidad.CRITICAL).count()
+    advertencias = abiertas.filter(regla__severidad=ReglaAlerta.Severidad.WARNING).count()
+
+    # Se excluye lo que NUNCA respondió: no es una caída sino configuración pendiente, y
+    # contarlo como incidente infla el tablero con algo que nadie va a resolver hoy.
+    # Mismo criterio que ya aplican notificar_cambios_enlaces y evaluar_regla_servicio_pos.
+    enlaces_caidos = _por_unidad(
+        EstadoEnlaceFarmacia.objects.filter(alcanzable=False, respondio_alguna_vez=True),
+        unidades, 'farmacia__unidad_negocio',
+    ).count()
+
+    servicios = _por_unidad(
+        EstadoServicioPos.objects.filter(disponible=False, ultima_respuesta__isnull=False),
+        unidades, 'estacion__farmacia__unidad_negocio',
+    )
+    pos_criticos = servicios.filter(critico=True).count()
+    pos_no_criticos = servicios.filter(critico=False).count()
+
+    corte_red = ahora - timedelta(hours=EstadoRedActivo.HORAS_VERIFICACION_VIGENTE)
+    sin_sondeo = _por_unidad(
+        EstadoRedActivo.objects.filter(ultima_verificacion__lt=corte_red),
+        unidades, 'activo__unidad_negocio',
+    ).count()
+
+    ultima_muestra = _por_unidad(
+        MuestraRedFarmacia.objects.all(), unidades, 'farmacia__unidad_negocio',
+    ).order_by('-timestamp').values_list('timestamp', flat=True).first()
+
+    return {
+        'estaciones_total': total_estaciones,
+        'estaciones_en_linea': en_linea,
+        'estaciones_fuera': total_estaciones - en_linea,
+        'alertas_criticas': criticas,
+        'alertas_advertencias': advertencias,
+        'enlaces_caidos': enlaces_caidos,
+        'pos_criticos': pos_criticos,
+        'pos_no_criticos': pos_no_criticos,
+        'activos_sin_sondeo': sin_sondeo,
+        'ultimo_sondeo_red': ultima_muestra,
+        'calculado_en': ahora,
+    }
+
+
+def fuente_desactualizada(instante, clave: str) -> bool:
+    """True si `instante` quedó fuera de la tolerancia de esa fuente.
+
+    `None` cuenta como desactualizado a propósito: "nunca se midió" y "se midió hace
+    mucho" llevan a la misma conclusión operativa —no te fíes de este bloque— y
+    distinguirlos en el tablero solo agrega ruido.
+    """
+    from datetime import timedelta
+
+    if instante is None:
+        return True
+    minutos = TOLERANCIA_FRESCURA_MINUTOS.get(clave)
+    if minutos is None:
+        return False
+    return (timezone.now() - instante) > timedelta(minutes=minutos)

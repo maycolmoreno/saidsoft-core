@@ -452,6 +452,53 @@ infraestructura; tenerlos en SAIDSOFT deja diagnosticar problemas de conectivida
 (o priorizar qué farmacias no tienen enlace de respaldo) sin volver a esa planilla.
 Visibles/filtrables desde `/admin/catalogo/farmacia/`.
 
+## Centro de Monitoreo (`/centro/`)
+
+La pantalla que la mesa de ayuda deja abierta durante el turno. Consolida en una sola
+vista lo que hasta ahora obligaba a saltar entre cuatro pantallas: alertas, enlaces,
+servicios del POS y equipos sin sondeo. **No reemplaza las pantallas de detalle — las
+enlaza**: cada fila lleva al lugar donde ese problema se atiende.
+
+**De solo lectura, por diseño.** No se reconoce ni se cierra una alerta desde acá, ni se
+reinicia nada. Es el mismo criterio que el bot de Telegram: una pantalla que se mira de
+reojo todo el día no puede tener una acción destructiva a un clic. Las dos vistas llevan
+`@require_GET`, así que es algo que el código impide y no solo una intención.
+
+**Secciones**, en el orden en que importan:
+
+1. **Mantenimiento en curso, primero de todo.** Si hay una ventana activa, lo que está
+   caído ahí es *esperado* y sus alertas están silenciadas. Va arriba porque verlo
+   después de la lista de incidentes es verlo tarde.
+2. Alertas críticas y advertencias, con los mismos colores del resto del panel.
+3. Enlaces caídos **agrupados por proveedor** — es como se abre el ticket: un reclamo por
+   proveedor, no uno por farmacia. Reusa `_agrupar_por_proveedor`, la misma función del
+   correo de enlaces.
+4. Servicios del POS sin responder, separando críticos ("la caja no vende") de no
+   críticos.
+5. Equipos **sin sondeo reciente** — silencio, no caída. Un tablero que solo mira caídas
+   no ve el caso de que nadie esté preguntando.
+
+**Filtro por unidad de negocio**: el selector global del panel, el mismo del resto de las
+pantallas. No hay un filtro propio.
+
+**Se refresca solo cada 60 segundos.** No más rápido a propósito: `marcar-estaciones-offline`
+corre cada 60 s y el sondeo de enlaces cada 2 min, así que pollear cada 10 s —como hacen
+las pantallas de detalle— mostraría seis veces el mismo dato, multiplicado por cada agente
+que deja esto abierto ocho horas.
+
+**Marca los datos viejos.** Cada bloque conoce la cadencia de su propia fuente
+(`TOLERANCIA_FRESCURA_MINUTOS` en `apps/monitoreo/services.py`) y se marca como
+"dato posiblemente viejo" si se pasó. Un tablero en verde con datos congelados es peor
+que no tener tablero: el agente concluye que no hay nada que atender.
+
+**Permiso**: `monitoreo.view_alerta`, el mismo que ya decide si se ve el menú de Alertas.
+`seed_permisos` se lo agrega al rol **Mesa de Ayuda**, que hasta ahora solo tenía
+`catalogo.estacion:view` y se habría quedado afuera de su propia pantalla.
+
+Los números de cabecera salen de `resumen_operacion` (en `apps/monitoreo/services.py`),
+**el mismo servicio que alimenta `/estado` del bot de Telegram**: antes cada uno tenía su
+copia de las agregaciones, que es la forma segura de que algún día digan cosas distintas.
+
 ## Monitoreo de servidores
 
 Migra y unifica el monitoreo del sistema viejo (`log_servidor_memoria` + `log_servidor_cpu`,

@@ -87,6 +87,11 @@ urlpatterns = [
 
     path('auditoria/', views.auditoria_lista, name='auditoria_lista'),
 
+    # Centro de Monitoreo: la vista consolidada de triage que la mesa de ayuda deja
+    # abierta. Va ANTES de 'monitoreo/' en la lista por legibilidad, no por resolucion:
+    # son rutas distintas y Django no las confunde.
+    path('centro/', views.centro_monitoreo, name='centro_monitoreo'),
+    path('centro/datos/', views.centro_monitoreo_partial, name='centro_monitoreo_partial'),
     path('monitoreo/', views.monitoreo_lista, name='monitoreo_lista'),
     path('monitoreo/tendencia/', views.tendencia_flota, name='tendencia_flota'),
     path('monitoreo/<int:pk>/', views.monitoreo_detalle, name='monitoreo_detalle'),

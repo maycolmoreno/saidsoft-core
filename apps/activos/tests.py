@@ -43,10 +43,31 @@ class SeedPermisosTests(TestCase):
         )
 
     def test_mesa_de_ayuda_solo_diagnostico_sin_acciones_de_riesgo(self):
+        """El set es exacto a proposito: que este test falle al agregar un permiso es el
+        punto. Obliga a mirar si lo nuevo es diagnostico o accion antes de dárselo a
+        primera linea.
+
+        `view_alerta` y `view_estadoenlacefarmacia` se sumaron el 19-sep-2026 con el
+        Centro de Monitoreo: sin ellos el rol implicaba una pantalla que sus permisos le
+        cerraban, igual que le habia pasado a 'Operador RMM'. Son de lectura, que es
+        justo lo que este test protege — abajo se verifica que no entro ninguna accion.
+        """
         call_command('seed_permisos')
         grupo = Group.objects.get(name='Mesa de Ayuda')
         codenames = set(grupo.permissions.values_list('codename', flat=True))
-        self.assertEqual(codenames, {'acceso_remoto_estacion', 'consultar_info_estacion', 'view_estacion'})
+        self.assertEqual(codenames, {
+            'acceso_remoto_estacion', 'consultar_info_estacion', 'view_estacion',
+            'view_alerta', 'view_estadoenlacefarmacia',
+        })
+        # La invariante de verdad, independiente de la lista de arriba: nada que escriba.
+        for codename in codenames:
+            self.assertFalse(
+                codename.startswith(('add_', 'change_', 'delete_')),
+                f'{codename} le da escritura a primera linea',
+            )
+        for accion in ('reiniciar_estacion', 'aprobar_estacion', 'actualizar_agente_estacion',
+                       'ver_clave_bitlocker', 'escanear_actualizaciones_estacion'):
+            self.assertNotIn(accion, codenames)
 
     def test_soporte_tecnico_tiene_acciones_de_riesgo_pero_no_bitlocker_ni_grabaciones(self):
         call_command('seed_permisos')

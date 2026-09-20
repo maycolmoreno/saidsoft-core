@@ -54,6 +54,12 @@
             <span class="lbl">Aperturas</span>
         </a>
         {% endif %}
+        {% if perms.monitoreo.view_alerta %}
+        <a href="{% url 'panel:centro_monitoreo' %}" class="nav-item {% if request.resolver_match.url_name == 'centro_monitoreo' %}active{% endif %}">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/><path d="M4.9 4.9l2.1 2.1"/><path d="M17 17l2.1 2.1"/><path d="M19.1 4.9L17 7"/><path d="M7 17l-2.1 2.1"/></svg>
+            <span class="lbl">Centro</span>
+        </a>
+        {% endif %}
         {% if perms.monitoreo.view_estadoenlacefarmacia %}
         <a href="{% url 'panel:enlaces_farmacias_lista' %}" class="nav-item {% if 'enlaces' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15l6-6"/><path d="M11 6l1-1a4 4 0 0 1 6 6l-1 1"/><path d="M13 18l-1 1a4 4 0 0 1-6-6l1-1"/></svg>

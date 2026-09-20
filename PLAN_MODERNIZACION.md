@@ -2584,3 +2584,44 @@ destinos nuevos no ocurre hasta reconstruir el `.exe` y hacer el rollout**: el a
 0.24 en la flota no conoce el tópico ni el tipo `ping` para servicios del POS. Mismo
 patrón que el hallazgo 2 de la auditoría — el código commiteado no cambia nada en las
 farmacias hasta que el binario llegue.
+
+## Centro de Monitoreo (19-sep-2026)
+
+Pantalla nueva en `/centro/` (`panel:centro_monitoreo`) que consolida el estado de la
+operación para la mesa de ayuda. Convive con las pantallas de detalle y las enlaza; no
+reemplaza ninguna.
+
+**Qué se reusó, que es casi todo**: `_agrupar_por_proveedor` (enlaces.py) para el agrupado
+por proveedor, `ventana_mantenimiento_activa`/`abrir_o_mantener_alerta` para el
+silenciamiento, `unidades_negocio_en_foco` para el filtro multi-tenant (el selector global
+del panel, sin construir uno propio), las clases `pill critical/warning/good/neutral/info`
+ya existentes, y el patrón marco + parcial con `hx-trigger` de `monitoreo_detalle`.
+
+**Qué hubo que escribir**: `resumen_operacion` y `fuente_desactualizada` en services.py,
+las dos vistas, dos plantillas, y el permiso de Mesa de Ayuda en seed_permisos.
+
+**Se eliminó una duplicación**: `_comando_estado` del bot tenía su propia copia de las
+agregaciones ("cuántos enlaces caídos", "cuántas alertas por severidad"). Ahora las dos
+puntas consumen `resumen_operacion`, con un test que fija que el bot lo llama.
+
+**Polling: 60 s.** Elegido contra CELERY_BEAT_SCHEDULE, no por gusto:
+`marcar-estaciones-offline` corre cada 60 s y `sondear-enlaces-farmacias` cada 2 min, así
+que los 10 s de las pantallas de detalle mostrarían seis veces el mismo dato. Y a
+diferencia de esas —que se abren un rato para seguir un despliegue— ésta se deja abierta
+todo el turno por varios agentes, así que cada refresco se multiplica por gente y por
+horas. Hay un test que falla si alguien lo baja de 60.
+
+**Frescura por bloque.** `TOLERANCIA_FRESCURA_MINUTOS` define cuánto puede tardar cada
+fuente antes de que su dato se marque como viejo, derivado de la cadencia de su propia
+tarea con margen. Sin esto, si el sondeo deja de correr el tablero muestra todo en verde
+y el agente concluye que no hay nada que atender.
+
+**Solo lectura impuesta, no sugerida**: las dos vistas llevan `@require_GET`. El test de
+solo-lectura falló en la primera corrida justamente porque sin el decorador la vista
+aceptaba POST y devolvía 200 — el contrato existía en el docstring y no en el código.
+
+**Permisos**: `monitoreo.view_alerta`, el mismo que gobierna el menú de Alertas. Mesa de
+Ayuda tenía únicamente `catalogo.estacion:view`, así que se le agregó en `seed_permisos`
+con el mismo criterio que el precedente de 'Operador RMM': un rol no puede implicar una
+pantalla que sus permisos le cierran. `view` y nada más — primera línea diagnostica, no
+reconoce ni cierra alertas.

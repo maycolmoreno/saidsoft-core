@@ -1,0 +1,23 @@
+{% extends "panel/base.html" %}
+{% block title %}Centro de Monitoreo · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-1">
+    <h1 class="text-xl font-semibold">Centro de Monitoreo</h1>
+    <span class="text-sm text-[var(--text-faint)]">se actualiza solo cada {{ segundos_refresco }} s</span>
+</div>
+<p class="text-sm text-[var(--text-faint)] mb-6">
+    Todo lo que está pasando ahora, en una pantalla. Cada fila enlaza al detalle —
+    desde acá solo se mira.
+</p>
+
+{% comment %}
+El interior se reemplaza solo. Ver SEGUNDOS_REFRESCO_CENTRO en la vista para por qué
+60 s y no 10 como las pantallas de detalle.
+{% endcomment %}
+<div id="centro-wrap"
+     hx-get="{% url 'panel:centro_monitoreo_partial' %}"
+     hx-trigger="load, every {{ segundos_refresco }}s"
+     hx-swap="innerHTML">
+    <div class="text-sm text-[var(--text-faint)]">Cargando estado de la operación…</div>
+</div>
+{% endblock %}
