@@ -149,7 +149,18 @@ definir_acl "$MQTT_USERNAME_PANEL" '[
     {"topic": "/saidsof/software/farmacia/+/", "permission": "allow", "action": "publish"},
     {"topic": "/saidsof/agente/+/software/", "permission": "allow", "action": "publish"},
     {"topic": "/saidsof/agente/+/comando/", "permission": "allow", "action": "publish"},
-    {"topic": "/saidsof/agente/+/actualizar_agente/", "permission": "allow", "action": "publish"}
+    {"topic": "/saidsof/agente/+/actualizar_agente/", "permission": "allow", "action": "publish"},
+    # Los dos catalogos globales (servicios del POS y eventos de Windows). SIN ESTAS DOS
+    # REGLAS el publish parece funcionar y no llega: `_publicar_mqtt` devuelve True
+    # porque paho recibio el PUBACK, y el PUBACK solo confirma que EMQX recibio el
+    # paquete, NO que lo haya autorizado -- es la advertencia que este mismo script
+    # documenta al final, y volvio a morder el 21-sep-2026.
+    #
+    # Sintoma: los agentes con la suscripcion activa y la ACL correcta seguian con
+    # `catalogo_eventos_sistema` ausente en identidad.json y chequeando odoo, que estaba
+    # desactivado en el catalogo desde dos dias antes. Cero errores en ningun log.
+    {"topic": "/saidsof/catalogo/servicios_pos/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/catalogo/eventos_sistema/", "permission": "allow", "action": "publish"}
 ]'
 
 echo

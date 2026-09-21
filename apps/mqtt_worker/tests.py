@@ -1465,3 +1465,95 @@ class AclDeEstacionPermiteReenrolarseTests(TestCase):
             if r['topic'].startswith('/saidsof/enrolamiento/respuesta/'):
                 self.assertIn(self.estacion.codigo, r['topic'])
             self.assertNotIn('+', r['topic'], 'una estacion no puede tener comodines en su ACL')
+
+class AclDelPanelCubreLoQuePublicaTests(TestCase):
+    """Cada tópico al que el SERVIDOR publica tiene que estar permitido en la ACL del
+    usuario `saidsof_panel`.
+
+    Es la mitad que faltaba. `AclDelWorkerCubreSusTopicosTests` (arriba) ata las
+    SUSCRIPCIONES del worker; esto ata las PUBLICACIONES del panel, y el agujero se pagó
+    el 21-sep-2026: los dos catálogos globales —servicios del POS y eventos de Windows—
+    se publicaban a tópicos que la ACL del panel no permitía.
+
+    **Y el síntoma es el peor posible: parece funcionar.** `_publicar_mqtt` devuelve True
+    porque paho recibió el PUBACK, y el PUBACK solo confirma que EMQX recibió el paquete,
+    NO que lo autorizara. El propio `bootstrap-emqx.sh` documenta esa distinción al final
+    y aun así volvió a morder.
+
+    Lo que se vio en producción: agentes con la suscripción activa, la ACL de estación
+    correcta, el catálogo publicado "con éxito" — y `catalogo_eventos_sistema` ausente en
+    su `identidad.json`, todavía chequeando un servicio que llevaba dos días desactivado.
+    Cero eventos recolectados, cero errores, nada en ningún log.
+    """
+
+    def _reglas_de_publicacion_del_panel(self):
+        """Los tópicos con `action: publish` (o `all`) del bloque de `MQTT_USERNAME_PANEL`
+        en bootstrap-emqx.sh. Se parsea el .sh como texto, mismo criterio que la prueba de
+        las suscripciones: no vale sumar una dependencia para leer un shell script."""
+        import re
+        from pathlib import Path
+
+        from django.conf import settings
+
+        texto = (settings.BASE_DIR / 'deploy' / 'bootstrap-emqx.sh').read_text(encoding='utf-8')
+        # El bloque del panel va desde su `definir_acl` hasta el `]'` que lo cierra.
+        inicio = texto.index('definir_acl "$MQTT_USERNAME_PANEL"')
+        bloque = texto[inicio:texto.index("]'", inicio)]
+        return {
+            m.group(1) for m in re.finditer(
+                r'\{"topic":\s*"([^"]+)",\s*"permission":\s*"allow",\s*"action":\s*"(?:publish|all)"\}',
+                bloque,
+            )
+        }
+
+    def _topicos_que_publica_el_servidor(self):
+        """Los tópicos FIJOS a los que el servidor publica, declarados como constantes.
+
+        Solo los fijos: los que se arman con el código de la estación
+        (`/saidsof/agente/{codigo}/...`) ya están cubiertos por los comodines `+` de la
+        ACL, y comprobarlos exigiría resolver la plantilla.
+        """
+        from apps.monitoreo import servicios_pos
+
+        return {
+            valor for nombre, valor in vars(servicios_pos).items()
+            if nombre.startswith('TOPICO') and isinstance(valor, str) and valor.startswith('/saidsof/')
+        }
+
+    def test_el_panel_puede_publicar_todo_lo_que_publica(self):
+        permitidos = self._reglas_de_publicacion_del_panel()
+        self.assertTrue(permitidos, 'no se pudo leer la ACL del panel en bootstrap-emqx.sh')
+
+        faltan = sorted(self._topicos_que_publica_el_servidor() - permitidos)
+        self.assertEqual(
+            faltan, [],
+            'el servidor publica a estos tópicos y la ACL del panel no los permite: '
+            f'{faltan}. EMQX deniega el publish y devuelve PUBACK igual, así que '
+            '`_publicar_mqtt` informa exito y el mensaje no llega a nadie.',
+        )
+
+    def test_los_dos_catalogos_estan_permitidos(self):
+        """Explícito además del barrido de arriba: son los dos que fallaron, y que el
+        test genérico los cubra no significa que alguien no los saque de la ACL."""
+        permitidos = self._reglas_de_publicacion_del_panel()
+        for topico in ('/saidsof/catalogo/servicios_pos/', '/saidsof/catalogo/eventos_sistema/'):
+            self.assertIn(topico, permitidos)
+
+    def test_el_agente_puede_suscribirse_a_los_dos_catalogos(self):
+        """La otra punta: publicar sin que nadie pueda suscribirse es igual de inútil."""
+        from apps.monitoreo.servicios_pos import TOPICO_CATALOGO, TOPICO_CATALOGO_EVENTOS
+        from apps.mqtt_worker.emqx_admin import _reglas_para
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX994')
+        farmacia = Farmacia.objects.create(codigo='ML994', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML994-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        topicos = {
+            r['topic'] for r in _reglas_para(estacion)
+            if r['action'] in ('subscribe', 'all')
+        }
+        self.assertIn(TOPICO_CATALOGO, topicos)
+        self.assertIn(TOPICO_CATALOGO_EVENTOS, topicos)
