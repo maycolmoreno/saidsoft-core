@@ -2205,3 +2205,81 @@ class AgenteDecodificaSalidaDeScriptsEnUtf8Tests(TestCase):
             'el .ps1 temporal se escribe sin BOM: PowerShell 5.1 lo lee como ANSI y los '
             'acentos del propio script llegan rotos a la estación',
         )
+
+
+class TodosLosBuclesDelAgenteAtrapanSusExcepcionesTests(TestCase):
+    """Cada `bucle_*` del agente tiene que envolver su cuerpo en un `try/except`.
+
+    Los bucles corren en hilos **demonio**: una excepción no tumba el servicio, mata a
+    ESE hilo y el agente sigue conectado al broker como si nada. No hay error visible en
+    el panel, ni en el log del servidor, ni en el estado de la estación — solo deja de
+    llegar lo que ese hilo reportaba.
+
+    Ya pasó dos veces y las dos costaron caro:
+
+    - `bucle_eventos_sistema`, el 21-sep-2026: moría en su primera vuelta por un import
+      sombreado. Se descartaron antes la versión del binario, tres ACLs, la suscripción
+      real en el broker y el payload del catálogo, hasta que apareció en el log crudo de
+      la estación. Ahí el try/except sí estaba y por eso hubo un `logging.exception` que
+      leer; sin él no habría habido nada.
+    - `bucle_heartbeat` y `bucle_metricas` NO lo tenían hasta 0.28, y son los peores dos
+      para no tenerlo: sin latido la estación se ve apagada. A 8 agentes eso se encuentra
+      a mano; a ~1.800 se diagnostica como un corte de red o de energía que no existe.
+
+    Se comprueba sobre el AST y no con un grep porque lo que importa no es que la palabra
+    `try` aparezca en el método, sino que envuelva el trabajo DENTRO del `while`: un
+    try/except por fuera del bucle atrapa la primera excepción y termina el hilo igual.
+    """
+
+    def _bucles_del_agente(self):
+        import ast
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(
+            encoding='utf-8',
+        )
+        for nodo in ast.walk(ast.parse(fuente)):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name.startswith('bucle_'):
+                yield nodo
+
+    def _atrapa_dentro_del_while(self, metodo):
+        """True si hay un `while` cuyo cuerpo contiene un `try` que captura Exception."""
+        import ast
+
+        for nodo in ast.walk(metodo):
+            if not isinstance(nodo, ast.While):
+                continue
+            for hijo in nodo.body:
+                if not isinstance(hijo, ast.Try):
+                    continue
+                for manejador in hijo.handlers:
+                    # `except:` pelado (type is None) tambien atrapa todo y vale.
+                    if manejador.type is None:
+                        return True
+                    if isinstance(manejador.type, ast.Name) and manejador.type.id == 'Exception':
+                        return True
+        return False
+
+    def test_hay_bucles_que_revisar(self):
+        """Si el nombre de los bucles cambia, esta clase dejaría de comprobar nada y
+        pasaría en verde sin mirar una sola línea. Es el modo de falla de toda prueba
+        que se apoya en una convención de nombres."""
+        nombres = sorted(m.name for m in self._bucles_del_agente())
+        self.assertGreaterEqual(len(nombres), 5, f'se encontraron muy pocos bucles: {nombres}')
+        for esperado in ('bucle_heartbeat', 'bucle_metricas', 'bucle_log_pos',
+                         'bucle_servicios_pos', 'bucle_eventos_sistema'):
+            self.assertIn(esperado, nombres)
+
+    def test_ningun_bucle_puede_morir_en_silencio(self):
+        sin_red = sorted(
+            m.name for m in self._bucles_del_agente() if not self._atrapa_dentro_del_while(m)
+        )
+        self.assertEqual(
+            sin_red, [],
+            'estos bucles corren en hilos demonio y no atrapan sus excepciones dentro '
+            f'del while: {sin_red}. Una excepción mata el hilo para siempre y la estación '
+            'deja de reportar sin que nada lo avise — ni un error en el panel, ni una '
+            'línea en el log del servidor.',
+        )

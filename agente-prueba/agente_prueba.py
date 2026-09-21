@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.27'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.28'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -1121,57 +1121,92 @@ class AgentePrueba:
 
     # --- heartbeat ---
     def bucle_heartbeat(self):
+        """El latido es lo unico que sostiene la visibilidad de la flota: si este hilo
+        muere, la estacion queda muda y el panel la da por caida aunque el POS este
+        vendiendo con normalidad.
+
+        Por eso el try/except, que hasta 0.27 este bucle NO tenia (ni `bucle_metricas`;
+        los otros tres si). Es un hilo demonio: una excepcion no lo tumba el servicio,
+        lo mata a EL y el agente sigue conectado al broker sin reportar nunca mas. Ese
+        modo de falla ya costo una tarde el 21-sep-2026 en `bucle_eventos_sistema`, y
+        alli el sintoma era una funcion que no andaba; aca seria una estacion que parece
+        apagada. A 8 agentes se encuentra a mano; a 1.800 se diagnostica como un problema
+        de red o de energia que no existe.
+
+        Las funciones que arma el payload ya estan blindadas una por una
+        (`_leer_config_pos`, `_version_pos_reportable` y `leer_zona_horaria` nunca
+        lanzan), asi que esto es una red de seguridad, no un parche a un bug conocido —
+        y es justo lo que hay que tener antes de un despliegue masivo.
+        """
         while True:
             time.sleep(self.args.intervalo_heartbeat)
             if not self._token():
                 continue
-            self._publicar(f'/saidsof/agente/{self.args.codigo}/heartbeat/', {
-                'token': self._token(),
-                'version_agente': VERSION_AGENTE_PRUEBA,
-                # Se declara, no se deduce de la version: la version dice que este agente
-                # ENTIENDE el secreto propio, esto dice que lo TIENE. Son cosas distintas
-                # y confundirlas dejo mudas a dos estaciones (ver el bloque de
-                # re-enrolamiento en _on_connect y apps.catalogo.services.secreto_de).
-                'hmac_propio': bool(self.identidad.get('hmac_secret')),
-                'so_nombre': f'Windows {platform.win32_ver()[0]}',
-                'so_build': platform.win32_ver()[1],
-                'hostname': socket.gethostname(),
-                'numero_serie': self.identidad.get('numero_serie', ''),
-                # Reloj y zona horaria. El desfase lo calcula el SERVIDOR comparando este
-                # epoch con el suyo: el agente no tiene contra qué compararse, porque si
-                # su reloj está mal su idea de "ahora" también lo está. Va en el latido y
-                # no en consultar_info porque un reloj que se corre deja a la estación sin
-                # recibir comandos (ventana de 120 s), o sea que el aviso tiene que llegar
-                # solo y no depender de que alguien apriete un botón.
-                'reloj_epoch': time.time(),
-                'offset_utc_minutos': offset_utc_minutos(),
-                'zona_horaria': leer_zona_horaria(),
-                # A qué nodo apunta REALMENTE el POS de esta estación (ver
-                # _leer_config_pos). Va en el heartbeat y no en consultar_info para que
-                # se mantenga solo, sin depender de que alguien apriete un botón.
-                **self._version_pos_reportable(),
-                **self._leer_config_pos(),
-            })
-            logging.info('Heartbeat enviado')
+            try:
+                self._reportar_heartbeat()
+            except Exception:
+                logging.exception('No se pudo enviar el heartbeat')
+
+    def _reportar_heartbeat(self):
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/heartbeat/', {
+            'token': self._token(),
+            'version_agente': VERSION_AGENTE_PRUEBA,
+            # Se declara, no se deduce de la version: la version dice que este agente
+            # ENTIENDE el secreto propio, esto dice que lo TIENE. Son cosas distintas
+            # y confundirlas dejo mudas a dos estaciones (ver el bloque de
+            # re-enrolamiento en _on_connect y apps.catalogo.services.secreto_de).
+            'hmac_propio': bool(self.identidad.get('hmac_secret')),
+            'so_nombre': f'Windows {platform.win32_ver()[0]}',
+            'so_build': platform.win32_ver()[1],
+            'hostname': socket.gethostname(),
+            'numero_serie': self.identidad.get('numero_serie', ''),
+            # Reloj y zona horaria. El desfase lo calcula el SERVIDOR comparando este
+            # epoch con el suyo: el agente no tiene contra qué compararse, porque si
+            # su reloj está mal su idea de "ahora" también lo está. Va en el latido y
+            # no en consultar_info porque un reloj que se corre deja a la estación sin
+            # recibir comandos (ventana de 120 s), o sea que el aviso tiene que llegar
+            # solo y no depender de que alguien apriete un botón.
+            'reloj_epoch': time.time(),
+            'offset_utc_minutos': offset_utc_minutos(),
+            'zona_horaria': leer_zona_horaria(),
+            # A qué nodo apunta REALMENTE el POS de esta estación (ver
+            # _leer_config_pos). Va en el heartbeat y no en consultar_info para que
+            # se mantenga solo, sin depender de que alguien apriete un botón.
+            **self._version_pos_reportable(),
+            **self._leer_config_pos(),
+        })
+        logging.info('Heartbeat enviado')
 
     # --- métricas periódicas (CPU/RAM/disco) ---
     def bucle_metricas(self):
         """Calco de bucle_heartbeat, con su propio intervalo. Solo reporta si esta
         estación está marcada `monitorear_recursos=True` (viaja en la respuesta de
         enrolamiento) — mismo criterio de volumen que ya usaba el sistema viejo (solo
-        servidores/matriz), aplicado ahora también a las cajas si se decide activarlo."""
+        servidores/matriz), aplicado ahora también a las cajas si se decide activarlo.
+
+        Calco tambien en el try/except, que hasta 0.27 le faltaba igual que al latido:
+        `_medir_recursos` y `_tasa_red_kbps` hacen cuentas sobre lo que devuelve un
+        script de PowerShell, y una division por cero o una clave ausente en UNA
+        estacion mataba el hilo de metricas de esa estacion para siempre.
+        """
         while True:
             time.sleep(self.args.intervalo_metricas)
             if not self._token() or not self.identidad.get('monitorear_recursos'):
                 continue
-            recursos = self._medir_recursos()
-            if not recursos:
-                continue
-            self._tasa_red_kbps(recursos)
-            self._publicar(f'/saidsof/agente/{self.args.codigo}/metricas/', {
-                'token': self._token(), **recursos,
-            })
-            logging.info('Métricas enviadas: %s', recursos)
+            try:
+                self._reportar_metricas()
+            except Exception:
+                logging.exception('No se pudieron enviar las metricas')
+
+    def _reportar_metricas(self):
+        recursos = self._medir_recursos()
+        if not recursos:
+            return
+        self._tasa_red_kbps(recursos)
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/metricas/', {
+            'token': self._token(), **recursos,
+        })
+        logging.info('Métricas enviadas: %s', recursos)
 
     def _medir_recursos(self) -> dict:
         """CPU/RAM/disco/red vía CIM, mismo estilo de un solo script PowerShell que
