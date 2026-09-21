@@ -15,8 +15,10 @@ class MuestraMetrica(models.Model):
     y log_servidor_cpu: el agente arma una muestra completa y la publica junta, lo que
     evita joins al graficar. Valores de memoria en MB. null = no medido.
 
-    A esta escala (1.800 equipos), en producción esta tabla va sobre TimescaleDB
-    (hypertable + compresión + retención automática). En desarrollo, SQLite basta.
+    A esta escala (1.800 equipos), en producción esta tabla va sobre TimescaleDB:
+    hypertable con chunks de un día y retención nativa de 30 días (migración 0035; las
+    0002/0006/0021 lo intentaban y fallaban en silencio). Compresión todavía no. En
+    desarrollo, SQLite basta y la purga de Celery hace de retención.
     """
 
     estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='metricas')
@@ -48,7 +50,14 @@ class MuestraMetrica(models.Model):
     red_recibido_kbps = models.FloatField(null=True, blank=True)
     red_enviado_kbps = models.FloatField(null=True, blank=True)
 
-    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    # `default=` y no `auto_now_add=True`: desde que esta tabla es un hypertable
+    # (migración 0035), TimescaleDB rechaza un UPDATE que mueva la fila a otro chunk
+    # —"violates check constraint" del chunk—, así que la fecha tiene que quedar bien
+    # en el INSERT. `auto_now_add` ignora cualquier valor que se le pase y obligaba a
+    # corregirla después, que es justo lo que ya no se puede hacer. Sin esto no hay
+    # forma de cargar historial: ni las pruebas ni un backfill pueden fechar una fila.
+    # `editable=False` conserva el resto del comportamiento (fuera de los formularios).
+    timestamp = models.DateTimeField(default=timezone.now, editable=False, db_index=True)
 
     class Meta:
         db_table = 'muestra_metrica'
@@ -103,7 +112,8 @@ class MuestraRedFarmacia(models.Model):
     bytes_enviados = models.BigIntegerField()
     red_recibido_kbps = models.FloatField(null=True, blank=True)
     red_enviado_kbps = models.FloatField(null=True, blank=True)
-    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    # default y no auto_now_add, por el hypertable — ver MuestraMetrica.timestamp.
+    timestamp = models.DateTimeField(default=timezone.now, editable=False, db_index=True)
 
     class Meta:
         db_table = 'muestra_red_farmacia'
@@ -224,7 +234,8 @@ class EventoMonitoreo(models.Model):
     fuente = models.CharField(max_length=20, choices=EstadoDispositivo.Fuente.choices)
     en_linea = models.BooleanField()
     detalle = models.JSONField(blank=True, default=dict)
-    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    # default y no auto_now_add, por el hypertable — ver MuestraMetrica.timestamp.
+    timestamp = models.DateTimeField(default=timezone.now, editable=False, db_index=True)
 
     class Meta:
         db_table = 'evento_monitoreo'
@@ -1417,7 +1428,9 @@ class MuestraServicioPos(models.Model):
 
     Separada de `EstadoServicioPos` siguiendo el precedente explícito del proyecto
     (`EstadoEnlaceFarmacia` + `MuestraRedFarmacia`): el estado actual se sobrescribe y se
-    consulta a cada rato; la serie crece sin parar y se purga. Mezclarlas obligaría a
+    consulta a cada rato; la serie crece sin parar y se purga a los 30 días
+    (`purgar_muestras_servicio_pos_antiguas` + la retención nativa de la migración
+    0035 — la purga faltaba y se agregó recién el 20-sep-2026). Mezclarlas obligaría a
     elegir entre perder el historial o leer una tabla enorme para pintar un semáforo.
 
     Solo se guarda cuando el servicio RESPONDE: una latencia nula no es un punto en la
@@ -1438,7 +1451,8 @@ class MuestraServicioPos(models.Model):
                   'huerfano el historial ya acumulado.',
     )
     latencia_ms = models.PositiveIntegerField()
-    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    # default y no auto_now_add, por el hypertable — ver MuestraMetrica.timestamp.
+    timestamp = models.DateTimeField(default=timezone.now, editable=False, db_index=True)
 
     class Meta:
         db_table = 'muestra_servicio_pos'

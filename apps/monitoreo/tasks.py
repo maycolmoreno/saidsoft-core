@@ -1,36 +1,50 @@
+import logging
+
 from celery import shared_task
 
 from .enlaces import notificar_cambios_enlaces, sondear_enlaces_farmacias
 from .mikrotik import sincronizar_ancho_banda_farmacias, solicitar_sondeo_red_farmacias_via_agente
 from .services import (
     escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
-    purgar_muestras_red_antiguas, solicitar_sondeo_activos_via_agente,
+    purgar_muestras_red_antiguas, purgar_muestras_servicio_pos_antiguas, solicitar_sondeo_activos_via_agente,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task(name='apps.monitoreo.tasks.purgar_metricas_task')
 def purgar_metricas_task():
-    """Diaria (ver CELERY_BEAT_SCHEDULE). NO es un respaldo: es la única retención que
-    existe. Los hypertables de TimescaleDB nunca se crearon (ver
-    `apps.monitoreo.services.purgar_metricas_antiguas`)."""
+    """Diaria (ver CELERY_BEAT_SCHEDULE). Desde la migración 0035 hay además una
+    política de retención nativa de TimescaleDB con la MISMA ventana de 30 días; esto
+    la respalda y es lo único que acota la tabla donde no hay hypertables (desarrollo).
+    Si se cambia la ventana, hay que cambiarla en los dos lados."""
     borradas = purgar_metricas_antiguas(dias=30)
     return f'{borradas} muestra(s) de métricas eliminada(s).'
 
 
 @shared_task(name='apps.monitoreo.tasks.purgar_eventos_monitoreo_task')
 def purgar_eventos_monitoreo_task():
-    """Diaria (ver CELERY_BEAT_SCHEDULE). Misma advertencia que purgar_metricas_task:
-    no hay retención nativa detrás, esto es lo único que borra."""
+    """Diaria (ver CELERY_BEAT_SCHEDULE). Misma nota que purgar_metricas_task sobre la
+    política nativa que la respalda desde la migración 0035."""
     borrados = purgar_eventos_monitoreo_antiguos(dias=30)
     return f'{borrados} evento(s) de monitoreo eliminado(s).'
 
 
 @shared_task(name='apps.monitoreo.tasks.purgar_muestras_red_task')
 def purgar_muestras_red_task():
-    """Diaria (ver CELERY_BEAT_SCHEDULE). Misma advertencia que purgar_metricas_task:
-    no hay retención nativa detrás, esto es lo único que borra."""
+    """Diaria (ver CELERY_BEAT_SCHEDULE). Misma nota que purgar_metricas_task sobre la
+    política nativa que la respalda desde la migración 0035."""
     borradas = purgar_muestras_red_antiguas(dias=30)
     return f'{borradas} muestra(s) de red eliminada(s).'
+
+
+@shared_task(name='apps.monitoreo.tasks.purgar_muestras_servicio_pos_task')
+def purgar_muestras_servicio_pos_task():
+    """Diaria (ver CELERY_BEAT_SCHEDULE). La serie más grande de las cuatro: cuatro
+    servicios por estación cada 5 minutos. Faltaba — ver
+    `apps.monitoreo.services.purgar_muestras_servicio_pos_antiguas`."""
+    borradas = purgar_muestras_servicio_pos_antiguas(dias=30)
+    return f'{borradas} muestra(s) de servicios del POS eliminada(s).'
 
 
 @shared_task(name='apps.monitoreo.tasks.solicitar_sondeo_activos_task')
@@ -212,6 +226,38 @@ def diagnosticar_alerta_task(alerta_id):
         if _enviar_telegram(canal.destino, f'{encabezado}\n\n{texto}')
     )
     return f'Diagnóstico generado para la alerta #{alerta.pk}; {enviados} envío(s) por Telegram.'
+
+
+@shared_task(name='apps.monitoreo.tasks.notificar_alerta_task')
+def notificar_alerta_task(alerta_id, escalamiento=False):
+    """Manda el correo, el webhook de Teams y el mensaje de Telegram de una alerta.
+
+    No la dispara el Beat: la encola quien abre o escala la alerta, para no hacer el
+    envío en su propio hilo. El motivo completo está en
+    `apps.monitoreo.services.encolar_notificacion_alerta` — en dos palabras, el que
+    abre la alerta suele ser el worker MQTT, y mientras hace un SMTP no ingiere nada.
+
+    **Nunca lanza.** Con CELERY_TASK_EAGER_PROPAGATES (desarrollo y pruebas) la tarea
+    corre en el proceso del llamador y una excepción volvería hasta su `except`, que
+    reaccionaría mandando el aviso OTRA VEZ en línea. Y en producción no habría a quién
+    reintentarle: `notificar_alerta` ya trata un SMTP o un webhook caído como algo que
+    se registra y no se propaga.
+    """
+    from .models import Alerta
+    from .services import notificar_alerta
+
+    alerta = (
+        Alerta.objects.filter(pk=alerta_id)
+        .select_related('regla', 'estacion__farmacia__unidad_negocio').first()
+    )
+    if alerta is None:
+        return f'La alerta #{alerta_id} ya no existe.'
+    try:
+        notificar_alerta(alerta, escalamiento=escalamiento)
+    except Exception:
+        logger.exception('Falló la notificación de la alerta #%s.', alerta_id)
+        return f'Alerta #{alerta_id}: la notificación falló (ver el log).'
+    return f'Alerta #{alerta_id} notificada.'
 
 
 @shared_task(name='apps.monitoreo.tasks.resumen_diario_telegram_task')

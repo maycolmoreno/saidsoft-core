@@ -35,3 +35,10 @@ EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')  # noqa: F405
 EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')  # noqa: F405
 EMAIL_PORT = env.int('EMAIL_PORT', default=587)  # noqa: F405
 EMAIL_USE_TLS = True
+# Sin esto, Django le pasa timeout=None a smtplib y el socket queda esperando sin
+# limite: un Gmail que acepta la conexion TCP y despues no contesta cuelga al proceso
+# que esta notificando, no lo hace fallar. `fail_silently=True` no cubre eso -- solo
+# atrapa excepciones, y acá nunca llega ninguna. Importa mas desde que el envio corre
+# en Celery (ver apps.monitoreo.tasks.notificar_alerta_task): un worker con
+# --concurrency=2 se queda sin hilos con dos envios colgados.
+EMAIL_TIMEOUT = env.int('EMAIL_TIMEOUT', default=10)  # noqa: F405

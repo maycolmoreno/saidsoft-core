@@ -405,6 +405,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.monitoreo.tasks.purgar_muestras_red_task',
         'schedule': crontab(hour=3, minute=20),
     },
+    'purgar-muestras-servicios-pos-viejas': {
+        'task': 'apps.monitoreo.tasks.purgar_muestras_servicio_pos_task',
+        'schedule': crontab(hour=3, minute=30),
+    },
     'sondear-activos-sin-agente': {
         'task': 'apps.monitoreo.tasks.solicitar_sondeo_activos_task',
         'schedule': 60.0 * 15,

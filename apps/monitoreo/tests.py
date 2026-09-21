@@ -48,26 +48,20 @@ class EvaluarReglasMetricasTests(TestCase):
         )
 
     def _crear_muestra(self, cpu, hace_minutos=0):
-        muestra = MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=cpu)
-        if hace_minutos:
-            MuestraMetrica.objects.filter(pk=muestra.pk).update(
-                timestamp=timezone.now() - timedelta(minutes=hace_minutos),
-            )
-            muestra.refresh_from_db()
-        return muestra
+        # La fecha va en el create y no en un UPDATE posterior: estas tablas son
+        # hypertables (migración 0035) y TimescaleDB no deja mover una fila de chunk.
+        return MuestraMetrica.objects.create(
+            estacion=self.estacion, cpu_carga_pct=cpu,
+            timestamp=timezone.now() - timedelta(minutes=hace_minutos),
+        )
 
     def _crear_muestra_disco(self, disco_usado_pct, hace_minutos=0):
         # disco_usado_pct es una property (100 - libre/total), no un campo — se arma
         # total/libre para que dé el porcentaje pedido.
-        muestra = MuestraMetrica.objects.create(
+        return MuestraMetrica.objects.create(
             estacion=self.estacion, disco_total_gb=100.0, disco_libre_gb=100.0 - disco_usado_pct,
+            timestamp=timezone.now() - timedelta(minutes=hace_minutos),
         )
-        if hace_minutos:
-            MuestraMetrica.objects.filter(pk=muestra.pk).update(
-                timestamp=timezone.now() - timedelta(minutes=hace_minutos),
-            )
-            muestra.refresh_from_db()
-        return muestra
 
     def test_regla_de_disco_usado_abre_alerta_por_el_mismo_mecanismo_generico(self):
         # evaluar_reglas_metricas lee getattr(muestra, regla.metrica) — no hace falta
@@ -91,10 +85,10 @@ class EvaluarReglasMetricasTests(TestCase):
             nombre='Consumo de red alto', metrica=Metrica.RED_TOTAL_KBPS, operador=ReglaAlerta.Operador.GTE,
             umbral=5000, duracion_minutos=10, creado_por=self.usuario,
         )
-        vieja = MuestraMetrica.objects.create(
+        MuestraMetrica.objects.create(
             estacion=self.estacion, red_recibido_kbps=4000, red_enviado_kbps=1200,
+            timestamp=timezone.now() - timedelta(minutes=15),
         )
-        MuestraMetrica.objects.filter(pk=vieja.pk).update(timestamp=timezone.now() - timedelta(minutes=15))
         muestra = MuestraMetrica.objects.create(
             estacion=self.estacion, red_recibido_kbps=4500, red_enviado_kbps=1300,
         )
@@ -450,8 +444,9 @@ class VentanaMantenimientoHookTests(TestCase):
             nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, operador=ReglaAlerta.Operador.GTE,
             umbral=90, duracion_minutos=10, creado_por=self.usuario,
         )
-        vieja = MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=95)
-        MuestraMetrica.objects.filter(pk=vieja.pk).update(timestamp=timezone.now() - timedelta(minutes=15))
+        MuestraMetrica.objects.create(
+            estacion=self.estacion, cpu_carga_pct=95, timestamp=timezone.now() - timedelta(minutes=15),
+        )
         self._crear_ventana()
         muestra = MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=96)
         evaluar_reglas_metricas(self.estacion, muestra)
@@ -691,8 +686,9 @@ class PurgarMetricasTaskTests(TestCase):
         grupo = Grupo.objects.create(codigo='TRX001')
         farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
         estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
-        vieja = MuestraMetrica.objects.create(estacion=estacion, cpu_carga_pct=50)
-        MuestraMetrica.objects.filter(pk=vieja.pk).update(timestamp=timezone.now() - timedelta(days=40))
+        vieja = MuestraMetrica.objects.create(
+            estacion=estacion, cpu_carga_pct=50, timestamp=timezone.now() - timedelta(days=40),
+        )
         reciente = MuestraMetrica.objects.create(estacion=estacion, cpu_carga_pct=60)
 
         resultado = purgar_metricas_task.delay()
@@ -715,8 +711,10 @@ class PurgarEventosMonitoreoTaskTests(TestCase):
         grupo = Grupo.objects.create(codigo='TRX001')
         farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
         estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
-        viejo = EventoMonitoreo.objects.create(estacion=estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=True)
-        EventoMonitoreo.objects.filter(pk=viejo.pk).update(timestamp=timezone.now() - timedelta(days=40))
+        viejo = EventoMonitoreo.objects.create(
+            estacion=estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=True,
+            timestamp=timezone.now() - timedelta(days=40),
+        )
         reciente = EventoMonitoreo.objects.create(
             estacion=estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=False,
         )
@@ -1013,8 +1011,8 @@ class SincronizarAnchoBandaFarmaciasTests(TestCase):
     def test_segunda_muestra_calcula_la_tasa_contra_la_anterior(self):
         anterior = MuestraRedFarmacia.objects.create(
             farmacia=self.con_ip, bytes_recibidos=100_000_000, bytes_enviados=50_000_000,
+            timestamp=timezone.now() - timedelta(seconds=300),
         )
-        MuestraRedFarmacia.objects.filter(pk=anterior.pk).update(timestamp=timezone.now() - timedelta(seconds=300))
 
         with patch('apps.monitoreo.mikrotik._sondear_farmacia', new_callable=AsyncMock) as sondear:
             # +12.000.000 bytes recibidos en 300s -> 12e6*8/1000/300 = 320 kbps
@@ -1037,8 +1035,8 @@ class SincronizarAnchoBandaFarmaciasTests(TestCase):
         # sentido, se retoma normal en la próxima corrida.
         anterior = MuestraRedFarmacia.objects.create(
             farmacia=self.con_ip, bytes_recibidos=100_000_000, bytes_enviados=50_000_000,
+            timestamp=timezone.now() - timedelta(seconds=300),
         )
-        MuestraRedFarmacia.objects.filter(pk=anterior.pk).update(timestamp=timezone.now() - timedelta(seconds=300))
 
         with patch('apps.monitoreo.mikrotik._sondear_farmacia', new_callable=AsyncMock) as sondear:
             sondear.return_value = (self.con_ip, 500, 200)
@@ -1484,10 +1482,8 @@ class UnidadesDeAnchoDeBandaTests(TestCase):
         grupo = Grupo.objects.create(codigo='TRX001')
         farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
 
-        anterior = MuestraRedFarmacia.objects.create(
+        MuestraRedFarmacia.objects.create(
             farmacia=farmacia, bytes_recibidos=0, bytes_enviados=0,
-        )
-        MuestraRedFarmacia.objects.filter(pk=anterior.pk).update(
             timestamp=timezone.now() - timedelta(seconds=10),
         )
 
@@ -2111,14 +2107,10 @@ class PurgaMuestrasRedTests(TestCase):
     def _muestra(self, dias_atras):
         from apps.monitoreo.models import MuestraRedFarmacia
 
-        muestra = MuestraRedFarmacia.objects.create(
+        return MuestraRedFarmacia.objects.create(
             farmacia=self.farmacia, bytes_recibidos=1, bytes_enviados=1,
-        )
-        # `timestamp` es auto_now_add, así que no se puede fijar al crear.
-        MuestraRedFarmacia.objects.filter(pk=muestra.pk).update(
             timestamp=timezone.now() - timedelta(days=dias_atras),
         )
-        return muestra
 
     def test_borra_las_mas_viejas_que_el_umbral(self):
         from apps.monitoreo.services import purgar_muestras_red_antiguas
@@ -2170,6 +2162,196 @@ class PurgaMuestrasRedTests(TestCase):
 
         agendadas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
         self.assertIn('apps.monitoreo.tasks.purgar_muestras_red_task', agendadas)
+
+
+class PurgaMuestrasServicioPosTests(TestCase):
+    """Retención de `MuestraServicioPos`.
+
+    Por qué existe: el modelo nació diciendo "la serie crece sin parar y se purga" y la
+    purga nunca se escribió — quedó fuera de CELERY_BEAT_SCHEDULE mientras las otras
+    tres series sí entraban. Es la que más crece de las cuatro: una fila por servicio
+    que responde, cuatro por estación cada 5 minutos, o sea ~1,7 millones de filas por
+    día a 1.500 estaciones. Hoy no se nota porque reportan 8.
+    """
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def _muestra(self, dias_atras):
+        from apps.monitoreo.models import MuestraServicioPos
+
+        return MuestraServicioPos.objects.create(
+            estacion=self.estacion, servicio='pg_local', latencia_ms=12,
+            timestamp=timezone.now() - timedelta(days=dias_atras),
+        )
+
+    def test_borra_las_mas_viejas_que_el_umbral(self):
+        from apps.monitoreo.services import purgar_muestras_servicio_pos_antiguas
+
+        self._muestra(45)
+        self._muestra(31)
+        self.assertEqual(purgar_muestras_servicio_pos_antiguas(dias=30), 2)
+
+    def test_no_toca_las_recientes(self):
+        from apps.monitoreo.models import MuestraServicioPos
+        from apps.monitoreo.services import purgar_muestras_servicio_pos_antiguas
+
+        self._muestra(1)
+        self._muestra(29)
+        self._muestra(60)
+
+        purgar_muestras_servicio_pos_antiguas(dias=30)
+        self.assertEqual(MuestraServicioPos.objects.count(), 2)
+
+    def test_el_umbral_es_configurable(self):
+        from apps.monitoreo.models import MuestraServicioPos
+        from apps.monitoreo.services import purgar_muestras_servicio_pos_antiguas
+
+        self._muestra(45)
+        purgar_muestras_servicio_pos_antiguas(dias=90)
+        self.assertEqual(MuestraServicioPos.objects.count(), 1)
+
+    def test_la_tarea_de_celery_la_invoca(self):
+        from apps.monitoreo.models import MuestraServicioPos
+        from apps.monitoreo.tasks import purgar_muestras_servicio_pos_task
+
+        self._muestra(45)
+        resultado = purgar_muestras_servicio_pos_task()
+        self.assertIn('1 muestra', resultado)
+        self.assertEqual(MuestraServicioPos.objects.count(), 0)
+
+    def test_el_comando_manual_la_invoca(self):
+        from apps.monitoreo.models import MuestraServicioPos
+
+        self._muestra(45)
+        call_command('purgar_muestras_servicio_pos', '--dias', '30')
+        self.assertEqual(MuestraServicioPos.objects.count(), 0)
+
+    def test_esta_agendada_en_beat(self):
+        """Sin la entrada en CELERY_BEAT_SCHEDULE la función existe y no la llama nadie —
+        que es exactamente el estado del que venimos."""
+        from django.conf import settings
+
+        agendadas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
+        self.assertIn('apps.monitoreo.tasks.purgar_muestras_servicio_pos_task', agendadas)
+
+
+class NotificacionFueraDelHiloQueAbreLaAlertaTests(TestCase):
+    """Abrir una alerta no puede quedarse esperando a un SMTP.
+
+    `abrir_o_mantener_alerta` corre DENTRO del loop del worker MQTT, que procesa los
+    mensajes de a uno. Antes, cada alerta nueva hacía ahí mismo un handshake SMTP más
+    un POST por canal de Teams y de Telegram. Con un corte de energía en una zona se
+    abren decenas de alertas seguidas: a 1.500 estaciones (42 msg/s solo de heartbeat y
+    métricas) un minuto sin leer del broker son miles de mensajes encolados, y los que
+    se pierdan a QoS 0 no los reintenta nadie.
+
+    En pruebas CELERY_TASK_ALWAYS_EAGER hace que `.delay()` corra en el acto, así que
+    todo lo que el resto de la suite verifica sobre `mail.outbox` sigue valiendo; lo que
+    se prueba acá es POR DÓNDE pasa el envío, que es lo que en producción decide si el
+    worker sigue ingiriendo.
+    """
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u', password='x', email='ops@example.com')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.regla = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, operador=ReglaAlerta.Operador.GTE,
+            umbral=90, duracion_minutos=10, creado_por=self.usuario,
+        )
+
+    def test_abrir_una_alerta_encola_el_aviso_y_no_lo_manda_en_linea(self):
+        with patch('apps.monitoreo.tasks.notificar_alerta_task.delay') as delay:
+            alerta = abrir_o_mantener_alerta(self.regla, self.estacion, 95)
+
+        delay.assert_called_once_with(alerta.pk, escalamiento=False)
+        self.assertEqual(len(mail.outbox), 0, 'el SMTP no puede pasar por el hilo de ingesta')
+
+    def test_escalar_una_alerta_tambien_encola(self):
+        """El Beat escala de a lotes: con 200 alertas sin reconocer, hacerlo en línea
+        deja al worker de Celery ocupado minutos con un --concurrency=2."""
+        alerta = abrir_o_mantener_alerta(self.regla, self.estacion, 95)
+        Alerta.objects.filter(pk=alerta.pk).update(
+            abierta_en=timezone.now() - timedelta(minutes=UMBRAL_ESCALAMIENTO_MINUTOS + 5),
+        )
+        mail.outbox = []
+
+        with patch('apps.monitoreo.tasks.notificar_alerta_task.delay') as delay:
+            self.assertEqual(escalar_alertas_abiertas(), 1)
+
+        delay.assert_called_once_with(alerta.pk, escalamiento=True)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_si_no_se_puede_encolar_se_manda_en_linea(self):
+        """Con el broker de Celery caído el aviso sale igual, aunque bloquee: una
+        notificación tarde es mejor que una perdida. Es el camino de antes."""
+        with patch(
+            'apps.monitoreo.tasks.notificar_alerta_task.delay',
+            side_effect=OSError('Redis no responde'),
+        ):
+            abrir_o_mantener_alerta(self.regla, self.estacion, 95)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('CPU alta', mail.outbox[0].subject)
+
+    def test_la_tarea_manda_el_aviso(self):
+        from apps.monitoreo.tasks import notificar_alerta_task
+
+        with patch('apps.monitoreo.tasks.notificar_alerta_task.delay'):
+            alerta = abrir_o_mantener_alerta(self.regla, self.estacion, 95)
+
+        notificar_alerta_task(alerta.pk)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('CPU alta', mail.outbox[0].subject)
+
+    def test_la_tarea_de_escalamiento_usa_el_texto_de_escalamiento(self):
+        from apps.monitoreo.tasks import notificar_alerta_task
+
+        with patch('apps.monitoreo.tasks.notificar_alerta_task.delay'):
+            alerta = abrir_o_mantener_alerta(self.regla, self.estacion, 95)
+
+        notificar_alerta_task(alerta.pk, escalamiento=True)
+        self.assertIn('SIN ATENDER', mail.outbox[-1].subject)
+
+    def test_la_tarea_no_revienta_si_la_alerta_ya_no_existe(self):
+        """Entre que se encola y se corre, alguien puede haber borrado la alerta."""
+        from apps.monitoreo.tasks import notificar_alerta_task
+
+        self.assertIn('ya no existe', notificar_alerta_task(999999))
+
+    def test_la_tarea_nunca_propaga_el_fallo(self):
+        """Si propagara, con CELERY_TASK_EAGER_PROPAGATES la excepción volvería al
+        `except` de encolar_notificacion_alerta y el aviso saldría DOS veces."""
+        from apps.monitoreo.tasks import notificar_alerta_task
+
+        with patch('apps.monitoreo.tasks.notificar_alerta_task.delay'):
+            alerta = abrir_o_mantener_alerta(self.regla, self.estacion, 95)
+
+        with patch(
+            'apps.monitoreo.services.notificar_alerta', side_effect=RuntimeError('SMTP roto'),
+        ):
+            resultado = notificar_alerta_task(alerta.pk)
+        self.assertIn('falló', resultado)
+
+    def test_no_se_duplica_el_aviso_cuando_la_tarea_falla(self):
+        """La consecuencia de lo de arriba, medida donde se nota: un solo intento."""
+        with patch(
+            'apps.monitoreo.services.notificar_alerta', side_effect=RuntimeError('SMTP roto'),
+        ) as envio:
+            abrir_o_mantener_alerta(self.regla, self.estacion, 95)
+        self.assertEqual(envio.call_count, 1)
 
 
 class SondeoDeActivosPorPingTests(TestCase):
@@ -5602,14 +5784,15 @@ class TareasDiariasConCrontabTests(TestCase):
         )
 
     def test_las_purgas_siguen_programadas(self):
-        """Son la única retención que existe: los hypertables de TimescaleDB nunca se
-        crearon (ver el docstring de purgar_metricas_antiguas)."""
+        """La retención donde no hay TimescaleDB, y el respaldo donde sí: la política
+        nativa existe recién desde la migración 0035 (ver purgar_metricas_antiguas)."""
         from django.conf import settings
 
         tareas = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
         for tarea in ('apps.monitoreo.tasks.purgar_metricas_task',
                       'apps.monitoreo.tasks.purgar_eventos_monitoreo_task',
-                      'apps.monitoreo.tasks.purgar_muestras_red_task'):
+                      'apps.monitoreo.tasks.purgar_muestras_red_task',
+                      'apps.monitoreo.tasks.purgar_muestras_servicio_pos_task'):
             self.assertIn(tarea, tareas)
 
     def test_las_purgas_corren_de_madrugada_y_escalonadas(self):

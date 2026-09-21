@@ -2866,3 +2866,52 @@ Como el catálogo de servicios del POS, **el lado servidor se despliega solo y e
 —un agente que no entiende el tópico simplemente lo ignora— pero **no se recolecta un solo
 evento hasta reconstruir el `.exe` y hacer el rollout**. Ya son tres cosas esperando ese
 mismo rebuild: el arreglo del log del POS (hallazgo 2), el catálogo de servicios, y esto.
+
+## Que la ingesta no se pare a mandar correos, y la retención que faltaba (20-sep-2026)
+
+Salió de una pregunta del usuario —*con más de 1.500 computadoras, ¿qué tan buena
+opción es este servidor?*— y de medir la respuesta sobre el código en vez de opinar.
+
+### El número que ordena todo lo demás
+
+A 1.500 estaciones, con los intervalos por defecto del agente: 25 heartbeat/s + 5
+métricas/s + 5 log del POS/s + 5 servicios del POS/s + 1,7 eventos de Windows/s =
+**~42 mensajes por segundo**, 3,6 millones por día. Cada heartbeat dispara ~8-10
+queries y cada reporte de servicios del POS ~10 más: ~350-400 queries por segundo.
+
+Y todo eso pasa por **un solo hilo**: `run_mqtt_worker` procesa los mensajes de a uno
+en el loop de paho. No importa cuántos núcleos tenga el servidor — el techo de la
+ingesta es un núcleo. La estimación por aritmética da 30-50 % de ese núcleo en régimen
+estable, que alcanza y no deja margen para el pico garantizado (la mañana, cuando
+1.500 agentes reconectan con sus ciclos alineados).
+
+### Lo que se arregló
+
+| Qué | Por qué |
+|---|---|
+| `encolar_notificacion_alerta` + `notificar_alerta_task` | `abrir_o_mantener_alerta` corre DENTRO del hilo de ingesta y `notificar_alerta` hace un handshake SMTP más un POST por canal de Teams y de Telegram. Un corte de energía en una zona abre decenas de alertas seguidas: a 1-2 s cada una, un minuto sin leer del broker son miles de mensajes encolados, y los que se pierdan a QoS 0 no los reintenta nadie. Si no se puede encolar se envía en línea, como antes: una notificación tarde es mejor que una perdida. La tarea **nunca lanza** — con `CELERY_TASK_EAGER_PROPAGATES` la excepción volvería al `except` del despachador y el aviso saldría dos veces. |
+| `EMAIL_TIMEOUT = 10` en producción | Django le pasaba `timeout=None` a `smtplib`. Un Gmail que acepta la conexión y después no contesta **cuelga** al proceso; `fail_silently` solo atrapa excepciones, y ahí no llega ninguna. Importa más ahora que el envío corre en un worker de Celery con `--concurrency=2`. |
+| Purga de `muestra_servicio_pos` (3:30) + comando manual | Faltaba. Es la serie que más crece: ~1,7 millones de filas por día a 1.500 estaciones, cuatro veces `muestra_metrica`. El modelo decía "se purga" desde que nació. |
+| Migración 0035: hypertables **de verdad** + retención nativa | Las 0002/0006/0021 fallaban SIEMPRE con `cannot create a unique index without the column timestamp` y solo dejaban un warning: el despliegue pasaba y `timescaledb_information.hypertables` devolvía cero filas. La causa era la PK `id` de Django; ahora es `(id, timestamp)`. La retención deja de ser un DELETE de millones de filas y pasa a ser `drop_chunks`. |
+| Migración 0036: las cuatro series dejan `auto_now_add` | Consecuencia de lo anterior, y lo más importante de recordar: **en un hypertable, un UPDATE que mueva la fila a otro chunk falla**. Con `default=timezone.now` la fecha se elige en el INSERT. Catorce pruebas que creaban la fila y después le corregían el `timestamp` se reescribieron; sin esto tampoco habría forma de cargar historial. |
+
+Momento elegido a propósito: la base entera pesa 31 MB (auditoría del 19-sep-2026).
+`migrate_data => true` copia las filas existentes — hoy es instantáneo, con 50 millones
+de filas es una ventana de mantenimiento.
+
+### Lo que NO se hizo, y es lo que sigue
+
+1. **Escalar el worker MQTT horizontalmente**: *shared subscriptions* de EMQX
+   (`$share/ingesta/...`) y N réplicas del servicio `worker`. Es el cambio que convierte
+   el techo de un núcleo en N, y es chico: un prefijo en los `subscribe` de
+   `_on_connect` más réplicas en el compose.
+2. **Abaratar el heartbeat**: `save(update_fields=[...])` en vez de fila completa,
+   cachear catálogos y reglas (hoy `registrar_eventos_sistema`,
+   `registrar_servicios_pos` y `evaluar_reglas_metricas` releen su tabla en CADA
+   mensaje), y no hacer `get_or_create` de `ActividadMensualEstacion` en cada latido.
+3. **Jitter en los intervalos del agente**, para que 1.500 equipos no reporten en el
+   mismo segundo después de un corte.
+4. **Medir en vez de estimar.** `simular_agente` simula UNA estación y solo el flujo de
+   despliegues. Extenderlo a `--n 1500` con heartbeat, métricas, servicios del POS y
+   eventos es medio día y dice en qué número se satura este servidor de verdad. Con 8
+   agentes instalados de ~1.800, es la única forma de saberlo.

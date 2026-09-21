@@ -20,7 +20,7 @@ from apps.catalogo.db import cerrar_conexiones_viejas
 
 from .models import (
     Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, MuestraRedFarmacia,
-    ConfiguracionMonitoreo, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
+    ConfiguracionMonitoreo, MuestraServicioPos, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,7 +140,7 @@ def abrir_o_mantener_alerta(regla, estacion, valor):
     if _alerta_activa(regla, estacion):
         return None
     alerta = Alerta.objects.create(regla=regla, estacion=estacion, valor_disparador=valor)
-    notificar_alerta(alerta)
+    encolar_notificacion_alerta(alerta)
     if regla.severidad == ReglaAlerta.Severidad.CRITICAL:
         _pedir_diagnostico_ia(alerta)
     if regla.abre_mantenimiento:
@@ -621,6 +621,37 @@ def canales_telegram_para(unidad):
     ).filter(Q(unidad_negocio__isnull=True) | Q(unidad_negocio=unidad))
 
 
+def encolar_notificacion_alerta(alerta, *, escalamiento=False) -> None:
+    """Manda la notificación a Celery en vez de enviarla en el hilo del llamador.
+
+    Quién llama importa: `abrir_o_mantener_alerta` corre DENTRO del hilo que ingiere
+    MQTT — `run_mqtt_worker` procesa los mensajes de a uno en el loop de paho — y
+    `notificar_alerta` hace un handshake SMTP más un POST por canal de Teams y de
+    Telegram. Con un corte de energía en una zona se abren decenas de alertas seguidas
+    y cada una bloqueaba la ingesta uno o dos segundos: a 1.500 estaciones (42 msg/s
+    solo de heartbeat y métricas) un minuto sin leer del broker son miles de mensajes
+    encolados, y los que se pierdan a QoS 0 no los reintenta nadie. El aviso no es
+    urgente al milisegundo; la ingesta sí.
+
+    Si no se puede encolar (broker de Celery caído) se envía acá mismo, sincrónico:
+    es exactamente lo que se hacía antes, y una notificación tarde es mejor que una
+    perdida. Por eso esto NO es un calco de `_pedir_diagnostico_ia`, que ante el mismo
+    fallo se rinde — el diagnóstico es un extra, el aviso de la alerta es el producto.
+
+    Import diferido para no arrastrar Celery al importar `services`, que es lo que
+    hacen el worker MQTT y los comandos de gestión.
+    """
+    try:
+        from .tasks import notificar_alerta_task
+        notificar_alerta_task.delay(alerta.pk, escalamiento=escalamiento)
+    except Exception:
+        logger.warning(
+            'No se pudo encolar la notificación de la alerta #%s; se envía en línea.',
+            alerta.pk, exc_info=True,
+        )
+        notificar_alerta(alerta, escalamiento=escalamiento)
+
+
 def notificar_alerta(alerta, *, escalamiento=False):
     """Correo a quienes tengan acceso a la unidad de negocio de la estación (equipo
     interno + usuarios de ese cliente) con email configurado, más un webhook de Teams
@@ -734,7 +765,7 @@ def escalar_alertas_abiertas() -> int:
     ).select_related('regla', 'estacion__farmacia__unidad_negocio')
     escaladas = 0
     for alerta in candidatas:
-        notificar_alerta(alerta, escalamiento=True)
+        encolar_notificacion_alerta(alerta, escalamiento=True)
         alerta.escalada_en = timezone.now()
         alerta.save(update_fields=['escalada_en'])
         escaladas += 1
@@ -745,15 +776,17 @@ def purgar_metricas_antiguas(*, dias: int = 30) -> int:
     """Borra MuestraMetrica más viejas que `dias`. Reemplaza el `vaciar_logs` del sistema
     viejo (que borraba TODO cada domingo) — retención por antigüedad, no total.
 
-    En producción NO hay ninguna política de retención nativa: verificado el 16-sep-2026,
-    `timescaledb_information.hypertables` devuelve cero filas. Las tres migraciones que
-    intentan `create_hypertable` (monitoreo 0002, 0006 y 0021) fallan siempre con
-    "cannot create a unique index without the column timestamp" — el PK `id` que Django
-    crea solo no incluye la columna de particionado. Fallan sin abortar, así que el
-    despliegue pasa y nadie se entera.
+    Durante mucho tiempo esto fue lo ÚNICO que acotaba la tabla: las tres migraciones
+    que intentaban `create_hypertable` (monitoreo 0002, 0006 y 0021) fallaban siempre
+    con "cannot create a unique index without the column timestamp" —el PK `id` que
+    Django crea solo no incluye la columna de particionado— y fallaban sin abortar, así
+    que el despliegue pasaba y nadie se enteraba (verificado el 16-sep-2026:
+    `timescaledb_information.hypertables` devolvía cero filas).
 
-    O sea: esta función es lo ÚNICO que controla el crecimiento de la tabla. Desactivarla
-    creyendo que TimescaleDB se hace cargo dejaría la base creciendo sin límite.
+    La migración 0035 arregló la causa y agregó una política de retención nativa con la
+    MISMA ventana de 30 días. Esta función sigue: es la retención donde no hay
+    TimescaleDB (SQLite en desarrollo, PostgreSQL pelado) y el respaldo donde sí lo hay.
+    Las dos ventanas tienen que moverse juntas.
 
     La llaman tanto el comando manual (`purgar_metricas`) como la tarea periódica de
     Celery.
@@ -772,9 +805,8 @@ def purgar_muestras_red_antiguas(*, dias: int = 30) -> int:
     con las 700 respondiendo son ~6 millones de filas por mes, y sería la tabla más
     grande del sistema. El momento barato de arreglarlo es antes de que crezca.
 
-    Mismo criterio de retención que las otras dos: 30 días. Y la misma advertencia — ver
-    `purgar_metricas_antiguas`: no hay política nativa de TimescaleDB detrás, esto es lo
-    único que acota el crecimiento.
+    Mismo criterio de retención que las otras dos: 30 días, y la misma relación con la
+    política nativa que agregó la migración 0035 — ver `purgar_metricas_antiguas`.
 
     Dimensión, con los números medidos el 16-sep-2026 (~200 bytes por fila): con las 700
     farmacias reportando cada 5 minutos son ~200.000 filas por día, y con 30 días de
@@ -783,6 +815,24 @@ def purgar_muestras_red_antiguas(*, dias: int = 30) -> int:
     """
     umbral = timezone.now() - timedelta(days=dias)
     borradas, _ = MuestraRedFarmacia.objects.filter(timestamp__lt=umbral).delete()
+    return borradas
+
+
+def purgar_muestras_servicio_pos_antiguas(*, dias: int = 30) -> int:
+    """Borra MuestraServicioPos más viejas que `dias`.
+
+    El modelo nació diciendo "la serie crece sin parar y se purga" (ver su docstring) y
+    la purga nunca se escribió: quedó fuera de `CELERY_BEAT_SCHEDULE` mientras las otras
+    tres series sí entraban. Es la que más rápido crece de las cuatro — una fila por
+    servicio que RESPONDE, cuatro servicios por estación cada 5 minutos: a 1.500
+    estaciones son ~1,7 millones de filas por día, cuatro veces `muestra_metrica` y
+    ocho veces `muestra_red_farmacia`. Hoy no se nota porque reportan 8 estaciones, y
+    ese es justo el momento barato de arreglarlo.
+
+    Mismo criterio de retención que las otras tres: 30 días.
+    """
+    umbral = timezone.now() - timedelta(days=dias)
+    borradas, _ = MuestraServicioPos.objects.filter(timestamp__lt=umbral).delete()
     return borradas
 
 

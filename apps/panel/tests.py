@@ -1516,8 +1516,9 @@ class TendenciaFlotaTests(TestCase):
         # serie, no necesariamente el de la semana actual — si la semana actual no
         # tiene muestras, no debe mostrarse el promedio de una semana vieja rotulado
         # como "Esta semana".
-        vieja = MuestraMetrica.objects.create(estacion=self.estacion, cpu_carga_pct=55)
-        MuestraMetrica.objects.filter(pk=vieja.pk).update(timestamp=timezone.now() - timedelta(weeks=3))
+        MuestraMetrica.objects.create(
+            estacion=self.estacion, cpu_carga_pct=55, timestamp=timezone.now() - timedelta(weeks=3),
+        )
 
         resp = self.client.get(reverse('panel:tendencia_flota'))
         cpu = self._indicador(resp, 'cpu_carga_pct')
@@ -4731,12 +4732,12 @@ class TendenciaFlotaConsultasTests(TestCase):
                 Alerta.objects.filter(pk=alerta.pk).update(
                     abierta_en=momento, resuelta_en=momento if i % 3 == 0 else None,
                 )
-                muestra = MuestraMetrica.objects.create(
+                MuestraMetrica.objects.create(
                     estacion=self.estacion, cpu_carga_pct=50 + i, ram_total=8000,
                     ram_usada=4000 + i * 100, disco_total_gb=500, disco_libre_gb=200 + i,
                     red_recibido_kbps=1000 + i, red_enviado_kbps=200 + i,
+                    timestamp=momento,
                 )
-                MuestraMetrica.objects.filter(pk=muestra.pk).update(timestamp=momento)
 
     def _series(self):
         from apps.panel.views.tendencia import _semanas_recientes, _series_semanales
@@ -5911,12 +5912,15 @@ class IndicadoresDeMonitoreoTests(TestCase):
         )
         self.client.force_login(self.usuario)
 
-    def _muestra(self, cpu=50, ram_pct=50, disco_pct=50, latencia=20, rx=100):
+    def _muestra(self, cpu=50, ram_pct=50, disco_pct=50, latencia=20, rx=100, hace=None):
+        # `hace` (un timedelta) se aplica al crear y no con un UPDATE posterior: estas
+        # tablas son hypertables (migración 0035) y mover una fila de chunk falla.
         return MuestraMetrica.objects.create(
             estacion=self.estacion, cpu_carga_pct=cpu,
             ram_total=1000, ram_usada=int(ram_pct * 10),
             disco_total_gb=100.0, disco_libre_gb=100.0 - disco_pct,
             latencia_ms=latencia, red_recibido_kbps=rx, red_enviado_kbps=0,
+            timestamp=timezone.now() - (hace or timedelta()),
         )
 
     def _indicadores(self, resp):
@@ -5952,10 +5956,7 @@ class IndicadoresDeMonitoreoTests(TestCase):
         """La ventana del sparkline del listado son 20 minutos; la última muestra puede
         ser más vieja si la estación se apagó. El número tiene que seguir siendo el que
         muestra el resto de la pantalla."""
-        vieja = self._muestra(cpu=77)
-        MuestraMetrica.objects.filter(pk=vieja.pk).update(
-            timestamp=timezone.now() - timedelta(hours=4),
-        )
+        self._muestra(cpu=77, hace=timedelta(hours=4))
         resp = self.client.get(reverse('panel:monitoreo_lista'))
         tarjeta = resp.context['tarjetas'][0]
         indicadores = {i.clave: i for i in tarjeta['indicadores']}

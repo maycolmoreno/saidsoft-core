@@ -624,7 +624,15 @@ tiempo real:
 - **Notificación**: correo (`django.core.mail.send_mail`, backend configurado en
   `config/settings/{desarrollo,produccion}.py`) a quienes tengan acceso a la unidad de
   negocio de la estación, solo al **abrir** una alerta (no en cada muestra que la
-  sostiene).
+  sostiene). **Va por Celery, no en el hilo que abre la alerta** (20-sep-2026):
+  `abrir_o_mantener_alerta` corre dentro del loop del worker MQTT, que procesa los
+  mensajes de a uno, y un handshake SMTP más un POST por canal lo dejaban sin ingerir
+  uno o dos segundos por alerta — con un corte de energía en una zona se abren decenas
+  seguidas. `encolar_notificacion_alerta` manda la tarea y sigue; si el broker de Celery
+  no responde, envía en línea igual que antes (una notificación tarde es mejor que una
+  perdida). En producción además hay `EMAIL_TIMEOUT`: sin él, un SMTP que acepta la
+  conexión y no contesta cuelga al proceso sin lanzar nada que `fail_silently` pueda
+  atrapar.
 - Panel: `/alertas/` (reconocer/resolver manualmente) y `/monitoreo/reglas/` (CRUD de
   reglas).
 - **Vista agrupada** (17-ago-2026 — M1 del roadmap de monitoreo proactivo, ver §9 de
@@ -1618,6 +1626,47 @@ TimescaleDB/EMQX-con-TLS, config, scripts de bootstrap). Ver **`deploy/README-pr
 para los pasos. Reemplaza el SQLite y el broker `amqtt` de desarrollo. La config de Django
 para producción (`config/settings/produccion.py`) usa WhiteNoise para estáticos, PostgreSQL
 vía `DATABASE_URL`, y endurecimiento HTTPS/HSTS.
+
+## Retención de las series de tiempo
+
+Cuatro tablas crecen sin parar: `muestra_metrica` (CPU/RAM/disco/red por estación),
+`muestra_servicio_pos` (latencia de cada servicio del POS), `muestra_red_farmacia`
+(tráfico del Mikrotik de cada sitio) y `evento_monitoreo` (transiciones en línea/fuera
+de línea). Todas se quedan con **30 días**.
+
+Lo que hay detrás, después de arreglarlo el 20-sep-2026:
+
+- **Purgas por antigüedad** (`apps.monitoreo.tasks.purgar_*`, diarias a las 3:00, 3:10,
+  3:20 y 3:30, escalonadas para no largar cuatro DELETE grandes en el mismo segundo).
+  Cada una tiene su comando de gestión equivalente para correrla a mano
+  (`purgar_metricas`, `purgar_muestras_servicio_pos`, ...).
+- **Hypertables de TimescaleDB con retención nativa** (migración `monitoreo/0035`), que
+  reemplazan ese DELETE por `drop_chunks` donde la extensión existe.
+
+Dos cosas que conviene saber antes de tocar esto:
+
+**La purga de `muestra_servicio_pos` no existía.** El modelo decía "la serie crece sin
+parar y se purga" y nadie la había escrito. Es la que más crece de las cuatro: una fila
+por servicio que responde, cuatro por estación cada 5 minutos — a 1.500 estaciones son
+~1,7 millones de filas por día, cuatro veces `muestra_metrica`. No se notaba porque hoy
+reportan 8 estaciones.
+
+**Los hypertables tampoco existían**, aunque tres migraciones los intentaban desde el
+principio. Fallaban siempre con `cannot create a unique index without the column
+timestamp` —la PK `id` que Django crea sola no incluye la columna de particionado— y
+fallaban dentro de un savepoint, dejando solo un `logger.warning`: el despliegue pasaba
+y nadie se enteraba. La 0035 arregla la causa (PK compuesta `(id, timestamp)`, que el
+ORM sigue usando igual) y convierte las cuatro.
+
+**Consecuencia que hay que tener presente al escribir código o pruebas**: en un
+hypertable, un `UPDATE` que mueva una fila a otro chunk **falla**. Por eso el
+`timestamp` de las cuatro series ya no es `auto_now_add` sino `default=timezone.now`
+(migración `0036`, sin efecto en el esquema): la fecha se elige en el `INSERT`. Fechar
+una fila creándola y corrigiéndola después —lo que hacían catorce pruebas— dejó de
+funcionar, y tampoco habría forma de cargar historial de otro modo.
+
+La compresión de chunks todavía no está activada: cambia cómo se comportan los DELETE
+que las purgas siguen haciendo, y eso se prueba contra datos reales antes de encenderlo.
 
 ## Distribución en cascada (caché por farmacia)
 

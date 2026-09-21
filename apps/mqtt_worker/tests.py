@@ -900,8 +900,8 @@ class ManejarRedFarmaciaTests(TestCase):
 
         anterior = MuestraRedFarmacia.objects.create(
             farmacia=self.estacion.farmacia, bytes_recibidos=100_000_000, bytes_enviados=50_000_000,
+            timestamp=timezone.now() - timedelta(seconds=300),
         )
-        MuestraRedFarmacia.objects.filter(pk=anterior.pk).update(timestamp=timezone.now() - timedelta(seconds=300))
 
         manejar_red_farmacia(self.estacion.codigo, {
             'token': self.estacion.token_enrolamiento, 'bytes_recibidos': 112_000_000, 'bytes_enviados': 56_000_000,
