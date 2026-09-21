@@ -139,6 +139,15 @@ definir_acl "$MQTT_USERNAME_WORKER" '[
     {"topic": "/saidsof/enrolamiento/respuesta/+/", "permission": "allow", "action": "publish"}
 ]'
 
+# Las dos ultimas reglas son los catalogos globales (servicios del POS y eventos de
+# Windows). SIN ELLAS el publish parece funcionar y no llega: `_publicar_mqtt` devuelve
+# True porque paho recibio el PUBACK, y el PUBACK confirma que EMQX recibio el PAQUETE,
+# no que lo haya autorizado -- la misma advertencia que este script documenta al final.
+# Mordio el 21-sep-2026: los agentes con suscripcion activa y ACL correcta seguian con
+# `catalogo_eventos_sistema` ausente, sin un solo error en ningun log.
+#
+# Los comentarios van ACA y no dentro del arreglo: JSON no admite `#`, y adentro EMQX
+# responde 400 BAD_REQUEST -- que es como se rompio este mismo bloque al arreglarlo.
 definir_acl "$MQTT_USERNAME_PANEL" '[
     {"topic": "/saidsof/despliegue/global/", "permission": "allow", "action": "publish"},
     {"topic": "/saidsof/despliegue/grupo/+/", "permission": "allow", "action": "publish"},
@@ -150,15 +159,6 @@ definir_acl "$MQTT_USERNAME_PANEL" '[
     {"topic": "/saidsof/agente/+/software/", "permission": "allow", "action": "publish"},
     {"topic": "/saidsof/agente/+/comando/", "permission": "allow", "action": "publish"},
     {"topic": "/saidsof/agente/+/actualizar_agente/", "permission": "allow", "action": "publish"},
-    # Los dos catalogos globales (servicios del POS y eventos de Windows). SIN ESTAS DOS
-    # REGLAS el publish parece funcionar y no llega: `_publicar_mqtt` devuelve True
-    # porque paho recibio el PUBACK, y el PUBACK solo confirma que EMQX recibio el
-    # paquete, NO que lo haya autorizado -- es la advertencia que este mismo script
-    # documenta al final, y volvio a morder el 21-sep-2026.
-    #
-    # Sintoma: los agentes con la suscripcion activa y la ACL correcta seguian con
-    # `catalogo_eventos_sistema` ausente en identidad.json y chequeando odoo, que estaba
-    # desactivado en el catalogo desde dos dias antes. Cero errores en ningun log.
     {"topic": "/saidsof/catalogo/servicios_pos/", "permission": "allow", "action": "publish"},
     {"topic": "/saidsof/catalogo/eventos_sistema/", "permission": "allow", "action": "publish"}
 ]'
