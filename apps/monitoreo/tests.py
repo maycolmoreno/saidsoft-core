@@ -1023,8 +1023,13 @@ class SincronizarAnchoBandaFarmaciasTests(TestCase):
             sincronizar_ancho_banda_farmacias()
 
         muestra = MuestraRedFarmacia.objects.filter(farmacia=self.con_ip).exclude(pk=anterior.pk).get()
-        self.assertEqual(muestra.red_recibido_kbps, 320.0)
-        self.assertEqual(muestra.red_enviado_kbps, 160.0)
+        # `delta` y no igualdad exacta: la tasa se divide por el tiempo REAL transcurrido
+        # entre las dos muestras, asi que unos milisegundos de mas la corren unas
+        # decimas. Con `assertEqual` esto pasa aislado en 0,7 s y falla en una corrida
+        # completa donde la maquina esta cargada -- visto el 20-sep-2026, 319.9 != 320.0.
+        # Lo que el test verifica es el calculo, no el cronometro.
+        self.assertAlmostEqual(muestra.red_recibido_kbps, 320.0, delta=1.0)
+        self.assertAlmostEqual(muestra.red_enviado_kbps, 160.0, delta=1.0)
 
     def test_contador_reiniciado_no_calcula_tasa_negativa(self):
         # Router reiniciado entre corridas: el contador vuelve a empezar desde ~0,

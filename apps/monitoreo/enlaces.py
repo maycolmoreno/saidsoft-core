@@ -245,16 +245,121 @@ def sondear_enlaces_farmacias(farmacias=None) -> dict:
     return resumen
 
 
+def nombre_proveedor(farmacia) -> str:
+    """El ISP de una farmacia: TELCONET, PUNTO NET, FIBROMARK...
+
+    Punto único: lo consumen el correo de caídas, la tabla de enlaces y el Centro de
+    Monitoreo. Tres lugares diciendo "el proveedor" con tres criterios distintos es cómo
+    se llega a que el panel y el correo se contradigan.
+
+    **Sale de `tipo_enlace` y NO de `circuito_proveedor`, y la diferencia importa.** Hasta
+    el 20-sep-2026 esto cortaba el circuito en el primer guion creyendo que ahí estaba el
+    proveedor. No está: medido sobre las 700 farmacias, el circuito tiene la forma
+    `cliente-sitio-ciudad` (`sangregorio-7deagosto-buenafe`), así que el primer segmento
+    es la CADENA. El agrupado "por proveedor" venía devolviendo 164 bloques llamados
+    `sangregorio`, `sangregorio61`, `sg278` — que para reclamarle a un proveedor no sirven.
+
+    `tipo_enlace` sí es el ISP y está cargado en el 100% de las farmacias monitoreadas:
+    TELCONET 579, PUNTO NET 109, FIBROMARK 5, ETAPA 4, y tres sueltas.
+    """
+    return (getattr(farmacia, 'tipo_enlace', '') or '').strip() or '(proveedor sin cargar)'
+
+
 def _agrupar_por_proveedor(eventos):
-    """Agrupa por circuito para que el correo se lea como se reporta: un bloque por
-    proveedor. El circuito trae el sitio pegado al proveedor ("sangregorio61-avejose"),
-    así que se corta en el primer guion — es lo que distingue TELCONET de PUNTO NET sin
-    pedir un campo nuevo que hoy nadie llena."""
+    """Agrupa las caídas por ISP, para que el correo se lea como se abre el ticket: un
+    reclamo por proveedor.
+
+    Requiere que los eventos vengan con `select_related('farmacia')` — si no, esto hace
+    una consulta por evento, y una tanda de caídas puede traer cientos.
+    """
     grupos: dict[str, list] = {}
     for evento in eventos:
-        proveedor = (evento.circuito_proveedor or '').split('-')[0].strip() or '(sin circuito)'
-        grupos.setdefault(proveedor, []).append(evento)
+        grupos.setdefault(nombre_proveedor(evento.farmacia), []).append(evento)
     return dict(sorted(grupos.items()))
+
+
+# --- Caídas simultáneas: circuito individual, corte del proveedor, o ceguera propia ---
+#
+# ESTO NO DISTINGUE CORTE DE LUZ DE CAÍDA DEL ENLACE. Se investigó el 20-sep-2026 y hoy
+# no es posible: el ping externo y el heartbeat MQTT viajan por la misma conexión que se
+# corta en los dos casos, los Mikrotik instalados (RB941-2nD, RB951Ui-2nD/2HnD) NO
+# implementan el árbol de salud de MikroTik —comprobado contra GAT01: `sysName` responde
+# y los cinco OID `mtxrHl*` devuelven "No Such Object"— y hay CERO UPS en el inventario.
+# Sin un sensor que sobreviva al corte, o un canal fuera de banda, no hay señal que
+# separar. Ver README.md / PLAN_MODERNIZACION.md.
+#
+# Lo que SÍ se puede responder con los datos que ya existen es otra pregunta, y resulta
+# ser la que la mesa de ayuda necesita antes: **¿esto es un sitio, o es el proveedor?**
+# De eso depende si se abre un ticket por farmacia o uno solo por el circuito troncal.
+
+# Umbrales, medidos sobre los 1.108 eventos de los últimos 30 días (20-sep-2026):
+#
+# - VENTANA de 10 min: los racimos reales se forman en 4-22 min. Con 5 min se parten en
+#   dos y con 30 se pegan cosas que no tienen que ver.
+# - MÍNIMO de 3: dos farmacias cayendo juntas pasa por casualidad; de las 166 tandas con
+#   2+ caídas, 162 (98%) comparten un solo proveedor, así que el agrupado discrimina.
+# - PROVEEDORES_PARA_CEGUERA en 3: una tanda que toca tres ISP distintos a la vez no es
+#   una coincidencia, es que el que dejó de ver fue el servidor. Pasó de verdad: 194
+#   caídas en 8 minutos abarcando 6 proveedores y 39 ciudades — el 17% de TODOS los
+#   eventos del mes en un solo episodio. Sin esta regla, esos 194 se reportan como 194
+#   farmacias caídas y el número del mes queda inflado.
+VENTANA_SIMULTANEAS_MINUTOS = 10
+MINIMO_PARA_CORTE_DE_PROVEEDOR = 3
+PROVEEDORES_PARA_CEGUERA = 3
+
+
+def clasificar_caidas_simultaneas(eventos):
+    """`{farmacia_id: (clase, detalle)}` para un conjunto de caídas abiertas.
+
+    `clase` es una de:
+      - `'proveedor'`  — varias del MISMO ISP cayeron juntas: probable corte del proveedor.
+      - `'ceguera'`    — cayeron de varios ISP a la vez: lo más probable es que el que
+                         perdió visibilidad sea este servidor, no las farmacias.
+      - `'individual'` — nada alrededor: es ese sitio.
+
+    Es una INFERENCIA, no una lectura. Nada de esto mide el estado del enlace ni de la
+    energía: mira cuándo empezaron las caídas y de qué proveedor es cada una. Por eso las
+    etiquetas dicen "probable" y no afirman una causa.
+
+    Los eventos tienen que venir con `select_related('farmacia')`.
+    """
+    from datetime import timedelta
+
+    ordenados = sorted(eventos, key=lambda e: e.inicio)
+    ventana = timedelta(minutes=VENTANA_SIMULTANEAS_MINUTOS)
+
+    racimos, actual = [], []
+    for evento in ordenados:
+        if actual and (evento.inicio - actual[-1].inicio) > ventana:
+            racimos.append(actual)
+            actual = []
+        actual.append(evento)
+    if actual:
+        racimos.append(actual)
+
+    clasificacion = {}
+    for racimo in racimos:
+        proveedores = {nombre_proveedor(e.farmacia) for e in racimo}
+        if len(racimo) >= MINIMO_PARA_CORTE_DE_PROVEEDOR and len(proveedores) >= PROVEEDORES_PARA_CEGUERA:
+            detalle = (
+                f'{len(racimo)} sitios de {len(proveedores)} proveedores distintos cayeron '
+                'en minutos. Que varios ISP fallen a la vez es muy improbable: revisá '
+                'primero la conexión del servidor de monitoreo.'
+            )
+            clase = 'ceguera'
+        elif len(racimo) >= MINIMO_PARA_CORTE_DE_PROVEEDOR and len(proveedores) == 1:
+            proveedor = next(iter(proveedores))
+            detalle = (
+                f'{len(racimo)} sitios de {proveedor} cayeron en minutos. Conviene un solo '
+                'reclamo al proveedor en vez de un ticket por farmacia.'
+            )
+            clase = 'proveedor'
+        else:
+            detalle = ''
+            clase = 'individual'
+        for evento in racimo:
+            clasificacion[evento.farmacia_id] = (clase, detalle)
+    return clasificacion
 
 
 def notificar_cambios_enlaces() -> dict:

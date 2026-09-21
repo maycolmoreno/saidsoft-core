@@ -2757,3 +2757,59 @@ que no controlamos), aprobar enrolamientos, actualizar el agente o desplegar (af
 la flota), `configurar_nodo_pos`, y **resolver** una alerta — distinto de reconocerla:
 afirma "esto ya está arreglado" y eso no se verifica desde un teléfono; además la mayoría
 se cierra sola cuando el servicio vuelve.
+
+## Proveedor en la tabla de enlaces, y por qué energía vs. enlace no se puede hoy (20-sep-2026)
+
+### El hallazgo que cambió los dos cambios pedidos
+
+`circuito_proveedor` **no es el proveedor**. Medido sobre las 700 farmacias: tiene la
+forma `cliente-sitio-ciudad` (`sangregorio-7deagosto-buenafe`), así que el primer
+segmento es la CADENA. `_agrupar_por_proveedor` venía cortando ahí desde que existe, con
+un docstring que afirmaba que eso "distingue TELCONET de PUNTO NET" — no lo distingue.
+El correo de caídas producía 164 bloques llamados `sangregorio`, `sangregorio61`,
+`sg278`, que para reclamarle a un proveedor no sirven.
+
+El campo correcto ya existía y nadie lo estaba usando para esto: **`tipo_enlace`**, con
+help_text "Proveedor/tecnología del enlace principal (ej. TELCONET, PUNTO NET)", cargado
+al **100%**: TELCONET 579, PUNTO NET 109, FIBROMARK 5, ETAPA 4, CORVINET/CLARO/GONET 1.
+
+Se corrigió en `nombre_proveedor()`, punto único que consumen el correo de caídas, la
+tabla de enlaces y el Centro de Monitoreo. La columna nueva se llama **Proveedor** y
+convive con la de **Circuito**, que se mantiene porque es el identificador que el
+proveedor pide al abrir el ticket — son dos datos distintos, no uno duplicado.
+
+### Energía vs. enlace: ruta 3 (no es viable hoy), con la evidencia
+
+No se inventó ninguna columna de causa. Las tres razones, medidas y no supuestas:
+
+1. El ping y el heartbeat MQTT **viajan por la misma conexión** que se corta en ambos
+   casos.
+2. **Los routers no tienen sensores de energía.** Modelos en producción: RB941-2nD,
+   RB951Ui-2nD, RB951Ui-2HnD. Probado por SNMP contra GAT01: `sysName` responde `GAT01`
+   (el control funciona) y los cinco OID `mtxrHl*` devuelven *No Such Object currently
+   exists at this OID*. No es comunidad ni timeout — esas placas no implementan el árbol
+   de salud de MikroTik.
+3. **Cero UPS inventariados** (`Activo.tipo='UPS'`).
+
+Para poder distinguirlo haría falta un UPS con tarjeta SNMP (el único que sobrevive al
+corte), o un router con sensores alimentado por ese UPS, o un canal fuera de banda.
+Documentado en README.md.
+
+### Lo que sí se pudo, que responde la pregunta anterior
+
+La mesa de ayuda necesita saber, antes que la causa física, **si esto es un sitio o es el
+proveedor** — de eso depende si abre un ticket por farmacia o uno solo. Eso sí sale de
+los datos actuales:
+
+- De las **166 tandas con 2+ caídas** en 30 días, **162 (98%) comparten un solo
+  proveedor**. Agrupar por ISP discrimina.
+- Umbrales: 3+ caídas en 10 min. Los racimos reales se forman en 4-22 min; con 5 min se
+  parten y con 30 se pegan cosas ajenas. Dos caídas juntas pasan por casualidad.
+- **Tercera categoría, y salió de los datos**: una tanda que toca 3+ ISP a la vez no es
+  coincidencia, es que el que dejó de ver fue el servidor. Caso real: **194 caídas en 8
+  minutos, 6 proveedores, 39 ciudades — el 17% de todos los eventos del mes**. Sin esta
+  regla esos 194 se cuentan como farmacias caídas e inflan el mes entero.
+
+`clasificar_caidas_simultaneas` en `apps/monitoreo/enlaces.py`. Es una inferencia por
+correlación temporal y las etiquetas lo dicen ("probable"), con un test que verifica que
+el texto **no** mencione energía ni corte de luz.

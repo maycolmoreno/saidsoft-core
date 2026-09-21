@@ -140,6 +140,17 @@ def enlaces_farmacias_lista(request):
 
     pagina, query_filtros = paginar(listado, request)
 
+    # Se clasifican TODAS las caidas abiertas (no solo las de esta pagina): una tanda
+    # simultanea se reconoce por lo que paso alrededor, y mirar 25 filas no alcanza para
+    # ver que cayeron 30 sitios del mismo proveedor.
+    from apps.monitoreo.enlaces import clasificar_caidas_simultaneas
+
+    abiertas = list(
+        EventoEnlaceFarmacia.objects.filter(fin__isnull=True)
+        .select_related('farmacia')
+    )
+    simultaneas = clasificar_caidas_simultaneas(abiertas)
+
     filas = []
     for farmacia in pagina.object_list:
         estado = getattr(farmacia, 'estado_enlace', None)
@@ -154,6 +165,12 @@ def enlaces_farmacias_lista(request):
             # nunca respondió manda a alguien a abrir un ticket con el proveedor por un
             # enlace que nunca estuvo arriba.
             'nunca_respondio': bool(estado and estado.nunca_respondio),
+            # Inferencia por correlacion, no una lectura: ver
+            # `clasificar_caidas_simultaneas`. Dice si esto parece un sitio, el proveedor,
+            # o que el servidor perdio visibilidad -- NO si fue corte de luz, que con la
+            # instrumentacion actual no se puede saber.
+            'simultanea': simultaneas.get(farmacia.pk, ('individual', ''))[0],
+            'simultanea_detalle': simultaneas.get(farmacia.pk, ('individual', ''))[1],
             'total_kbps': total_kbps,
             # Mismo criterio que el modal de esta farmacia: % de SU ancho contratado
             # cuando se conoce, y recién si no, el umbral absoluto en kbps. Antes la

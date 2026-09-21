@@ -5475,7 +5475,12 @@ class CentroMonitoreoTests(TestCase):
         grupo = Grupo.objects.create(codigo='TRX940')
         self.farmacia_sg = Farmacia.objects.create(
             codigo='ML940', grupo=grupo, unidad_negocio=self.sg, ip_router='10.1.1.254',
-            circuito_proveedor='telconet-ml940',
+            # El proveedor va en `tipo_enlace`; el circuito es el identificador del
+            # ticket y tiene forma `cliente-sitio-ciudad`. Esta fixture decia
+            # `circuito_proveedor='telconet-ml940'`, que es justo la confusion que el
+            # agrupado arrastraba: el primer segmento del circuito es la CADENA.
+            tipo_enlace='TELCONET',
+            circuito_proveedor='sangregorio-ml940-portoviejo',
         )
         self.farmacia_mia = Farmacia.objects.create(
             codigo='MM940', grupo=grupo, unidad_negocio=self.mia, ip_router='10.2.2.254',
@@ -5635,12 +5640,12 @@ class CentroMonitoreoTests(TestCase):
         )
         EventoEnlaceFarmacia.objects.create(
             farmacia=self.farmacia_sg, inicio=timezone.now() - timedelta(minutes=30),
-            circuito_proveedor='telconet-ml940',
+            circuito_proveedor='sangregorio-ml940-portoviejo',
         )
 
         resp = self._datos()
 
-        self.assertIn('telconet', resp.context['enlaces_por_proveedor'])
+        self.assertIn('TELCONET', resp.context['enlaces_por_proveedor'])
         self.assertEqual(resp.context['r']['enlaces_caidos'], 1)
 
     def test_un_enlace_que_nunca_respondio_no_cuenta_como_caido(self):
@@ -6043,3 +6048,220 @@ class IndicadoresDeMonitoreoTests(TestCase):
         # aunque esté por debajo del umbral absoluto de 15.000 kbps.
         self.assertEqual(resp.context['estado_bw'], 'critical')
         self.assertEqual(resp.context['consumo'].estado, 'critical')
+
+class ProveedorRealVsCircuitoTests(TestCase):
+    """El proveedor sale de `tipo_enlace`, NO del primer segmento del circuito.
+
+    Medido el 20-sep-2026 sobre las 700 farmacias: el circuito tiene la forma
+    `cliente-sitio-ciudad` (`sangregorio-7deagosto-buenafe`), así que cortarlo en el
+    primer guion devuelve la CADENA. El agrupado "por proveedor" venía produciendo 164
+    bloques llamados `sangregorio`, `sangregorio61`, `sg278` — inútiles para reclamarle
+    a nadie. `tipo_enlace` sí es el ISP y está al 100%.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX960')
+
+    def _farmacia(self, codigo, *, tipo_enlace='TELCONET', circuito='', ip='10.9.9.1'):
+        from apps.catalogo.models import Farmacia
+
+        return Farmacia.objects.create(
+            codigo=codigo, grupo=self.grupo, unidad_negocio=self.sg,
+            tipo_enlace=tipo_enlace, circuito_proveedor=circuito, ip_router=ip,
+        )
+
+    def test_el_proveedor_es_el_ISP_y_no_la_cadena(self):
+        from apps.monitoreo.enlaces import nombre_proveedor
+
+        farmacia = self._farmacia('ML960', tipo_enlace='TELCONET',
+                                  circuito='sangregorio-7deagosto-buenafe')
+        self.assertEqual(nombre_proveedor(farmacia), 'TELCONET')
+        self.assertNotEqual(nombre_proveedor(farmacia), 'sangregorio')
+
+    def test_una_farmacia_sin_proveedor_cargado_lo_dice_en_vez_de_mentir(self):
+        from apps.monitoreo.enlaces import nombre_proveedor
+
+        farmacia = self._farmacia('ML961', tipo_enlace='', circuito='sangregorio-x-y')
+        self.assertEqual(nombre_proveedor(farmacia), '(proveedor sin cargar)')
+
+    def test_el_correo_de_caidas_agrupa_por_ISP(self):
+        """Un reclamo por proveedor es como se abre el ticket. Antes salían tantos
+        bloques como sitios, porque cada circuito empieza distinto."""
+        from apps.monitoreo.enlaces import _agrupar_por_proveedor
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        ahora = timezone.now()
+        eventos = []
+        for i, (codigo, isp) in enumerate([
+            ('ML962', 'TELCONET'), ('ML963', 'TELCONET'), ('ML964', 'PUNTO NET'),
+        ]):
+            f = self._farmacia(codigo, tipo_enlace=isp,
+                               circuito=f'sangregorio{i}-sitio{i}-ciudad', ip=f'10.9.9.{10 + i}')
+            eventos.append(EventoEnlaceFarmacia.objects.create(
+                farmacia=f, inicio=ahora, circuito_proveedor=f.circuito_proveedor,
+            ))
+
+        grupos = _agrupar_por_proveedor(eventos)
+
+        self.assertEqual(set(grupos), {'TELCONET', 'PUNTO NET'})
+        self.assertEqual(len(grupos['TELCONET']), 2)
+
+
+class CaidasSimultaneasTests(TestCase):
+    """Clasificar una caída como "es este sitio", "es el proveedor" o "el que dejó de ver
+    fue el servidor".
+
+    Es una INFERENCIA por correlación temporal, no una lectura de nada. No dice si fue
+    corte de luz: eso hoy no se puede saber (ver el comentario de
+    `clasificar_caidas_simultaneas`).
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX970')
+        self.ahora = timezone.now()
+
+    def _caida(self, codigo, isp, *, minutos_atras=0, ip_sufijo=1):
+        from apps.catalogo.models import Farmacia
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        f = Farmacia.objects.create(
+            codigo=codigo, grupo=self.grupo, unidad_negocio=self.sg,
+            tipo_enlace=isp, ip_router=f'10.8.8.{ip_sufijo}',
+        )
+        return EventoEnlaceFarmacia.objects.create(
+            farmacia=f, inicio=self.ahora - timedelta(minutes=minutos_atras),
+        )
+
+    def _clasificar(self, eventos):
+        from apps.monitoreo.enlaces import clasificar_caidas_simultaneas
+
+        return clasificar_caidas_simultaneas(eventos)
+
+    def test_una_caida_sola_es_del_sitio(self):
+        evento = self._caida('ML970', 'TELCONET', ip_sufijo=1)
+        clase, _ = self._clasificar([evento])[evento.farmacia_id]
+        self.assertEqual(clase, 'individual')
+
+    def test_dos_juntas_todavia_no_alcanzan(self):
+        """Dos cayendo a la vez pasa por casualidad. El mínimo es 3 por eso."""
+        eventos = [self._caida(f'ML97{i}', 'TELCONET', ip_sufijo=10 + i) for i in (1, 2)]
+        clases = {self._clasificar(eventos)[e.farmacia_id][0] for e in eventos}
+        self.assertEqual(clases, {'individual'})
+
+    def test_tres_del_mismo_proveedor_son_un_probable_corte_del_proveedor(self):
+        eventos = [self._caida(f'ML98{i}', 'TELCONET', minutos_atras=i, ip_sufijo=20 + i)
+                   for i in range(3)]
+        for e in eventos:
+            clase, detalle = self._clasificar(eventos)[e.farmacia_id]
+            self.assertEqual(clase, 'proveedor')
+            self.assertIn('TELCONET', detalle)
+
+    def test_tres_de_proveedores_distintos_apuntan_al_propio_monitoreo(self):
+        """Que tres ISP fallen en el mismo minuto no es coincidencia. Pasó de verdad: 194
+        caídas en 8 minutos abarcando 6 proveedores y 39 ciudades — el 17% de todos los
+        eventos del mes en un solo episodio, que no eran 194 farmacias caídas."""
+        eventos = [
+            self._caida('ML990', 'TELCONET', ip_sufijo=30),
+            self._caida('ML991', 'PUNTO NET', minutos_atras=1, ip_sufijo=31),
+            self._caida('ML992', 'FIBROMARK', minutos_atras=2, ip_sufijo=32),
+        ]
+        for e in eventos:
+            clase, detalle = self._clasificar(eventos)[e.farmacia_id]
+            self.assertEqual(clase, 'ceguera')
+            self.assertIn('servidor', detalle)
+
+    def test_caidas_separadas_en_el_tiempo_no_se_juntan(self):
+        """Tres del mismo proveedor pero con horas de diferencia son tres incidentes."""
+        eventos = [self._caida(f'MM00{i}', 'TELCONET', minutos_atras=i * 60, ip_sufijo=40 + i)
+                   for i in range(3)]
+        clases = {self._clasificar(eventos)[e.farmacia_id][0] for e in eventos}
+        self.assertEqual(clases, {'individual'})
+
+    def test_la_etiqueta_nunca_afirma_una_causa(self):
+        """Es una inferencia y el texto lo tiene que decir: "probable", no "hubo"."""
+        eventos = [self._caida(f'MM01{i}', 'TELCONET', minutos_atras=i, ip_sufijo=50 + i)
+                   for i in range(3)]
+        _, detalle = self._clasificar(eventos)[eventos[0].farmacia_id]
+        self.assertNotIn('corte de luz', detalle.lower())
+        self.assertNotIn('energía', detalle.lower())
+
+
+class ColumnaProveedorEnLaTablaTests(TestCase):
+    """La tabla de /monitoreo/enlaces/ muestra a quién reclamarle."""
+
+    def setUp(self):
+        from apps.catalogo.models import Farmacia
+        from apps.cuentas.models import PerfilUsuario
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX980')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML985', grupo=grupo, unidad_negocio=self.sg, tipo_enlace='PUNTO NET',
+            circuito_proveedor='sangregorio-7deagosto-buenafe', ip_router='10.7.7.1',
+        )
+        EstadoEnlaceFarmacia.objects.create(
+            farmacia=self.farmacia, alcanzable=True, ultima_verificacion=timezone.now(),
+        )
+        # Sin proveedor cargado: el borde que el prompt pidió cubrir.
+        self.sin_proveedor = Farmacia.objects.create(
+            codigo='ML986', grupo=grupo, unidad_negocio=self.sg, tipo_enlace='',
+            ip_router='10.7.7.2',
+        )
+
+        self.usuario = User.objects.create_user(username='ver_enlaces', password='x')
+        self.usuario.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia',
+            ),
+        )
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+
+    def test_la_tabla_muestra_el_proveedor(self):
+        self.client.force_login(self.usuario)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertContains(resp, 'Proveedor')
+        self.assertContains(resp, 'PUNTO NET')
+
+    def test_el_circuito_sigue_estando_porque_es_lo_que_pide_el_proveedor(self):
+        """Proveedor y circuito son cosas distintas: a uno se le reclama, el otro es el
+        identificador que te pide al abrir el ticket. La columna nueva no reemplaza."""
+        self.client.force_login(self.usuario)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertContains(resp, 'sangregorio-7deagosto-buenafe')
+
+    def test_una_farmacia_sin_proveedor_no_rompe_la_tabla(self):
+        self.client.force_login(self.usuario)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'ML986')
+
+    def test_sin_caidas_simultaneas_no_aparece_ninguna_etiqueta(self):
+        """Una etiqueta que sale siempre deja de significar algo."""
+        self.client.force_login(self.usuario)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertNotContains(resp, 'probable corte del proveedor')
+
+    def test_tres_caidas_del_mismo_proveedor_marcan_la_fila(self):
+        from apps.catalogo.models import Farmacia
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        grupo = Grupo.objects.get(codigo='TRX980')
+        ahora = timezone.now()
+        for i in range(3):
+            f = Farmacia.objects.create(
+                codigo=f'ML99{i}', grupo=grupo, unidad_negocio=self.sg,
+                tipo_enlace='TELCONET', ip_router=f'10.7.8.{i + 1}',
+            )
+            EstadoEnlaceFarmacia.objects.create(
+                farmacia=f, alcanzable=False, respondio_alguna_vez=True,
+                ultima_verificacion=ahora,
+            )
+            EventoEnlaceFarmacia.objects.create(farmacia=f, inicio=ahora - timedelta(minutes=i))
+
+        self.client.force_login(self.usuario)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+
+        self.assertContains(resp, 'probable corte del proveedor')

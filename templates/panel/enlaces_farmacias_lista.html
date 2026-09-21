@@ -194,6 +194,7 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
                 <th class="text-left px-3 py-2.5">Estado</th>
                 <th class="text-right px-3 py-2.5">Latencia</th>
                 <th class="text-right px-3 py-2.5">Tráfico</th>
+                <th class="text-left px-3 py-2.5">Proveedor</th>
                 <th class="text-left px-3 py-2.5">Circuito</th>
                 <th class="text-left px-3 py-2.5">Último sondeo</th>
                 <th class="text-right px-4 py-2.5"></th>
@@ -254,6 +255,14 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
                     {% endif %}
                     {% else %}<span class="text-[var(--text-faint)]">sin SNMP</span>{% endif %}
                 </td>
+                <td class="px-3 py-2.5 whitespace-nowrap">
+                    {{ fila.farmacia.tipo_enlace|default:"—" }}
+                    {% if fila.simultanea == 'proveedor' %}
+                    <div class="text-xs text-[var(--warning)] mt-0.5" title="{{ fila.simultanea_detalle }}">probable corte del proveedor</div>
+                    {% elif fila.simultanea == 'ceguera' %}
+                    <div class="text-xs text-[var(--info)] mt-0.5" title="{{ fila.simultanea_detalle }}">¿el monitoreo perdió visibilidad?</div>
+                    {% endif %}
+                </td>
                 <td class="px-3 py-2.5 mono text-[var(--text-faint)] truncate" style="font-size:11px; max-width:200px;"
                     title="{{ fila.farmacia.circuito_proveedor }}">{{ fila.farmacia.circuito_proveedor|default:"—" }}</td>
                 <td class="px-3 py-2.5 text-[var(--text-faint)] text-xs whitespace-nowrap">
@@ -262,7 +271,7 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
                 <td class="px-4 py-2.5 text-right text-[var(--text-faint)] text-xs">Ver ›</td>
             </tr>
         {% empty %}
-            <tr><td colspan="8">
+            <tr><td colspan="9">
                 {% include "panel/_estado_vacio.html" with titulo="Ninguna farmacia tiene IP de enlace cargada" pista="Se cargan desde el Excel de operaciones con importar_red_farmacias_xlsx. Sin IP no hay a qué hacerle ping." pista_filtro="Hay enlaces cargados, pero ninguno coincide con este filtro." accion_puede=False %}
             </td></tr>
         {% endfor %}

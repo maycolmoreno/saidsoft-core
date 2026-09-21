@@ -1148,6 +1148,75 @@ enterara). El agente ahora lo monitorea:
   solo al crear la fila: si la lista gana un prefijo nuevo más adelante, las filas
   viejas se ponen al día solas.
 
+### Proveedor, circuito, y por qué no son lo mismo
+
+La tabla de `/monitoreo/enlaces/` tiene dos columnas parecidas y conviene no confundirlas:
+
+- **Proveedor** (`Farmacia.tipo_enlace`) — el ISP: TELCONET, PUNTO NET, FIBROMARK, ETAPA.
+  Es **a quién se le reclama**. Está cargado en el 100% de las 700 farmacias
+  monitoreadas: TELCONET 579, PUNTO NET 109, FIBROMARK 5, ETAPA 4, y tres sueltas.
+- **Circuito** (`Farmacia.circuito_proveedor`) — el identificador del enlace, con la
+  forma `cliente-sitio-ciudad` (`sangregorio-7deagosto-buenafe`). Es **lo que el
+  proveedor te pide al abrir el ticket**. Falta en 145 farmacias.
+
+**Corrección del 20-sep-2026**: `_agrupar_por_proveedor` cortaba el circuito en el primer
+guion creyendo que ahí estaba el proveedor. No estaba: el primer segmento es la CADENA,
+así que el correo de caídas venía agrupando en 164 bloques llamados `sangregorio`,
+`sangregorio61`, `sg278` — inútiles para reclamarle a nadie. Ahora usa `tipo_enlace` a
+través de `nombre_proveedor()`, que es el punto único que consumen el correo, la tabla y
+el Centro de Monitoreo.
+
+### Caída del sitio, del proveedor, o ceguera propia
+
+Cuando varias farmacias caen juntas, la tabla marca la fila con una inferencia:
+
+| Etiqueta | Cuándo aparece | Qué hacer |
+|---|---|---|
+| *(ninguna)* | La caída está sola | Ticket por esa farmacia |
+| **probable corte del proveedor** | 3+ sitios del MISMO ISP en 10 min | Un solo reclamo al proveedor |
+| **¿el monitoreo perdió visibilidad?** | 3+ sitios de 3+ ISP distintos a la vez | Revisar la conexión del servidor antes que las farmacias |
+
+Los umbrales salen de medir los 1.108 eventos de 30 días: de las 166 tandas con 2+
+caídas, **162 (98%) comparten un solo proveedor**, así que agrupar por ISP discrimina
+bien. La tercera fila existe por un caso real: **194 caídas en 8 minutos abarcando 6
+proveedores y 39 ciudades** — el 17% de todos los eventos del mes en un solo episodio.
+Eso no fueron 194 farmacias cayéndose, fue el servidor quedándose sin ver. Sin esa
+distinción, el número del mes queda inflado y la mesa de ayuda sale a buscar 194
+problemas que no existen.
+
+**Es una inferencia por correlación temporal, no una lectura.** Por eso las etiquetas
+dicen "probable" y no afirman una causa.
+
+### Lo que NO se puede saber hoy: corte de luz vs. caída del enlace
+
+Se investigó el 20-sep-2026 y **no es posible con la instrumentación actual**. Vale
+dejarlo escrito para no volver a intentarlo sin cambiar nada antes:
+
+1. **El ping externo y el heartbeat MQTT viajan por la misma conexión** que se corta en
+   los dos casos. Desde afuera, un corte de luz y un circuito caído apagan exactamente
+   la misma señal.
+2. **Los routers instalados no tienen sensores de energía.** Los modelos en producción
+   son RB941-2nD, RB951Ui-2nD y RB951Ui-2HnD — MikroTik de gama baja. Comprobado contra
+   GAT01 por SNMP: el control `sysName` responde `GAT01`, y los cinco OID del árbol de
+   salud (`mtxrHlVoltage`, `mtxrHlPowerSupplyState`, `mtxrHlBackupPowerSupplyState`,
+   `mtxrHlPowerConsumption`, `mtxrHlActiveFan`) devuelven **"No Such Object currently
+   exists at this OID"**. No es un problema de comunidad ni de timeout: esas placas no
+   implementan ese árbol.
+3. **Hay cero UPS en el inventario** (`Activo.tipo='UPS'`), así que tampoco hay uno a
+   quien preguntarle.
+
+**Qué haría falta** para poder distinguirlo, en orden de costo:
+
+- Un **UPS con tarjeta de red SNMP** en las farmacias donde importe, e inventariarlo. Es
+  el único que puede reportar "estoy en batería" — y sobrevive al corte, que es el punto.
+- O un router con sensores de salud (gama Mikrotik CCR/CRS) **alimentado por ese UPS**:
+  si el router sigue en pie y su WAN está caída, es el circuito; si el router se apagó,
+  es energía.
+- O un canal fuera de banda (un módem celular de respaldo), que además daría
+  conectividad, no solo diagnóstico.
+
+Sin alguno de esos, cualquier columna "causa: energía / enlace" sería una invención.
+
 ## Monitoreo de los servicios externos que consume el POS
 
 El log del POS (sección de arriba) dice que algo falló. Esto dice **dónde se corta la
