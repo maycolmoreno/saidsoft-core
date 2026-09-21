@@ -2915,3 +2915,75 @@ de filas es una ventana de mantenimiento.
    despliegues. Extenderlo a `--n 1500` con heartbeat, métricas, servicios del POS y
    eventos es medio día y dice en qué número se satura este servidor de verdad. Con 8
    agentes instalados de ~1.800, es la única forma de saberlo.
+
+## La codificación de los subprocesos del agente, y lo que costó encontrarla (21-sep-2026)
+
+Apareció mientras se verificaba la recolección de eventos de Windows, leyendo el visor
+de `MAM06-A` por script remoto. La salida decía:
+
+    El servicio Saidsoft Agente terminÃ³ inesperadamente
+
+`terminÃ³` es UTF-8 leído como cp1252. No es un error: el script devolvía `exit 0`, el
+agente reportaba con normalidad y el panel mostraba el texto roto sin que nada fallara
+en ningún punto del camino.
+
+### La causa, y por qué estaba en once lugares
+
+`subprocess` con `text=True` y sin `encoding=` decodifica con la página de códigos local
+—cp1252 en un Windows en español— mientras el proceso hijo escribe en otra. La
+recolección de eventos ya lo hacía bien porque se escribió sabiendo esto; el resto del
+agente no.
+
+La guarda que se escribió para el caso encontrado (`AgenteDecodificaSalidaDeScriptsEnUtf8Tests`,
+sobre el AST y no sobre el texto, porque `subprocess.run(...)` se escribe partido en
+varias líneas) devolvió **once** llamadas, no una. La más cara: `_listar_software_instalado`.
+Medio catálogo de software de un Windows en español lleva acentos, así que el inventario
+de toda la flota llevaba meses guardándose corrupto.
+
+### Son dos familias y no se arreglan igual
+
+| Familia | Qué escribe | Arreglo |
+|---|---|---|
+| PowerShell | lo que se le diga | se le fuerza la salida a UTF-8 y se decodifica UTF-8 |
+| `.exe` nativos (`ping`, `tasklist`, instaladores) | página **OEM** del sistema (cp850 en español) | se decodifica con `'oem'` |
+
+Forzarles UTF-8 a los nativos habría roto lo que hoy funciona por casualidad: `ping` se
+parsea con una regex ASCII (`tiempo=3ms`) y `tasklist` se compara contra un nombre de
+proceso ASCII, así que la corrupción nunca tocaba la parte que se lee.
+
+Los PowerShell quedan concentrados en `correr_powershell()`: un solo lugar donde
+equivocarse, que es el punto.
+
+### La dirección contraria, que también estaba rota
+
+PowerShell 5.1 lee un `.ps1` **sin BOM** como ANSI. Un script con acentos en su propio
+texto se corrompía *antes* de ejecutarse. Los temporales se escriben ahora con
+`utf-8-sig`. En un `.bat` no va: `cmd` escupe el BOM como basura en la primera línea.
+
+La línea que fija la codificación no se antepone si el script empieza con `param(` o
+`#requires`, que tienen que ser lo primero del archivo. Ninguno de los 49 guardados al
+21-sep-2026 empieza así, pero uno futuro puede.
+
+### Lo que este episodio dice del proyecto
+
+Es el quinto caso seguido del mismo patrón: **código correcto, un detalle de entorno
+faltante, falla silenciosa**. Los cuatro anteriores fueron permisos (ACLs de EMQX, que
+deniegan sin avisar); este es una codificación. Lo que cambió no es que se arreglen más
+rápido sino que cada uno deja una prueba estructural que impide que la clase entera
+vuelva — `AclDelWorkerCubreSusTopicosTests`, `AclDelPanelCubreLoQuePublicaTests`,
+`AgenteSinModulosSombreadosTests` y ahora ésta. Las tres últimas se escribieron después
+de que el bug llegara a producción; ninguna habría hecho falta si existiera un linter
+corriendo sobre `agente-prueba/`, que sigue sin tener ninguno.
+
+### Dos hallazgos reales de la propia recolección, antes de recolectar
+
+Leyendo 30 días del visor de `MAM06-A` para probar la tubería aparecieron dos cosas que
+nadie estaba mirando:
+
+1. **El servicio Saidsoft Agente terminó inesperadamente, 2 veces.** El nuestro. Sin
+   investigar todavía.
+2. **`MeshAgent.exe` crasheó 3 veces** con `0xc0000005` (violación de acceso). Coincide
+   con lo ya anotado en §10 sobre procesos `meshagent` sueltos en `C:\WINDOWS\TEMP`.
+
+Ninguno de los dos había producido una alerta, porque hasta ahora no había nada que
+mirara el visor de eventos. Es exactamente para lo que se construyó.
