@@ -412,6 +412,7 @@ _AYUDA = '\n'.join([
     '/toperrores — errores del POS más repetidos en la flota',
     '/farmacia ML016 — detalle de una farmacia',
     '/hora — estaciones con el reloj corrido',
+    '/id — tu chat_id, para que te den de alta o te vinculen al panel',
     '',
     'Acciones:',
     '',
@@ -540,6 +541,39 @@ def _reconocer_alerta(alerta_id, chat_id) -> str:
 # minimo: corrige el reloj de UNA estacion, es idempotente, y es exactamente lo que la
 # alerta que llega por este mismo chat te esta pidiendo que hagas. Cualquier otra accion
 # tiene que volver a discutirse, no heredar este permiso.
+
+# --- Averiguar el propio chat_id ---
+#
+# Existe para sacar el SSH del proceso de sumar una persona. Antes habia que entrar al
+# servidor y preguntarle a la API de Telegram por los updates del bot para averiguar el
+# numero de alguien; ahora esa persona escribe /id y lo lee en pantalla.
+#
+# Un chat_id NO es secreto —sin TELEGRAM_BOT_TOKEN no sirve para nada, ver el docstring
+# de CanalNotificacion— asi que mostrarlo no expone nada. Lo que expone es la ESTRUCTURA
+# que muestra la respuesta larga de abajo (que existe un panel, que la autorizacion tiene
+# dos niveles), y por eso esa version es solo para chats ya autorizados: al desconocido,
+# en `procesar_actualizacion`, se le contesta el numero pelado y nada mas.
+def _comando_id(chat_id=None) -> str:
+    if chat_id is None:
+        # Pasa al probar el comando sin chat. Decirlo es mejor que devolver "None".
+        return 'No puedo ver tu chat_id desde aca.'
+
+    from apps.cuentas.services import usuario_de_chat_telegram
+
+    lineas = [f'Tu chat_id es {chat_id}', '']
+    usuario = usuario_de_chat_telegram(chat_id)
+    if usuario:
+        lineas.append(f'Esta atado a tu usuario del panel: {usuario.username}.')
+        lineas.append('Las acciones que hagas por aca corren con TUS permisos y quedan a tu nombre.')
+    else:
+        # El caso que mas confunde: el chat esta autorizado a consultar pero no atado a
+        # una persona, asi que /reconocer y /sincronizar le van a fallar sin que sea obvio
+        # por que. Decirlo aca ahorra el viaje.
+        lineas.append('Todavia NO esta atado a ningun usuario del panel, asi que solo podes')
+        lineas.append('consultar: /reconocer y /sincronizar te van a ser rechazados.')
+        lineas.append('Pasale este numero a quien administre el panel para que lo vincule.')
+    return '\n'.join(lineas)
+
 
 def _comando_hora() -> str:
     """Estaciones con el reloj corrido, la peor primero. Solo lectura."""
@@ -846,6 +880,8 @@ def responder_a(texto: str, chat_id=None):
         if not argumento.strip():
             return 'Decime cuál: /reconocer 42 (el número sale de /alertas).'
         return _pedir_confirmacion_reconocer(argumento.strip().lstrip('#'))
+    if comando in ('/id', '/miid'):
+        return _comando_id(chat_id)
     if comando == '/hora':
         return _comando_hora()
     if comando == '/sincronizar':
@@ -879,6 +915,20 @@ def procesar_actualizacion(update: dict) -> bool:
         if chat_id is None:
             return False
         if not chat_autorizado(chat_id):
+            # `/id` es la UNICA cosa que se le contesta a un chat sin autorizar, y tiene
+            # que ser asi para que sirva de algo: existe para dar de alta a alguien nuevo,
+            # y alguien nuevo por definicion todavia no esta en la lista. Contestarlo solo
+            # a los autorizados lo volveria un comando que unicamente pueden usar los que
+            # ya no lo necesitan.
+            #
+            # Tiene un costo y conviene tenerlo escrito: rompe en parte la propiedad que
+            # buscaba el silencio de abajo —no confirmarle a un desconocido que el bot es
+            # algo vivo—. Se acota a que la respuesta no dice NADA del sistema: ni que
+            # existe un panel, ni que hay comandos, ni si ese chat va a recibir acceso.
+            # Solo el numero, que Telegram ya le da a cualquiera con cualquier otro bot.
+            if (texto or '').strip().split('@')[0].lower() in ('/id', '/miid'):
+                logger.warning('Telegram: /id de un chat sin autorizar (%s).', chat_id)
+                return _enviar_telegram(chat_id, f'{chat_id}', teclado=None)
             # Sin respuesta: contestar "no autorizado" ya confirma que el bot es de algo
             # real y que responde. Queda en el log para poder detectar el sondeo.
             logger.warning('Telegram: consulta de un chat no autorizado (%s).', chat_id)

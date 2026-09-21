@@ -6652,3 +6652,97 @@ class EventosWindowsIngestaTests(TestCase):
         fila = EventoSistemaDetectado.objects.get()
         self.assertEqual(fila.cantidad_total, 1)
         self.assertIsNone(fila.vigilado)
+
+
+class IdPorTelegramTests(TestCase):
+    """`/id` le dice a una persona su propio chat_id.
+
+    Existe para sacar el SSH del proceso de sumar gente: antes, averiguar el chat_id de
+    alguien nuevo exigía entrar al servidor y consultarle los updates a la API de
+    Telegram. Pasó de verdad el 21-sep-2026 con el usuario `soportito`.
+
+    Lo que estas pruebas defienden es la decisión incómoda del comando: **tiene que
+    contestarle a un chat que NO está autorizado**. Si solo respondiera a los
+    autorizados sería un comando que únicamente pueden usar los que ya no lo necesitan.
+    Eso cede parte del silencio que protege al bot del sondeo, y la contención es que a
+    un desconocido se le manda el número pelado y nada más — ni que existe un panel, ni
+    que hay comandos, ni si va a recibir acceso.
+    """
+
+    def setUp(self):
+        from apps.cuentas.models import PerfilUsuario
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.persona = User.objects.create_user(username='soportito_test', password='x')
+        PerfilUsuario.objects.create(
+            usuario=self.persona, acceso_todas_unidades=False, telegram_chat_id='8063269004',
+        )
+
+    # --- el caso que justifica el comando ---
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=['999'])
+    def test_un_chat_sin_autorizar_recibe_su_numero_y_nada_mas(self):
+        from apps.monitoreo import telegram_bot
+
+        enviados = []
+        with patch('apps.monitoreo.services._enviar_telegram') as enviar:
+            enviar.side_effect = lambda chat, texto, **kw: enviados.append((chat, texto)) or True
+            respondio = telegram_bot.procesar_actualizacion({
+                'message': {'chat': {'id': 8063269004}, 'text': '/id'},
+            })
+
+        self.assertTrue(respondio, 'a un chat sin autorizar hay que contestarle /id')
+        self.assertEqual(len(enviados), 1)
+        chat, texto = enviados[0]
+        self.assertEqual(chat, 8063269004)
+        # El numero, y nada que describa el sistema.
+        self.assertEqual(texto.strip(), '8063269004')
+        for filtracion in ('panel', 'permiso', 'alerta', 'comando', '/'):
+            self.assertNotIn(
+                filtracion, texto.lower(),
+                f'la respuesta a un desconocido no puede mencionar "{filtracion}": '
+                'es justo la estructura que el silencio protege',
+            )
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=['999'])
+    def test_un_chat_sin_autorizar_sigue_sin_respuesta_para_todo_lo_demas(self):
+        """La otra mitad: abrir `/id` no puede abrir nada más."""
+        from apps.monitoreo import telegram_bot
+
+        for texto in ('/alertas', '/estado', '/hora', '/reconocer 1', 'hola'):
+            with patch('apps.monitoreo.services._enviar_telegram') as enviar:
+                respondio = telegram_bot.procesar_actualizacion({
+                    'message': {'chat': {'id': 8063269004}, 'text': texto},
+                })
+            self.assertFalse(respondio, f'{texto} no puede contestarse sin autorizacion')
+            enviar.assert_not_called()
+
+    # --- la version larga, solo para chats ya autorizados ---
+
+    def test_a_un_chat_atado_le_dice_a_que_usuario(self):
+        from apps.monitoreo.telegram_bot import _comando_id
+
+        texto = _comando_id('8063269004')
+        self.assertIn('8063269004', texto)
+        self.assertIn('soportito_test', texto)
+
+    def test_a_un_chat_sin_usuario_le_explica_que_solo_puede_consultar(self):
+        """El caso que más confunde: autorizado a consultar pero sin persona atada, así
+        que /reconocer y /sincronizar fallan sin que sea obvio por qué."""
+        from apps.monitoreo.telegram_bot import _comando_id
+
+        texto = _comando_id('7777777')
+        self.assertIn('7777777', texto)
+        self.assertIn('NO esta atado', texto)
+
+    def test_sin_chat_no_inventa_un_numero(self):
+        from apps.monitoreo.telegram_bot import _comando_id
+
+        self.assertNotIn('None', _comando_id(None))
+
+    def test_esta_en_la_ayuda(self):
+        """Un comando que nadie sabe que existe no resuelve el problema que vino a
+        resolver: la persona nueva tiene que poder descubrirlo desde /ayuda."""
+        from apps.monitoreo.telegram_bot import _AYUDA
+
+        self.assertIn('/id', _AYUDA)
