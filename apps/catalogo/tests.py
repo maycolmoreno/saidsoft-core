@@ -1565,7 +1565,47 @@ class ArmarPaqueteAgenteTests(TestCase):
         medios.enable()
         self.addCleanup(medios.disable)
         self.addCleanup(shutil.rmtree, self.medios, True)
+
+        # Repo de mentira con los archivos que el comando mete al zip.
+        #
+        # Hasta el 21-sep-2026 estas pruebas leian los archivos REALES del repo, y uno de
+        # ellos —`deploy/certs/cert.pem`— esta en .gitignore por ser material de
+        # certificados. En la maquina de quien desarrolla existe; en un checkout limpio
+        # NO, asi que en CI las nueve pruebas de esta clase morian con "Faltan archivos
+        # del paquete: deploy/certs/cert.pem".
+        #
+        # Costo 38 dias de CI en rojo (ultima corrida verde: 15-sep 03:34, `3c9c42c0`;
+        # primera roja: `95720f2`, el commit que agrego este comando) y el sintoma era el
+        # peor para diagnosticar: verde en local, rojo en CI, sin que el codigo tuviera
+        # nada malo. La leccion no es sobre este archivo sino sobre la clase: una prueba
+        # que lee algo ignorado por git no puede pasar donde git es la unica fuente.
+        #
+        # Ninguna prueba mira el CONTENIDO de estos archivos, solo que viajen en el zip,
+        # asi que un stub alcanza y ademas deja de poner bajo prueba un certificado real.
+        self.repo = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        self._sembrar_archivos_del_repo()
+        base = override_settings(BASE_DIR=Path(self.repo))
+        base.enable()
+        self.addCleanup(base.disable)
+
         self.admin = User.objects.create_superuser(username='u_paq', password='x' * 16)
+
+    def _sembrar_archivos_del_repo(self, omitir=()):
+        """Crea en el repo de mentira los archivos que declara ARCHIVOS_DEL_REPO.
+
+        `omitir` existe para poder probar el camino de error sin depender de que un
+        archivo del repo real falte por casualidad -- que es exactamente como se colo
+        el problema que esta clase documenta.
+        """
+        from apps.catalogo.management.commands.armar_paquete_agente import ARCHIVOS_DEL_REPO
+
+        for ruta, _ in ARCHIVOS_DEL_REPO:
+            if ruta in omitir:
+                continue
+            destino = Path(self.repo) / ruta
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            destino.write_text(f'contenido de prueba de {ruta}\n', encoding='utf-8')
 
     def _version(self, nombre='agente-prueba-0.20'):
         from django.core.files.uploadedfile import SimpleUploadedFile
@@ -1637,6 +1677,23 @@ class ArmarPaqueteAgenteTests(TestCase):
         """Mejor que armar un paquete sin ejecutable, que fallaría recién en la estación."""
         with self.assertRaises(CommandError):
             self._armar()
+
+    def test_falla_si_falta_un_archivo_del_repo(self):
+        """El comando tiene que negarse antes que publicar un zip incompleto: un paquete
+        sin `cert.pem` instala un agente que no puede validar TLS y falla recién en la
+        estación, que es el peor lugar para enterarse.
+
+        Este camino venía ejercitándose por accidente —en CI el `cert.pem` real no existe,
+        así que TODA la clase caía por acá— y por eso nadie notó que las otras nueve
+        pruebas no probaban nada. Ahora se prueba a propósito y una sola vez.
+        """
+        import shutil
+
+        shutil.rmtree(Path(self.repo) / 'deploy')
+        self._version()
+        with self.assertRaises(CommandError) as ctx:
+            self._armar()
+        self.assertIn('cert.pem', str(ctx.exception))
 
     def test_el_leeme_explica_por_que_faltan_los_secretos(self):
         """Quien abra el zip en una estación tiene que entender qué falta y por qué, o va
