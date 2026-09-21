@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.26'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.27'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -100,13 +100,37 @@ def leer_machine_guid() -> str:
         return 'SIN-MACHINEGUID-DE-PRUEBA'
 
 
+# Codificacion de la salida de los subprocesos. Un solo lugar, porque equivocarlo no
+# produce un error sino texto corrupto que sigue viaje: el agente reporta, el servidor
+# guarda y el panel muestra "ConfiguraciÃ³n" sin que nada falle en el camino.
+#
+# Encontrado el 21-sep-2026: `text=True` sin `encoding=` hace que Python decodifique con
+# la pagina de codigos local (cp1252 en un Windows en espanol) mientras el proceso
+# escribe en otra. Estaba bien resuelto en la lectura del visor de eventos y mal en
+# TODO el resto -- incluido el inventario de software, donde medio catalogo de un
+# Windows en espanol lleva acentos.
+#
+# Son dos familias y no se arreglan igual:
+#   PowerShell   -> se le fuerza la salida a UTF-8 y se decodifica UTF-8.
+#   .exe nativos -> `ping`, `tasklist` y los instaladores escriben en la pagina OEM del
+#                   sistema (cp850 en espanol) y no hay como pedirles otra cosa; se
+#                   decodifica con 'oem', que es justo esa.
+PREFIJO_SALIDA_UTF8 = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n'
+
+
+def correr_powershell(script: str, timeout: int) -> str:
+    """Corre `script` en PowerShell y devuelve su salida ya decodificada."""
+    return subprocess.check_output(
+        ['powershell', '-NoProfile', '-Command', PREFIJO_SALIDA_UTF8 + script],
+        timeout=timeout, text=True, encoding='utf-8', errors='replace',
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+    )
+
+
 def leer_numero_serie() -> str:
     try:
-        salida = subprocess.check_output(
-            ['powershell', '-NoProfile', '-Command', '(Get-CimInstance Win32_BIOS).SerialNumber'],
-            timeout=10, text=True,
-        )
-        return salida.strip() or 'SN-DESCONOCIDO'
+        return correr_powershell('(Get-CimInstance Win32_BIOS).SerialNumber', timeout=10).strip() \
+            or 'SN-DESCONOCIDO'
     except Exception:
         return 'SN-DESCONOCIDO'
 
@@ -1189,10 +1213,7 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
 } | ConvertTo-Json -Compress
 """
         try:
-            salida = subprocess.check_output(
-                ['powershell', '-NoProfile', '-Command', script], timeout=20, text=True,
-            )
-            return json.loads(salida)
+            return json.loads(correr_powershell(script, timeout=20))
         except Exception:
             logging.exception('No se pudo medir CPU/RAM/disco')
             return {}
@@ -1360,16 +1381,46 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
         self._reportar_script(resultado_id, 'ejecutando')
         ruta_script = None
         try:
-            extension = '.ps1' if payload['tipo_script'] == 'powershell' else '.bat'
-            with tempfile.NamedTemporaryFile('w', suffix=extension, delete=False, encoding='utf-8') as f:
-                f.write(payload['contenido'])
+            es_powershell = payload['tipo_script'] == 'powershell'
+            extension = '.ps1' if es_powershell else '.bat'
+            contenido = payload['contenido']
+            # Los acentos iban y volvian rotos, en las DOS direcciones, y como el script
+            # igual terminaba con exit 0 no habia nada que delatara el problema: la salida
+            # simplemente se leia mal en el panel ("termino inesperadamente" aparecia como
+            # "terminÃ³ inesperadamente"). Encontrado el 21-sep-2026 leyendo el visor de
+            # eventos de MAM06-A por este mismo camino.
+            #
+            # DE IDA: PowerShell 5.1 lee un .ps1 SIN BOM como ANSI, asi que un script con
+            #   acentos en su texto se corrompe antes de ejecutarse. El BOM (utf-8-sig) es
+            #   lo que le dice que es UTF-8. En un .bat no va: cmd escupe el BOM como
+            #   basura en la primera linea.
+            # DE VUELTA: `text=True` sin `encoding=` decodifica con la pagina de codigos
+            #   local (cp1252 en un Windows en espanol), pero el script escribe UTF-8.
+            #   Se fuerza la salida a UTF-8 y se decodifica igual, como ya hacia
+            #   `_leer_eventos_sistema`. Un .bat queda como estaba: su salida SI sale en
+            #   la pagina del sistema y forzarla no tendria donde engancharse.
+            #
+            # La linea se antepone SALVO que el script empiece con `param(` o `#requires`,
+            # que en PowerShell tienen que ser lo primero del archivo: ahi se deja como
+            # estaba antes que romper el script. Ninguno de los 49 guardados al 21-sep-2026
+            # empieza asi, pero uno futuro puede.
+            if es_powershell and not re.match(r'\s*(param\s*\(|#requires)', contenido, re.IGNORECASE):
+                contenido = (
+                    '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n' + contenido
+                )
+            with tempfile.NamedTemporaryFile(
+                'w', suffix=extension, delete=False,
+                encoding='utf-8-sig' if es_powershell else 'utf-8',
+            ) as f:
+                f.write(contenido)
                 ruta_script = f.name
             comando_exec = (
                 ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ruta_script]
-                if payload['tipo_script'] == 'powershell' else [ruta_script]
+                if es_powershell else [ruta_script]
             )
             resultado = subprocess.run(
                 comando_exec, capture_output=True, text=True, timeout=payload['timeout_segundos'],
+                **({'encoding': 'utf-8', 'errors': 'replace'} if es_powershell else {}),
             )
             estado = 'completado' if resultado.returncode == 0 else 'error'
             self._reportar_script(
@@ -1461,10 +1512,7 @@ try {
 } | ConvertTo-Json -Compress
 """
         try:
-            salida = subprocess.check_output(
-                ['powershell', '-NoProfile', '-Command', script], timeout=20, text=True,
-            )
-            return json.loads(salida)
+            return json.loads(correr_powershell(script, timeout=20))
         except Exception:
             logging.exception('No se pudo consultar la info del equipo (CIM/BitLocker)')
             return {}
@@ -1618,9 +1666,7 @@ ConvertTo-Json -Compress -InputObject @($programas)
         # un solo elemento a un objeto suelto si llega por pipeline, lo que rompe el
         # parseo del lado servidor (espera siempre una lista). Pasarlo como -InputObject
         # lo serializa como array sin importar cuántos elementos tenga (0, 1 o muchos).
-        salida = subprocess.check_output(
-            ['powershell', '-NoProfile', '-Command', script], timeout=30, text=True,
-        )
+        salida = correr_powershell(script, timeout=30)
         datos = json.loads(salida) if salida.strip() else []
         return datos if isinstance(datos, list) else [datos]
 
@@ -1661,9 +1707,7 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
 """
         # Mismo motivo que _listar_software_instalado: -InputObject @(...) fuerza
         # serialización como array sin importar cuántos elementos tenga.
-        salida = subprocess.check_output(
-            ['powershell', '-NoProfile', '-Command', script], timeout=20, text=True,
-        )
+        salida = correr_powershell(script, timeout=20)
         datos = json.loads(salida) if salida.strip() else []
         return datos if isinstance(datos, list) else [datos]
 
@@ -1725,6 +1769,7 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
             proc = subprocess.run(
                 ['ping', '-n', '1', '-w', '1000', ip],
                 capture_output=True, text=True, timeout=5,
+                encoding='oem', errors='replace',
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
         except Exception:
@@ -1767,11 +1812,10 @@ ConvertTo-Json -Compress -InputObject @($dispositivos)
         conoce el servidor porque el agente no lo recibe y porque redescubrirlo
         localmente es más robusto que depender de que ese dato esté siempre al día."""
         try:
-            salida = subprocess.check_output(
-                ['powershell', '-NoProfile', '-Command',
-                 "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | "
-                 "Sort-Object -Property RouteMetric | Select-Object -First 1 -ExpandProperty NextHop)"],
-                timeout=10, text=True,
+            salida = correr_powershell(
+                "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | "
+                "Sort-Object -Property RouteMetric | Select-Object -First 1 -ExpandProperty NextHop)",
+                timeout=10,
             )
             return salida.strip()
         except Exception:
@@ -2036,7 +2080,10 @@ del "%~f0"
         if payload.get('argumentos_adicionales'):
             comando = f"{comando} {payload['argumentos_adicionales']}"
         try:
-            resultado = subprocess.run(comando, shell=True, capture_output=True, text=True, timeout=600)
+            resultado = subprocess.run(
+                comando, shell=True, capture_output=True, text=True, timeout=600,
+                encoding='oem', errors='replace',
+            )
         except subprocess.TimeoutExpired:
             self._reportar_instalacion(solicitud_id, 'error', detalle='Timeout (600s) ejecutando el instalador.')
             return
@@ -2171,7 +2218,7 @@ del "%~f0"
         try:
             salida = subprocess.check_output(
                 ['tasklist', '/FI', f'IMAGENAME eq {self.args.pos_nombre_proceso}.exe', '/NH'],
-                text=True, timeout=10,
+                text=True, timeout=10, encoding='oem', errors='replace',
             )
         except Exception:
             return False
@@ -2203,10 +2250,9 @@ del "%~f0"
         """Best-effort: versión de archivo del ejecutable del POS antes de tocarlo.
         Si falla (no existe, sin permisos) devuelve '' — no es crítico para aplicar."""
         try:
-            salida = subprocess.check_output(
-                ['powershell', '-NoProfile', '-Command',
-                 f"(Get-Item -LiteralPath '{self.args.pos_comando_iniciar}').VersionInfo.ProductVersion"],
-                timeout=10, text=True,
+            salida = correr_powershell(
+                f"(Get-Item -LiteralPath '{self.args.pos_comando_iniciar}').VersionInfo.ProductVersion",
+                timeout=10,
             )
             return salida.strip()
         except Exception:

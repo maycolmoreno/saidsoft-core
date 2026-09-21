@@ -19,12 +19,19 @@ HIDDEN_IMPORTS_PYWIN32 = [
     'servicemanager',
 ]
 
+# `encodings.oem` es como se decodifica la salida de ping/tasklist/instaladores, que
+# escriben en la pagina OEM del sistema. PyInstaller arrastra `encodings` entero por
+# defecto, asi que declararlo es redundante hoy — y es exactamente el tipo de
+# dependencia que se rompe en la estacion y no en el build: un LookupError adentro de
+# un hilo daemon no tumba el agente, solo apaga en silencio lo que ese hilo hacia.
+HIDDEN_IMPORTS = HIDDEN_IMPORTS_PYWIN32 + ['encodings.oem']
+
 a_consola = Analysis(
     ['agente_prueba.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=['encodings.oem'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -60,7 +67,7 @@ a_servicio = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=HIDDEN_IMPORTS_PYWIN32,
+    hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

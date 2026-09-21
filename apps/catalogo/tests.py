@@ -2075,3 +2075,76 @@ class AgenteSinModulosSombreadosTests(TestCase):
         import ast
 
         ast.parse(self._fuente_del_agente())
+
+
+class AgenteDecodificaSalidaDeScriptsEnUtf8Tests(TestCase):
+    """Todo `subprocess` del agente que lea texto de PowerShell tiene que fijar la
+    codificación en las dos puntas.
+
+    `text=True` sin `encoding=` hace que Python decodifique con la página de códigos
+    local — cp1252 en un Windows en español — mientras PowerShell escribe otra cosa. El
+    resultado no es un error: es texto corrupto que sigue su camino sin que nada avise.
+    Encontrado el 21-sep-2026 leyendo el visor de eventos de MAM06-A por script remoto,
+    donde "el servicio terminó inesperadamente" llegó como "terminÃ³". La recolección de
+    eventos ya lo hacía bien; la ejecución de scripts, que es por donde se diagnostica
+    toda la flota, no — así que llevaba meses devolviendo diagnósticos con los acentos
+    rotos y nadie lo leyó como un defecto.
+
+    Se comprueba sobre el AST y no sobre el texto porque `subprocess.run(...)` se escribe
+    partido en varias líneas y un grep se lo pierde.
+    """
+
+    def _llamadas_a_subprocess(self):
+        import ast
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(
+            encoding='utf-8',
+        )
+        for nodo in ast.walk(ast.parse(fuente)):
+            if not isinstance(nodo, ast.Call):
+                continue
+            func = nodo.func
+            if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+                continue
+            if func.value.id != 'subprocess' or func.attr not in ('run', 'check_output'):
+                continue
+            claves = {kw.arg for kw in nodo.keywords}
+            yield nodo, claves
+
+    def test_ninguna_lectura_de_texto_queda_sin_codificacion_explicita(self):
+        sin_encoding = []
+        for nodo, claves in self._llamadas_a_subprocess():
+            if 'text' not in claves and 'universal_newlines' not in claves:
+                continue  # devuelve bytes: decide quien los decodifique, no esta llamada.
+            if 'encoding' in claves:
+                continue
+            # `**{...}` condicional (powershell sí, .bat no) cuenta como explícito: la
+            # decisión está tomada a la vista, que es lo que esta prueba defiende.
+            if any(kw.arg is None for kw in nodo.keywords):
+                continue
+            sin_encoding.append(nodo.lineno)
+
+        self.assertEqual(
+            sin_encoding, [],
+            'estas llamadas piden texto sin fijar `encoding=`, así que decodifican con la '
+            f'página de códigos local y corrompen cualquier acento: líneas {sin_encoding}',
+        )
+
+    def test_los_ps1_se_escriben_con_bom(self):
+        """La otra dirección: PowerShell 5.1 lee un .ps1 SIN BOM como ANSI, así que un
+        script con acentos en su propio texto se corrompe antes de ejecutarse."""
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(
+            encoding='utf-8',
+        )
+        self.assertIn(
+            'utf-8-sig', fuente,
+            'el .ps1 temporal se escribe sin BOM: PowerShell 5.1 lo lee como ANSI y los '
+            'acentos del propio script llegan rotos a la estación',
+        )
