@@ -137,14 +137,20 @@ TOPICO_CATALOGO_EVENTOS = '/saidsof/catalogo/eventos_sistema/'
 def catalogo_eventos_para_agentes() -> list:
     """Que eventos del visor de Windows tiene que mirar el agente.
 
-    Viaja lo minimo que el agente necesita para filtrar: log e id. El nombre, la nota y
-    la severidad son para el panel y no le sirven a la estacion — mandarlos serian bytes
-    por nada en cada reconexion de 1.800 equipos.
+    Viaja lo minimo que el agente necesita para FILTRAR: log, proveedor e id. El nombre,
+    la nota y la severidad son para el panel y no le sirven a la estacion.
+
+    **El proveedor no es opcional y omitirlo no falla, falla en silencio.** Paso el
+    21-sep-2026: esta funcion mandaba solo `log` e `id`, el agente armaba el
+    `Get-WinEvent` sin `ProviderName`, traia los eventos equivocados (`System 55` de
+    Kernel-Processor-Power en vez de Ntfs) y `registrar_eventos_sistema` los rechazaba
+    todos porque la clave `(log, proveedor, id)` no coincidia. Resultado: cero eventos
+    recolectados, cero errores, y nada en ningun log que lo explicara.
     """
     from .models import EventoSistemaVigilado
 
     return [
-        {'log': v.log, 'id': v.identificador}
+        {'log': v.log, 'proveedor': v.proveedor, 'id': v.identificador}
         for v in EventoSistemaVigilado.objects.filter(activo=True).order_by('log', 'identificador')
     ]
 

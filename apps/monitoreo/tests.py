@@ -6441,14 +6441,46 @@ class EventosWindowsCatalogoTests(TestCase):
 
         self.assertFalse(EventoSistemaVigilado.objects.get(identificador=55).abre_alerta)
 
-    def test_al_agente_le_viaja_solo_lo_que_necesita_para_filtrar(self):
-        """El nombre y la nota son para el panel. Mandarlos son bytes por nada en cada
-        reconexión de 1.800 equipos."""
+    def test_al_agente_le_viaja_el_proveedor_ademas_del_id(self):
+        """Sin el proveedor el agente consulta sin `ProviderName`, trae otra cosa, y el
+        servidor rechaza todo: cero eventos, cero errores, nada en ningún log.
+
+        Pasó de verdad el 21-sep-2026 — y la versión anterior de ESTE test afirmaba que
+        solo viajaban `log` e `id`, así que consagraba el bug en vez de atraparlo. Se
+        escribió antes de que el campo `proveedor` existiera y nadie lo revisó después.
+        """
         from apps.monitoreo.servicios_pos import catalogo_eventos_para_agentes
 
         filas = catalogo_eventos_para_agentes()
         self.assertEqual(len(filas), 10)
-        self.assertEqual(set(filas[0]), {'log', 'id'})
+        self.assertEqual(set(filas[0]), {'log', 'proveedor', 'id'})
+        # Y que no viaje vacío, que es el modo en que este bug se disfrazaba.
+        self.assertTrue(all(f['proveedor'] for f in filas))
+
+    def test_lo_que_viaja_alcanza_para_que_el_servidor_lo_acepte(self):
+        """El contrato de punta a punta: lo que el agente recibe tiene que poder volver
+        y ser aceptado. Es la verificación que faltaba — cada mitad estaba probada por
+        separado y el bug vivía justo en la junta."""
+        from apps.monitoreo.servicios_pos import catalogo_eventos_para_agentes
+        from apps.monitoreo.services import registrar_eventos_sistema
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX993')
+        farmacia = Farmacia.objects.create(codigo='ML993', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML993-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        # El agente devuelve lo que el catálogo le dijo, con el origen que leyó del visor
+        # (que es el proveedor por el que filtró).
+        reportados = [
+            {'log': f['log'], 'id': f['id'], 'origen': f['proveedor'], 'cantidad': 1,
+             'mensaje': 'x'}
+            for f in catalogo_eventos_para_agentes()
+        ]
+        guardados = registrar_eventos_sistema(estacion=estacion, eventos=reportados)
+
+        self.assertEqual(guardados, 10, 'el servidor tiene que aceptar los 10 del catálogo')
 
     def test_el_topico_del_catalogo_esta_en_la_ACL(self):
         """EMQX deniega en silencio: sin la regla el agente se suscribe y no recibe nada."""
