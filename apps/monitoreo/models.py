@@ -166,6 +166,10 @@ class Metrica(models.TextChoices):
     # una adelantada, y el agente descarta los mensajes firmados en las dos direcciones.
     # Lo que se GUARDA en la Alerta es el valor con signo, que es lo que dice qué pasó.
     DESFASE_RELOJ = 'desfase_reloj', 'Desfase de reloj (segundos)'
+    # Se evalua al ingerir el reporte del agente, como bitlocker_deshabilitado: el evento
+    # ya ocurrio, no hay condicion sostenida que esperar. Cual dispara y cual solo se
+    # guarda lo decide `EventoSistemaVigilado.abre_alerta`, no esta regla.
+    EVENTO_SISTEMA = 'evento_sistema', 'Evento de Windows (disco, apagon...)'
 
 
 class EstadoDispositivo(models.Model):
@@ -961,6 +965,147 @@ def nombres_de_servicios_pos() -> dict:
         cache['valor'] = dict(ServicioPosMonitoreado.objects.values_list('clave', 'nombre'))
         cache['expira'] = ahora + timedelta(seconds=_TTL_NOMBRES_SERVICIO_SEGUNDOS)
     return cache['valor']
+
+
+class EventoSistemaVigilado(models.Model):
+    """Catálogo GLOBAL de qué eventos del visor de Windows mira el agente.
+
+    Existe por el mismo motivo que `ServicioPosMonitoreado`: qué evento importa se
+    aprende usándolo, y descubrirlo no puede costar un rebuild del ejecutable más un
+    rollout a la flota. Acá es una fila.
+
+    **Por qué una lista curada y no "traer todo".** Medido el 20-sep-2026 sobre una
+    máquina real, en 30 días: 260 eventos de `Ntfs 55`, 15 de `Application Error 1000`,
+    14 de `Disk 51`. Una sola máquina. A 1.800 estaciones, recolectar sin filtrar son
+    cientos de miles de filas por mes que nadie va a leer — y la retención de 30 días que
+    hoy alcanza para todo el monitoreo dejaría de alcanzar.
+
+    El agente pregunta SOLO por los identificadores de este catálogo, así que el filtro
+    ocurre en la estación y ni siquiera viaja lo que no interesa.
+    """
+
+    class Log(models.TextChoices):
+        SISTEMA = 'System', 'System'
+        APLICACION = 'Application', 'Application'
+
+    class Severidad(models.TextChoices):
+        WARNING = 'warning', 'Advertencia'
+        CRITICAL = 'critical', 'Crítica'
+
+    identificador = models.PositiveIntegerField(
+        verbose_name='ID del evento',
+        help_text='El número que muestra el visor de Windows, ej. 41 para el apagón '
+                  'inesperado o 1000 para el crash de una aplicación.',
+    )
+    log = models.CharField(
+        max_length=20, choices=Log.choices, default=Log.SISTEMA,
+        help_text='En qué registro vive. El mismo número puede significar cosas distintas '
+                  'en System y en Application.',
+    )
+    proveedor = models.CharField(
+        max_length=120,
+        help_text='Quién emite el evento, ej. "disk", "Ntfs", "Microsoft-Windows-Kernel-Power". '
+                  'OBLIGATORIO, y no es un detalle: el ID solo NO identifica un evento. '
+                  'Medido el 20-sep-2026 contra un visor real, el ID 55 de System devolvió '
+                  '260 avisos de "Kernel-Processor-Power" (administración de energía del '
+                  'procesador) cuando se esperaba corrupción de NTFS, y el 153 devolvió '
+                  '"Kernel-Boot" en vez de reintentos de disco. Filtrar solo por número '
+                  'recolecta otra cosa y nadie se entera.',
+    )
+    nombre = models.CharField(
+        max_length=120,
+        help_text='Cómo se lee en el panel, ej. "Apagón inesperado". El texto crudo de '
+                  'Windows es largo y en inglés.',
+    )
+    severidad = models.CharField(max_length=10, choices=Severidad.choices, default=Severidad.WARNING)
+    abre_alerta = models.BooleanField(
+        default=False,
+        help_text='Si además de guardarse dispara una alerta. Por defecto NO: con 260 '
+                  'eventos de un solo tipo en una sola máquina, alertar por todo es cómo '
+                  'se consigue que dejen de mirarse las alertas.',
+    )
+    activo = models.BooleanField(
+        default=True,
+        help_text='Desactivar deja de pedírselo al agente y NO borra el historial ya '
+                  'recolectado.',
+    )
+    nota = models.TextField(
+        blank=True,
+        help_text='Para quien atiende: qué significa este evento y qué mirar primero.',
+    )
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'evento_sistema_vigilado'
+        ordering = ['-abre_alerta', 'log', 'identificador']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['log', 'proveedor', 'identificador'], name='un_evento_por_log_proveedor_e_id',
+            ),
+        ]
+        verbose_name = 'Evento de Windows vigilado'
+        verbose_name_plural = 'Catálogo de eventos de Windows vigilados'
+
+    def __str__(self):
+        return f'{self.log}/{self.proveedor} {self.identificador} — {self.nombre}'
+
+
+class EventoSistemaDetectado(models.Model):
+    """Un evento de Windows visto en una estación, AGREGADO por tipo.
+
+    Una fila por (estación, log, identificador) y no una por ocurrencia: es el mismo
+    criterio que `PosErrorDetectado`, y acá importa todavía más. Una sola máquina generó
+    260 `Ntfs 55` en 30 días; lo que le sirve a la mesa de ayuda es "esto viene pasando
+    260 veces desde el martes", no 260 filas idénticas que tapan todo lo demás.
+
+    **No hay ForeignKey al catálogo**, misma decisión que en `EstadoServicioPos.servicio`:
+    dar de baja un evento del catálogo no puede dejar huérfano el historial que ya se
+    juntó — que es justamente para lo que sirve poder darlo de baja.
+    """
+
+    estacion = models.ForeignKey(
+        Estacion, on_delete=models.CASCADE, related_name='eventos_sistema',
+    )
+    log = models.CharField(max_length=20)
+    identificador = models.PositiveIntegerField(verbose_name='ID del evento')
+    origen = models.CharField(
+        max_length=120,
+        help_text='El proveedor que lo emitió, ej. "Microsoft-Windows-Kernel-Power". '
+                  'Parte de la clave, no un adorno: el mismo ID significa cosas distintas '
+                  'según quién lo emita (ver el help_text de EventoSistemaVigilado.proveedor).',
+    )
+    ultimo_mensaje = models.CharField(
+        max_length=500, blank=True,
+        help_text='El texto del evento más reciente de este tipo, recortado. Crudo, para '
+                  'poder diagnosticar sin entrar al equipo.',
+    )
+    cantidad_total = models.PositiveIntegerField(default=0)
+    primera_vez = models.DateTimeField(auto_now_add=True)
+    ultima_vez = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'evento_sistema_detectado'
+        ordering = ['-ultima_vez']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['estacion', 'log', 'origen', 'identificador'],
+                name='un_evento_de_sistema_por_estacion_y_tipo',
+            ),
+        ]
+        indexes = [models.Index(fields=['estacion', '-ultima_vez'])]
+        verbose_name = 'Evento de Windows detectado'
+        verbose_name_plural = 'Eventos de Windows detectados'
+
+    def __str__(self):
+        return f'{self.estacion.codigo} / {self.log} {self.identificador} x{self.cantidad_total}'
+
+    @property
+    def vigilado(self):
+        """La fila del catálogo, si sigue existiendo. `None` si se dio de baja: el
+        historial sobrevive igual, que es el punto de no usar una ForeignKey."""
+        return EventoSistemaVigilado.objects.filter(
+            log=self.log, proveedor=self.origen, identificador=self.identificador,
+        ).first()
 
 
 class ServicioPosMonitoreado(models.Model):

@@ -1321,6 +1321,83 @@ python manage.py publicar_catalogo_servicios_pos --aplicar
 nada, sin error en ningún log. Ya está en `apps/mqtt_worker/emqx_admin.py`; en una
 estación aprovisionada antes de este cambio hay que correr `reaplicar_acls_mqtt --aplicar`.
 
+## Eventos de Windows (monitoreo proactivo)
+
+El agente barre el visor de eventos cada 15 minutos y reporta solo lo que está en un
+catálogo editable desde el admin. Sirve para dos cosas distintas: **anticipar** una falla
+(un disco que avisa antes de morir) y **explicar** una que ya pasó (por qué esa caja se
+reinició anoche).
+
+### El proveedor no es opcional, y es lo que más cuesta entender
+
+**El ID del evento NO identifica el evento.** Comprobado contra un visor real el
+20-sep-2026:
+
+| Se pedía | Se esperaba | Lo que realmente vino |
+|---|---|---|
+| `System 55` | Corrupción de NTFS | **260** avisos de `Kernel-Processor-Power` (energía del procesador) |
+| `System 153` | Reintento de disco | `Kernel-Boot` (seguridad basada en virtualización) |
+| `System 51` | Error de disco | `disk` ✓ correcto |
+
+Filtrando solo por número, el sistema habría reportado 260 "corrupciones de NTFS" que no
+existían. Con el proveedor en el filtro, ese mismo barrido devuelve 0 de Ntfs 55 y 1 de
+disk 153 — los reales. Por eso `EventoSistemaVigilado.proveedor` es obligatorio y forma
+parte de la clave, tanto en el catálogo como en lo detectado.
+
+El valor sale del visor de Windows, columna **Origen**.
+
+### Qué se vigila hoy, y qué despierta a alguien
+
+Diez eventos sembrados, de los cuales **solo cuatro abren alerta**:
+
+| Evento | Proveedor | ¿Alerta? |
+|---|---|---|
+| 41 Apagón inesperado | `Microsoft-Windows-Kernel-Power` | **Sí** |
+| 7 / 51 / 52 Disco (bloque, paginación, SMART) | `disk` | **Sí** |
+| 153 Reintento de E/S | `disk` | No |
+| 55 Corrupción NTFS | `Ntfs` | No — muy ruidoso |
+| 7031 / 7034 Servicio caído | `Service Control Manager` | No |
+| 1000 Crash de aplicación | `Application Error` | No |
+| 17 Error de hardware | `Microsoft-Windows-WHEA-Logger` | No |
+
+Que un evento alerte o solo se guarde se decide **por fila en el admin** (`abre_alerta`),
+no en el código. Es lo que permite vigilar los 260 `Ntfs 55` sin que notifiquen nada:
+sirven de contexto cuando hay un problema que explicar, y ahí termina su trabajo.
+
+### El 41 responde una pregunta que antes no se podía responder
+
+`Kernel-Power 41` es "me apagué sin apagado limpio". **No sirve durante el corte** —el
+equipo está muerto y no puede avisar— pero sí cuando vuelve: si una farmacia estuvo caída
+tres horas y aparece este evento, la caída fue de **energía**, no del enlace, y el ticket
+va a electricidad en vez de al proveedor de internet.
+
+Es una corrección parcial de lo documentado más arriba sobre energía vs. enlace: en vivo
+sigue siendo indistinguible, retrospectivamente ya no. La limitación honesta: el 41 no
+separa un corte de luz de un cuelgue duro o de alguien desenchufando, y solo sirve si la
+estación vuelve a encender.
+
+### Todo agregado, nunca una fila por ocurrencia
+
+`EventoSistemaDetectado` guarda una fila por `(estación, log, proveedor, ID)` con su
+`cantidad_total` — mismo criterio que `PosErrorDetectado`. Una sola máquina generó 260
+eventos de un tipo en 30 días; a 1.800 estaciones, guardar en crudo sería medio millón de
+filas mensuales que nadie lee. Lo que le sirve a la mesa de ayuda es "esto viene pasando
+260 veces desde el martes".
+
+La agregación ocurre **en la estación**: el agente agrupa antes de publicar, así que
+tampoco viaja por la red.
+
+### Agregar un evento nuevo
+
+`Monitoreo → Catálogo de eventos de Windows vigilados → Agregar`. Log, **proveedor**, ID,
+nombre, severidad, si abre alerta, y una nota para quien atienda. Guardar publica el
+catálogo a la flota por `/saidsof/catalogo/eventos_sistema/` (MQTT retenido, igual que el
+de servicios del POS). Una estación apagada lo recibe al encender.
+
+**Ojo con la ACL de EMQX**: el tópico tiene que estar permitido o el agente se suscribe y
+no recibe nada, sin error en ningún log. Ya está en `emqx_admin.py`; en estaciones
+aprovisionadas antes de este cambio hay que correr `reaplicar_acls_mqtt --aplicar`.
+
 ## Scripts RMM y parcheo
 
 `apps/scripts` — biblioteca de scripts PowerShell que corren sobre el mismo canal de

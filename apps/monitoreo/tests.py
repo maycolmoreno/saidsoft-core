@@ -2548,7 +2548,7 @@ class SeedReglasAlertaTests(TestCase):
         from apps.monitoreo.models import ReglaAlerta
 
         self._correr('--aplicar')
-        self.assertEqual(ReglaAlerta.objects.count(), 12)
+        self.assertEqual(ReglaAlerta.objects.count(), 14)
 
     def test_las_reglas_que_se_disparan_por_ausencia_nacen_apagadas(self):
         """El punto entero del comando. `sin_heartbeat` y `agente_caido_red_viva` se
@@ -2573,8 +2573,10 @@ class SeedReglasAlertaTests(TestCase):
         )
         # Las dos de reloj entran acá: se evalúan con el latido, no por ausencia,
         # así que una farmacia cerrada tampoco las dispara.
-        self.assertEqual(de_metrica.count(), 10)
-        self.assertEqual(de_metrica.filter(activo=True).count(), 10)
+        # Las dos de evento_sistema entran aca: se evaluan al ingerir el reporte del
+        # agente, no por ausencia, asi que una farmacia cerrada tampoco las dispara.
+        self.assertEqual(de_metrica.count(), 12)
+        self.assertEqual(de_metrica.filter(activo=True).count(), 12)
 
     def test_ninguna_abre_mantenimiento_automatico(self):
         """Activar una regla no puede empezar a generar ordenes de trabajo sin que nadie
@@ -2590,14 +2592,14 @@ class SeedReglasAlertaTests(TestCase):
         from apps.monitoreo.models import ReglaAlerta
 
         self._correr('--aplicar')
-        self.assertEqual(ReglaAlerta.objects.filter(unidad_negocio__isnull=True).count(), 12)
+        self.assertEqual(ReglaAlerta.objects.filter(unidad_negocio__isnull=True).count(), 14)
 
     def test_correrlo_dos_veces_no_duplica(self):
         from apps.monitoreo.models import ReglaAlerta
 
         self._correr('--aplicar')
         texto = self._correr('--aplicar')
-        self.assertEqual(ReglaAlerta.objects.count(), 12)
+        self.assertEqual(ReglaAlerta.objects.count(), 14)
         self.assertIn('intactas', texto)
 
     def test_no_pisa_un_umbral_afinado_a_mano(self):
@@ -2698,7 +2700,8 @@ class SeedReglasAlertaTests(TestCase):
         # daria un falso negativo sobre reglas que funcionan perfecto.
         aparte = {Metrica.SIN_HEARTBEAT, Metrica.AGENTE_CAIDO_RED_VIVA,
                   Metrica.BITLOCKER_DESHABILITADO, Metrica.POS_ERRORES,
-                  Metrica.SERVICIO_POS_CAIDO, Metrica.DESFASE_RELOJ}
+                  Metrica.SERVICIO_POS_CAIDO, Metrica.DESFASE_RELOJ,
+                  Metrica.EVENTO_SISTEMA}
         for regla in ReglaAlerta.objects.exclude(metrica__in=aparte):
             self.assertTrue(
                 hasattr(MuestraMetrica, regla.metrica),
@@ -6204,3 +6207,233 @@ class ReconocerAlertaPorTelegramTests(TestCase):
         from apps.monitoreo.telegram_bot import responder_a
 
         self.assertIn('/reconocer 42', responder_a('/reconocer', '111'))
+
+
+class EventosWindowsCatalogoTests(TestCase):
+    """El catálogo de eventos del visor, sembrado por migración y editable desde el admin."""
+
+    def test_los_diez_iniciales_estan_sembrados(self):
+        from apps.monitoreo.models import EventoSistemaVigilado
+
+        self.assertEqual(EventoSistemaVigilado.objects.count(), 10)
+
+    def test_TODOS_tienen_proveedor_cargado(self):
+        """Sin proveedor el evento no se identifica. Comprobado contra un visor real el
+        20-sep-2026: pedir solo `System 55` devolvía 260 avisos de energía del procesador,
+        no corrupción de NTFS, y `System 153` devolvía Kernel-Boot en vez de disco.
+        Un evento sin proveedor recolecta otra cosa y nadie se entera."""
+        from apps.monitoreo.models import EventoSistemaVigilado
+
+        sin_proveedor = list(
+            EventoSistemaVigilado.objects.filter(proveedor='').values_list('identificador', flat=True)
+        )
+        self.assertEqual(sin_proveedor, [])
+
+    def test_los_proveedores_son_los_reales_de_windows(self):
+        from apps.monitoreo.models import EventoSistemaVigilado
+
+        esperados = {
+            41: 'Microsoft-Windows-Kernel-Power',
+            51: 'disk',
+            55: 'Ntfs',
+            1000: 'Application Error',
+            7031: 'Service Control Manager',
+        }
+        for identificador, proveedor in esperados.items():
+            fila = EventoSistemaVigilado.objects.get(identificador=identificador)
+            self.assertEqual(fila.proveedor, proveedor, f'ID {identificador}')
+
+    def test_solo_disco_y_apagon_abren_alerta(self):
+        """Decisión explícita: 260 eventos de un tipo en una máquina. Alertar por todo es
+        cómo se consigue que dejen de mirarse las alertas."""
+        from apps.monitoreo.models import EventoSistemaVigilado
+
+        con_alerta = set(
+            EventoSistemaVigilado.objects.filter(abre_alerta=True).values_list('identificador', flat=True)
+        )
+        self.assertEqual(con_alerta, {41, 7, 51, 52})
+
+    def test_el_ruidoso_NO_abre_alerta(self):
+        from apps.monitoreo.models import EventoSistemaVigilado
+
+        self.assertFalse(EventoSistemaVigilado.objects.get(identificador=55).abre_alerta)
+
+    def test_al_agente_le_viaja_solo_lo_que_necesita_para_filtrar(self):
+        """El nombre y la nota son para el panel. Mandarlos son bytes por nada en cada
+        reconexión de 1.800 equipos."""
+        from apps.monitoreo.servicios_pos import catalogo_eventos_para_agentes
+
+        filas = catalogo_eventos_para_agentes()
+        self.assertEqual(len(filas), 10)
+        self.assertEqual(set(filas[0]), {'log', 'id'})
+
+    def test_el_topico_del_catalogo_esta_en_la_ACL(self):
+        """EMQX deniega en silencio: sin la regla el agente se suscribe y no recibe nada."""
+        from apps.monitoreo.servicios_pos import TOPICO_CATALOGO_EVENTOS
+        from apps.mqtt_worker.emqx_admin import _reglas_para
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX991')
+        farmacia = Farmacia.objects.create(codigo='ML991', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML991-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        topicos = {r['topic'] for r in _reglas_para(estacion) if r['action'] in ('subscribe', 'all')}
+        self.assertIn(TOPICO_CATALOGO_EVENTOS, topicos)
+
+    def test_se_publica_retenido(self):
+        from apps.monitoreo.servicios_pos import TOPICO_CATALOGO_EVENTOS, publicar_catalogo_eventos_sistema
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            cuantos, enviado = publicar_catalogo_eventos_sistema()
+
+        self.assertTrue(enviado)
+        self.assertEqual(cuantos, 10)
+        self.assertEqual(publicar.call_args.args[0], TOPICO_CATALOGO_EVENTOS)
+        self.assertTrue(publicar.call_args.kwargs['retain'])
+
+
+class EventosWindowsIngestaTests(TestCase):
+    """Lo que hace el servidor con lo que reporta el agente."""
+
+    def setUp(self):
+        from apps.monitoreo.models import Metrica, ReglaAlerta
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX992')
+        farmacia = Farmacia.objects.create(codigo='ML992', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML992-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        autor = User.objects.create_user(username='autor_ev', password='x')
+        self.regla_critica = ReglaAlerta.objects.create(
+            nombre='Evento critico de Windows', metrica=Metrica.EVENTO_SISTEMA, umbral=0,
+            duracion_minutos=0, severidad=ReglaAlerta.Severidad.CRITICAL, creado_por=autor,
+        )
+
+    def _reportar(self, *eventos):
+        from apps.monitoreo.services import registrar_eventos_sistema
+
+        return registrar_eventos_sistema(estacion=self.estacion, eventos=list(eventos))
+
+    def _disco(self, cantidad=1):
+        return {'log': 'System', 'id': 51, 'origen': 'disk', 'cantidad': cantidad,
+                'mensaje': 'Error detectado en el dispositivo durante paginación.'}
+
+    def test_se_guarda_agregado_y_no_una_fila_por_ocurrencia(self):
+        """260 filas idénticas tapan todo lo demás. Lo que sirve es la cuenta."""
+        from apps.monitoreo.models import EventoSistemaDetectado
+
+        self._reportar(self._disco(cantidad=14))
+
+        fila = EventoSistemaDetectado.objects.get()
+        self.assertEqual(fila.cantidad_total, 14)
+        self.assertEqual(EventoSistemaDetectado.objects.count(), 1)
+
+    def test_reportes_sucesivos_SUMAN_en_la_misma_fila(self):
+        from apps.monitoreo.models import EventoSistemaDetectado
+
+        self._reportar(self._disco(cantidad=3))
+        self._reportar(self._disco(cantidad=5))
+
+        self.assertEqual(EventoSistemaDetectado.objects.get().cantidad_total, 8)
+        self.assertEqual(EventoSistemaDetectado.objects.count(), 1)
+
+    def test_un_evento_que_no_esta_en_el_catalogo_se_ignora(self):
+        """El agente filtra, pero un agente viejo con catálogo desactualizado seguiría
+        mandando lo dado de baja, y un identificador sin validar deja entrar cualquier cosa."""
+        from apps.monitoreo.models import EventoSistemaDetectado
+
+        guardados = self._reportar({'log': 'System', 'id': 99999, 'origen': 'inventado', 'cantidad': 1})
+
+        self.assertEqual(guardados, 0)
+        self.assertEqual(EventoSistemaDetectado.objects.count(), 0)
+
+    def test_el_MISMO_id_de_otro_proveedor_es_otro_evento(self):
+        """El corazón del hallazgo: System 55 de Ntfs y System 55 de Kernel-Processor-Power
+        no son lo mismo. Solo el que está en el catálogo se acepta."""
+        from apps.monitoreo.models import EventoSistemaDetectado
+
+        guardados = self._reportar(
+            {'log': 'System', 'id': 55, 'origen': 'Ntfs', 'cantidad': 2, 'mensaje': 'corrupcion'},
+            {'log': 'System', 'id': 55, 'origen': 'Microsoft-Windows-Kernel-Processor-Power',
+             'cantidad': 260, 'mensaje': 'energia del procesador'},
+        )
+
+        self.assertEqual(guardados, 1, 'solo el de Ntfs esta en el catalogo')
+        fila = EventoSistemaDetectado.objects.get()
+        self.assertEqual(fila.origen, 'Ntfs')
+        self.assertEqual(fila.cantidad_total, 2)
+
+    def test_desactivar_un_evento_deja_de_aceptar_sus_reportes(self):
+        from apps.monitoreo.models import EventoSistemaDetectado, EventoSistemaVigilado
+
+        EventoSistemaVigilado.objects.filter(identificador=51).update(activo=False)
+
+        self.assertEqual(self._reportar(self._disco()), 0)
+        self.assertEqual(EventoSistemaDetectado.objects.count(), 0)
+
+    def test_desactivar_NO_borra_el_historial(self):
+        from apps.monitoreo.models import EventoSistemaDetectado, EventoSistemaVigilado
+
+        self._reportar(self._disco())
+        EventoSistemaVigilado.objects.filter(identificador=51).update(activo=False)
+
+        self.assertEqual(EventoSistemaDetectado.objects.count(), 1)
+
+    def test_un_evento_marcado_abre_alerta_la_abre(self):
+        from apps.monitoreo.models import Alerta
+
+        self._reportar(self._disco())
+
+        alerta = Alerta.objects.get()
+        self.assertEqual(alerta.regla, self.regla_critica)
+
+    def test_un_evento_ruidoso_NO_abre_alerta_aunque_venga_260_veces(self):
+        """La diferencia entre recolectar y molestar. Sin esto, la única forma de bajar el
+        ruido sería dejar de recolectar — y se pierde el contexto que explica el problema."""
+        from apps.monitoreo.models import Alerta, EventoSistemaDetectado
+
+        guardados = self._reportar(
+            {'log': 'System', 'id': 55, 'origen': 'Ntfs', 'cantidad': 260, 'mensaje': 'x'},
+        )
+
+        self.assertEqual(guardados, 1)
+        self.assertEqual(EventoSistemaDetectado.objects.get().cantidad_total, 260)
+        self.assertEqual(Alerta.objects.count(), 0, 'se guarda, no despierta a nadie')
+
+    def test_el_apagon_inesperado_abre_alerta(self):
+        """Es el que responde "¿fue corte de luz?" cuando la farmacia estuvo caída."""
+        from apps.monitoreo.models import Alerta
+
+        self._reportar({'log': 'System', 'id': 41, 'origen': 'Microsoft-Windows-Kernel-Power',
+                        'cantidad': 1, 'mensaje': 'El sistema se reinicio sin apagarse limpiamente.'})
+
+        self.assertEqual(Alerta.objects.count(), 1)
+
+    def test_una_cantidad_basura_no_revienta(self):
+        from apps.monitoreo.models import EventoSistemaDetectado
+
+        self._reportar({'log': 'System', 'id': 51, 'origen': 'disk', 'cantidad': 'muchas'})
+        self.assertEqual(EventoSistemaDetectado.objects.get().cantidad_total, 1)
+
+    def test_un_id_que_no_es_numero_no_revienta(self):
+        self.assertEqual(self._reportar({'log': 'System', 'id': 'DROP TABLE', 'origen': 'disk'}), 0)
+
+    def test_el_mensaje_se_recorta_y_no_revienta_la_columna(self):
+        from apps.monitoreo.models import EventoSistemaDetectado
+
+        self._reportar({'log': 'System', 'id': 51, 'origen': 'disk', 'cantidad': 1,
+                        'mensaje': 'x' * 2000})
+        self.assertEqual(len(EventoSistemaDetectado.objects.get().ultimo_mensaje), 500)
+
+    def test_el_historial_sobrevive_a_borrar_el_catalogo(self):
+        """Por eso no hay ForeignKey: dar de baja no puede dejar huérfano lo ya juntado."""
+        from apps.monitoreo.models import EventoSistemaDetectado, EventoSistemaVigilado
+
+        self._reportar(self._disco())
+        EventoSistemaVigilado.objects.filter(identificador=51).delete()
+
+        fila = EventoSistemaDetectado.objects.get()
+        self.assertEqual(fila.cantidad_total, 1)
+        self.assertIsNone(fila.vigilado)

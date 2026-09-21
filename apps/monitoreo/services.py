@@ -343,6 +343,101 @@ def resolver_alertas_bitlocker(estacion):
     ).update(estado=Alerta.Estado.RESUELTA, resuelta_en=timezone.now())
 
 
+def registrar_eventos_sistema(*, estacion, eventos: list) -> int:
+    """Guarda los eventos de Windows que reportó el agente y evalúa la alerta.
+
+    AGREGA por (estación, log, id): una fila que se va sumando, no una por ocurrencia.
+    Medido el 20-sep-2026 sobre una máquina real, 260 `Ntfs 55` en 30 días — a 1.800
+    estaciones eso es medio millón de filas mensuales que nadie lee. Lo que sirve es
+    "esto viene pasando 260 veces desde el martes".
+
+    Solo se aceptan los eventos que están en el catálogo y ACTIVOS: el agente ya filtra,
+    pero un agente viejo con un catálogo desactualizado seguiría mandando lo que se dio
+    de baja, y `identificador` sin validar deja entrar cualquier cosa.
+    """
+    from .models import EventoSistemaDetectado, EventoSistemaVigilado
+
+    # La clave incluye el PROVEEDOR: el mismo ID significa cosas distintas segun quien
+    # lo emita. `System 55` de Ntfs es corrupcion del sistema de archivos; `System 55` de
+    # Kernel-Processor-Power es un aviso de energia del procesador, y en una maquina real
+    # habia 260 de esos. Sin el proveedor en la clave, los 260 entran como corrupcion.
+    vigilados = {
+        (v.log, v.proveedor, v.identificador): v
+        for v in EventoSistemaVigilado.objects.filter(activo=True)
+    }
+    guardados = 0
+
+    for fila in eventos:
+        log = (fila.get('log') or '').strip()
+        try:
+            identificador = int(fila.get('id'))
+        except (TypeError, ValueError):
+            continue
+        origen = (fila.get('origen') or '').strip()
+        vigilado = vigilados.get((log, origen, identificador))
+        if vigilado is None:
+            logger.info(
+                '%s reportó %s/%s/%s, que no está en el catálogo activo — se ignora.',
+                estacion.codigo, log, origen or '(sin origen)', identificador,
+            )
+            continue
+
+        try:
+            cantidad = max(1, int(fila.get('cantidad', 1)))
+        except (TypeError, ValueError):
+            cantidad = 1
+
+        detectado, creado = EventoSistemaDetectado.objects.get_or_create(
+            estacion=estacion, log=log, origen=origen[:120], identificador=identificador,
+            defaults={
+                'ultimo_mensaje': (fila.get('mensaje') or '')[:500],
+                'cantidad_total': cantidad,
+            },
+        )
+        if not creado:
+            # F() y no leer-sumar-guardar: el worker MQTT puede estar ingiriendo el
+            # reporte de otra estación al mismo tiempo, y la cuenta se pisa.
+            from django.db.models import F
+
+            EventoSistemaDetectado.objects.filter(pk=detectado.pk).update(
+                cantidad_total=F('cantidad_total') + cantidad,
+                ultimo_mensaje=(fila.get('mensaje') or '')[:500] or detectado.ultimo_mensaje,
+                ultima_vez=timezone.now(),
+            )
+            detectado.refresh_from_db()
+        guardados += 1
+
+        if vigilado.abre_alerta:
+            evaluar_regla_evento_sistema(estacion, detectado, vigilado)
+
+    return guardados
+
+
+def evaluar_regla_evento_sistema(estacion, detectado, vigilado) -> None:
+    """Abre la alerta de un evento de Windows marcado como accionable.
+
+    De la familia de `evaluar_regla_bitlocker`: el evento ya pasó, no hay condición
+    sostenida que esperar.
+
+    **Qué dispara y qué no lo decide el CATÁLOGO, no esta función** — `abre_alerta` por
+    fila. Es lo que permite que un disco muriendo despierte a alguien y que los 260
+    `Ntfs 55` de la misma máquina solo se guarden. Sin esa separación, la única forma de
+    bajar el ruido sería dejar de recolectar, y entonces se pierde el contexto que
+    explica el problema cuando llega.
+
+    La severidad sale del catálogo y se aplica sobre las reglas de esa severidad: mismo
+    mecanismo que `evaluar_regla_servicio_pos` usa con `critico`, sin inventar un
+    concepto nuevo.
+    """
+    from .models import Metrica, ReglaAlerta
+
+    unidad = estacion.farmacia.unidad_negocio
+    for regla in reglas_aplicables_a(unidad, metrica=Metrica.EVENTO_SISTEMA):
+        if regla.severidad != vigilado.severidad:
+            continue
+        abrir_o_mantener_alerta(regla, estacion, detectado.cantidad_total)
+
+
 def evaluar_regla_reloj(estacion) -> None:
     """Llamada desde `manejar_heartbeat` justo despues de recalcular
     `Estacion.desfase_reloj_segundos`. De la familia de `evaluar_regla_bitlocker`: el

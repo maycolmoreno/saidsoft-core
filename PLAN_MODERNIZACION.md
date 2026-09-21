@@ -2813,3 +2813,56 @@ los datos actuales:
 `clasificar_caidas_simultaneas` en `apps/monitoreo/enlaces.py`. Es una inferencia por
 correlación temporal y las etiquetas lo dicen ("probable"), con un test que verifica que
 el texto **no** mencione energía ni corte de luz.
+
+## Eventos de Windows: monitoreo proactivo del sistema operativo (20-sep-2026)
+
+El agente barre el visor de eventos cada 15 min y reporta lo que diga un catálogo
+editable desde el admin (`EventoSistemaVigilado`). Dos modelos nuevos, la métrica
+`evento_sistema`, un tópico MQTT retenido propio, y el bucle en el agente.
+
+### El hallazgo que salió de probar contra un visor real
+
+**El ID del evento no identifica el evento; hace falta el proveedor.** Pidiendo solo
+`System 55` volvieron **260 avisos de `Microsoft-Windows-Kernel-Processor-Power`**
+—administración de energía del procesador— cuando se esperaba corrupción de NTFS. Y
+`System 153` devolvió `Kernel-Boot` en vez de reintentos de disco. Con `ProviderName` en
+el filtro, el mismo barrido devuelve 0 de Ntfs 55 y 1 de disk 153: los reales.
+
+Sin esa comprobación, la funcionalidad habría entrado en producción reportando 260
+corrupciones de disco inexistentes por estación. `proveedor` es obligatorio en el
+catálogo y forma parte de la clave única, también en `EventoSistemaDetectado`.
+
+El test `test_el_MISMO_id_de_otro_proveedor_es_otro_evento` lo fija, y falló en su primera
+corrida porque la ingesta todavía buscaba por `(log, id)` — exactamente para eso estaba.
+
+### Kernel-Power 41 corrige parcialmente lo de energía vs. enlace
+
+Ayer se documentó que distinguir corte de luz de caída del enlace no era posible. Sigue
+siendo cierto **en vivo**. Pero `Kernel-Power 41` ("me apagué sin apagado limpio") lo
+responde **retrospectivamente**: si la farmacia estuvo caída y al volver aparece ese
+evento, fue energía. No separa corte de luz de cuelgue duro ni de alguien desenchufando,
+y solo sirve si la estación vuelve.
+
+### Señal sobre volumen, por decisión explícita
+
+De los diez eventos sembrados, **cuatro abren alerta**: apagón y los tres de disco. El
+resto se guarda y se consulta. Que un evento notifique o no se decide **por fila en el
+admin** (`abre_alerta`), no en código — es lo que permite vigilar los 260 `Ntfs 55` sin
+molestar a nadie, conservando el contexto que explica un problema cuando llega.
+
+Todo se agrega por `(estación, log, proveedor, ID)` con `cantidad_total`, mismo criterio
+que `PosErrorDetectado`, y **la agregación ocurre en la estación**: no viaja una fila por
+ocurrencia. A 1.800 estaciones, guardar en crudo serían ~500.000 filas mensuales.
+
+### Otro detalle que solo aparece probando
+
+La salida de PowerShell no es UTF-8: en un Windows en español es cp1252, y el visor está
+en español. Sin forzar `[Console]::OutputEncoding` y leer con `encoding='utf-8'`, el
+primer mensaje acentuado rompe el `json.loads`. Es decir: todos.
+
+### Pendiente: el agente
+
+Como el catálogo de servicios del POS, **el lado servidor se despliega solo y es inocuo**
+—un agente que no entiende el tópico simplemente lo ignora— pero **no se recolecta un solo
+evento hasta reconstruir el `.exe` y hacer el rollout**. Ya son tres cosas esperando ese
+mismo rebuild: el arreglo del log del POS (hallazgo 2), el catálogo de servicios, y esto.

@@ -3,7 +3,7 @@ from django.contrib import admin
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_por_unidad_negocio
 
 from .models import (
-    Alerta, CanalNotificacion, ConfiguracionMonitoreo, DispositivoDetectado, EquipoBordeFarmacia, EstadoDispositivo, EstadoEnlaceFarmacia, EstadoServicioPos, EventoEnlaceFarmacia, EventoMonitoreo, MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, ServicioPosMonitoreado, VentanaMantenimiento,
+    Alerta, CanalNotificacion, ConfiguracionMonitoreo, DispositivoDetectado, EquipoBordeFarmacia, EstadoDispositivo, EstadoEnlaceFarmacia, EstadoServicioPos, EventoEnlaceFarmacia, EventoMonitoreo, EventoSistemaDetectado, EventoSistemaVigilado, MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, ServicioPosMonitoreado, VentanaMantenimiento,
 )
 
 
@@ -466,3 +466,71 @@ class ServicioPosMonitoreadoAdmin(admin.ModelAdmin):
                 'El catálogo se guardó pero NO se pudo publicar por MQTT: las estaciones '
                 'siguen con la lista anterior. Revisá el log del panel y volvé a guardar.',
             )
+
+
+@admin.register(EventoSistemaVigilado)
+class EventoSistemaVigiladoAdmin(admin.ModelAdmin):
+    """Acá se decide qué mira el agente en el visor de Windows, sin tocar código.
+
+    Guardar publica el catálogo a la flota. Igual que el de servicios del POS.
+    """
+
+    list_display = ('nombre', 'log', 'proveedor', 'identificador', 'severidad', 'abre_alerta', 'activo')
+    list_filter = ('activo', 'abre_alerta', 'severidad', 'log')
+    search_fields = ('nombre', 'proveedor', 'nota', 'identificador')
+    list_editable = ('abre_alerta', 'activo')
+    fieldsets = (
+        (None, {'fields': ('nombre', 'activo')}),
+        ('Qué evento es', {
+            'fields': ('log', 'proveedor', 'identificador'),
+            'description': (
+                '<strong>El proveedor no es opcional.</strong> El mismo número significa '
+                'cosas distintas según quién lo emita: pedir solo <code>System 55</code> '
+                'devuelve avisos de energía del procesador, no corrupción de NTFS. '
+                'Sacalo del visor de Windows, columna "Origen".'
+            ),
+        }),
+        ('Qué hacer con él', {
+            'fields': ('severidad', 'abre_alerta', 'nota'),
+            'description': (
+                'Marcá <em>abre alerta</em> solo si amerita despertar a alguien. Una sola '
+                'máquina generó 260 eventos de un mismo tipo en 30 días.'
+            ),
+        }),
+    )
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        self._publicar(request)
+
+    def delete_model(self, request, obj):
+        super().delete_model(request, obj)
+        self._publicar(request)
+
+    def _publicar(self, request):
+        from django.contrib import messages
+
+        from .servicios_pos import publicar_catalogo_eventos_sistema
+
+        cuantos, ok = publicar_catalogo_eventos_sistema()
+        if ok:
+            messages.info(request, f'Catálogo publicado a la flota: {cuantos} evento(s) vigilado(s).')
+        else:
+            messages.warning(
+                request,
+                'Se guardó pero NO se pudo publicar por MQTT: las estaciones siguen con la '
+                'lista anterior. Revisá el log y volvé a guardar.',
+            )
+
+
+@admin.register(EventoSistemaDetectado)
+class EventoSistemaDetectadoAdmin(admin.ModelAdmin):
+    """Solo lectura: los escribe el agente. Agregados por tipo, no una fila por
+    ocurrencia — ver el docstring del modelo."""
+
+    list_display = ('estacion', 'log', 'origen', 'identificador', 'cantidad_total', 'ultima_vez')
+    list_filter = ('log', 'origen', 'estacion__farmacia__unidad_negocio')
+    search_fields = ('estacion__codigo', 'origen', 'ultimo_mensaje')
+    readonly_fields = tuple(
+        f.name for f in EventoSistemaDetectado._meta.fields if f.name != 'id'
+    )

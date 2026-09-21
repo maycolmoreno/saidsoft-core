@@ -109,6 +109,21 @@ REGLAS = [
         ReglaAlerta.Severidad.CRITICAL, True,
         'Ultima llamada: quedan 30 s antes de los 120 s en que deja de obedecer y hay que ir al local.',
     ),
+    # Dos reglas para la misma metrica, una por severidad, igual que servicio_pos_caido:
+    # `evaluar_regla_evento_sistema` elige segun lo que diga el CATALOGO de cada evento.
+    # Que un evento despierte a alguien o solo se guarde se decide por fila en el admin,
+    # no aca -- es lo que permite vigilar los 260 Ntfs sin alertar por ellos.
+    (
+        'Evento critico de Windows (disco, apagon)', Metrica.EVENTO_SISTEMA,
+        ReglaAlerta.Operador.GTE, 0, 0, ReglaAlerta.Severidad.CRITICAL, True,
+        'Disco muriendo o apagon inesperado: los dos ameritan que alguien actue hoy.',
+    ),
+    (
+        'Evento de Windows para revisar', Metrica.EVENTO_SISTEMA,
+        ReglaAlerta.Operador.GTE, 0, 0, ReglaAlerta.Severidad.WARNING, True,
+        'Solo se dispara si el evento esta marcado "abre alerta" en el catalogo; por '
+        'defecto ninguno de los de advertencia lo esta.',
+    ),
     (
         'Sin heartbeat (30 min)', Metrica.SIN_HEARTBEAT, ReglaAlerta.Operador.GTE, 30, 0,
         ReglaAlerta.Severidad.CRITICAL, False,

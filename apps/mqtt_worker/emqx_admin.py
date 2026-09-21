@@ -109,6 +109,9 @@ def _reglas_para(estacion):
         # llega nunca -- no hay error en ningun log, simplemente las estaciones siguen
         # chequeando la lista vieja para siempre.
         {'topic': '/saidsof/catalogo/servicios_pos/', 'permission': 'allow', 'action': 'subscribe'},
+        # Catalogo de eventos de Windows a vigilar. Misma advertencia que el de arriba:
+        # sin la regla el agente se suscribe y EMQX lo deniega sin decir nada.
+        {'topic': '/saidsof/catalogo/eventos_sistema/', 'permission': 'allow', 'action': 'subscribe'},
     ]
     farmacia = estacion.farmacia
     reglas.append({

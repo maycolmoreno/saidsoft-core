@@ -32,6 +32,7 @@ no vuelve a enrolarse en cada arranque si ya tiene un token guardado, igual que 
 documenta que hace el agente real.
 """
 import argparse
+import datetime
 import hashlib
 import hmac
 import json
@@ -288,6 +289,7 @@ class AgentePrueba:
         # se conecta, aunque el servidor lo haya publicado hace dias con esta estacion
         # apagada. Ver apps/monitoreo/servicios_pos.py.
         client.subscribe('/saidsof/catalogo/servicios_pos/')
+        client.subscribe('/saidsof/catalogo/eventos_sistema/')
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/despliegue/')
         client.subscribe('/saidsof/despliegue/global/')
         if self.identidad.get('farmacia'):
@@ -356,6 +358,8 @@ class AgentePrueba:
                 self._manejar_respuesta_enrolamiento(payload)
             elif msg.topic == f'/saidsof/agente/{self.args.codigo}/comando/':
                 self._manejar_comando(payload)
+            elif msg.topic == '/saidsof/catalogo/eventos_sistema/':
+                self._aplicar_catalogo_eventos(payload)
             elif msg.topic == '/saidsof/catalogo/servicios_pos/':
                 self._aplicar_catalogo_servicios(payload)
             elif msg.topic == f'/saidsof/agente/{self.args.codigo}/actualizar_agente/':
@@ -751,6 +755,152 @@ class AgentePrueba:
             ', '.join('%s -> %s' % (s['servicio'], s.get('url') or s.get('host')) for s in servicios),
         )
         return servicios
+
+    # --- Eventos del visor de Windows ---
+    #
+    # Que eventos mirar lo manda el servidor por `/saidsof/catalogo/eventos_sistema/`, no
+    # es una lista fija aca: descubrir que un ID importa no puede costar un rebuild y un
+    # rollout a 1.800 equipos.
+    #
+    # Se pregunta SOLO por los ID del catalogo y no se trae el visor entero. Medido el
+    # 20-sep-2026 sobre una maquina real: 260 eventos de Ntfs 55 en 30 dias, en UNA
+    # maquina. Traer todo y filtrar del lado del servidor serian cientos de miles de
+    # filas mensuales que nadie lee.
+
+    def _aplicar_catalogo_eventos(self, payload: dict):
+        """Guarda que eventos vigilar. Se persiste en `identidad.json` para que sobreviva
+        a un reinicio: el mensaje es retenido y llegaria igual al reconectar, pero entre
+        el arranque y esa reconexion habria un ciclo mirando la lista vieja."""
+        eventos = payload.get('eventos') or []
+        self.identidad['catalogo_eventos_sistema'] = eventos
+        self._guardar_identidad()
+        logging.info('Catalogo de eventos de Windows recibido: %d vigilado(s).', len(eventos))
+
+    def _leer_eventos_sistema(self):
+        """(eventos, marca_nueva). NO persiste la marca: la guarda el bucle, y solo si el
+        publish salio.
+
+        Es la misma disciplina que `_leer_errores_nuevos_pos` tras el hallazgo 2 de la
+        auditoria: con QoS 0 paho descarta el mensaje sin avisar, y si la marca avanza
+        igual esos eventos no se vuelven a leer NUNCA. Un monitoreo que pierde
+        silenciosamente lo que vino a vigilar es peor que no tenerlo.
+
+        La marca es el instante del ultimo barrido, no un numero de registro: el visor de
+        Windows rota y purga por su cuenta, asi que un indice no sobrevive.
+        """
+        catalogo = self.identidad.get('catalogo_eventos_sistema') or []
+        if not catalogo:
+            return [], None
+
+        desde = self.identidad.get('eventos_sistema_marca')
+        if not desde:
+            # Primer barrido: una hora hacia atras y no todo el historial. Un equipo con
+            # meses de eventos mandaria miles de golpe en su primer reporte, y lo que
+            # importa es lo que pasa de ahora en adelante.
+            inicio = datetime.datetime.now() - datetime.timedelta(hours=1)
+        else:
+            try:
+                inicio = datetime.datetime.fromisoformat(desde)
+            except ValueError:
+                inicio = datetime.datetime.now() - datetime.timedelta(hours=1)
+
+        marca_nueva = datetime.datetime.now().isoformat(timespec='seconds')
+        # Se agrupa por (log, PROVEEDOR): el ID solo no identifica un evento.
+        # Comprobado contra un visor real el 20-sep-2026 -- pidiendo solo `System 55`
+        # volvian 260 avisos de energia del procesador, no corrupcion de NTFS.
+        por_fuente = {}
+        for entrada in catalogo:
+            clave = (entrada.get('log') or 'System', entrada.get('proveedor') or '')
+            por_fuente.setdefault(clave, []).append(int(entrada.get('id')))
+
+        # Se agrupa por (log, proveedor, id) EN LA ESTACION: mandar 260 ocurrencias
+        # identicas para que el servidor las cuente seria gastar red y base en algo
+        # que aca sale gratis.
+        # que el servidor las cuente seria gastar red y base en algo que aca sale gratis.
+        # La salida se fuerza a UTF-8. Sin esto PowerShell escribe en la pagina de codigos
+        # del sistema (cp1252 en un Windows en espanol) y `json.loads` revienta con el
+        # primer mensaje acentuado -- que son todos, porque el visor esta en espanol.
+        # Comprobado el 20-sep-2026: "operacion de paginacion" rompia el parseo.
+        script_partes = [
+            '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+            "$ErrorActionPreference = 'SilentlyContinue'",
+            '$r = @()',
+        ]
+        for (log, proveedor), ids in por_fuente.items():
+            lista = ','.join(str(i) for i in ids)
+            # ProviderName dentro del propio FilterHashtable: filtrar en el visor es
+            # mucho mas barato que traer todo y descartar despues en PowerShell.
+            filtro = f"LogName='{log}'; ID={lista}"
+            if proveedor:
+                filtro += f"; ProviderName='{proveedor}'"
+            script_partes.append(
+                f"$e = Get-WinEvent -FilterHashtable @{{{filtro}; "
+                f"StartTime=[datetime]'{inicio.isoformat(timespec='seconds')}'}} -ErrorAction SilentlyContinue"
+            )
+            script_partes.append(
+                '$r += $e | Group-Object Id | ForEach-Object { '
+                '$u = $_.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1; '
+                '[PSCustomObject]@{ log = ' + f"'{log}'" + '; id = [int]$_.Name; '
+                'cantidad = $_.Count; origen = $u.ProviderName; '
+                'mensaje = ($u.Message -replace "\\s+", " ") } }'
+            )
+        script_partes.append('ConvertTo-Json -InputObject @($r) -Compress -Depth 3')
+
+        try:
+            salida = subprocess.check_output(
+                ['powershell', '-NoProfile', '-Command', '\n'.join(script_partes)],
+                timeout=60, text=True, encoding='utf-8', errors='replace',
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+        except Exception:
+            logging.exception('No se pudo leer el visor de eventos de Windows')
+            return [], None
+
+        try:
+            eventos = json.loads(salida) if salida.strip() else []
+        except json.JSONDecodeError:
+            logging.warning('El visor de eventos devolvio algo que no es JSON, se descarta.')
+            return [], None
+
+        for evento in eventos:
+            evento['mensaje'] = (evento.get('mensaje') or '')[:500]
+        return eventos, marca_nueva
+
+    def bucle_eventos_sistema(self):
+        """Calco de bucle_log_pos, con su propio intervalo."""
+        while True:
+            time.sleep(self.args.intervalo_eventos_sistema)
+            if not self._token():
+                continue
+            try:
+                self._reportar_eventos_sistema()
+            except Exception:
+                logging.exception('No se pudieron reportar los eventos de Windows')
+
+    def _reportar_eventos_sistema(self):
+        eventos, marca_nueva = self._leer_eventos_sistema()
+        if marca_nueva is None:
+            # No se pudo leer. NO se avanza la marca: el proximo barrido reintenta desde
+            # el mismo punto en vez de saltearse la ventana que no se pudo mirar.
+            return
+        if not eventos:
+            self.identidad['eventos_sistema_marca'] = marca_nueva
+            self._guardar_identidad()
+            return
+
+        enviado = self._publicar(f'/saidsof/agente/{self.args.codigo}/eventos_sistema/', {
+            'token': self._token(), 'eventos': eventos,
+        })
+        if not enviado:
+            # Mismo criterio que el log del POS: si no salio, la ventana se vuelve a leer.
+            logging.warning('Los eventos de Windows no se pudieron publicar, se reintentan.')
+            return
+        self.identidad['eventos_sistema_marca'] = marca_nueva
+        self._guardar_identidad()
+        logging.info(
+            'Eventos de Windows reportados: %s',
+            ', '.join(f"{e['log']}/{e['id']} x{e['cantidad']}" for e in eventos),
+        )
 
     # --- Catalogo de servicios, enviado por el servidor ---
     #
@@ -2186,6 +2336,7 @@ del "%~f0"
         threading.Thread(target=self.bucle_metricas, daemon=True).start()
         threading.Thread(target=self.bucle_log_pos, daemon=True).start()
         threading.Thread(target=self.bucle_servicios_pos, daemon=True).start()
+        threading.Thread(target=self.bucle_eventos_sistema, daemon=True).start()
         self.client.loop_forever(retry_first_connection=True)
 
     def detener(self):
@@ -2214,6 +2365,7 @@ CAMPOS_CONFIG = [
     ('intervalo_metricas', 300),
     ('intervalo_log_pos', 300),
     ('intervalo_servicios_pos', 300),
+    ('intervalo_eventos_sistema', 900),
     ('pos_log_relativo', os.path.join('Logs', 'GeneraXML.txt')),
     ('pos_carpeta_instalacion', ''),
     ('pos_nombre_proceso', ''),
@@ -2258,6 +2410,10 @@ def main():
         '--intervalo-log-pos', type=int, default=300,
         help='Segundos entre revisiones del log de errores del POS (default 300 = 5min). '
              'Solo corre si --pos-carpeta-instalacion está configurado.',
+    )
+    parser.add_argument(
+        '--intervalo-eventos-sistema', type=int, default=900,
+        help='Cada cuantos segundos barrer el visor de eventos de Windows. 15 min por defecto: el visor no cambia cada minuto y cada barrido lanza un PowerShell, que en una caja vendiendo no es gratis.',
     )
     parser.add_argument(
         '--intervalo-servicios-pos', type=int, default=300,

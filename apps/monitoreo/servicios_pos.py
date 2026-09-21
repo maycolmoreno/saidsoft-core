@@ -125,3 +125,44 @@ def publicar_catalogo_servicios_pos() -> tuple:
     else:
         logger.warning('El catálogo de servicios del POS no se pudo publicar (broker sin responder).')
     return cuantos, bool(enviado)
+
+
+# Topico propio y no una seccion del de servicios: son dos catalogos distintos y meter
+# eventos de Windows en un topico llamado `servicios_pos` deja un nombre que miente. El
+# costo de separarlos es una regla de ACL y una suscripcion; el de mezclarlos lo paga el
+# que lo lea en seis meses.
+TOPICO_CATALOGO_EVENTOS = '/saidsof/catalogo/eventos_sistema/'
+
+
+def catalogo_eventos_para_agentes() -> list:
+    """Que eventos del visor de Windows tiene que mirar el agente.
+
+    Viaja lo minimo que el agente necesita para filtrar: log e id. El nombre, la nota y
+    la severidad son para el panel y no le sirven a la estacion — mandarlos serian bytes
+    por nada en cada reconexion de 1.800 equipos.
+    """
+    from .models import EventoSistemaVigilado
+
+    return [
+        {'log': v.log, 'id': v.identificador}
+        for v in EventoSistemaVigilado.objects.filter(activo=True).order_by('log', 'identificador')
+    ]
+
+
+def publicar_catalogo_eventos_sistema() -> tuple:
+    """Publica RETENIDO el catalogo de eventos. `(cuantos, se_envio)`. Nunca lanza."""
+    from apps.catalogo.services import _publicar_mqtt
+
+    eventos = catalogo_eventos_para_agentes()
+    try:
+        enviado = _publicar_mqtt(
+            TOPICO_CATALOGO_EVENTOS, json.dumps({'eventos': eventos}), retain=True,
+        )
+    except Exception:
+        logger.exception('No se pudo publicar el catalogo de eventos de Windows.')
+        return len(eventos), False
+    if enviado:
+        logger.info('Catalogo de eventos de Windows publicado: %d vigilado(s).', len(eventos))
+    else:
+        logger.warning('El catalogo de eventos no se pudo publicar (broker sin responder).')
+    return len(eventos), bool(enviado)

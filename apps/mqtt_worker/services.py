@@ -560,6 +560,35 @@ def manejar_perifericos(codigo_estacion: str, payload: dict) -> None:
     estacion.save(update_fields=['perifericos_ultima_verificacion'])
 
 
+def manejar_eventos_sistema(codigo_estacion: str, payload: dict) -> None:
+    """Guarda los eventos del visor de Windows que reporto esta estacion.
+
+    Un reporte vacio no se guarda ni se trata como "todo bien": que el agente no haya
+    encontrado eventos y que no haya podido leer el visor se ven igual desde aca, y
+    marcar una estacion como sana por no recibir nada es el modo de falla que este
+    proyecto ya conoce.
+    """
+    cerrar_conexiones_viejas()
+    try:
+        estacion = Estacion.objects.select_related('farmacia__unidad_negocio').get(
+            codigo=codigo_estacion, token_enrolamiento=payload.get('token'),
+        )
+    except Estacion.DoesNotExist:
+        logger.warning('Reporte de eventos de Windows con token invalido: %s', codigo_estacion)
+        return
+    if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return
+
+    eventos = payload.get('eventos')
+    if not isinstance(eventos, list) or not eventos:
+        return
+
+    from apps.monitoreo.services import registrar_eventos_sistema
+
+    guardados = registrar_eventos_sistema(estacion=estacion, eventos=eventos)
+    logger.info('%s: %d tipo(s) de evento de Windows registrado(s).', codigo_estacion, guardados)
+
+
 def manejar_servicios_pos(codigo_estacion: str, payload: dict) -> None:
     """Guarda el chequeo de los servicios externos que consume el POS de esta estación.
 
