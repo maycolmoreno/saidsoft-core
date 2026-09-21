@@ -32,7 +32,6 @@ no vuelve a enrolarse en cada arranque si ya tiene un token guardado, igual que 
 documenta que hace el agente real.
 """
 import argparse
-import datetime
 import hashlib
 import hmac
 import json
@@ -50,13 +49,13 @@ import time
 import urllib.parse
 import urllib.request
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.25'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.26'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -797,14 +796,14 @@ class AgentePrueba:
             # Primer barrido: una hora hacia atras y no todo el historial. Un equipo con
             # meses de eventos mandaria miles de golpe en su primer reporte, y lo que
             # importa es lo que pasa de ahora en adelante.
-            inicio = datetime.datetime.now() - datetime.timedelta(hours=1)
+            inicio = datetime.now() - timedelta(hours=1)
         else:
             try:
-                inicio = datetime.datetime.fromisoformat(desde)
+                inicio = datetime.fromisoformat(desde)
             except ValueError:
-                inicio = datetime.datetime.now() - datetime.timedelta(hours=1)
+                inicio = datetime.now() - timedelta(hours=1)
 
-        marca_nueva = datetime.datetime.now().isoformat(timespec='seconds')
+        marca_nueva = datetime.now().isoformat(timespec='seconds')
         # Se agrupa por (log, PROVEEDOR): el ID solo no identifica un evento.
         # Comprobado contra un visor real el 20-sep-2026 -- pidiendo solo `System 55`
         # volvian 260 avisos de energia del procesador, no corrupcion de NTFS.

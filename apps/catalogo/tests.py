@@ -2005,3 +2005,73 @@ class CorregirIpRouterProveedorTests(TestCase):
             ip_router='192.169.1.254')
         salida = self._correr('--aplicar')
         self.assertIn('Ninguna farmacia', salida)
+
+
+class AgenteSinModulosSombreadosTests(TestCase):
+    """El agente no puede usar `X.algo` cuando `X` es una CLASE importada con
+    `from X import X`, no el módulo.
+
+    Existe por un bug que llegó a producción el 21-sep-2026 y solo se vio leyendo el log
+    de una estación por script remoto:
+
+        AttributeError: type object 'datetime.datetime' has no attribute 'datetime'
+
+    El archivo ya tenía `from datetime import datetime` (línea 53) desde hacía meses. Al
+    sumar la recolección de eventos de Windows se agregó `import datetime` arriba y se
+    escribió `datetime.datetime.now()`. Python se queda con el último binding: `datetime`
+    era la clase, no el módulo, así que el hilo de eventos moría en su primera vuelta.
+
+    Lo caro no fue el bug sino encontrarlo: el hilo es daemon y la excepción no tumba
+    nada, así que el agente seguía mandando heartbeats y métricas con normalidad y la
+    recolección simplemente no existía. Se descartaron antes la versión del binario, tres
+    ACLs distintas, la suscripción real en el broker y el payload del catálogo.
+
+    No es un linter completo — mypy o ruff lo atraparían mejor — pero ninguno corre hoy
+    sobre `agente-prueba/`, y este caso concreto ya costó una tarde.
+    """
+
+    def _fuente_del_agente(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        return (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(
+            encoding='utf-8',
+        )
+
+    def test_ningun_nombre_importado_como_clase_se_usa_como_modulo(self):
+        import ast
+        import re
+
+        fuente = self._fuente_del_agente()
+        arbol = ast.parse(fuente)
+
+        # Nombres traídos con `from X import X` (la clase, no el módulo).
+        sombreados = set()
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.ImportFrom) and nodo.module:
+                raiz = nodo.module.split('.')[0]
+                for alias in nodo.names:
+                    if (alias.asname or alias.name) == raiz:
+                        sombreados.add(raiz)
+
+        culpables = []
+        for nombre in sorted(sombreados):
+            # `nombre.nombre` solo puede ser acceso al módulo: la clase no se contiene
+            # a sí misma. Es la forma exacta que tuvo este bug.
+            for m in re.finditer(rf'\b{re.escape(nombre)}\.{re.escape(nombre)}\b', fuente):
+                linea = fuente[:m.start()].count('\n') + 1
+                culpables.append(f'{nombre}.{nombre} en la línea {linea}')
+
+        self.assertEqual(
+            culpables, [],
+            'estos usos tratan como módulo un nombre que está importado como clase, y '
+            f'revientan con AttributeError en tiempo de ejecución: {culpables}',
+        )
+
+    def test_el_agente_compila(self):
+        """Barato y sorprendentemente útil: el .exe se construye con PyInstaller, que no
+        ejecuta el módulo, así que un error de sintaxis recién aparecería en la estación."""
+        import ast
+
+        ast.parse(self._fuente_del_agente())
