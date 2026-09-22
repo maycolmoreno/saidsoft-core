@@ -2827,3 +2827,79 @@ class AutocorreccionDelRelojTests(TestCase):
         estacion.refresh_from_db()
         evaluar_regla_autocorrecciones_reloj(estacion)
         self.assertTrue(Alerta.objects.filter(regla=regla, estacion=estacion).exists())
+
+
+class ElServidorDeHoraTieneRespaldoTests(TestCase):
+    """Si el `config.json` no trae `servidor_hora`, el agente usa el dominio del equipo.
+
+    El respaldo no es una comodidad: sin él la autocorrección del reloj **no funciona en
+    ninguna estación ya instalada**, que son justamente las que la necesitan.
+
+    El campo se agregó al `config.json` en 0.30, pero actualizar el agente NO reescribe
+    la configuración. Comprobado en producción el 22-sep-2026: MAM06-A, con 0.30 ya
+    aplicada, tenía `servidor_hora = AUSENTE`, y las 5 estaciones sordas seguían sordas
+    seis minutos después de recibir un comando que debía disparar la corrección. El
+    mecanismo estaba bien y no podía dispararse nunca.
+
+    `Win32_ComputerSystem.Domain` es el valor correcto y se descubre localmente: no hay
+    nada hardcodeado y cada unidad de negocio resuelve el suyo sin configurar nada.
+    """
+
+    def _fuente(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        return (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(
+            encoding='utf-8',
+        )
+
+    def test_el_config_tiene_prioridad_sobre_el_dominio(self):
+        """Quien configuró un servidor explícito tiene una razón; el dominio es el
+        respaldo, no al revés.
+
+        Sobre el AST y no sobre el texto: el docstring del método menciona
+        `Win32_ComputerSystem` antes que el código, y compararlo por posición en el
+        fuente daba un falso negativo — lo comprobé escribiendo esta prueba.
+        """
+        import ast
+
+        for nodo in ast.walk(ast.parse(self._fuente())):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == '_servidor_de_hora':
+                # Primera sentencia real (saltando el docstring).
+                cuerpo = [n for n in nodo.body if not (
+                    isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+                )]
+                primera = ast.dump(cuerpo[0])
+                self.assertIn('servidor_hora', primera,
+                              'lo primero que hace tiene que ser mirar el config')
+                return
+        self.fail('no existe _servidor_de_hora')
+
+    def test_un_equipo_fuera_de_dominio_no_se_toma_como_servidor(self):
+        """`Domain` devuelve el grupo de trabajo ("WORKGROUP") en un equipo suelto, y eso
+        no es un servidor de hora: `net time \\\\WORKGROUP` fallaría en cada intento."""
+        fuente = self._fuente()
+        cuerpo = fuente[fuente.index('def _servidor_de_hora'):fuente.index('def _reloj_fuera_de_ventana')]
+        self.assertIn("'.' in dominio", cuerpo)
+
+    def test_el_dominio_se_cachea(self):
+        """Se consulta desde la ruta de rechazo de comandos: lanzar un PowerShell por
+        cada mensaje descartado sería peor que el problema."""
+        fuente = self._fuente()
+        self.assertIn('_dominio_cacheado', fuente)
+
+    def test_nada_de_esto_hardcodea_un_controlador_de_dominio(self):
+        self.assertNotIn('farmaciasmia', self._fuente())
+
+    def test_la_correccion_usa_el_servidor_resuelto_y_no_el_arg_crudo(self):
+        """Si `_corregir_reloj` leyera `self.args.servidor_hora` directamente, el
+        respaldo no serviría de nada: volvería a quedar vacío en las estaciones viejas."""
+        fuente = self._fuente()
+        cuerpo = fuente[fuente.index('def _corregir_reloj'):]
+        cuerpo = cuerpo[:cuerpo.index('\n    def ', 10)]
+        self.assertNotIn(
+            'self.args.servidor_hora', cuerpo,
+            '_corregir_reloj tiene que usar _servidor_de_hora(), no el argumento crudo',
+        )
+        self.assertIn('servidor = self._servidor_de_hora()', cuerpo)

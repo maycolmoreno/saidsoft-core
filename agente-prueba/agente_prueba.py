@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.30'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.31'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -325,6 +325,49 @@ class AgentePrueba:
     # Corre como LocalSystem (`whoami` = nt authority\system, comprobado en la misma
     # medición) y el equipo está unido al dominio, así que `net time /set` tiene el
     # privilegio que necesita sin elevación extra.
+    def _servidor_de_hora(self) -> str:
+        """Contra quién sincronizar: lo del config, o el dominio del propio equipo.
+
+        El respaldo existe porque el config NO alcanza, y eso se descubrió con el
+        mecanismo ya desplegado: `servidor_hora` se agregó al `config.json` en 0.30, pero
+        actualizar el agente **no reescribe la configuración**. Las ~39 estaciones ya
+        instaladas quedaron con un config sin el campo, así que la autocorrección no
+        podía dispararse en ninguna de ellas — justo en las que hacía falta. Comprobado
+        en MAM06-A el 22-sep-2026: `servidor_hora = AUSENTE`.
+
+        `Win32_ComputerSystem.Domain` da el dominio al que la estación está unida, que es
+        exactamente el servidor de hora correcto y se descubre localmente: no hay nada
+        hardcodeado y cada unidad de negocio resuelve el suyo sin configurar nada. En un
+        equipo fuera de dominio devuelve el grupo de trabajo (típicamente "WORKGROUP"),
+        que no es un servidor — por eso solo se acepta si parece un dominio real.
+
+        Se cachea: esto se consulta desde la ruta de rechazo de comandos y no tiene
+        sentido lanzar un PowerShell cada vez.
+        """
+        if self.args.servidor_hora:
+            return self.args.servidor_hora
+        if getattr(self, '_dominio_cacheado', None) is not None:
+            return self._dominio_cacheado
+
+        self._dominio_cacheado = ''
+        try:
+            dominio = correr_powershell(
+                '(Get-CimInstance Win32_ComputerSystem).Domain', timeout=20,
+            ).strip()
+        except Exception:
+            logging.exception('No se pudo averiguar el dominio del equipo.')
+            return ''
+        # Un dominio real tiene punto; "WORKGROUP" y los grupos de trabajo no.
+        if '.' in dominio:
+            self._dominio_cacheado = dominio
+            logging.info('Sin ServidorHora en la config: uso el dominio del equipo (%s).', dominio)
+        else:
+            logging.warning(
+                'Sin ServidorHora en la config y el equipo no esta en un dominio (%r): '
+                'no puedo corregir el reloj solo.', dominio,
+            )
+        return self._dominio_cacheado
+
     def _reloj_fuera_de_ventana(self, timestamp_servidor):
         """Dispara la corrección en un hilo aparte. Nunca bloquea a quien la llama.
 
@@ -333,10 +376,10 @@ class AgentePrueba:
         la conexión — el mismo motivo por el que `_manejar_despliegue` despacha a un
         hilo (ver `_on_message`).
         """
-        if not self.args.servidor_hora:
+        if not self._servidor_de_hora():
             logging.warning(
-                'El reloj parece desfasado pero no hay ServidorHora configurado: '
-                'no puedo corregirlo solo. Hay que arreglarlo a mano.',
+                'El reloj parece desfasado y no hay contra que sincronizarlo (ni '
+                'ServidorHora en la config ni dominio): hay que arreglarlo a mano.',
             )
             return
         threading.Thread(
@@ -365,19 +408,20 @@ class AgentePrueba:
             desfase = None
             detalle_desfase = 'desfase no calculable (timestamp ilegible)'
 
+        servidor = self._servidor_de_hora()
         logging.warning(
             'Reloj fuera de la ventana de %ss (%s). Intento corregirlo contra %s.',
-            VENTANA_TIMESTAMP_SEGUNDOS, detalle_desfase, self.args.servidor_hora,
+            VENTANA_TIMESTAMP_SEGUNDOS, detalle_desfase, servidor,
         )
         try:
             proc = subprocess.run(
-                ['net', 'time', f'\\\\{self.args.servidor_hora}', '/set', '/y'],
+                ['net', 'time', f'\\\\{servidor}', '/set', '/y'],
                 capture_output=True, text=True, timeout=60,
                 encoding='oem', errors='replace',
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
         except Exception:
-            logging.exception('No se pudo ejecutar `net time` contra %s.', self.args.servidor_hora)
+            logging.exception('No se pudo ejecutar `net time` contra %s.', servidor)
             return
 
         salida = ' '.join((proc.stdout or '').split())[:300]
@@ -387,7 +431,7 @@ class AgentePrueba:
             self._guardar_identidad()
             logging.warning(
                 'Reloj corregido contra %s. Van %s autocorrecciones. Hora ahora: %s. %s',
-                self.args.servidor_hora, self.identidad['autocorrecciones_reloj'],
+                servidor, self.identidad['autocorrecciones_reloj'],
                 datetime.now().isoformat(timespec='seconds'), salida,
             )
         else:
@@ -395,7 +439,7 @@ class AgentePrueba:
             logging.error(
                 '`net time` falló contra %s (codigo %s). salida=%r error=%r. '
                 'La estación sigue sorda a los comandos hasta que alguien le arregle la hora.',
-                self.args.servidor_hora, proc.returncode, salida, error,
+                servidor, proc.returncode, salida, error,
             )
 
     # --- ciclo de conexión ---
