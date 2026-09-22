@@ -3081,3 +3081,113 @@ que cada una tenga su regla con comodín. Comprobada en rojo quitando la regla.
 Van cinco veces el mismo patrón: código correcto, permiso o detalle de entorno faltante,
 falla silenciosa. Lo que cambió no es que se arreglen más rápido sino que cada uno deja
 una prueba estructural que impide que la clase entera vuelva.
+
+## El agente se corrige el reloj solo (22-sep-2026)
+
+### El círculo vicioso
+
+Pasados los `VENTANA_TIMESTAMP_SEGUNDOS` (120 s), `_firma_valida` descarta **todo**
+mensaje firmado del servidor. Eso incluye el script que le arreglaría la hora. Una
+estación desfasada queda sorda y la única salida era entrar por MeshCentral y correr
+`net time` a mano — a ~1.800 equipos eso deja de ser una salida.
+
+Le pasó a GSD08-A el 22-sep-2026: se enroló a las 16:53 con el reloj 270 s atrasado y a
+las 16:56 ya tenía dos alertas abiertas. El script #61 que se le mandó quedó "en
+progreso" para siempre porque el agente lo descartó sin contestar.
+
+### Lo que se midió antes de escribir una línea
+
+Sobre MAM06-A, con el ejecutor de scripts del panel (que corre como el propio agente):
+
+| Qué | Resultado |
+|---|---|
+| Cuenta del servicio | `nt authority\system` (LocalSystem), con `SeSystemtimePrivilege` |
+| Equipo en dominio | sí, `farmaciasmia.int` |
+| `w32tm` contra el DC | **falla**: `10.0.0.7:123` devuelve `0x800705B4` (timeout) |
+| Fuente de hora actual | **"Free-running System Clock"** — no sincroniza con nada |
+| `net time` contra el DC | **funciona**: exit 0, devuelve la hora |
+
+El cuarto punto explica el problema de fondo: el `w32tm /config /manualpeerlist` que hace
+el instalador **no queda vigente**, porque el peer nunca responde NTP y Windows cae a
+reloj libre. Por eso las estaciones se van desfasando después de instaladas, y por eso
+acá se usa `net time` (SMB) y no `w32tm`.
+
+### Cómo funciona
+
+`_firma_valida` hace tres chequeos **en este orden**: firma HMAC, destinatario, ventana.
+La corrección se dispara **solo desde la tercera rama**, y ese orden es la propiedad que
+la hace segura: llegar hasta ahí implica que el mensaje venía firmado con un secreto que
+solo conoce el servidor y dirigido a esta estación. Una firma inválida o un mensaje
+cruzado cortan antes y no disparan nada. Hay una prueba que falla si alguien reordena los
+chequeos.
+
+Al detectarlo, el agente lanza **en un hilo aparte** (nunca bloquea el hilo de red de
+paho, o se corta el keepalive) un `net time \<ServidorHora> /set /y` con timeout de 60 s,
+capturando salida y código.
+
+`ServidorHora` sale del `config.json`, **nunca hardcodeado**: cada unidad de negocio
+puede apuntar a un controlador de dominio distinto. Hasta 0.29 ese valor lo consumía solo
+el instalador y el agente ni se enteraba — una estación que se desfasaba *después* de
+instalada quedaba sorda sin remedio.
+
+### Cooldown: 15 minutos
+
+Se marca **antes** de intentar, no después: si `net time` cuelga hasta el timeout o el
+proceso muere en el medio, el cooldown igual corre. Marcarlo al final dejaría la puerta
+abierta a reintentar en bucle justo en el caso que existe para cubrir. Y se persiste en
+`identidad.json`, no en memoria: el servicio está configurado para reiniciarse solo al
+fallar (cada 30 s), y un cooldown en memoria se perdería en cada reinicio.
+
+Los 15 minutos salen de tres cosas: si `net time` funciona no hay más rechazos, así que
+el cooldown solo entra en juego cuando **falla**; es el mismo orden de magnitud que el
+resto de los ciclos del agente (`intervalo_eventos_sistema` son 900 s); y aun en el peor
+caso son 4 intentos por hora, despreciable, y muchísimo más rápido que esperar a que
+alguien entre por MeshCentral.
+
+### Por qué no alcanza con el log local
+
+Arreglar el síntoma **tapa la señal**. Antes, un equipo con la pila de CMOS agotada se
+delataba quedándose sordo cada pocos días; ahora se corrige solo y nadie se entera —
+hasta que la pila muere del todo y la caja arranca en 2016 con el POS sin poder facturar.
+
+Por eso el agente lleva un contador acumulativo y lo manda **en el heartbeat**: es el
+mensaje que ya lleva los datos de reloj, ya tiene ACL y ya lo procesa el worker, así que
+no hace falta un tópico nuevo. El servidor lo guarda en `Estacion.autocorrecciones_reloj`
+y la métrica `AUTOCORRECCIONES_RELOJ` deja definir el umbral desde una `ReglaAlerta` del
+panel — con lo que la alerta viaja por el mismo camino que todas, Telegram incluido.
+
+El umbral vive en el panel y no en el agente por el criterio de siempre: fijarlo en el
+ejecutable obligaría a redistribuirlo a ~1.800 estaciones para cambiar un número.
+
+### ¿Se puede abusar?
+
+La pregunta correcta es si alguien puede provocar rechazos a propósito para que el agente
+ejecute `net time` en bucle. La respuesta corta es que no sin tener ya el secreto HMAC.
+
+- **Firma inválida**: corta en la primera rama, no llega a la corrección.
+- **Mensaje de otra estación**: corta en la segunda.
+- **Replay de un comando legítimo capturado**: es el único vector real. Quien tenga la
+  credencial MQTT compartida puede capturar un comando válido y reenviarlo: llegaría con
+  firma buena, destinatario correcto y timestamp viejo, o sea por la rama de la ventana.
+
+Ese vector lo contiene el cooldown: como máximo un `net time` cada 15 minutos. Y lo que
+lograría es que la estación **sincronice su reloj con su propio controlador de dominio**,
+que es lo que debería estar haciendo igual. No hay escalada: no elige el servidor (sale
+del config local), no ejecuta nada arbitrario, y el comando replayado sigue descartado.
+
+La mitigación de fondo de ese replay no es este mecanismo sino angostar la ACL de la
+credencial compartida, que sigue pendiente — y que, como anota
+`generar_script_instalacion`, tampoco la cierra del todo mientras conserve el comodín
+sobre `/saidsof/enrolamiento/respuesta/+/`.
+
+### Cómo se probó
+
+El agente no tiene suite propia (importarlo exige paho y win32api, y corre como servicio
+de Windows), así que su contrato se verifica leyendo el fuente con AST desde
+`AutocorreccionDelRelojTests` — 13 pruebas. La central,
+`test_solo_el_rechazo_POR_VENTANA_dispara_la_correccion`, se comprobó **en rojo**: se
+agregó a mano la llamada a la corrección en la rama de firma inválida y la prueba falló
+señalándolo; restaurada, pasa.
+
+Lo que se probó contra estaciones reales es lo que el AST no puede decir: privilegios,
+dominio, que `w32tm` falla y que `net time` funciona — la tabla de arriba.

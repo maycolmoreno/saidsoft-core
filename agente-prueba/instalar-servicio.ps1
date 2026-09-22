@@ -195,6 +195,12 @@ $config = [ordered]@{
     pos_nombre_proceso       = $PosNombreProceso
     pos_comando_iniciar      = $PosComandoIniciar
     espera_liveness_segundos = 15
+    # El agente lo usa para corregirse el reloj solo cuando detecta que quedo fuera de
+    # la ventana de 120s y por eso esta descartando TODO comando (incluido el que le
+    # arreglaria la hora). Hasta 0.29 este valor lo consumia solo este instalador, en el
+    # paso 2, y el agente ni se enteraba: una estacion que se desfasaba DESPUES de
+    # instalada quedaba sorda hasta que alguien entrara por MeshCentral.
+    servidor_hora            = $ServidorHora
 }
 $config | ConvertTo-Json | Set-Content -Path (Join-Path $InstallPath "config.json") -Encoding utf8
 

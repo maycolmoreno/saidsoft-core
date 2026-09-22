@@ -1599,6 +1599,37 @@ dominio en la estación (mismo problema del secreto compartido, sin resolver); e
 persona, no de máquina. Los tres son pasos de tipo `manual` — quedan en el checklist con su
 evidencia, no fingidos como automáticos.
 
+## El agente se corrige el reloj solo
+
+Una estación con el reloj desviado más de **120 segundos** descarta *todos* los comandos
+y scripts del panel — es la protección anti-replay de las firmas HMAC. El problema es que
+eso incluye el script que le arreglaría la hora: queda sorda y antes solo se recuperaba
+entrando por MeshCentral a mano.
+
+Desde el agente **0.30** se arregla sola. Cuando descarta un mensaje por ventana —y solo
+por eso: una firma inválida o un mensaje dirigido a otra estación cortan antes y no
+disparan nada— corre `net time \<ServidorHora> /set /y` contra el controlador de dominio
+de su `config.json`, con un cooldown de 15 minutos para no quedar en bucle si el DC no
+responde.
+
+Se usa `net time` y no `w32tm` porque **el DC no responde NTP**: medido el 22-sep-2026
+contra `10.0.0.7:123`, `w32tm` da timeout (`0x800705B4`) y la estación queda en
+"Free-running System Clock", sin sincronizar con nada. Por SMB sí funciona.
+
+`ServidorHora` se completa en el `config.txt` de la instalación y viaja al `config.json`
+del agente. **Vacío desactiva la autocorrección**: el agente solo lo avisa en su log.
+
+### Que se corrija seguido es una alarma, no un alivio
+
+Arreglar el síntoma tapa la señal. Un equipo con la pila de CMOS agotada antes se
+delataba quedándose sordo cada pocos días; si se corrige solo, nadie se entera hasta que
+la pila muere del todo y la caja arranca con una fecha de hace años.
+
+Por eso el agente lleva la cuenta y la manda en cada latido, y el panel la muestra en la
+ficha de la estación. La métrica **"Veces que la estación se corrigió el reloj sola"**
+permite crear una `ReglaAlerta` con el umbral que prefieras: una corrección es lo
+esperado, varias significan que hay que abrir el equipo.
+
 ## Freno de emergencia (pausar el agente sin apagarlo)
 
 Si el agente se despliega a ~1.800 cajas y algo sale mal, esto es con lo que se frena.

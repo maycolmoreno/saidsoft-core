@@ -252,6 +252,31 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
         estacion.ip_lan = payload['ip_lan']
     if payload.get('puerto_cache'):
         estacion.puerto_cache = payload['puerto_cache']
+    # Cuántas veces la estación se corrigió el reloj sola (agente 0.30+). Se guarda el
+    # contador acumulado tal cual lo reporta ella: es su historia, no la nuestra, y
+    # sobrevive a que el servidor pierda datos.
+    #
+    # Un agente anterior no manda la clave, y entonces no se toca nada: poner 0 borraría
+    # el historial de una estación que sí se venía corrigiendo, y justo esa es la señal
+    # que este contador existe para conservar.
+    autocorrecciones = payload.get('autocorrecciones_reloj')
+    if isinstance(autocorrecciones, int) and autocorrecciones != estacion.autocorrecciones_reloj:
+        estacion.autocorrecciones_reloj = autocorrecciones
+        ultima = payload.get('ultima_autocorreccion_reloj') or ''
+        if ultima:
+            from django.utils.dateparse import parse_datetime
+            fecha = parse_datetime(ultima)
+            if fecha is not None:
+                # El agente la manda en hora LOCAL de la estación y sin zona (isoformat
+                # de datetime.now()). Se interpreta en la zona del proyecto en vez de
+                # asumir UTC, que la correría 5 horas.
+                estacion.ultima_autocorreccion_reloj = (
+                    timezone.make_aware(fecha) if timezone.is_naive(fecha) else fecha
+                )
+        logger.warning(
+            '%s se corrigió el reloj sola (van %s veces).', codigo_estacion, autocorrecciones,
+        )
+
     # La estación declara si está frenada. Es lo único que convierte "publiqué la orden"
     # en "la orden se aplicó": el mensaje de pausa va retenido, así que salir del
     # servidor no prueba nada sobre una estación apagada. Se confía en lo que reporta y
@@ -282,11 +307,14 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
     registrar_actividad_mensual(estacion)
 
     from apps.monitoreo.models import EstadoDispositivo
-    from apps.monitoreo.services import evaluar_regla_reloj, registrar_estado_dispositivo
+    from apps.monitoreo.services import (
+        evaluar_regla_autocorrecciones_reloj, evaluar_regla_reloj, registrar_estado_dispositivo,
+    )
     registrar_estado_dispositivo(estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=True)
     # Despues del save: el desfase recien recalculado ya esta persistido, y la alerta se
     # abre o se resuelve con el valor de ESTE latido (ver evaluar_regla_reloj).
     evaluar_regla_reloj(estacion)
+    evaluar_regla_autocorrecciones_reloj(estacion)
 
 
 def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:

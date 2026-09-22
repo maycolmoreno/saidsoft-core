@@ -324,6 +324,18 @@ class Estacion(models.Model):
         help_text='La estación confirmó en su heartbeat que tiene guardado su secreto '
                   'propio. Es lo único que habilita a firmarle con él.',
     )
+    autocorrecciones_reloj = models.PositiveIntegerField(
+        default=0, editable=False,
+        help_text='Veces que la estación se corrigió el reloj sola contra el servidor de '
+                  'hora (agente 0.30+). Que pase una vez es lo esperado: rompe el círculo '
+                  'vicioso de una estación que descarta todo comando, incluido el que le '
+                  'arreglaría la hora. Que suba seguido señala la pila de CMOS agotada — '
+                  'eso no se configura, se cambia el equipo.',
+    )
+    ultima_autocorreccion_reloj = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text='Cuándo se corrigió el reloj por última vez, según la propia estación.',
+    )
     # --- Pausa remota (freno de emergencia) ---
     #
     # Existe porque el despliegue del agente pasa de 8 equipos a ~1.800 y hasta ahora no

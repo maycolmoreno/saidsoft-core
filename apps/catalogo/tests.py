@@ -2589,3 +2589,241 @@ class ElAgentePausadoSigueLatiendoTests(TestCase):
             for n in ast.walk(metodo)
         )
         self.assertTrue(firma, 'la orden de pausa tiene que verificarse con firma')
+
+
+class AutocorreccionDelRelojTests(TestCase):
+    """El agente se corrige el reloj solo cuando detecta que quedó sordo.
+
+    El círculo vicioso que rompe: pasados los 120 s de desfase, `_firma_valida` descarta
+    TODO mensaje firmado — incluido el script que le arreglaría la hora. Hasta 0.29 la
+    única salida era entrar por MeshCentral y correr `net time` a mano, lo que a ~1.800
+    equipos deja de ser una salida.
+
+    El contrato del agente se lee del fuente (importarlo exige paho y win32api, y corre
+    en Windows dentro de un servicio), pero lo que se ata acá NO es cosmético: es la
+    diferencia entre corregir el reloj y ejecutar `net time` cada vez que llega una firma
+    inválida.
+    """
+
+    def _fuente(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        return (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(
+            encoding='utf-8',
+        )
+
+    def _metodo(self, nombre):
+        import ast
+
+        for nodo in ast.walk(ast.parse(self._fuente())):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == nombre:
+                return nodo
+        self.fail(f'no existe {nombre} en el agente')
+
+    # --- LA prueba: solo el desfase de reloj dispara la corrección ---
+
+    def test_solo_el_rechazo_POR_VENTANA_dispara_la_correccion(self):
+        """Los tres rechazos de `_firma_valida` son ramas distintas y solo una puede
+        llamar a la corrección.
+
+        Que la ventana se chequee ÚLTIMA no es un detalle de estilo: garantiza que
+        llegar hasta ahí implica firma HMAC válida y mensaje dirigido a esta estación.
+        Si alguien reordena los chequeos, una firma inválida empezaría a disparar
+        `net time` — que es exactamente lo que el pedido excluye.
+        """
+        import ast
+
+        metodo = self._metodo('_firma_valida')
+        returns_false = []
+        for nodo in ast.walk(metodo):
+            if isinstance(nodo, ast.If):
+                llama_correccion = any(
+                    isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == '_reloj_fuera_de_ventana'
+                    for n in ast.walk(nodo)
+                )
+                # La rama que menciona la ventana es la única que puede corregir.
+                fuente_rama = ast.dump(nodo.test)
+                es_rama_ventana = 'timestamp_en_ventana' in fuente_rama
+                returns_false.append((es_rama_ventana, llama_correccion))
+
+        con_correccion = [r for r in returns_false if r[1]]
+        self.assertEqual(
+            len(con_correccion), 1,
+            'exactamente una rama de _firma_valida puede disparar la corrección del reloj',
+        )
+        self.assertTrue(
+            con_correccion[0][0],
+            'la corrección del reloj se dispara desde una rama que NO es la de la ventana: '
+            'eso haría que una firma inválida ejecute net time',
+        )
+
+    def test_la_ventana_se_chequea_despues_de_la_firma(self):
+        """Lo que sostiene la prueba de arriba y además la propiedad de seguridad: nadie
+        puede provocar un `net time` sin tener el secreto HMAC."""
+        fuente = self._fuente()
+        cuerpo = fuente[fuente.index('def _firma_valida'):fuente.index('def _reloj_fuera_de_ventana')]
+        pos_firma = cuerpo.index('compare_digest')
+        pos_estacion = cuerpo.index("'estacion' in campos")
+        pos_ventana = cuerpo.index('timestamp_en_ventana')
+        self.assertLess(pos_firma, pos_ventana, 'la firma tiene que validarse ANTES que la ventana')
+        self.assertLess(pos_estacion, pos_ventana, 'el destinatario tiene que validarse ANTES que la ventana')
+
+    # --- no bloquear a quien lo dispara ---
+
+    def test_la_correccion_corre_en_un_hilo_aparte(self):
+        """`_firma_valida` corre en el hilo de red de paho. Bloquearlo impide que salgan
+        los PINGREQ del keepalive y el broker cierra la conexión — el mismo motivo por el
+        que despliegue y software se despachan a un hilo."""
+        import ast
+
+        metodo = self._metodo('_reloj_fuera_de_ventana')
+        usa_hilo = any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == 'Thread'
+            for n in ast.walk(metodo)
+        )
+        self.assertTrue(usa_hilo, '_reloj_fuera_de_ventana tiene que despachar a un hilo')
+
+    def test_net_time_tiene_timeout(self):
+        """Sin timeout, un DC que acepta la conexión y no responde deja el hilo colgado
+        para siempre."""
+        import ast
+
+        metodo = self._metodo('_corregir_reloj')
+        for nodo in ast.walk(metodo):
+            if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == 'run':
+                claves = {kw.arg for kw in nodo.keywords}
+                self.assertIn('timeout', claves, 'el net time tiene que tener timeout')
+                return
+        self.fail('no se encontró la llamada a subprocess.run en _corregir_reloj')
+
+    # --- cooldown ---
+
+    def test_hay_cooldown_y_se_marca_ANTES_de_intentar(self):
+        """Marcarlo al final dejaría la puerta abierta a reintentar en bucle justo en el
+        caso que el cooldown existe para cubrir: que `net time` cuelgue o el proceso
+        muera en el medio."""
+        fuente = self._fuente()
+        self.assertIn('COOLDOWN_CORRECCION_RELOJ_SEGUNDOS', fuente)
+        cuerpo = fuente[fuente.index('def _corregir_reloj'):]
+        cuerpo = cuerpo[:cuerpo.index('def ', 10)]
+        pos_marca = cuerpo.index("identidad['ultimo_intento_reloj']")
+        pos_subproceso = cuerpo.index('subprocess.run')
+        self.assertLess(
+            pos_marca, pos_subproceso,
+            'el cooldown se tiene que marcar ANTES de ejecutar net time',
+        )
+
+    def test_el_cooldown_se_persiste_en_disco(self):
+        """El servicio está configurado para reiniciarse solo al fallar (sc.exe failure,
+        cada 30 s). Un cooldown en memoria se perdería en cada reinicio y un agente en
+        bucle de caídas ejecutaría `net time` sin parar."""
+        self.assertIn("self.identidad['ultimo_intento_reloj']", self._fuente())
+
+    # --- el servidor de hora sale del config, nunca hardcodeado ---
+
+    def test_el_servidor_de_hora_sale_del_config(self):
+        """Cada unidad de negocio puede apuntar a un controlador de dominio distinto."""
+        fuente = self._fuente()
+        self.assertIn("('servidor_hora', '')", fuente)
+        self.assertIn('self.args.servidor_hora', fuente)
+        self.assertNotIn('farmaciasmia.int', fuente, 'el DC no puede estar hardcodeado en el agente')
+
+    def test_sin_servidor_de_hora_no_intenta_nada(self):
+        import ast
+
+        metodo = self._metodo('_reloj_fuera_de_ventana')
+        primero = metodo.body[1] if len(metodo.body) > 1 else metodo.body[0]
+        self.assertIsInstance(
+            primero, ast.If,
+            'lo primero después del docstring tiene que ser la guarda de servidor_hora',
+        )
+
+    def test_el_instalador_le_pasa_el_servidor_de_hora_al_agente(self):
+        """Hasta 0.29 `ServidorHora` lo consumía SOLO el instalador y el agente ni se
+        enteraba: una estación que se desfasaba después de instalada quedaba sorda."""
+        from pathlib import Path
+
+        from django.conf import settings
+
+        ps1 = (Path(settings.BASE_DIR) / 'agente-prueba' / 'instalar-servicio.ps1').read_text(
+            encoding='utf-8',
+        )
+        self.assertIn('servidor_hora            = $ServidorHora', ps1)
+
+    # --- que no quede solo en el log local ---
+
+    def test_el_latido_reporta_el_contador(self):
+        """El problema de hoy es justamente que todo queda en un log que nadie mira."""
+        self.assertIn("'autocorrecciones_reloj': self.identidad.get('autocorrecciones_reloj', 0),", self._fuente())
+
+    def test_el_servidor_guarda_el_contador_que_reporta_la_estacion(self):
+        from apps.mqtt_worker.services import manejar_heartbeat
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX977')
+        farmacia = Farmacia.objects.create(codigo='ML977', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML977-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        manejar_heartbeat('ML977-A', {
+            'token': estacion.token_enrolamiento,
+            'autocorrecciones_reloj': 3,
+            'ultima_autocorreccion_reloj': '2026-09-22T10:15:00',
+        })
+        estacion.refresh_from_db()
+        self.assertEqual(estacion.autocorrecciones_reloj, 3)
+        self.assertIsNotNone(estacion.ultima_autocorreccion_reloj)
+
+    def test_un_agente_viejo_no_borra_el_historial(self):
+        """Poner 0 cuando la clave no viene borraría la única señal que delata al equipo
+        con la pila agotada."""
+        from apps.mqtt_worker.services import manejar_heartbeat
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX976')
+        farmacia = Farmacia.objects.create(codigo='ML976', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML976-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        Estacion.objects.filter(pk=estacion.pk).update(autocorrecciones_reloj=5)
+        manejar_heartbeat('ML976-A', {'token': estacion.token_enrolamiento})
+        estacion.refresh_from_db()
+        self.assertEqual(estacion.autocorrecciones_reloj, 5)
+
+    def test_corregirse_seguido_abre_alerta(self):
+        """Arreglar el síntoma tapa la señal: sin esto, el equipo con la pila agotada se
+        vuelve invisible en vez de delatarse quedándose sordo."""
+        from apps.monitoreo.models import Alerta, Metrica, ReglaAlerta
+        from apps.monitoreo.services import evaluar_regla_autocorrecciones_reloj
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX975')
+        farmacia = Farmacia.objects.create(codigo='ML975', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML975-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        autor = User.objects.create_user(username='autor_reloj', password='x')
+        regla = ReglaAlerta.objects.create(
+            nombre='Reloj que se corrige solo demasiado', metrica=Metrica.AUTOCORRECCIONES_RELOJ,
+            umbral=3, duracion_minutos=0, severidad=ReglaAlerta.Severidad.WARNING, creado_por=autor,
+        )
+
+        Estacion.objects.filter(pk=estacion.pk).update(autocorrecciones_reloj=1)
+        estacion.refresh_from_db()
+        evaluar_regla_autocorrecciones_reloj(estacion)
+        self.assertFalse(
+            Alerta.objects.filter(regla=regla, estacion=estacion).exists(),
+            'una sola autocorrección es lo esperado y no debe alertar',
+        )
+
+        Estacion.objects.filter(pk=estacion.pk).update(autocorrecciones_reloj=4)
+        estacion.refresh_from_db()
+        evaluar_regla_autocorrecciones_reloj(estacion)
+        self.assertTrue(Alerta.objects.filter(regla=regla, estacion=estacion).exists())

@@ -467,6 +467,34 @@ def evaluar_regla_reloj(estacion) -> None:
             resolver_condicion(regla, estacion)
 
 
+def evaluar_regla_autocorrecciones_reloj(estacion) -> None:
+    """Alerta sobre la estacion que se corrige el reloj sola DEMASIADAS veces.
+
+    Existe por un efecto secundario incomodo de la autocorreccion: al arreglar el
+    sintoma, tapa la senal. Antes, un equipo con la pila de CMOS agotada se delataba
+    quedandose sordo cada pocos dias y obligando a que alguien fuera; ahora se corrige
+    solo y nadie se entera nunca — hasta que la pila muere del todo y la caja arranca en
+    2016, con el POS sin poder facturar.
+
+    Por eso el contador es acumulativo y lo lleva la ESTACION, no el servidor: sobrevive
+    a que el agente se reinicie y a que el servidor pierda datos. Una sola correccion es
+    exactamente lo que se buscaba y no deberia alertar; el umbral lo define una
+    `ReglaAlerta` desde el panel, como todo lo demas, en vez de fijarlo en el agente —
+    que obligaria a redistribuir el ejecutable a ~1.800 estaciones para cambiarlo.
+
+    No se resuelve sola: el contador nunca baja, asi que una alerta abierta acá se cierra
+    cuando alguien cambia la pila y la da por atendida. Es deliberado — lo que hay que
+    ver es que ESE equipo tuvo el problema, no si lo tuvo en las ultimas 24 horas.
+    """
+    veces = estacion.autocorrecciones_reloj or 0
+    if not veces:
+        return
+    unidad = estacion.farmacia.unidad_negocio
+    for regla in reglas_aplicables_a(unidad, metrica=Metrica.AUTOCORRECCIONES_RELOJ):
+        if _cumple(regla, veces):
+            abrir_o_mantener_alerta(regla, estacion, veces)
+
+
 def evaluar_regla_pos_errores(estacion, total_nuevos: int) -> None:
     """Llamada tras ingerir un reporte del log del POS (ver
     apps.mqtt_worker.services.manejar_pos_errores). Cada reporte ya es una ventana

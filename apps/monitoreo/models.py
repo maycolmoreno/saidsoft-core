@@ -180,6 +180,15 @@ class Metrica(models.TextChoices):
     # ya ocurrio, no hay condicion sostenida que esperar. Cual dispara y cual solo se
     # guarda lo decide `EventoSistemaVigilado.abre_alerta`, no esta regla.
     EVENTO_SISTEMA = 'evento_sistema', 'Evento de Windows (disco, apagon...)'
+    # Cuantas veces la estacion tuvo que corregirse el reloj sola (agente 0.30+, ver
+    # `_corregir_reloj`). NO mide un problema de hora: mide un problema de HARDWARE.
+    #
+    # Que el agente se autocorrija una vez es exactamente lo que se busca — rompe el
+    # circulo vicioso de una estacion sorda sin que nadie viaje. Que lo haga seguido
+    # significa que el reloj se le vuelve a ir, y eso no se configura: es la pila de CMOS
+    # agotada, y el equipo hay que abrirlo. Sin esta metrica la autocorreccion taparia
+    # justamente la senal que delata al equipo enfermo.
+    AUTOCORRECCIONES_RELOJ = 'autocorrecciones_reloj', 'Veces que la estación se corrigió el reloj sola'
 
 
 class EstadoDispositivo(models.Model):

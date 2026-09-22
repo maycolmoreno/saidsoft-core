@@ -274,6 +274,27 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
             {% endif %}
         </p>
 
+        {% comment %}
+        Que la estación se haya corregido el reloj sola es la única pista de que tiene la
+        pila de CMOS agotada: al arreglar el síntoma, el mecanismo tapa la señal que antes
+        la delataba (quedarse sorda cada pocos días). Por eso se muestra acá aunque el
+        número sea chico.
+        {% endcomment %}
+        {% if estacion.autocorrecciones_reloj %}
+        <p class="text-xs mb-2">
+            <span class="pill {% if estacion.autocorrecciones_reloj > 2 %}warning{% else %}neutral{% endif %}">
+                Reloj autocorregido {{ estacion.autocorrecciones_reloj }}
+                {% if estacion.autocorrecciones_reloj == 1 %}vez{% else %}veces{% endif %}
+            </span>
+            {% if estacion.ultima_autocorreccion_reloj %}
+            <span class="text-[var(--text-faint)]">última: {{ estacion.ultima_autocorreccion_reloj|date:"d/m/Y H:i" }}</span>
+            {% endif %}
+            {% if estacion.autocorrecciones_reloj > 2 %}
+            <br><span class="text-[var(--text-dim)]">Se corrige seguido: revisar la pila de la placa, no la configuración.</span>
+            {% endif %}
+        </p>
+        {% endif %}
+
         {% if not ultima_version_agente %}
         <p class="text-xs text-[var(--text-dim)] mb-2">No hay ninguna versión de agente cargada todavía.</p>
         {% elif not agente_desactualizado %}

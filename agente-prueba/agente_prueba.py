@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.29'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.30'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -67,6 +67,18 @@ VERSION_AGENTE_PRUEBA = 'agente-prueba-0.29'
 # mismo mensaje dentro de la ventana produce un reporte de estado duplicado sobre un
 # resultado que el servidor probablemente ya cerró.
 VENTANA_TIMESTAMP_SEGUNDOS = 120
+
+# Cuanto espera el agente antes de volver a intentar corregir su reloj (ver
+# `_corregir_reloj`). 15 minutos, por tres razones:
+#
+#   - Si `net time` funciona, el reloj queda bien y no hay mas rechazos: el cooldown
+#     solo entra en juego cuando el intento FALLA, y ahi lo que importa es no quedarse
+#     ejecutando `net time` en bucle contra un DC inalcanzable.
+#   - Es el mismo orden de magnitud que el resto de los ciclos del agente
+#     (`intervalo_eventos_sistema` son 900 s), asi que no introduce un numero nuevo.
+#   - Aun en el peor caso son 4 intentos por hora, despreciable, y sigue siendo
+#     muchisimo mas rapido que la alternativa actual: que alguien entre por MeshCentral.
+COOLDOWN_CORRECCION_RELOJ_SEGUNDOS = 900
 
 
 def _configurar_logging_archivo(ruta_log: str = ARCHIVO_LOG):
@@ -287,8 +299,104 @@ class AgentePrueba:
                 '%s con timestamp fuera de ventana (posible mensaje reenviado/capturado) — se ignora.',
                 tipo_mensaje,
             )
+            # Único punto del que puede salir la autocorrección del reloj, y no es
+            # casualidad que sea el ÚLTIMO de los tres chequeos: llegar hasta acá
+            # significa que la firma HMAC ya se validó y que el mensaje venía dirigido a
+            # ESTA estación. O sea que la causa del rechazo solo puede ser la ventana —
+            # nunca una firma inválida ni un mensaje cruzado, que cortan antes.
+            self._reloj_fuera_de_ventana(payload.get('timestamp'))
             return False
         return True
+
+    # --- autocorrección del reloj ---
+    #
+    # Rompe un círculo vicioso: pasados los VENTANA_TIMESTAMP_SEGUNDOS la estación
+    # descarta TODO mensaje firmado, incluido el script que le arreglaría la hora. Hasta
+    # ahora la única salida era entrar por MeshCentral a mano y correr `net time`, lo que
+    # a ~1.800 equipos no es una salida.
+    #
+    # Por qué `net time` y no `w32tm`: medido sobre MAM06-A el 22-sep-2026, el DC
+    # (10.0.0.7) NO responde NTP — `w32tm /stripchart` devuelve 0x800705B4 (timeout) — y
+    # `w32tm /query /source` dice "Free-running System Clock", o sea que la estación no
+    # sincroniza con nada y su reloj deriva libre. `net time` contra el mismo DC sí
+    # funciona (exit 0, devuelve la hora) porque va por SMB. Es el mismo camino que ya
+    # usa instalar-servicio.ps1 como respaldo.
+    #
+    # Corre como LocalSystem (`whoami` = nt authority\system, comprobado en la misma
+    # medición) y el equipo está unido al dominio, así que `net time /set` tiene el
+    # privilegio que necesita sin elevación extra.
+    def _reloj_fuera_de_ventana(self, timestamp_servidor):
+        """Dispara la corrección en un hilo aparte. Nunca bloquea a quien la llama.
+
+        Importa: esto lo invoca `_firma_valida`, que corre en el hilo de red de paho.
+        Bloquearlo impediría que salgan los PINGREQ del keepalive y el broker cerraría
+        la conexión — el mismo motivo por el que `_manejar_despliegue` despacha a un
+        hilo (ver `_on_message`).
+        """
+        if not self.args.servidor_hora:
+            logging.warning(
+                'El reloj parece desfasado pero no hay ServidorHora configurado: '
+                'no puedo corregirlo solo. Hay que arreglarlo a mano.',
+            )
+            return
+        threading.Thread(
+            target=self._corregir_reloj, args=(timestamp_servidor,), daemon=True,
+        ).start()
+
+    def _corregir_reloj(self, timestamp_servidor):
+        ahora = time.time()
+        ultimo = self.identidad.get('ultimo_intento_reloj', 0)
+        if ahora - ultimo < COOLDOWN_CORRECCION_RELOJ_SEGUNDOS:
+            faltan = int(COOLDOWN_CORRECCION_RELOJ_SEGUNDOS - (ahora - ultimo))
+            logging.info('Reloj desfasado, pero ya intenté corregirlo hace poco (faltan %ss).', faltan)
+            return
+
+        # Se marca ANTES de intentar, no después: si `net time` cuelga hasta el timeout o
+        # el proceso muere en el medio, el cooldown igual corre. Marcarlo al final dejaría
+        # la puerta abierta a reintentar en bucle justo en el caso que el cooldown
+        # existe para cubrir.
+        self.identidad['ultimo_intento_reloj'] = ahora
+        self._guardar_identidad()
+
+        try:
+            desfase = ahora - float(timestamp_servidor)
+            detalle_desfase = f'{desfase:+.0f}s respecto del servidor'
+        except (TypeError, ValueError):
+            desfase = None
+            detalle_desfase = 'desfase no calculable (timestamp ilegible)'
+
+        logging.warning(
+            'Reloj fuera de la ventana de %ss (%s). Intento corregirlo contra %s.',
+            VENTANA_TIMESTAMP_SEGUNDOS, detalle_desfase, self.args.servidor_hora,
+        )
+        try:
+            proc = subprocess.run(
+                ['net', 'time', f'\\\\{self.args.servidor_hora}', '/set', '/y'],
+                capture_output=True, text=True, timeout=60,
+                encoding='oem', errors='replace',
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+        except Exception:
+            logging.exception('No se pudo ejecutar `net time` contra %s.', self.args.servidor_hora)
+            return
+
+        salida = ' '.join((proc.stdout or '').split())[:300]
+        if proc.returncode == 0:
+            self.identidad['autocorrecciones_reloj'] = self.identidad.get('autocorrecciones_reloj', 0) + 1
+            self.identidad['ultima_autocorreccion_reloj'] = datetime.now().isoformat(timespec='seconds')
+            self._guardar_identidad()
+            logging.warning(
+                'Reloj corregido contra %s. Van %s autocorrecciones. Hora ahora: %s. %s',
+                self.args.servidor_hora, self.identidad['autocorrecciones_reloj'],
+                datetime.now().isoformat(timespec='seconds'), salida,
+            )
+        else:
+            error = ' '.join((proc.stderr or '').split())[:300]
+            logging.error(
+                '`net time` falló contra %s (codigo %s). salida=%r error=%r. '
+                'La estación sigue sorda a los comandos hasta que alguien le arregle la hora.',
+                self.args.servidor_hora, proc.returncode, salida, error,
+            )
 
     # --- ciclo de conexión ---
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
@@ -1187,6 +1295,13 @@ class AgentePrueba:
             'reloj_epoch': time.time(),
             'offset_utc_minutos': offset_utc_minutos(),
             'zona_horaria': leer_zona_horaria(),
+            # Cuantas veces esta estacion tuvo que corregirse el reloj sola. Va en el
+            # latido y no en un topico nuevo porque este mensaje YA es el que lleva los
+            # datos de reloj, ya tiene ACL y ya lo procesa el worker. Que el numero suba
+            # es la senal que hoy no existe: una estacion que se autocorrige seguido
+            # tiene un problema de hardware (pila de CMOS), no de configuracion.
+            'autocorrecciones_reloj': self.identidad.get('autocorrecciones_reloj', 0),
+            'ultima_autocorreccion_reloj': self.identidad.get('ultima_autocorreccion_reloj', ''),
             # A qué nodo apunta REALMENTE el POS de esta estación (ver
             # _leer_config_pos). Va en el heartbeat y no en consultar_info para que
             # se mantenga solo, sin depender de que alguien apriete un botón.
@@ -2512,6 +2627,11 @@ CAMPOS_CONFIG = [
     ('pos_nombre_proceso', ''),
     ('pos_comando_iniciar', ''),
     ('espera_liveness_segundos', 15),
+    # Contra quien sincroniza el reloj cuando se detecta que quedo fuera de ventana.
+    # Sale del config real y NO se hardcodea: cada unidad de negocio puede apuntar a un
+    # controlador de dominio distinto. Vacio = la autocorreccion queda desactivada y el
+    # agente solo lo avisa en su log.
+    ('servidor_hora', ''),
 ]
 
 
@@ -2551,6 +2671,11 @@ def main():
         '--intervalo-log-pos', type=int, default=300,
         help='Segundos entre revisiones del log de errores del POS (default 300 = 5min). '
              'Solo corre si --pos-carpeta-instalacion está configurado.',
+    )
+    parser.add_argument(
+        '--servidor-hora', default='',
+        help='Contra quien corregir el reloj si queda fuera de la ventana de comandos '
+             '(ej. el controlador de dominio). Vacio = no autocorregir.',
     )
     parser.add_argument(
         '--intervalo-eventos-sistema', type=int, default=900,
