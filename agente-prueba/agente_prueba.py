@@ -55,7 +55,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.28'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.29'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -306,6 +306,10 @@ class AgentePrueba:
         # retenido (payload vacío) en cuanto ve el heartbeat con la versión ya aplicada
         # (ver apps.mqtt_worker.services.manejar_heartbeat).
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/actualizar_agente/')
+        # Freno de emergencia. Retenido como el de arriba: una estacion que estaba
+        # apagada cuando se freno la flota recibe la orden apenas enciende, que es
+        # exactamente el caso que un freno tiene que cubrir.
+        client.subscribe(f'/saidsof/agente/{self.args.codigo}/pausa/')
         client.subscribe(f'/saidsof/agente/{self.args.codigo}/software/')
         client.subscribe('/saidsof/software/global/')
         # Catalogo de que servicios del POS chequear. Retenido y global: se recibe apenas
@@ -385,6 +389,13 @@ class AgentePrueba:
                 self._aplicar_catalogo_eventos(payload)
             elif msg.topic == '/saidsof/catalogo/servicios_pos/':
                 self._aplicar_catalogo_servicios(payload)
+            elif msg.topic == f'/saidsof/agente/{self.args.codigo}/pausa/':
+                # verificar_ventana=False por el mismo motivo que actualizar_agente: va
+                # retenido y puede llegar dias despues, cuando la estacion encienda. Esa
+                # es justamente la razon de ser del freno — si solo valiera dentro de la
+                # ventana de 120 s, las estaciones apagadas durante la emergencia
+                # arrancarian sin frenar, que es el caso que hay que cubrir.
+                self._verificar_y_aplicar_pausa(payload)
             elif msg.topic == f'/saidsof/agente/{self.args.codigo}/actualizar_agente/':
                 # verificar_ventana=False: este tópico es retenido, puede llegar horas
                 # o días después de publicado (ver _on_connect) -- el SHA-256 sigue
@@ -895,6 +906,8 @@ class AgentePrueba:
             time.sleep(self.args.intervalo_eventos_sistema)
             if not self._token():
                 continue
+            if self._pausado():
+                continue
             try:
                 self._reportar_eventos_sistema()
             except Exception:
@@ -1082,6 +1095,8 @@ class AgentePrueba:
             time.sleep(self.args.intervalo_servicios_pos)
             if not self._token() or not self.args.pos_carpeta_instalacion:
                 continue
+            if self._pausado():
+                continue
             try:
                 self._reportar_servicios_pos()
             except Exception:
@@ -1156,6 +1171,9 @@ class AgentePrueba:
             # y confundirlas dejo mudas a dos estaciones (ver el bloque de
             # re-enrolamiento en _on_connect y apps.catalogo.services.secreto_de).
             'hmac_propio': bool(self.identidad.get('hmac_secret')),
+            # Lo que confirma que el freno se aplico de verdad. Publicar la orden solo
+            # prueba que salio del servidor; esto prueba que llego y esta vigente.
+            'pausado': self._pausado(),
             'so_nombre': f'Windows {platform.win32_ver()[0]}',
             'so_build': platform.win32_ver()[1],
             'hostname': socket.gethostname(),
@@ -1192,6 +1210,8 @@ class AgentePrueba:
         while True:
             time.sleep(self.args.intervalo_metricas)
             if not self._token() or not self.identidad.get('monitorear_recursos'):
+                continue
+            if self._pausado():
                 continue
             try:
                 self._reportar_metricas()
@@ -1297,6 +1317,8 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
             time.sleep(self.args.intervalo_log_pos)
             if not self._token() or not self.args.pos_carpeta_instalacion:
                 continue
+            if self._pausado():
+                continue
             try:
                 errores = self._leer_errores_nuevos_pos()
             except Exception:
@@ -1379,6 +1401,14 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
     # --- scripts (RMM) ---
     def _manejar_comando(self, payload):
         comando = payload.get('comando')
+        # Pausada: no se ejecuta NADA por este canal. `actualizar_agente` no pasa por
+        # aca (tiene tópico propio y retenido) justamente para que siga funcionando
+        # estando pausada: si lo que hay que frenar es el agente, empujarle la version
+        # arreglada es el camino de recuperacion, y cerrarlo dejaria la flota congelada
+        # sin salida que no sea visitar 700 farmacias.
+        if self._pausado():
+            logging.warning('Estoy pausada: ignoro el comando "%s".', comando)
+            return
         if comando == 'ejecutar_script':
             self._verificar_y_ejecutar_script(payload)
         elif comando == 'consultar_info':
@@ -1551,6 +1581,37 @@ try {
         except Exception:
             logging.exception('No se pudo consultar la info del equipo (CIM/BitLocker)')
             return {}
+
+    # --- freno de emergencia ---
+    #
+    # `pausado` vive en identidad.json y no solo en memoria. El mensaje retenido vuelve a
+    # llegar al reconectar, pero eso pasa DESPUES del `_on_connect`, y los bucles ya
+    # estan corriendo desde el arranque: sin persistirlo, cada reinicio del servicio daria
+    # una ventana de varios segundos en la que una estacion frenada vuelve a reportar y a
+    # ejecutar. Con 1.800 equipos reiniciandose, esa ventana deja de ser teorica.
+    def _pausado(self) -> bool:
+        return bool(self.identidad.get('pausado'))
+
+    def _verificar_y_aplicar_pausa(self, payload):
+        if not self._firma_valida(
+            'orden de pausa', payload, verificar_ventana=False,
+            comando='pausa', pausado=str(bool(payload.get('pausado'))).lower(),
+            estacion=payload.get('estacion'), timestamp=payload.get('timestamp'),
+        ):
+            return
+
+        pausado = bool(payload.get('pausado'))
+        if pausado == self._pausado():
+            return  # el retenido vuelve a llegar en cada reconexion; no hay nada que hacer
+        self.identidad['pausado'] = pausado
+        self._guardar_identidad()
+        if pausado:
+            logging.warning(
+                'PAUSADA desde el panel: dejo de ejecutar comandos y de reportar todo '
+                'menos el latido. Sigo aceptando actualizaciones del agente.',
+            )
+        else:
+            logging.warning('Reanudada desde el panel: vuelvo a operar con normalidad.')
 
     # --- reiniciar (equipo completo, no solo el servicio) ---
     def _verificar_y_reiniciar(self, payload):

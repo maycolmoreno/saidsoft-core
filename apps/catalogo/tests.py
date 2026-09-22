@@ -2283,3 +2283,309 @@ class TodosLosBuclesDelAgenteAtrapanSusExcepcionesTests(TestCase):
             'deja de reportar sin que nada lo avise — ni un error en el panel, ni una '
             'línea en el log del servidor.',
         )
+
+
+class FrenoDeEmergenciaTests(TestCase):
+    """Pausar y reanudar el agente a distancia: el kill-switch que no existía.
+
+    Antes de esto, lo único para frenar un agente era mandarle `Stop-Service` por
+    `ejecutar_script`, y como freno de flota no sirve: no llega a una estación apagada
+    (`/comando/` es fire-and-forget), exige que el agente que querés frenar todavía
+    funcione, y es de ida sola — sin agente no queda canal para volver a arrancarlo, así
+    que recuperar 1.800 equipos sería ir a cada farmacia.
+
+    Estas pruebas atan las decisiones de diseño que hacen que esto sea un freno y no un
+    apagado, porque son justo las que alguien podría "simplificar" más adelante sin ver
+    lo que se pierde.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX991')
+        self.farmacia = Farmacia.objects.create(codigo='ML991', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML991-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    # --- va retenido, o no frena a las apagadas ---
+
+    def test_la_orden_se_publica_RETENIDA(self):
+        """Lo que distingue un freno de un comando. Una estación apagada durante la
+        emergencia tiene que recibirlo al encender: si no, arranca a toda máquina con el
+        problema que motivó el freno, que es el peor momento posible."""
+        from apps.catalogo.services import enviar_pausa
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            enviar_pausa(self.estacion, pausado=True)
+
+        _, kwargs = publicar.call_args
+        self.assertTrue(kwargs.get('retain'), 'la orden de pausa TIENE que ir retenida')
+
+    def test_no_usa_el_topico_de_comandos(self):
+        """`/comando/` es fire-and-forget a propósito. Un freno que se pierde no es freno."""
+        from apps.catalogo.services import enviar_pausa
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            enviar_pausa(self.estacion, pausado=True)
+
+        topico = publicar.call_args[0][0]
+        self.assertEqual(topico, '/saidsof/agente/ML991-A/pausa/')
+        self.assertNotIn('/comando/', topico)
+
+    # --- va firmado, o es una denegacion de servicio de una sola publicacion ---
+
+    def test_la_orden_va_firmada(self):
+        """Sin firma, cualquiera que alcance el broker silencia la flota entera con un
+        solo publish. Es el comando con mejor relación daño/esfuerzo del sistema."""
+        import json
+
+        from apps.catalogo.services import enviar_pausa, firmar_payload, secreto_de
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            enviar_pausa(self.estacion, pausado=True)
+
+        payload = json.loads(publicar.call_args[0][1])
+        self.assertIn('firma', payload)
+        esperada = firmar_payload(
+            secreto_de(self.estacion),
+            comando='pausa', pausado='true',
+            estacion=self.estacion.codigo, timestamp=payload['timestamp'],
+        )
+        self.assertEqual(payload['firma'], esperada)
+
+    def test_la_firma_distingue_pausar_de_reanudar(self):
+        """Si el estado no entrara en la firma, capturar un "reanudar" válido permitiría
+        levantar el freno de cualquier estación reenviándolo."""
+        import json
+
+        from apps.catalogo.services import enviar_pausa
+
+        firmas = {}
+        for pausado in (True, False):
+            with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+                enviar_pausa(self.estacion, pausado=pausado)
+            firmas[pausado] = json.loads(publicar.call_args[0][1])['firma']
+        self.assertNotEqual(firmas[True], firmas[False])
+
+    # --- publicado no es aplicado ---
+
+    def test_el_latido_es_lo_unico_que_confirma_la_pausa(self):
+        """La distinción que evita creer que frenaste 1.800 equipos cuando frenaste los
+        que estaban encendidos."""
+        from apps.mqtt_worker.services import manejar_heartbeat
+
+        manejar_heartbeat(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'pausado': True,
+        })
+        self.estacion.refresh_from_db()
+        self.assertTrue(self.estacion.pausado)
+        self.assertIsNotNone(self.estacion.pausa_confirmada_en)
+
+    def test_un_agente_viejo_no_afirma_nada_sobre_la_pausa(self):
+        """Un agente anterior al freno no manda la clave. Tratar su silencio como "no
+        pausado" sería afirmar algo que ese agente no puede decir — y mostraría como
+        reanudada una estación cuyo estado real nadie conoce."""
+        from apps.mqtt_worker.services import manejar_heartbeat
+
+        Estacion.objects.filter(pk=self.estacion.pk).update(pausado=True)
+        manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento})
+        self.estacion.refresh_from_db()
+        self.assertTrue(self.estacion.pausado, 'un latido sin la clave no puede despausar')
+        self.assertIsNone(self.estacion.pausa_confirmada_en)
+
+    # --- el interruptor de altas nuevas ---
+
+    def test_con_el_alta_cerrada_no_entra_una_estacion_nueva(self):
+        from apps.monitoreo.models import ConfiguracionMonitoreo
+        from apps.mqtt_worker.services import manejar_enrolamiento
+
+        config = ConfiguracionMonitoreo.obtener()
+        config.enrolamiento_habilitado = False
+        config.save(update_fields=['enrolamiento_habilitado'])
+
+        respuesta = manejar_enrolamiento({
+            'codigo': 'ML991-Z', 'hardware_id': 'hw-nuevo', 'hostname': 'PC-NUEVA',
+        })
+        self.assertFalse(respuesta['aceptado'])
+        self.assertFalse(Estacion.objects.filter(codigo='ML991-Z').exists())
+
+    def test_con_el_alta_cerrada_una_estacion_EXISTENTE_se_sigue_re_enrolando(self):
+        """Negárselo la dejaría muda: perdió su identidad.json y este es el único camino
+        de vuelta. Frenar las altas es cortar equipos NUEVOS, no romper los que ya están."""
+        from apps.monitoreo.models import ConfiguracionMonitoreo
+        from apps.mqtt_worker.services import manejar_enrolamiento
+
+        Estacion.objects.filter(pk=self.estacion.pk).update(hardware_id='hw-1')
+        config = ConfiguracionMonitoreo.obtener()
+        config.enrolamiento_habilitado = False
+        config.save(update_fields=['enrolamiento_habilitado'])
+
+        respuesta = manejar_enrolamiento({'codigo': 'ML991-A', 'hardware_id': 'hw-1'})
+        self.assertTrue(respuesta['aceptado'])
+
+    def test_con_el_alta_cerrada_el_cero_touch_TAMBIEN_queda_bloqueado(self):
+        """Es tentador dejar pasar el token de apertura porque lo emite una persona a
+        propósito, pero el cero-touch es justamente el que hace aparecer equipos solos y
+        en tanda — lo que un freno de emergencia viene a cortar."""
+        from apps.monitoreo.models import ConfiguracionMonitoreo
+        from apps.mqtt_worker.services import manejar_enrolamiento
+
+        config = ConfiguracionMonitoreo.obtener()
+        config.enrolamiento_habilitado = False
+        config.save(update_fields=['enrolamiento_habilitado'])
+
+        respuesta = manejar_enrolamiento({
+            'codigo': 'ML991-Y', 'hardware_id': 'hw-y', 'token_apertura': 'lo-que-sea',
+        })
+        self.assertFalse(respuesta['aceptado'])
+
+    # --- el comando de flota ---
+
+    def test_el_comando_simula_por_defecto(self):
+        salida = io.StringIO()
+        with patch('apps.catalogo.services._publicar_mqtt') as publicar:
+            call_command('pausar_flota', stdout=salida)
+        publicar.assert_not_called()
+        self.assertIn('SIMULACI', salida.getvalue())
+        self.estacion.refresh_from_db()
+        self.assertFalse(self.estacion.pausado)
+
+    def test_con_aplicar_publica_y_anota_cuando_se_pidio(self):
+        salida = io.StringIO()
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            call_command('pausar_flota', '--aplicar', stdout=salida)
+        self.assertTrue(publicar.called)
+        self.estacion.refresh_from_db()
+        self.assertIsNotNone(self.estacion.pausa_solicitada_en)
+        # Publicar NO marca `pausado`: eso lo confirma la estación en su latido.
+        self.assertFalse(self.estacion.pausado)
+        self.assertIsNone(self.estacion.pausa_confirmada_en)
+
+
+class ElAgentePausadoSigueLatiendoTests(TestCase):
+    """El contrato del freno, del lado del agente, leído del propio código fuente.
+
+    Es la mitad que no se puede probar ejecutando: `agente_prueba.py` importa `paho` y
+    `win32api` y corre en Windows dentro de un servicio, así que no se instancia desde la
+    suite. Lo que sí se puede atar es su ESTRUCTURA, y son cuatro decisiones que definen
+    la diferencia entre un freno y un apagado:
+
+    1. Los bucles que reportan datos se saltean si está pausada.
+    2. `bucle_heartbeat` NO. Una estación frenada tiene que seguir viéndose viva: si se
+       callara, el panel la mostraría caída y perderías visibilidad justo en la
+       emergencia. Es la decisión que más fácil se "simplifica" por error.
+    3. `_manejar_comando` no ejecuta nada estando pausada.
+    4. `actualizar_agente` sigue funcionando igual. Si lo que hay que frenar es el propio
+       agente, empujarle la versión arreglada es el camino de recuperación; cerrarlo
+       dejaría la flota congelada sin más salida que visitar 700 farmacias.
+    """
+
+    def _fuente(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        return (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(
+            encoding='utf-8',
+        )
+
+    def _metodo(self, nombre):
+        import ast
+
+        for nodo in ast.walk(ast.parse(self._fuente())):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == nombre:
+                return nodo
+        self.fail(f'no existe el metodo {nombre} en el agente')
+
+    def _consulta_pausado(self, nombre):
+        """True si el método llama a `self._pausado()` en algún punto."""
+        import ast
+
+        for nodo in ast.walk(self._metodo(nombre)):
+            if (
+                isinstance(nodo, ast.Call)
+                and isinstance(nodo.func, ast.Attribute)
+                and nodo.func.attr == '_pausado'
+            ):
+                return True
+        return False
+
+    def test_los_bucles_que_reportan_datos_respetan_la_pausa(self):
+        for bucle in ('bucle_metricas', 'bucle_log_pos', 'bucle_servicios_pos',
+                      'bucle_eventos_sistema'):
+            self.assertTrue(
+                self._consulta_pausado(bucle),
+                f'{bucle} no consulta la pausa: una estación frenada seguiría reportando',
+            )
+
+    def test_el_latido_NO_se_frena(self):
+        """La decisión central. Si alguien "uniforma" los cinco bucles agregándole la
+        misma compuerta al latido, la estación frenada desaparece del panel y el freno
+        deja de ser observable — que es lo contrario de lo que se buscaba."""
+        self.assertFalse(
+            self._consulta_pausado('bucle_heartbeat'),
+            'bucle_heartbeat NO debe frenarse: una estación pausada tiene que seguir '
+            'viéndose viva, o perdés visibilidad justo durante la emergencia',
+        )
+
+    def test_el_latido_declara_si_esta_pausada(self):
+        """Es lo único que convierte "publiqué la orden" en "la orden se aplicó"."""
+        self.assertIn("'pausado': self._pausado(),", self._fuente())
+
+    def test_estando_pausada_no_ejecuta_comandos(self):
+        self.assertTrue(
+            self._consulta_pausado('_manejar_comando'),
+            '_manejar_comando tiene que cortar cuando la estación está pausada',
+        )
+
+    def test_actualizar_agente_sigue_funcionando_pausada(self):
+        """La excepción deliberada, y la que hace que el freno sea reversible cuando el
+        problema es el agente mismo. `actualizar_agente` llega por tópico propio y no por
+        `/comando/`, así que no lo alcanza la compuerta — esto ata que siga siendo así."""
+        self.assertFalse(
+            self._consulta_pausado('_verificar_y_actualizar_agente'),
+            'un agente pausado TIENE que poder actualizarse: es el camino de recuperación',
+        )
+        fuente = self._fuente()
+        self.assertIn("/actualizar_agente/':", fuente)
+
+    def test_la_pausa_se_persiste_en_disco(self):
+        """El retenido vuelve a llegar al reconectar, pero eso pasa DESPUÉS del
+        `_on_connect`, y los bucles ya corren desde el arranque. Sin persistirla, cada
+        reinicio del servicio abre una ventana en la que una estación frenada vuelve a
+        reportar y a ejecutar. Con 1.800 equipos reiniciándose, deja de ser teórica."""
+        fuente = self._fuente()
+        self.assertIn("self.identidad['pausado'] = pausado", fuente)
+        self.assertIn("return bool(self.identidad.get('pausado'))", fuente)
+
+    def test_se_suscribe_al_topico_de_pausa(self):
+        """Publicar sin que nadie escuche es el modo de falla favorito de este proyecto."""
+        self.assertIn(
+            "client.subscribe(f'/saidsof/agente/{self.args.codigo}/pausa/')", self._fuente(),
+        )
+
+    def test_la_orden_de_pausa_no_caduca(self):
+        """Va retenida y puede llegar días después, cuando la estación encienda. Si se
+        validara contra la ventana de 120 s, las estaciones apagadas durante la
+        emergencia arrancarían sin frenar — justo el caso que hay que cubrir."""
+        import ast
+
+        metodo = self._metodo('_verificar_y_aplicar_pausa')
+        for nodo in ast.walk(metodo):
+            if isinstance(nodo, ast.keyword) and nodo.arg == 'verificar_ventana':
+                self.assertIs(nodo.value.value, False)
+                return
+        self.fail('_verificar_y_aplicar_pausa debe pasar verificar_ventana=False')
+
+    def test_la_pausa_se_verifica_con_firma(self):
+        """Sin firma, un solo publish silencia la flota."""
+        import ast
+
+        metodo = self._metodo('_verificar_y_aplicar_pausa')
+        firma = any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == '_firma_valida'
+            for n in ast.walk(metodo)
+        )
+        self.assertTrue(firma, 'la orden de pausa tiene que verificarse con firma')

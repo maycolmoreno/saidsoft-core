@@ -21,6 +21,10 @@ def _topico_actualizar_agente(estacion) -> str:
     return f'/saidsof/agente/{estacion.codigo}/actualizar_agente/'
 
 
+def _topico_pausa(estacion) -> str:
+    return f'/saidsof/agente/{estacion.codigo}/pausa/'
+
+
 def firmar_payload(_secreto=None, /, **campos) -> str:
     """HMAC-SHA256 de los valores de `campos` unidos con "|", en el orden en que se pasan.
 
@@ -298,6 +302,36 @@ def limpiar_actualizacion_pendiente(estacion) -> bool:
     de red cualquiera, no solo apagar/prender) no vuelva a aplicar esa misma
     actualización de nuevo."""
     return _publicar_mqtt(_topico_actualizar_agente(estacion), '', retain=True)
+
+
+def enviar_pausa(estacion, *, pausado: bool) -> bool:
+    """Publica el freno de emergencia de `estacion`: `pausado=True` la detiene,
+    `pausado=False` la reanuda.
+
+    **Retenido, como `actualizar_agente` y a diferencia de `/comando/`.** Es lo que hace
+    que esto sirva de freno: si la estación está apagada cuando se publica, EMQX guarda
+    el mensaje y se lo entrega apenas se reconecta. Sin eso, frenar la flota dejaría
+    afuera justo a las que están apagadas — que después encienden y arrancan a toda
+    máquina con el problema que motivó el freno.
+
+    Que sea un tópico propio y no un `/comando/` importa por lo mismo: `/comando/` es
+    fire-and-forget a propósito (ver `enviar_comando`), y un freno que se pierde no es
+    un freno.
+
+    Firmado igual que el resto: sin esto, cualquiera que alcance el broker podría
+    silenciar la flota entera, que es un ataque de denegación con una sola publicación.
+    """
+    timestamp = int(time.time())
+    firma = firmar_payload(
+        secreto_de(estacion),
+        comando='pausa', pausado=str(pausado).lower(),
+        estacion=estacion.codigo, timestamp=timestamp,
+    )
+    payload = {
+        'comando': 'pausa', 'pausado': pausado, 'estacion': estacion.codigo,
+        'timestamp': timestamp, 'firma': firma,
+    }
+    return _publicar_mqtt(_topico_pausa(estacion), json.dumps(payload), retain=True)
 
 
 def resolver_estaciones(destino_tipo, *, unidad_negocio, grupos=None, farmacias=None, estaciones=None):

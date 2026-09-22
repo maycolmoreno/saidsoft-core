@@ -116,6 +116,10 @@ PERMISOS_LITERALES = {
         ('catalogo', 'reiniciar_estacion'),
         ('catalogo', 'escanear_actualizaciones_estacion'),
         ('catalogo', 'actualizar_agente_estacion'),
+        # Freno de emergencia. Va en segunda línea y NO en mesa de ayuda: pausar es la
+        # única acción que se ejerce sobre toda la flota a la vez, y primera línea
+        # diagnostica, no interviene.
+        ('catalogo', 'pausar_estacion'),
         # Segunda línea planifica visitas y actividades de otros, así que conserva el
         # desplegable de técnico completo (ya preseleccionado en sí mismo). El rol
         # 'Técnico' NO lo tiene a propósito: registra su propio trabajo y el campo le

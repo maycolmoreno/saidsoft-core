@@ -6266,3 +6266,104 @@ class ColumnaProveedorEnLaTablaTests(TestCase):
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
 
         self.assertContains(resp, 'probable corte del proveedor')
+
+
+class EstacionPausarDesdeElPanelTests(TestCase):
+    """El freno de emergencia, desde la ficha de la estación.
+
+    Permiso propio (`catalogo.pausar_estacion`) y no heredado de reiniciar/actualizar:
+    pausar es la única acción que se ejerce sobre toda la flota a la vez, y quien puede
+    reiniciar una caja no necesariamente debería poder frenar las 1.800.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX061')
+        farmacia = Farmacia.objects.create(codigo='ML061', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML061-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        self.sin_permiso = User.objects.create_user(username='sin_permiso_pausa', password='x')
+        PerfilUsuario.objects.create(usuario=self.sin_permiso, acceso_todas_unidades=True)
+
+        self.con_permiso = User.objects.create_user(username='con_permiso_pausa', password='x')
+        PerfilUsuario.objects.create(usuario=self.con_permiso, acceso_todas_unidades=True)
+        self.con_permiso.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='pausar_estacion'),
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
+
+    def _url(self):
+        return reverse('panel:estacion_pausar', args=[self.estacion.pk])
+
+    def test_sin_permiso_no_puede(self):
+        self.client.force_login(self.sin_permiso)
+        with patch('apps.catalogo.services._publicar_mqtt') as publicar:
+            resp = self.client.post(self._url(), {'pausado': 'true'})
+        self.assertEqual(resp.status_code, 403)
+        publicar.assert_not_called()
+
+    def test_no_acepta_GET(self):
+        """Frenar la flota no puede dispararse con una visita a una URL."""
+        self.client.force_login(self.con_permiso)
+        self.assertEqual(self.client.get(self._url()).status_code, 405)
+
+    def test_con_permiso_publica_y_anota_la_solicitud(self):
+        self.client.force_login(self.con_permiso)
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            resp = self.client.post(self._url(), {'pausado': 'true'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(publicar.called)
+        self.estacion.refresh_from_db()
+        self.assertIsNotNone(self.estacion.pausa_solicitada_en)
+        # Publicar no confirma: eso lo hace la estación en su latido.
+        self.assertFalse(self.estacion.pausado)
+
+    def test_funciona_aunque_la_estacion_este_FUERA_DE_LINEA(self):
+        """A diferencia de reiniciar o actualizar. La orden va retenida y la estación
+        apagada la recibe al encender — si solo pudiera frenarse lo conectado, las que
+        arrancan después lo harían sin freno, que es el caso que importa."""
+        Estacion.objects.filter(pk=self.estacion.pk).update(
+            estado_conexion=Estacion.EstadoConexion.OFFLINE,
+        )
+        self.client.force_login(self.con_permiso)
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            resp = self.client.post(self._url(), {'pausado': 'true'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(publicar.called, 'una estación apagada también tiene que poder frenarse')
+
+    def test_pide_el_estado_deseado_y_no_alterna(self):
+        """Dos personas mirando el panel durante una emergencia pueden apretar casi a la
+        vez. Con un toggle, la segunda reanudaría lo que la primera acababa de frenar."""
+        import json
+
+        Estacion.objects.filter(pk=self.estacion.pk).update(pausado=True)
+        self.client.force_login(self.con_permiso)
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            self.client.post(self._url(), {'pausado': 'true'})
+        payload = json.loads(publicar.call_args[0][1])
+        self.assertTrue(payload['pausado'], 'pedir pausar sobre una ya pausada no la reanuda')
+
+    def test_queda_registrado_quien_freno(self):
+        from apps.auditoria.models import EventoAuditoria
+
+        self.client.force_login(self.con_permiso)
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True):
+            self.client.post(self._url(), {'pausado': 'true'})
+        self.assertTrue(
+            EventoAuditoria.objects.filter(
+                usuario=self.con_permiso, accion='estacion.pausar',
+            ).exists(),
+        )
+
+    def test_si_el_broker_falla_lo_dice_en_vez_de_callar(self):
+        """El peor final posible sería un panel que informa "pausada" cuando la orden no
+        salió: creerías que frenaste la flota."""
+        self.client.force_login(self.con_permiso)
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=False):
+            resp = self.client.post(self._url(), {'pausado': 'true'})
+        self.assertContains(resp, 'No se pudo publicar')
+        self.estacion.refresh_from_db()
+        self.assertIsNone(self.estacion.pausa_solicitada_en)

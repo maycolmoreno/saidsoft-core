@@ -146,6 +146,21 @@ def manejar_enrolamiento(payload: dict) -> dict:
             estacion.save(update_fields=campos)
         return _respuesta_aceptado(estacion, payload.get('version_agente', ''))
 
+    # Interruptor global, la otra mitad del freno de emergencia. Va DESPUES del
+    # re-enrolamiento y ANTES del token de apertura, y las dos cosas son deliberadas:
+    #
+    #   - Una estacion que ya existe se sigue re-enrolando siempre. Negarselo la dejaria
+    #     muda —perdio su identidad.json y este es el unico camino de vuelta— y eso no es
+    #     lo que alguien pide cuando frena las altas.
+    #   - El camino cero-touch (token de apertura) SI queda bloqueado. Es tentador
+    #     dejarlo pasar porque un token lo emite una persona a proposito, pero durante
+    #     una emergencia lo que hay que cortar es que sigan apareciendo equipos nuevos,
+    #     y el cero-touch es justamente el que los hace aparecer solos y en tanda.
+    from apps.monitoreo.models import ConfiguracionMonitoreo
+    if not ConfiguracionMonitoreo.obtener().enrolamiento_habilitado:
+        logger.warning('Enrolamiento de %s rechazado: las altas nuevas estan deshabilitadas.', codigo)
+        return {'aceptado': False, 'motivo': 'el alta de estaciones nuevas esta deshabilitada'}
+
     # Estación nueva. Si el agente trae un token de apertura válido, entra ya aprobada y
     # con la configuración de su perfil, y arranca sola los pasos de la plantilla — es el
     # camino "cero-touch" (ver apps.aperturas). Un token inválido/vencido no rechaza el
@@ -237,6 +252,20 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
         estacion.ip_lan = payload['ip_lan']
     if payload.get('puerto_cache'):
         estacion.puerto_cache = payload['puerto_cache']
+    # La estación declara si está frenada. Es lo único que convierte "publiqué la orden"
+    # en "la orden se aplicó": el mensaje de pausa va retenido, así que salir del
+    # servidor no prueba nada sobre una estación apagada. Se confía en lo que reporta y
+    # no en lo que el panel pidió, porque son dos cosas distintas y la diferencia entre
+    # ellas es justo lo que hay que poder ver durante una emergencia.
+    #
+    # Un agente anterior a 0.29 no manda la clave: `payload.get(...)` sin default la deja
+    # en None y entonces no se toca nada. Marcarlo como "no pausado" seria peor —
+    # afirmaria algo que ese agente no puede decir.
+    pausado_reportado = payload.get('pausado')
+    if isinstance(pausado_reportado, bool):
+        estacion.pausado = pausado_reportado
+        estacion.pausa_confirmada_en = timezone.now()
+
     estacion.estado_conexion = Estacion.EstadoConexion.ONLINE
     estacion.ultimo_heartbeat = timezone.now()
     estacion.save()

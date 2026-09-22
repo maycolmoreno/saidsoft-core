@@ -1518,6 +1518,17 @@ class ConfiguracionMonitoreo(models.Model):
                   'contador de cada mensaje es de por vida.',
     )
 
+    enrolamiento_habilitado = models.BooleanField(
+        default=True,
+        verbose_name='Aceptar enrolamientos nuevos',
+        help_text='La otra mitad del freno de emergencia, y la que hay que apagar PRIMERO: '
+                  'pausar las estaciones ya enroladas no sirve de nada si el instalador '
+                  'sigue dando de alta equipos nuevos que arrancan sin pausar. '
+                  'Desactivarlo NO afecta a las estaciones existentes: un re-enrolamiento '
+                  '(una estación que perdió su identidad.json) se sigue atendiendo, '
+                  'porque negárselo la dejaría muda sin que nadie lo haya pedido.',
+    )
+
     actualizado_en = models.DateTimeField(auto_now=True)
     actualizado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,

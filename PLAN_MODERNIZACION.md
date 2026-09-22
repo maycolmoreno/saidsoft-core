@@ -2987,3 +2987,97 @@ nadie estaba mirando:
 
 Ninguno de los dos había producido una alerta, porque hasta ahora no había nada que
 mirara el visor de eventos. Es exactamente para lo que se construyó.
+
+## Freno de emergencia: pausar la flota sin apagarla (21-sep-2026)
+
+Salió de la revisión previa al despliegue masivo, donde fue uno de los cuatro
+bloqueantes. La pregunta que lo motivó: **si el agente se despliega a ~1.800 cajas de
+farmacia y algo sale mal, ¿cómo se frena?**
+
+La respuesta era: no se podía. Lo único disponible era mandar `Stop-Service` por
+`ejecutar_script`, y como freno de flota tiene tres defectos que lo vuelven inservible
+justo cuando haría falta:
+
+1. **No llega a una estación apagada.** `/comando/` es fire-and-forget a propósito, así
+   que la que está apagada durante la emergencia enciende después sin freno.
+2. **Exige que el agente que querés frenar todavía funcione.** Si lo que falla es el
+   agente, el canal para frenarlo es el que está roto.
+3. **Es de ida sola.** Sin agente no queda canal MQTT para volver a arrancarlo.
+   Recuperar 1.800 equipos sería visitar 700 farmacias.
+
+### Frenar no es apagar
+
+Una estación pausada **sigue latiendo**. Es la decisión central y la más fácil de
+"simplificar" por error, así que hay una prueba que falla si alguien se la lleva por
+delante (`test_el_latido_NO_se_frena`).
+
+El motivo: si el agente se callara del todo, el panel mostraría la estación como caída y
+perderías visibilidad justo en el momento en que más la necesitás. Durante una
+emergencia lo que querés ver es "está viva y bajo control", no un hueco que no sabés si
+es el freno o un corte de luz.
+
+Lo que sí deja de hacer: ejecutar comandos, y reportar métricas, servicios del POS, log
+del POS y eventos de Windows.
+
+**Nada de esto toca el POS ni la venta.** El agente nunca fue parte de ese circuito.
+
+### La excepción deliberada: `actualizar_agente`
+
+Un agente pausado **sí** acepta una versión nueva. Cerrarlo sería coherente pero dejaría
+la flota congelada sin salida: si lo que hay que frenar es el propio agente, empujarle la
+versión arreglada es el camino de recuperación. Funciona porque `actualizar_agente` llega
+por tópico propio y no por `/comando/`, que es donde está la compuerta.
+
+### Publicar no es aplicar
+
+`pausa_solicitada_en` y `pausa_confirmada_en` son campos separados a propósito. La orden
+va **retenida**, así que publicarla no prueba nada sobre una estación apagada: lo único
+que confirma el freno es que ella lo declare en su latido.
+
+Confundir las dos cosas es creer que frenaste 1.800 equipos cuando frenaste los que
+estaban encendidos. El comando y el panel lo dicen explícitamente en vez de mostrar un
+"listo" que no sería cierto.
+
+### La otra mitad: cortar las altas
+
+`ConfiguracionMonitoreo.enrolamiento_habilitado`. Pausar lo ya enrolado no sirve si el
+instalador sigue dando de alta equipos que arrancan sin pausar.
+
+Dos decisiones sobre dónde se aplica:
+
+- **Un re-enrolamiento se sigue atendiendo siempre.** Una estación que perdió su
+  `identidad.json` tiene ahí su único camino de vuelta; negárselo la dejaría muda, y eso
+  no es lo que alguien pide cuando frena las altas.
+- **El cero-touch SÍ queda bloqueado**, aunque el token de apertura lo emita una persona
+  a propósito. Es justamente el mecanismo que hace aparecer equipos solos y en tanda.
+
+### Dónde vive
+
+| Qué | Dónde |
+|---|---|
+| Campos y permiso `pausar_estacion` | `apps/catalogo/models.py` (`Estacion`) |
+| Publicación firmada y retenida | `apps.catalogo.services.enviar_pausa` |
+| Confirmación por latido | `apps.mqtt_worker.services.manejar_heartbeat` |
+| Interruptor de altas | `apps.mqtt_worker.services.manejar_enrolamiento` |
+| Acción masiva | `python manage.py pausar_flota` (simula salvo `--aplicar`) |
+| Una estación | Ficha de la estación, sección "Freno de emergencia" |
+| Lado agente | `agente-prueba/agente_prueba.py`, `_verificar_y_aplicar_pausa` |
+
+La acción masiva es un comando y no una vista por lo que ya anotó la auditoría sobre
+`_publicar_ejecucion`: a ~1.800 estaciones son 1.800 publicaciones y 1.800 UPDATE dentro
+de un request HTTP. Además sirve con el panel caído, que es uno de los escenarios en los
+que alguien querría frenar la flota.
+
+### El quinto caso del mismo patrón
+
+Escribiendo esto apareció otra vez: **`/saidsof/agente/+/pausa/` no estaba en la ACL del
+panel**. El freno se habría publicado "con éxito" —el PUBACK confirma recepción, no
+autorización— y no habría llegado a ninguna estación.
+
+La guarda que existía (`AclDelPanelCubreLoQuePublicaTests`) solo miraba los tópicos
+FIJOS. Ahora recorre todas las funciones `_topico_*` de `apps.catalogo.services` y exige
+que cada una tenga su regla con comodín. Comprobada en rojo quitando la regla.
+
+Van cinco veces el mismo patrón: código correcto, permiso o detalle de entorno faltante,
+falla silenciosa. Lo que cambió no es que se arreglen más rápido sino que cada uno deja
+una prueba estructural que impide que la clase entera vuelva.

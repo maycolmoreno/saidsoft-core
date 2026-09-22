@@ -1539,6 +1539,55 @@ class AclDelPanelCubreLoQuePublicaTests(TestCase):
         for topico in ('/saidsof/catalogo/servicios_pos/', '/saidsof/catalogo/eventos_sistema/'):
             self.assertIn(topico, permitidos)
 
+    def test_cada_topico_POR_ESTACION_tiene_su_regla_con_comodin(self):
+        """El hueco que dejaba el barrido de arriba: solo miraba los tópicos FIJOS.
+
+        Los que se arman con el código de la estación viven en funciones
+        `_topico_*(estacion)` de `apps.catalogo.services` y dependen de una regla con `+`
+        en la ACL. Agregar una función nueva y olvidarse de la regla no rompía ninguna
+        prueba, y el síntoma en producción es el de siempre: `_publicar_mqtt` devuelve
+        True porque el PUBACK confirma recepción, no autorización.
+
+        Se detectó escribiendo el freno de emergencia (21-sep-2026): `/pausa/` no estaba
+        en la ACL del panel. Un freno que el broker descarta en silencio es peor que no
+        tener freno, porque creés que frenaste.
+        """
+        import re
+
+        from apps.catalogo import services
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX993')
+        farmacia = Farmacia.objects.create(codigo='ML993', grupo=grupo, unidad_negocio=sg)
+        estacion = Estacion.objects.create(
+            codigo='ML993-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+        constructores = {
+            nombre: fn for nombre, fn in vars(services).items()
+            if nombre.startswith('_topico_') and callable(fn)
+        }
+        self.assertTrue(constructores, 'no se encontró ninguna función _topico_*')
+
+        # Una regla con `+` cubre exactamente un nivel del tópico, igual que en MQTT.
+        permitidos = [
+            re.compile('^' + re.escape(r).replace(r'\+', '[^/]+') + '$')
+            for r in self._reglas_de_publicacion_del_panel()
+        ]
+
+        faltan = []
+        for nombre, fn in sorted(constructores.items()):
+            topico = fn(estacion)
+            if not any(p.match(topico) for p in permitidos):
+                faltan.append(f'{nombre} -> {topico}')
+
+        self.assertEqual(
+            faltan, [],
+            'el servidor arma estos tópicos por estación y la ACL del panel no los '
+            f'permite: {faltan}. EMQX deniega el publish y devuelve PUBACK igual.',
+        )
+
     def test_el_agente_puede_suscribirse_a_los_dos_catalogos(self):
         """La otra punta: publicar sin que nadie pueda suscribirse es igual de inútil."""
         from apps.monitoreo.servicios_pos import TOPICO_CATALOGO, TOPICO_CATALOGO_EVENTOS

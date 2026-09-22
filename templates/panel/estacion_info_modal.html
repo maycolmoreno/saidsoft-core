@@ -292,6 +292,81 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
     </div>
     {% endif %}
 
+    {% comment %}
+    Sección propia y NO dentro de "Agente": esa está detrás de
+    `actualizar_agente_estacion`, y anidar el freno ahí volvía inútil el permiso
+    `pausar_estacion` — quien solo pudiera frenar no veía el botón. Encontrado por la
+    prueba de la vista, no a ojo.
+    {% endcomment %}
+    {% if perms.catalogo.pausar_estacion %}
+    <div class="section-divider">
+        <div class="section-head">
+            <span class="label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M10 9v6"/><path d="M14 9v6"/></svg>
+                <h3>Freno de emergencia</h3>
+            </span>
+            {% if estacion.pausado %}<span class="pill warning">Pausada</span>{% endif %}
+        </div>
+
+        {% comment %}
+        Freno de emergencia. Va en la sección del agente porque es lo que frena: el POS y
+        la venta no se tocan.
+
+        A diferencia del botón de actualizar, este NO exige que la estación esté en línea.
+        La orden va retenida y una estación apagada la recibe al encender — que es
+        justamente el caso que un freno tiene que cubrir.
+        {% endcomment %}
+        <div>
+            {% if estacion.pausado %}
+            <p class="text-xs mb-2">
+                <span class="pill warning">Pausada</span>
+                Sigue latiendo, pero no ejecuta comandos ni reporta métricas, servicios,
+                log del POS ni eventos. Sí acepta actualizaciones del agente.
+            </p>
+            <form hx-post="{% url 'panel:estacion_pausar' estacion.pk %}"
+                  hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                  hx-target="#modal-info-content" hx-swap="innerHTML">
+                {% csrf_token %}
+                <input type="hidden" name="pausado" value="false">
+                <button type="submit" class="btn secondary">Reanudar {{ estacion.codigo }}</button>
+            </form>
+            {% else %}
+            <form hx-post="{% url 'panel:estacion_pausar' estacion.pk %}"
+                  hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                  hx-target="#modal-info-content" hx-swap="innerHTML"
+                  hx-confirm="{{ estacion.codigo }} dejará de ejecutar comandos y de reportar todo menos el latido. No afecta al POS ni a la venta. ¿Confirmás?">
+                {% csrf_token %}
+                <input type="hidden" name="pausado" value="true">
+                <button type="submit" class="btn secondary">Pausar el agente</button>
+            </form>
+            {% endif %}
+
+            {% if solicitado_pausa %}
+            <p class="text-xs text-[var(--text-dim)] mt-2">
+                Orden publicada{% if pausa_pedida %} (pausar){% else %} (reanudar){% endif %}.
+                Va retenida: si la estación está apagada la recibirá al encender.
+                <strong>Todavía no está confirmada</strong> — lo confirma ella en su
+                próximo latido.
+            </p>
+            {% endif %}
+            {% if error_pausa %}
+            <p class="text-xs text-[var(--danger)] mt-2">{{ error_pausa }}</p>
+            {% endif %}
+
+            {% if estacion.pausa_solicitada_en %}
+            <p class="text-xs text-[var(--text-faint)] mt-2">
+                Pedida: {{ estacion.pausa_solicitada_en|date:"d/m/Y H:i" }}
+                {% if estacion.pausa_confirmada_en %}
+                · confirmada por la estación: {{ estacion.pausa_confirmada_en|date:"d/m/Y H:i" }}
+                {% else %}
+                · <strong>sin confirmar</strong> por la estación
+                {% endif %}
+            </p>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
     <div class="section-divider">
         <div class="section-head">
             <span class="label">

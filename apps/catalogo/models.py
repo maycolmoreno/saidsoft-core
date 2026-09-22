@@ -324,6 +324,42 @@ class Estacion(models.Model):
         help_text='La estación confirmó en su heartbeat que tiene guardado su secreto '
                   'propio. Es lo único que habilita a firmarle con él.',
     )
+    # --- Pausa remota (freno de emergencia) ---
+    #
+    # Existe porque el despliegue del agente pasa de 8 equipos a ~1.800 y hasta ahora no
+    # habia forma de frenarlo. Lo unico disponible era mandar un `Stop-Service` por
+    # `ejecutar_script`, que tiene tres problemas: no llega a una estacion apagada, exige
+    # que el agente que queres frenar todavia funcione, y es de IDA SOLA — sin agente no
+    # queda canal para volver a arrancarlo, asi que recuperar 1.800 equipos seria ir a
+    # cada farmacia.
+    #
+    # Una estacion pausada SIGUE LATIENDO a proposito. Podria callarse del todo, pero
+    # entonces el panel la mostraria caida y perderias visibilidad justo en el momento en
+    # que mas la necesitas: lo que queres ver durante una emergencia es "esta viva y bajo
+    # control", no un hueco. Deja de ejecutar comandos y de reportar todo lo demas.
+    #
+    # La excepcion deliberada es `actualizar_agente`: un agente pausado SI acepta una
+    # version nueva. Si lo que hay que frenar es el propio agente, empujar el arreglo es
+    # el camino de recuperacion, y cerrarlo dejaria la flota congelada sin salida.
+    pausado = models.BooleanField(
+        default=False,
+        help_text='Freno de emergencia: la estación sigue reportando su latido pero deja '
+                  'de ejecutar comandos y de reportar métricas, servicios, log del POS y '
+                  'eventos. Reversible desde el panel; sigue aceptando actualizaciones '
+                  'del agente.',
+    )
+    pausa_solicitada_en = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text='Cuándo se publicó la orden. La estación puede tardar en recibirla si '
+                  'está apagada: el mensaje va retenido y le llega al reconectarse.',
+    )
+    pausa_confirmada_en = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text='Cuándo la estación confirmó el estado en su latido. Mientras esté '
+                  'vacío o sea anterior a la solicitud, la orden viajó pero NADIE '
+                  'confirmó que se aplicó — que es la diferencia entre creer que frenaste '
+                  'la flota y haberla frenado.',
+    )
     hmac_secret = models.CharField(
         max_length=64, blank=True, editable=False,
         help_text='Secreto con el que se firman los comandos dirigidos SOLO a esta estación. '
@@ -415,6 +451,10 @@ class Estacion(models.Model):
             # Reemplaza el binario del agente en caliente (se detiene, se reemplaza a sí
             # mismo, vuelve a arrancar) — mismo nivel de riesgo que reiniciar_estacion.
             ('actualizar_agente_estacion', 'Puede actualizar remotamente el agente de una estación'),
+            # Permiso propio y no heredado de los de arriba: pausar es la única acción que
+            # se ejerce sobre TODA la flota a la vez, y quien puede reiniciar una caja no
+            # necesariamente debería poder frenar las 1.800.
+            ('pausar_estacion', 'Puede pausar y reanudar remotamente el agente de estaciones'),
         ]
 
     # Ecuador es UTC-5 todo el año (no tiene horario de verano), así que el offset

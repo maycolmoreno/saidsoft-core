@@ -8,8 +8,8 @@ from django.views.decorators.http import require_POST
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Grupo, VersionAgente
 from apps.catalogo.services import (
-    enviar_actualizacion_agente, enviar_comando, enviar_configurar_nodo_pos, obtener_clave_bitlocker_descifrada,
-    obtener_password_nodo,
+    enviar_actualizacion_agente, enviar_comando, enviar_configurar_nodo_pos, enviar_pausa,
+    obtener_clave_bitlocker_descifrada, obtener_password_nodo,
     url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
@@ -228,6 +228,50 @@ def estacion_actualizar_agente_solicitar(request, pk):
     else:
         error_agente = f'No se pudo enviar la actualización a {estacion.codigo} (broker MQTT no disponible).'
     return _render_info_modal(request, estacion, solicitado_agente=solicitado_agente, error_agente=error_agente)
+
+
+@login_required
+@permission_required('catalogo.pausar_estacion', raise_exception=True)
+@require_POST
+def estacion_pausar(request, pk):
+    """Freno de emergencia de UNA estación: deja de ejecutar comandos y de reportar todo
+    menos el latido. Reversible con el mismo botón.
+
+    A diferencia de las otras acciones de esta pantalla, **no exige que la estación esté
+    en línea**. La orden va retenida: una estación apagada la recibe al encender, y ese
+    es justamente el caso que un freno tiene que cubrir — si solo pudiera frenarse lo que
+    está conectado, las que arrancan después lo harían sin freno.
+
+    Para frenar la flota entera está `python manage.py pausar_flota`: a ~1.800 estaciones
+    esto serían 1.800 publicaciones y 1.800 UPDATE dentro de un request HTTP, que es el
+    problema que ya tiene `_publicar_ejecucion` con los scripts.
+    """
+    estacion = get_object_or_404(Estacion, pk=pk)
+    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
+
+    # Se pide el estado deseado y no se alterna: dos personas mirando el mismo panel
+    # durante una emergencia pueden apretar casi a la vez, y un toggle haría que la
+    # segunda reanude lo que la primera acababa de frenar.
+    pausar = request.POST.get('pausado') == 'true'
+    error_pausa = ''
+    solicitado_pausa = False
+    if enviar_pausa(estacion, pausado=pausar):
+        estacion.pausa_solicitada_en = timezone.now()
+        estacion.save(update_fields=['pausa_solicitada_en'])
+        registrar_evento(
+            usuario=request.user, accion='estacion.pausar' if pausar else 'estacion.reanudar',
+            objeto=estacion, request=request,
+        )
+        solicitado_pausa = True
+    else:
+        error_pausa = (
+            f'No se pudo publicar la orden para {estacion.codigo} (broker MQTT no '
+            'disponible). NO des el freno por puesto.'
+        )
+    return _render_info_modal(
+        request, estacion, solicitado_pausa=solicitado_pausa,
+        pausa_pedida=pausar, error_pausa=error_pausa,
+    )
 
 
 @login_required

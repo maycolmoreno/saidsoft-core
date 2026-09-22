@@ -159,6 +159,7 @@ definir_acl "$MQTT_USERNAME_PANEL" '[
     {"topic": "/saidsof/agente/+/software/", "permission": "allow", "action": "publish"},
     {"topic": "/saidsof/agente/+/comando/", "permission": "allow", "action": "publish"},
     {"topic": "/saidsof/agente/+/actualizar_agente/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/agente/+/pausa/", "permission": "allow", "action": "publish"},
     {"topic": "/saidsof/catalogo/servicios_pos/", "permission": "allow", "action": "publish"},
     {"topic": "/saidsof/catalogo/eventos_sistema/", "permission": "allow", "action": "publish"}
 ]'

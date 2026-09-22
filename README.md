@@ -1599,6 +1599,49 @@ dominio en la estación (mismo problema del secreto compartido, sin resolver); e
 persona, no de máquina. Los tres son pasos de tipo `manual` — quedan en el checklist con su
 evidencia, no fingidos como automáticos.
 
+## Freno de emergencia (pausar el agente sin apagarlo)
+
+Si el agente se despliega a ~1.800 cajas y algo sale mal, esto es con lo que se frena.
+
+**Una estación pausada sigue latiendo.** Deja de ejecutar comandos y de reportar
+métricas, servicios del POS, log del POS y eventos de Windows — pero sigue apareciendo
+viva en el panel. Si se callara del todo la verías como caída y perderías visibilidad
+justo durante la emergencia, que es cuando más hace falta. **No toca el POS ni la venta**:
+el agente nunca fue parte de ese circuito.
+
+Un agente pausado **sí acepta actualizaciones**. Es deliberado: si lo que hay que frenar
+es el propio agente, empujarle la versión arreglada es el camino de recuperación.
+
+**Una estación**: ficha de la estación → sección "Freno de emergencia". Permiso
+`catalogo.pausar_estacion` (lo trae el rol *Soporte Técnico*, no *Mesa de Ayuda*).
+Funciona aunque la estación esté apagada: la orden va retenida y le llega al encender.
+
+**La flota**:
+
+```bash
+python manage.py pausar_flota                        # simula: dice a quién frenaría
+python manage.py pausar_flota --aplicar
+python manage.py pausar_flota --reanudar --aplicar
+python manage.py pausar_flota --unidad SG --aplicar
+python manage.py pausar_flota --sin-enrolamiento --aplicar   # además corta las altas nuevas
+```
+
+Es un comando y no un botón porque a ~1.800 estaciones son 1.800 publicaciones MQTT y
+1.800 UPDATE, que no entran en un request HTTP — y porque sirve con el panel caído, que
+es uno de los escenarios en los que alguien querría frenar la flota.
+
+**Publicar no es aplicar.** La orden va retenida, así que una estación apagada la recibe
+recién al encender. Lo único que confirma el freno es que ella lo declare en su latido:
+por eso `pausa_solicitada_en` y `pausa_confirmada_en` son campos distintos, y el panel
+muestra "sin confirmar" hasta que llega. Confundirlos es creer que frenaste 1.800 equipos
+cuando frenaste los que estaban encendidos.
+
+**Cortar las altas** (`--sin-enrolamiento`, o el campo `enrolamiento_habilitado` de
+Configuración de monitoreo) es la otra mitad: pausar lo ya enrolado no sirve si el
+instalador sigue dando de alta equipos que arrancan sin pausar. Bloquea las altas nuevas
+**incluido el camino cero-touch**, pero nunca un re-enrolamiento: una estación que perdió
+su `identidad.json` tiene ahí su único camino de vuelta.
+
 ## Credenciales MQTT por estación (aislamiento a nivel de broker)
 
 Hasta ahora las ~1.800 estaciones comparten una sola credencial MQTT (`MQTT_USERNAME_AGENTE`,

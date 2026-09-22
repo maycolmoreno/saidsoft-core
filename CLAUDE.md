@@ -68,12 +68,24 @@ corre sobre `timescale/timescaledb`.
 
 ### Pendientes concretos
 
-- **3 estaciones apagadas** (`MC001-B`, `MC001-C`, `ML016-A`) siguen con la credencial
-  MQTT compartida. Cuando enciendan, correrles el script "Migrar a credencial MQTT
-  propia". Recién después tiene sentido rotar `MQTT_PASSWORD_AGENTE` /
-  `COMANDO_HMAC_SECRET` y correr `deploy/emqx-narrow-acl-agente.sh`.
-- **El CI nunca se vio en verde** tras pasarlo a TimescaleDB. Revisar la pestaña
-  Actions.
+- **2 estaciones apagadas** (`MC001-B`, `MC001-C`) siguen con la credencial MQTT
+  compartida — verificado contra EMQX el 21-sep-2026: no existe usuario propio para
+  ellas. `ML016-A` **ya migró** (decía lo contrario acá hasta hoy: está conectada como
+  `usuario=ML016-A`). Cuando enciendan, correrles el script "Migrar a credencial MQTT
+  propia".
+  **Ojo antes de eso**: la ROTACIÓN de credencial está rota. El `PUT` de
+  `apps.mqtt_worker.emqx_admin` manda `user_id` en el cuerpo y EMQX 5.8.3 responde
+  HTTP 400 `unknown_fields`, así que `aprovisionar_credencial_estacion` devuelve None
+  para cualquier estación que ya exista. Crear una nueva sí funciona (POST 201). Hay que
+  arreglarlo antes de rotar `MQTT_PASSWORD_AGENTE` / `COMANDO_HMAC_SECRET` y de correr
+  `deploy/emqx-narrow-acl-agente.sh`.
+- ~~**El CI nunca se vio en verde** tras pasarlo a TimescaleDB.~~ **RESUELTO el
+  21-sep-2026.** El diagnóstico de acá era erróneo: no tenía que ver con TimescaleDB y el
+  CI sí estuvo verde hasta el 15-sep 03:34 (`3c9c42c0`). Lo rompió `95720f2`, que agregó
+  `armar_paquete_agente` y pruebas que leen `deploy/certs/cert.pem` — un archivo
+  **ignorado por git**, que existe en la máquina de quien desarrolla y no en un checkout
+  limpio. 38 días en rojo, verde en local todo el tiempo.
+  La lección general: **una prueba que lee algo ignorado por git no puede pasar en CI.**
 - **149 farmacias sin circuito de proveedor** y 3 códigos de planilla que no existen
   en SAIDSOFT (`MCMB-2`, `MMIL10`, `MPREV1`).
 - **Respaldos sin copia fuera del servidor** (diarios, cifrados con GPG, retención 14
