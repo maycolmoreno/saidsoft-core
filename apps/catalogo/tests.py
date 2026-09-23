@@ -2903,3 +2903,120 @@ class ElServidorDeHoraTieneRespaldoTests(TestCase):
             '_corregir_reloj tiene que usar _servidor_de_hora(), no el argumento crudo',
         )
         self.assertIn('servidor = self._servidor_de_hora()', cuerpo)
+
+
+class ElAgenteChequeaSuRelojSinQueNadieSeLoPidaTests(TestCase):
+    """El bucle horario que hace que la autocorrección sirva de algo.
+
+    El disparador por rechazo de comando solo actúa si ALGUIEN le manda algo a la
+    estación. Una caja que nadie está tocando se desfasa, queda sorda y no se entera —
+    medido el 22-sep-2026: 6 de 39 estaciones (15%) estaban así, y aparecieron porque se
+    las fue a buscar una por una. A ~1.800 equipos eso no es una forma de operar.
+    """
+
+    def _fuente(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        return (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(
+            encoding='utf-8',
+        )
+
+    def _metodo(self, nombre):
+        import ast
+
+        for nodo in ast.walk(ast.parse(self._fuente())):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == nombre:
+                return nodo
+        self.fail(f'no existe {nombre}')
+
+    def test_el_bucle_arranca_con_los_demas(self):
+        """Un bucle que nadie lanza es código muerto que parece una feature."""
+        self.assertIn(
+            'threading.Thread(target=self.bucle_reloj, daemon=True).start()', self._fuente(),
+        )
+
+    def test_el_salto_se_mide_comparando_dos_relojes_y_no_parseando(self):
+        """`net time` responde en el idioma y formato regional de Windows ("La hora
+        actual en \\\\dominio es 22/9/2026 16:06:22"). Parsear eso es frágil justo en la
+        estación equivocada.
+
+        `time.time()` salta cuando alguien cambia la hora del sistema; `time.monotonic()`
+        no. La diferencia entre lo que avanzó cada uno ES el salto, sin importar idioma.
+        """
+        fuente = self._fuente()
+        cuerpo = fuente[fuente.index('def _chequear_reloj'):]
+        cuerpo = cuerpo[:cuerpo.index('\n    def ', 10)]
+        self.assertIn('time.monotonic()', cuerpo)
+        self.assertNotIn('re.search', cuerpo, 'no se parsea la salida de net time')
+        self.assertNotIn('ConvertTo', cuerpo)
+
+    def test_solo_cuenta_los_saltos_grandes(self):
+        """El bucle corre `net time /set` siempre porque es idempotente, pero contar cada
+        corrida arruinaría el contador: existe para delatar al equipo con la pila agotada,
+        y si sube una vez por hora en ~1.800 estaciones deja de distinguir nada."""
+        fuente = self._fuente()
+        self.assertIn('SALTO_MINIMO_PARA_CONTAR_SEGUNDOS', fuente)
+        cuerpo = fuente[fuente.index('def _chequear_reloj'):]
+        cuerpo = cuerpo[:cuerpo.index('\n    def ', 10)]
+        self.assertIn('abs(salto) < SALTO_MINIMO_PARA_CONTAR_SEGUNDOS', cuerpo)
+
+    def test_el_umbral_para_contar_es_menor_que_la_ventana(self):
+        """Si el umbral fuera mayor que los 120 s de la ventana, el contador se perdería
+        justamente las correcciones que dejaron sorda a la estación."""
+        import re
+
+        fuente = self._fuente()
+        salto = int(re.search(r'SALTO_MINIMO_PARA_CONTAR_SEGUNDOS = (\d+)', fuente).group(1))
+        ventana = int(re.search(r'VENTANA_TIMESTAMP_SEGUNDOS = (\d+)', fuente).group(1))
+        self.assertLess(salto, ventana)
+
+    def test_el_chequeo_es_mas_frecuente_que_la_deriva_que_deja_sorda(self):
+        """Chequear cada hora acota la deriva muy por debajo de los 120 s: un reloj que se
+        corre más de 2 minutos por hora tiene un problema de hardware, no de
+        sincronización."""
+        import re
+
+        fuente = self._fuente()
+        intervalo = int(re.search(r'INTERVALO_CHEQUEO_RELOJ_SEGUNDOS = (\d+)', fuente).group(1))
+        self.assertGreaterEqual(intervalo, 600, 'chequear más seguido que esto es gasto puro')
+        self.assertLessEqual(intervalo, 86400, 'un día entero de deriva ya deja estaciones sordas')
+
+    def test_hay_jitter_para_no_golpear_todos_juntos(self):
+        """Las 39 estaciones aplicaron 0.31 en la misma media hora. Sin repartir la fase,
+        consultarían el DC en el mismo segundo cada hora, para siempre."""
+        import ast
+
+        metodo = self._metodo('bucle_reloj')
+        usa_jitter = any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == 'uniform'
+            for n in ast.walk(metodo)
+        )
+        self.assertTrue(usa_jitter, 'el bucle del reloj tiene que arrancar con jitter')
+
+    def test_el_jitter_va_UNA_vez_y_no_en_cada_ciclo(self):
+        """Lo que hay que repartir es la fase, no el intervalo: con jitter en cada vuelta
+        el ciclo se vuelve impredecible sin ganar nada."""
+        import ast
+
+        metodo = self._metodo('bucle_reloj')
+        dentro = [
+            n for w in ast.walk(metodo) if isinstance(w, ast.While)
+            for n in ast.walk(w)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == 'uniform'
+        ]
+        self.assertEqual(dentro, [], 'el jitter no puede estar dentro del while')
+
+    def test_una_estacion_pausada_no_chequea(self):
+        """El freno de emergencia tiene que frenar TODO lo que la estación hace sola."""
+        import ast
+
+        metodo = self._metodo('bucle_reloj')
+        consulta_pausa = any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == '_pausado'
+            for n in ast.walk(metodo)
+        )
+        self.assertTrue(consulta_pausa, 'bucle_reloj tiene que respetar la pausa')

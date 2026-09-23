@@ -3180,6 +3180,42 @@ credencial compartida, que sigue pendiente — y que, como anota
 `generar_script_instalacion`, tampoco la cierra del todo mientras conserve el comodín
 sobre `/saidsof/enrolamiento/respuesta/+/`.
 
+### El disparador por rechazo no alcanzaba (0.32)
+
+0.30 y 0.31 dejaron la autocorrección funcionando, y probándola en producción quedó claro
+que resolvía la mitad del problema. **El mecanismo es reactivo**: solo actúa cuando llega
+un comando y la estación lo rechaza. Una caja que nadie está tocando se desfasa, queda
+sorda y no se entera.
+
+Los números del 22-sep-2026: **6 de 39 estaciones (15%) estaban sordas**, y ninguna se iba
+a curar sola — se curaron porque se les mandó un comando a propósito para provocarlo.
+Aparecieron porque se las fue a buscar una por una. A ~1.800 equipos serían unas 270
+esperando que alguien las note.
+
+`bucle_reloj` corre cada hora y compara contra el servidor de hora sin esperar nada.
+
+**No parsea la salida de `net time`.** Viene en el idioma y el formato regional de
+Windows ("La hora actual en \dominio es 22/9/2026 16:06:22"), y parsear eso es frágil de
+un modo que solo se nota en la estación equivocada. En cambio compara dos relojes:
+`time.time()` salta cuando alguien cambia la hora del sistema, `time.monotonic()` no. La
+diferencia entre lo que avanzó uno y lo que avanzó el otro **es** el salto, sin importar
+idioma ni formato.
+
+**Cuenta solo los saltos de más de 30 s.** El bucle corre `net time /set` siempre porque
+es idempotente y no hace falta decidir nada; pero contar cada corrida arruinaría el
+contador, que existe para delatar al equipo con la pila agotada. Si sube una vez por hora
+en 1.800 estaciones deja de distinguir nada. 30 s es el mismo umbral con el que el panel
+ya avisa "reloj corrido".
+
+**Jitter, por primera vez en este agente.** Las 39 estaciones aplicaron 0.31 en la misma
+media hora; sin repartir la fase consultarían el DC en el mismo segundo cada hora, para
+siempre. Va una sola vez al arrancar el hilo y no en cada vuelta: lo que hay que repartir
+es la fase, no el intervalo. Es el pendiente #3 del plan resuelto para este bucle — los
+otros cinco siguen sin jitter.
+
+Una estación pausada no chequea: el freno de emergencia tiene que frenar todo lo que la
+estación hace por su cuenta.
+
 ### Cómo se probó
 
 El agente no tiene suite propia (importarlo exige paho y win32api, y corre como servicio

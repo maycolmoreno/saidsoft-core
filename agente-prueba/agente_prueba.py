@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import platform
+import random
 import re
 import shutil
 import socket
@@ -55,7 +56,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.31'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.32'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -79,6 +80,28 @@ VENTANA_TIMESTAMP_SEGUNDOS = 120
 #   - Aun en el peor caso son 4 intentos por hora, despreciable, y sigue siendo
 #     muchisimo mas rapido que la alternativa actual: que alguien entre por MeshCentral.
 COOLDOWN_CORRECCION_RELOJ_SEGUNDOS = 900
+
+# Cada cuanto el agente compara su reloj contra el servidor de hora POR SU CUENTA, sin
+# esperar a que llegue un comando.
+#
+# El disparador por rechazo no alcanza y eso se midio: el 22-sep-2026 habia 6 estaciones
+# de 39 (15%) con el reloj fuera de ventana, y ninguna se iba a curar sola porque nadie
+# les estaba mandando comandos. Aparecieron porque se las fue a buscar. A 1.800 equipos
+# eso serian ~270 sordas esperando que alguien las note.
+#
+# Una hora acota la deriva muy por debajo de los 120 s de la ventana (un reloj que se
+# corre mas de 2 minutos por hora tiene un problema de hardware, no de sincronizacion) y
+# cuesta una llamada SMB por estacion por hora: a 1.800, media llamada por segundo
+# repartida.
+INTERVALO_CHEQUEO_RELOJ_SEGUNDOS = 3600
+
+# Cuanto tiene que saltar el reloj para contarlo como una autocorreccion de verdad.
+#
+# El bucle corre `net time /set` siempre —es idempotente y no hace falta parsear nada—
+# pero contar cada corrida arruinaria la senal: el contador existe para delatar al equipo
+# con la pila agotada, y si sube una vez por hora en las ~1.800 estaciones deja de
+# distinguir nada. 30 s es el mismo umbral con el que el panel ya avisa "reloj corrido".
+SALTO_MINIMO_PARA_CONTAR_SEGUNDOS = 30
 
 
 def _configurar_logging_archivo(ruta_log: str = ARCHIVO_LOG):
@@ -1051,6 +1074,84 @@ class AgentePrueba:
         for evento in eventos:
             evento['mensaje'] = (evento.get('mensaje') or '')[:500]
         return eventos, marca_nueva
+
+    def bucle_reloj(self):
+        """Compara el reloj contra el servidor de hora por su cuenta, cada hora.
+
+        La otra mitad de la autocorrección, y la que de verdad escala. El disparador por
+        rechazo de comando solo sirve si ALGUIEN le manda algo a la estación: una caja
+        que nadie está tocando se desfasa, queda sorda y no se entera. Medido el
+        22-sep-2026: 6 de 39 estaciones (15%) estaban así, y aparecieron porque se las
+        fue a buscar una por una. A ~1.800 equipos eso no es una forma de operar.
+
+        **Jitter en el primer ciclo**, no en los siguientes: las estaciones arrancan
+        juntas después de un rollout (las 39 aplicaron 0.31 en la misma media hora), y
+        sin esto todas consultarían el DC en el mismo segundo cada hora, para siempre. Un
+        desfase inicial al azar las reparte y se mantiene repartido. Es la primera vez que
+        este agente usa jitter; el resto de los bucles todavía no lo tiene (pendiente #3
+        del plan).
+        """
+        # El jitter va acá, una sola vez, y después el ciclo es fijo: lo que hay que
+        # repartir es la fase, no el intervalo.
+        time.sleep(random.uniform(0, INTERVALO_CHEQUEO_RELOJ_SEGUNDOS))
+        while True:
+            if not self._token() or self._pausado():
+                time.sleep(INTERVALO_CHEQUEO_RELOJ_SEGUNDOS)
+                continue
+            try:
+                self._chequear_reloj()
+            except Exception:
+                logging.exception('No se pudo chequear el reloj contra el servidor de hora')
+            time.sleep(INTERVALO_CHEQUEO_RELOJ_SEGUNDOS)
+
+    def _chequear_reloj(self):
+        """Corre `net time /set` y mide cuánto saltó el reloj.
+
+        No parsea la salida de `net time` a propósito: viene en el idioma y el formato
+        regional de Windows ("La hora actual en \\\\dominio es 22/9/2026 16:06:22"), y
+        parsear eso es frágil de un modo que solo se nota en la estación equivocada.
+
+        El truco es comparar dos relojes: `time.time()` salta cuando alguien cambia la
+        hora del sistema, `time.monotonic()` no. La diferencia entre lo que avanzó uno y
+        lo que avanzó el otro ES el salto, sin importar idioma ni formato.
+        """
+        servidor = self._servidor_de_hora()
+        if not servidor:
+            return
+
+        pared_antes, mono_antes = time.time(), time.monotonic()
+        try:
+            proc = subprocess.run(
+                ['net', 'time', f'\\\\{servidor}', '/set', '/y'],
+                capture_output=True, text=True, timeout=60,
+                encoding='oem', errors='replace',
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+        except Exception:
+            logging.exception('No se pudo chequear el reloj contra %s.', servidor)
+            return
+
+        if proc.returncode != 0:
+            logging.warning(
+                'El chequeo horario del reloj contra %s fallo (codigo %s): %s',
+                servidor, proc.returncode, ' '.join((proc.stderr or '').split())[:200],
+            )
+            return
+
+        salto = (time.time() - pared_antes) - (time.monotonic() - mono_antes)
+        if abs(salto) < SALTO_MINIMO_PARA_CONTAR_SEGUNDOS:
+            logging.debug('Reloj chequeado contra %s, sin cambios (%+.1fs).', servidor, salto)
+            return
+
+        # Salto grande: esto no es deriva normal, es un equipo con un problema.
+        self.identidad['autocorrecciones_reloj'] = self.identidad.get('autocorrecciones_reloj', 0) + 1
+        self.identidad['ultima_autocorreccion_reloj'] = datetime.now().isoformat(timespec='seconds')
+        self._guardar_identidad()
+        logging.warning(
+            'Reloj corregido en el chequeo horario: salto %+.0fs contra %s. '
+            'Van %s autocorrecciones — si el numero sigue subiendo, revisar la pila de la placa.',
+            salto, servidor, self.identidad['autocorrecciones_reloj'],
+        )
 
     def bucle_eventos_sistema(self):
         """Calco de bucle_log_pos, con su propio intervalo."""
@@ -2637,6 +2738,7 @@ del "%~f0"
         threading.Thread(target=self.bucle_log_pos, daemon=True).start()
         threading.Thread(target=self.bucle_servicios_pos, daemon=True).start()
         threading.Thread(target=self.bucle_eventos_sistema, daemon=True).start()
+        threading.Thread(target=self.bucle_reloj, daemon=True).start()
         self.client.loop_forever(retry_first_connection=True)
 
     def detener(self):

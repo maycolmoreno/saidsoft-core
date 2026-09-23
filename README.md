@@ -1606,11 +1606,16 @@ y scripts del panel — es la protección anti-replay de las firmas HMAC. El pro
 eso incluye el script que le arreglaría la hora: queda sorda y antes solo se recuperaba
 entrando por MeshCentral a mano.
 
-Desde el agente **0.30** se arregla sola. Cuando descarta un mensaje por ventana —y solo
-por eso: una firma inválida o un mensaje dirigido a otra estación cortan antes y no
-disparan nada— corre `net time \<ServidorHora> /set /y` contra el controlador de dominio
-de su `config.json`, con un cooldown de 15 minutos para no quedar en bucle si el DC no
-responde.
+Desde el agente **0.30** se arregla sola, y son dos caminos:
+
+- **Reactivo**: cuando descarta un mensaje por ventana —y solo por eso: una firma inválida
+  o un mensaje dirigido a otra estación cortan antes y no disparan nada— corre
+  `net time \<ServidorHora> /set /y`, con un cooldown de 15 minutos para no quedar en
+  bucle si el DC no responde.
+- **Proactivo** (desde **0.32**): un chequeo horario que no espera a que llegue ningún
+  comando. Hace falta porque el reactivo solo actúa si alguien le manda algo a la
+  estación, y una caja que nadie toca se desfasa sin que nadie se entere: el 22-sep-2026
+  había 6 estaciones sordas de 39, y aparecieron porque se las fue a buscar.
 
 Se usa `net time` y no `w32tm` porque **el DC no responde NTP**: medido el 22-sep-2026
 contra `10.0.0.7:123`, `w32tm` da timeout (`0x800705B4`) y la estación queda en
