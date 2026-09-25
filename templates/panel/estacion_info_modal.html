@@ -319,6 +319,43 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
     `pausar_estacion` — quien solo pudiera frenar no veía el botón. Encontrado por la
     prueba de la vista, no a ojo.
     {% endcomment %}
+    {% comment %}
+    Eventos del visor de Windows de esta estación. Se muestra solo si hay: una sección
+    vacía en cada ficha entrena a saltearla, y con estaciones sanas lo normal es que esté
+    vacía.
+    {% endcomment %}
+    {% if eventos_windows %}
+    <div class="section-divider">
+        <div class="section-head">
+            <span class="label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+                <h3>Eventos de Windows</h3>
+            </span>
+            <span class="pill neutral">{{ eventos_windows|length }}</span>
+        </div>
+        {% for f in eventos_windows %}
+        <div class="py-1" style="border-top:1px solid var(--border-soft);">
+            <div class="flex items-center justify-between gap-3 text-sm">
+                <span class="font-medium">
+                    {{ f.nombre }}
+                    <span class="mono text-xs text-[var(--text-faint)]">{{ f.detectado.origen }}/{{ f.detectado.identificador }}</span>
+                </span>
+                <span class="pill {% if f.severidad == 'critical' %}danger{% else %}warning{% endif %} shrink-0">
+                    {{ f.detectado.cantidad_total }}×
+                </span>
+            </div>
+            <div class="text-xs text-[var(--text-faint)]">
+                {{ f.detectado.primera_vez|date:"d/m H:i" }} → {{ f.detectado.ultima_vez|date:"d/m H:i" }}
+            </div>
+            <div class="text-xs text-[var(--text-dim)]">{{ f.detectado.ultimo_mensaje|truncatechars:180 }}</div>
+        </div>
+        {% endfor %}
+        <p class="text-xs text-[var(--text-faint)] mt-2">
+            El contador es acumulado desde que se vio por primera vez, no del último día.
+        </p>
+    </div>
+    {% endif %}
+
     {% if perms.catalogo.pausar_estacion %}
     <div class="section-divider">
         <div class="section-head">

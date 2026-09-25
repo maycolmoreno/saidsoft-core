@@ -136,6 +136,12 @@ class ResultadoEjecucionScript(models.Model):
     fecha_envio = models.DateTimeField(null=True, blank=True)
     fecha_inicio = models.DateTimeField(null=True, blank=True)
     fecha_fin = models.DateTimeField(null=True, blank=True)
+    motivo_sin_respuesta = models.CharField(
+        max_length=400, blank=True, editable=False,
+        help_text='Por qué se dio por vencido sin respuesta, diagnosticado al cerrarlo '
+                  '(reloj corrido, estación pausada, apagada...). Es lo que convierte un '
+                  '"en progreso" eterno en algo accionable.',
+    )
 
     class Meta:
         db_table = 'resultado_ejecucion_script'

@@ -6367,3 +6367,342 @@ class EstacionPausarDesdeElPanelTests(TestCase):
         self.assertContains(resp, 'No se pudo publicar')
         self.estacion.refresh_from_db()
         self.assertIsNone(self.estacion.pausa_solicitada_en)
+
+
+class EjecucionesQueNadieCierraTests(TestCase):
+    """Los resultados que la estación nunca contesta se cierran solos, con el motivo.
+
+    Hasta el 23-sep-2026 no los cerraba **nadie**. El `timeout_segundos` viaja al agente,
+    que lo aplica al proceso que lanza; si el comando nunca llega —o llega y se descarta
+    por reloj corrido— no había nada del lado servidor que lo diera por vencido. El
+    resultado quedaba en `enviado` y la ejecución en "En progreso" indefinidamente.
+
+    Medido en producción el 22-sep-2026: **12 resultados colgados, el más viejo de 948
+    horas (39 días)** con un timeout de 300 s.
+    """
+
+    def setUp(self):
+        from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript, Script, TipoScript
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX880')
+        farmacia = Farmacia.objects.create(codigo='ML880', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML880-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        self.autor = User.objects.create_user(username='autor_caducar', password='x')
+        script = Script.objects.create(
+            nombre='Prueba', tipo=TipoScript.POWERSHELL, contenido='echo 1',
+            unidad_negocio=self.sg, creado_por=self.autor,
+        )
+        self.ejecucion = EjecucionScript.objects.create(
+            script=script, contenido_snapshot='echo 1', destino_tipo=EjecucionScript.DestinoTipo.ESTACIONES,
+            unidad_negocio=self.sg, creado_por=self.autor, timeout_segundos=300,
+            estado=EjecucionScript.Estado.EN_PROGRESO,
+        )
+        self.resultado = ResultadoEjecucionScript.objects.create(
+            ejecucion=self.ejecucion, estacion=self.estacion,
+            estado=ResultadoEjecucionScript.Estado.ENVIADO,
+            fecha_envio=timezone.now() - timedelta(days=39),
+        )
+
+    def _caducar(self):
+        from apps.scripts.services import caducar_resultados_vencidos
+
+        return caducar_resultados_vencidos()
+
+    def test_cierra_lo_que_lleva_39_dias_abierto(self):
+        from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript
+
+        self.assertEqual(self._caducar(), 1)
+        self.resultado.refresh_from_db()
+        self.ejecucion.refresh_from_db()
+        self.assertEqual(self.resultado.estado, ResultadoEjecucionScript.Estado.TIMEOUT)
+        self.assertIsNotNone(self.resultado.fecha_fin)
+        self.assertEqual(self.ejecucion.estado, EjecucionScript.Estado.CON_ERRORES)
+
+    def test_no_toca_lo_que_todavia_esta_a_tiempo(self):
+        """El timeout es para el proceso en la estación, no para el viaje: cerrar apenas
+        vence el plazo convertiría en "vencido" algo que estaba por contestar."""
+        from apps.scripts.models import ResultadoEjecucionScript
+
+        self.resultado.fecha_envio = timezone.now() - timedelta(seconds=60)
+        self.resultado.save(update_fields=['fecha_envio'])
+        self.assertEqual(self._caducar(), 0)
+        self.resultado.refresh_from_db()
+        self.assertEqual(self.resultado.estado, ResultadoEjecucionScript.Estado.ENVIADO)
+
+    def test_respeta_el_margen_sobre_el_plazo(self):
+        """Justo pasado el timeout pero dentro del margen todavía no se cierra."""
+        from apps.scripts.services import MARGEN_VENCIMIENTO_SEGUNDOS
+
+        self.resultado.fecha_envio = timezone.now() - timedelta(
+            seconds=self.ejecucion.timeout_segundos + MARGEN_VENCIMIENTO_SEGUNDOS - 30,
+        )
+        self.resultado.save(update_fields=['fecha_envio'])
+        self.assertEqual(self._caducar(), 0)
+
+    def test_se_marca_TIMEOUT_y_no_ERROR(self):
+        """ERROR es lo que reporta el agente cuando el script corrió y salió mal. Esto es
+        otra cosa —nunca supimos nada— y mezclarlas borraría la distinción justo en el
+        estado que hay que investigar distinto."""
+        from apps.scripts.models import ResultadoEjecucionScript
+
+        self._caducar()
+        self.resultado.refresh_from_db()
+        self.assertNotEqual(self.resultado.estado, ResultadoEjecucionScript.Estado.ERROR)
+
+    # --- el motivo, que es lo que faltaba en la pantalla ---
+
+    def test_el_reloj_corrido_se_nombra_como_causa(self):
+        """La causa que más desconcierta: la estación está en línea, parece sana, y
+        descarta todo comando en silencio."""
+        Estacion.objects.filter(pk=self.estacion.pk).update(desfase_reloj_segundos=-270)
+        self._caducar()
+        self.resultado.refresh_from_db()
+        self.assertIn('reloj', self.resultado.motivo_sin_respuesta.lower())
+        self.assertIn('-270', self.resultado.motivo_sin_respuesta)
+
+    def test_una_estacion_pausada_lo_dice(self):
+        Estacion.objects.filter(pk=self.estacion.pk).update(pausado=True)
+        self._caducar()
+        self.resultado.refresh_from_db()
+        self.assertIn('pausada', self.resultado.motivo_sin_respuesta.lower())
+
+    def test_una_estacion_apagada_avisa_que_el_comando_se_perdio(self):
+        """`/comando/` no es retenido: lo publicado mientras estaba apagada NO le llega al
+        encender. Hay que volver a lanzarlo, y la pantalla tiene que decirlo."""
+        Estacion.objects.filter(pk=self.estacion.pk).update(
+            estado_conexion=Estacion.EstadoConexion.OFFLINE,
+        )
+        self._caducar()
+        self.resultado.refresh_from_db()
+        self.assertIn('volver a lanzarlo', self.resultado.motivo_sin_respuesta)
+
+    def test_si_empezo_y_no_termino_lo_distingue(self):
+        """No es lo mismo que nunca lo recibiera: acá el script se colgó o el agente murió
+        a mitad de camino, y eso se investiga distinto."""
+        from apps.scripts.models import ResultadoEjecucionScript
+
+        self.resultado.estado = ResultadoEjecucionScript.Estado.EJECUTANDO
+        self.resultado.save(update_fields=['estado'])
+        self._caducar()
+        self.resultado.refresh_from_db()
+        self.assertIn('nunca reportó el final', self.resultado.motivo_sin_respuesta)
+
+
+    def test_la_tarea_esta_agendada(self):
+        """Un barrido que nadie corre deja el problema igual que antes."""
+        from django.conf import settings
+
+        self.assertIn('caducar-resultados-de-script', settings.CELERY_BEAT_SCHEDULE)
+
+
+class LosEventosDeWindowsSeVenEnElPanelTests(TestCase):
+    """La recolección de eventos funcionaba desde el 21-sep y no se podía ver.
+
+    Estaban el agente, el catálogo administrable, la ingesta y la regla de alerta — y la
+    única puerta era el admin de Django, detrás de permisos de staff. Se acumulaban
+    apagones inesperados y errores de hardware que nadie del turno podía mirar.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.models import EventoSistemaDetectado, EventoSistemaVigilado
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX881')
+        farmacia = Farmacia.objects.create(codigo='ML881', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML881-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        EventoSistemaVigilado.objects.get_or_create(
+            log='System', proveedor='Microsoft-Windows-Kernel-Power', identificador=41,
+            defaults={'nombre': 'Apagón inesperado',
+                      'severidad': EventoSistemaVigilado.Severidad.CRITICAL},
+        )
+        self.detectado = EventoSistemaDetectado.objects.create(
+            estacion=self.estacion, log='System',
+            origen='Microsoft-Windows-Kernel-Power', identificador=41,
+            cantidad_total=3, ultimo_mensaje='El sistema se reinició sin apagarse limpiamente.',
+        )
+
+    def test_resuelve_el_nombre_legible_contra_el_catalogo(self):
+        """"System/41" no le dice nada a quien está de guardia; "Apagón inesperado" sí."""
+        from apps.monitoreo.models import catalogo_eventos_por_clave
+        from apps.monitoreo.services import eventos_sistema_recientes
+
+        catalogo_eventos_por_clave.__globals__['_CACHE_CATALOGO_EVENTOS']['expira'] = None
+        filas = eventos_sistema_recientes([self.sg])
+        self.assertEqual(len(filas), 1)
+        self.assertEqual(filas[0]['nombre'], 'Apagón inesperado')
+        self.assertEqual(filas[0]['severidad'], 'critical')
+        self.assertFalse(filas[0]['fuera_de_catalogo'])
+
+    def test_un_evento_fuera_del_catalogo_igual_se_muestra(self):
+        """Se dio de baja el seguimiento, no la historia. Y un evento que no está en el
+        catálogo puede significar algo más interesante: una estación reportando con un
+        catálogo viejo."""
+        from apps.monitoreo.models import EventoSistemaDetectado, catalogo_eventos_por_clave
+        from apps.monitoreo.services import eventos_sistema_recientes
+
+        EventoSistemaDetectado.objects.create(
+            estacion=self.estacion, log='System', origen='Inventado', identificador=9999,
+            cantidad_total=1, ultimo_mensaje='x',
+        )
+        catalogo_eventos_por_clave.__globals__['_CACHE_CATALOGO_EVENTOS']['expira'] = None
+        filas = eventos_sistema_recientes([self.sg])
+        raros = [f for f in filas if f['fuera_de_catalogo']]
+        self.assertEqual(len(raros), 1)
+        self.assertEqual(raros[0]['nombre'], 'System/9999')
+
+    def test_se_puede_pedir_solo_los_de_una_estacion(self):
+        """Es la mitad que sirve para investigar un equipo puntual."""
+        from apps.monitoreo.services import eventos_sistema_recientes
+
+        otra = Estacion.objects.create(
+            codigo='ML881-B', farmacia=self.estacion.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.assertEqual(len(eventos_sistema_recientes(estacion=self.estacion)), 1)
+        self.assertEqual(len(eventos_sistema_recientes(estacion=otra)), 0)
+
+    def test_respeta_la_unidad_de_negocio(self):
+        """Una pantalla de triage que muestra estaciones de otro tenant es una fuga."""
+        from apps.monitoreo.services import eventos_sistema_recientes
+
+        mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.assertEqual(len(eventos_sistema_recientes([mia])), 0)
+
+    def test_el_centro_de_monitoreo_los_muestra(self):
+        from django.contrib.auth.models import Permission
+
+        from apps.cuentas.models import PerfilUsuario
+
+        usuario = User.objects.create_user(username='ve_eventos', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
+        self.client.force_login(usuario)
+        resp = self.client.get(reverse('panel:centro_monitoreo_partial'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Eventos de Windows')
+        self.assertContains(resp, 'Apagón inesperado')
+
+
+class EjecucionesVencidasBordesTests(TestCase):
+    """Los bordes del barrido que cierra ejecuciones sin respuesta.
+
+    Clase aparte de `EjecucionesQueNadieCierraTests` y no métodos sumados ahí: aquella
+    arma en su `setUp` un resultado ya vencido, y estos casos necesitan contar sobre una
+    base limpia. Plegarlos en la misma clase hacía que cada uno arrastrara esa fila y
+    contara de más — pasó al escribirlos.
+
+    Lo que se defiende acá es que un barrido que corre **cada 10 minutos** no puede
+    romperse ni duplicar trabajo.
+    """
+
+    def setUp(self):
+        from apps.scripts.models import Script, TipoScript
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX882')
+        self.farmacia = Farmacia.objects.create(codigo='ML882', grupo=grupo, unidad_negocio=self.sg)
+        self.autor = User.objects.create_user(username='a_bordes', password='x')
+        self.script = Script.objects.create(
+            nombre='S', tipo=TipoScript.POWERSHELL, contenido='x',
+            unidad_negocio=self.sg, creado_por=self.autor,
+        )
+
+    def _ejecucion(self):
+        from apps.scripts.models import EjecucionScript
+
+        return EjecucionScript.objects.create(
+            script=self.script, contenido_snapshot='x',
+            destino_tipo=EjecucionScript.DestinoTipo.ESTACIONES,
+            unidad_negocio=self.sg, creado_por=self.autor, timeout_segundos=300,
+            estado=EjecucionScript.Estado.EN_PROGRESO,
+        )
+
+    def test_sin_fecha_envio_no_explota(self):
+        """Un resultado que nunca se envio (el publish fallo) tiene fecha_envio en None.
+        Restarle un timedelta reventaria el barrido entero."""
+        from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript
+        from apps.scripts.services import caducar_resultados_vencidos
+
+        e = Estacion.objects.create(codigo='ML882-A', farmacia=self.farmacia,
+                                    estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        ResultadoEjecucionScript.objects.create(
+            ejecucion=self._ejecucion(), estacion=e,
+            estado=ResultadoEjecucionScript.Estado.ERROR, fecha_envio=None,
+        )
+        self.assertEqual(caducar_resultados_vencidos(), 0)
+
+    def test_es_idempotente(self):
+        """Corre cada 10 min: la segunda pasada no puede volver a tocar lo ya cerrado."""
+        from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript
+        from apps.scripts.services import caducar_resultados_vencidos
+
+        e = Estacion.objects.create(codigo='ML882-B', farmacia=self.farmacia,
+                                    estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        ResultadoEjecucionScript.objects.create(
+            ejecucion=self._ejecucion(), estacion=e,
+            estado=ResultadoEjecucionScript.Estado.ENVIADO,
+            fecha_envio=timezone.now() - timedelta(days=5),
+        )
+        self.assertEqual(caducar_resultados_vencidos(), 1)
+        self.assertEqual(caducar_resultados_vencidos(), 0)
+
+    def test_una_ejecucion_con_todos_cerrados_no_queda_en_progreso(self):
+        from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript
+        from apps.scripts.services import caducar_resultados_vencidos
+
+        ej = self._ejecucion()
+        for i in range(3):
+            e = Estacion.objects.create(codigo=f'ML882-C{i}', farmacia=self.farmacia,
+                                        estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+            ResultadoEjecucionScript.objects.create(
+                ejecucion=ej, estacion=e, estado=ResultadoEjecucionScript.Estado.ENVIADO,
+                fecha_envio=timezone.now() - timedelta(days=5),
+            )
+        self.assertEqual(caducar_resultados_vencidos(), 3)
+        ej.refresh_from_db()
+        self.assertEqual(ej.estado, EjecucionScript.Estado.CON_ERRORES)
+
+    def test_una_ejecucion_a_medias_sigue_en_progreso(self):
+        """Si una estacion cerro por vencimiento pero otra todavia esta a tiempo, la
+        ejecucion NO puede darse por terminada."""
+        from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript
+        from apps.scripts.services import caducar_resultados_vencidos
+
+        ej = self._ejecucion()
+        vieja = Estacion.objects.create(codigo='ML882-D0', farmacia=self.farmacia,
+                                        estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        nueva = Estacion.objects.create(codigo='ML882-D1', farmacia=self.farmacia,
+                                        estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        ResultadoEjecucionScript.objects.create(
+            ejecucion=ej, estacion=vieja, estado=ResultadoEjecucionScript.Estado.ENVIADO,
+            fecha_envio=timezone.now() - timedelta(days=5))
+        ResultadoEjecucionScript.objects.create(
+            ejecucion=ej, estacion=nueva, estado=ResultadoEjecucionScript.Estado.ENVIADO,
+            fecha_envio=timezone.now())
+        self.assertEqual(caducar_resultados_vencidos(), 1)
+        ej.refresh_from_db()
+        self.assertEqual(ej.estado, EjecucionScript.Estado.EN_PROGRESO)
+
+    def test_no_pisa_un_resultado_que_ya_contesto(self):
+        from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript
+        from apps.scripts.services import caducar_resultados_vencidos
+
+        e = Estacion.objects.create(codigo='ML882-E', farmacia=self.farmacia,
+                                    estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        r = ResultadoEjecucionScript.objects.create(
+            ejecucion=self._ejecucion(), estacion=e,
+            estado=ResultadoEjecucionScript.Estado.COMPLETADO, exit_code=0, stdout='ok',
+            fecha_envio=timezone.now() - timedelta(days=30))
+        self.assertEqual(caducar_resultados_vencidos(), 0)
+        r.refresh_from_db()
+        self.assertEqual(r.estado, ResultadoEjecucionScript.Estado.COMPLETADO)

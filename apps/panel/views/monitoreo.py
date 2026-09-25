@@ -281,7 +281,8 @@ def centro_monitoreo_partial(request):
         ReglaAlerta, VentanaMantenimiento,
     )
     from apps.monitoreo.services import (
-        TOLERANCIA_FRESCURA_MINUTOS, fuente_desactualizada, resumen_operacion,
+        TOLERANCIA_FRESCURA_MINUTOS, eventos_sistema_recientes, fuente_desactualizada,
+        resumen_operacion,
     )
 
     unidades = unidades_negocio_en_foco(request)
@@ -343,8 +344,15 @@ def centro_monitoreo_partial(request):
         .order_by('hasta')
     )
 
+    # Eventos del visor de Windows. Van al final del tablero y no arriba: a diferencia
+    # de un enlace caído o un POS sin base, esto casi nunca exige accion en el momento —
+    # es lo que evita que un disco muriendo o una caja apagandose sola pasen meses sin
+    # que nadie los vea.
+    eventos_windows = eventos_sistema_recientes(unidades, limite=_MAX_FILAS_CENTRO)
+
     return render(request, 'panel/centro_monitoreo_partial.html', {
         'r': resumen,
+        'eventos_windows': eventos_windows,
         'criticas': criticas,
         'advertencias': advertencias,
         'enlaces_por_proveedor': enlaces_por_proveedor,

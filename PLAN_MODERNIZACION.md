@@ -3227,3 +3227,64 @@ señalándolo; restaurada, pasa.
 
 Lo que se probó contra estaciones reales es lo que el AST no puede decir: privilegios,
 dominio, que `w32tm` falla y que `net time` funciona — la tabla de arriba.
+
+## Lo que estaba construido y no se podía ver (23-sep-2026)
+
+Dos cosas que funcionaban de punta a punta y no llegaban a la pantalla. No son
+funcionalidad nueva: es terminar lo que ya existía.
+
+### Los eventos de Windows no tenían pantalla
+
+Estaban el agente, el catálogo administrable, la ingesta, la regla de alerta — y la única
+puerta era el admin de Django, detrás de permisos de staff. Se venían acumulando apagones
+inesperados y errores de hardware que nadie del turno podía mirar.
+
+Ahora se ven en los dos lugares donde se los busca: el **Centro de Monitoreo** (al final
+del tablero, porque casi nunca exige acción inmediata a diferencia de un enlace caído) y
+la **ficha de la estación** (solo si hay: una sección vacía en cada ficha entrena a
+saltearla).
+
+El detalle que obligó a pensar: `EventoSistemaDetectado` no tiene FK al catálogo, guarda
+`log/origen/identificador` sueltos. Es correcto —una estación con un catálogo viejo tiene
+que poder reportar igual en vez de perder la fila por una FK que no resuelve— pero obliga
+a resolver el nombre legible aparte. Se hace con `catalogo_eventos_por_clave()`, cacheada
+60 s, el mismo patrón de `nombres_de_servicios_pos`. Un evento que ya no está en el
+catálogo se muestra igual y **marcado**: puede ser historia de algo dado de baja, o —más
+interesante— una estación reportando con un catálogo desactualizado.
+
+Medido: 2 consultas para 12 filas de 12 estaciones distintas. Importa porque esa pantalla
+se refresca sola cada minuto en cada puesto que la deja abierta.
+
+### Las ejecuciones se quedaban "En progreso" para siempre
+
+Nadie las cerraba. El `timeout_segundos` viaja **al agente**, que lo aplica al proceso que
+lanza; si el comando nunca llega —o llega y se descarta por reloj corrido— no había nada
+del lado servidor que lo diera por vencido.
+
+Medido el 22-sep-2026: **12 resultados colgados, el más viejo de 948 horas (39 días)** con
+un timeout de 300 s.
+
+`caducar_resultados_vencidos` corre cada 10 minutos (no diaria: una ejecución colgada es
+alguien esperando una respuesta). Marca **TIMEOUT y no ERROR** a propósito: ERROR es lo
+que reporta el agente cuando el script corrió y salió mal; esto es otra cosa —nunca
+supimos nada— y mezclarlas borraría la distinción justo en el estado que hay que
+investigar distinto.
+
+Y el campo `motivo_sin_respuesta` dice **por qué**, que era lo que faltaba: el reloj
+corrido con su desfase, la estación pausada, la apagada (avisando que `/comando/` no es
+retenido y hay que relanzarlo), o la distinción entre "nunca lo recibió" y "empezó y no
+reportó el final". Todo ese dato ya existía —desfase, pausa, último latido— pero vivía en
+la ficha de la estación y nadie iba a cruzarlo a mano.
+
+**Dos cosas que salieron de revisar, no de escribir:**
+
+El motivo se calculaba **después** de pisar el estado a TIMEOUT, así que la rama que
+distingue "empezó y no terminó" no se alcanzaba nunca. Lo encontró la prueba que la
+cubría.
+
+Y el barrido cargaba en memoria **todos** los resultados abiertos para filtrar en Python.
+Con 12 da igual; con un despliegue a ~1.800 estaciones serían 1.800 filas cada 10 minutos
+para descartar casi todas — el mismo patrón que la auditoría ya marcó en
+`_publicar_ejecucion`. Ahora el vencimiento se calcula en la base con aritmética de
+intervalos sobre `ejecucion__timeout_segundos`. Verificado: con 32 abiertos y 2 vencidos,
+2 SELECT y 2 UPDATE.

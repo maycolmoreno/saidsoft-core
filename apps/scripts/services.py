@@ -6,6 +6,7 @@ resolución de destino y el envío por MQTT.
 """
 from datetime import timedelta
 
+from django.db.models import DateTimeField, ExpressionWrapper, F
 from django.utils import timezone
 
 from apps.catalogo.services import enviar_script, resolver_estaciones
@@ -160,3 +161,135 @@ def generar_ejecuciones_vencidas() -> int:
             generar_ejecucion_programada(programado=programado)
             total += 1
     return total
+
+
+# Margen sobre el timeout pedido antes de dar un resultado por vencido.
+#
+# El `timeout_segundos` que viaja en el comando es para el PROCESO en la estación, no para
+# el viaje: el agente puede tardar en recibirlo (reconexión), en arrancarlo (otro script
+# corriendo) y en que el reporte de vuelta llegue al worker. Cerrar apenas vence el plazo
+# convertiría en "vencido" algo que estaba por contestar.
+#
+# Cinco minutos es holgado para los tres tramos y sigue siendo insignificante frente al
+# problema que esto resuelve: el resultado mas viejo sin cerrar llevaba 39 DIAS con un
+# timeout de 300 s.
+MARGEN_VENCIMIENTO_SEGUNDOS = 300
+
+
+def _motivo_sin_respuesta(resultado) -> str:
+    """Por qué esta estación no contestó, mirando su estado AHORA.
+
+    Es lo que faltaba: hasta el 23-sep-2026 una ejecución se quedaba "en progreso" para
+    siempre y la pantalla no daba una sola pista. El dato ya existía —el desfase del
+    reloj, la pausa, el último latido— pero vivía en la ficha de la estación y nadie iba
+    a cruzarlo a mano.
+
+    Es un diagnóstico a posteriori, no una certeza: se mira el estado actual, que puede no
+    ser el que tenía cuando se le mandó el comando. Por eso el texto dice qué se observa,
+    no qué pasó.
+    """
+    from apps.catalogo.models import Estacion
+
+    e = resultado.estacion
+    if e.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
+        return f'La estación no está aprobada ({e.get_estado_aprobacion_display()}).'
+    if e.pausado:
+        return 'La estación está pausada: no ejecuta comandos hasta que se la reanude.'
+
+    desfase = e.desfase_reloj_segundos
+    if desfase is not None and abs(desfase) > Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS:
+        return (
+            f'El reloj de la estación está corrido {desfase:+d} s, más de los '
+            f'{Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS} s de la ventana de firma: '
+            'descarta TODO comando, incluido este.'
+        )
+
+    if resultado.estado == resultado.Estado.EJECUTANDO:
+        return (
+            'La estación empezó a ejecutarlo y nunca reportó el final: el script se colgó '
+            'o el agente se reinició a mitad de camino.'
+        )
+
+    if e.estado_conexion != Estacion.EstadoConexion.ONLINE:
+        return (
+            'La estación no está en línea. El tópico de comandos NO es retenido, así que '
+            'lo publicado mientras estaba apagada se perdió: hay que volver a lanzarlo.'
+        )
+
+    return (
+        'La estación está en línea y no contestó. Revisar su log local '
+        '(C:\\ProgramData\\Saidsoft\\agente_prueba.log): puede ser una firma que no '
+        'validó o un hilo del agente caído.'
+    )
+
+
+def caducar_resultados_vencidos() -> int:
+    """Cierra como TIMEOUT los resultados que pasaron su plazo sin respuesta.
+
+    Hacía falta porque **nadie lo hacía**. El `timeout_segundos` viaja al agente, que lo
+    aplica al proceso que lanza; si el comando nunca llega —o llega y se descarta— no hay
+    nada del lado servidor que lo cierre. El resultado queda en `enviado` y la ejecución
+    en "En progreso" indefinidamente.
+
+    Medido el 22-sep-2026: 12 resultados colgados, el más viejo de **948 horas (39 días)**
+    con un timeout de 300 s.
+
+    Se marca TIMEOUT y no ERROR a propósito: ERROR es lo que reporta el agente cuando el
+    script corrió y salió mal. Esto es otra cosa —nunca supimos nada— y mezclarlas
+    borraría la distinción justo en el estado que hay que investigar distinto.
+    """
+    from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript
+
+    ahora = timezone.now()
+    # El vencimiento se calcula EN LA BASE, no en Python. Con 12 resultados abiertos da
+    # lo mismo; un despliegue a ~1.800 estaciones deja 1.800 filas abiertas, y traerlas
+    # todas cada 10 minutos para descartar casi todas es el mismo patron que la auditoria
+    # ya marco en `_publicar_ejecucion`. Asi solo viajan las vencidas.
+    #
+    # El plazo sale de `ejecucion.timeout_segundos`, que vive en otra tabla: de ahi el F()
+    # con aritmetica de intervalos, que Postgres resuelve sin problema (este proyecto es
+    # Postgres-only, ver CLAUDE.md).
+    vencidos = (
+        ResultadoEjecucionScript.objects
+        .filter(
+            estado__in=[
+                ResultadoEjecucionScript.Estado.PENDIENTE,
+                ResultadoEjecucionScript.Estado.ENVIADO,
+                ResultadoEjecucionScript.Estado.EJECUTANDO,
+            ],
+            fecha_envio__isnull=False,
+        )
+        .annotate(
+            vence_en=ExpressionWrapper(
+                F('fecha_envio')
+                + F('ejecucion__timeout_segundos') * timedelta(seconds=1)
+                + timedelta(seconds=MARGEN_VENCIMIENTO_SEGUNDOS),
+                output_field=DateTimeField(),
+            ),
+        )
+        .filter(vence_en__lt=ahora)
+        .select_related('estacion', 'ejecucion')
+    )
+
+    cerrados = 0
+    ejecuciones = set()
+    for r in vencidos:
+        # El motivo se calcula ANTES de pisar el estado: una de sus ramas distingue
+        # "empezó y nunca reportó el final" de "nunca lo recibió", y eso se lee del
+        # estado actual. Calcularlo después lo dejaba siempre en TIMEOUT y esa rama no
+        # se alcanzaba nunca — lo encontró `test_si_empezo_y_no_termino_lo_distingue`.
+        motivo = _motivo_sin_respuesta(r)[:400]
+        r.estado = ResultadoEjecucionScript.Estado.TIMEOUT
+        r.fecha_fin = ahora
+        r.motivo_sin_respuesta = motivo
+        r.save(update_fields=['estado', 'fecha_fin', 'motivo_sin_respuesta'])
+        ejecuciones.add(r.ejecucion)
+        cerrados += 1
+
+    # Recién con todos los resultados cerrados se recalcula: hacerlo por resultado
+    # dispararía un UPDATE por fila sobre la misma ejecución.
+    for ejecucion in ejecuciones:
+        recalcular_estado_ejecucion(ejecucion)
+
+    return cerrados
+

@@ -434,6 +434,13 @@ CELERY_BEAT_SCHEDULE = {
         # mientras el worker lleva mucho tiempo conectado sin caerse.
         'schedule': 60.0 * 15,
     },
+    # Cada 10 min y no diaria: una ejecucion colgada es alguien esperando una respuesta,
+    # y enterarse manana no sirve. Recorre solo los resultados abiertos, que en operacion
+    # normal son pocos.
+    'caducar-resultados-de-script': {
+        'task': 'apps.scripts.tasks.caducar_resultados_vencidos_task',
+        'schedule': 600.0,
+    },
     'generar-ejecuciones-programadas': {
         'task': 'apps.scripts.tasks.generar_ejecuciones_programadas_task',
         # 6:00, antes de que abran las farmacias: un script programado tiene que estar

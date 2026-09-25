@@ -467,6 +467,45 @@ def evaluar_regla_reloj(estacion) -> None:
             resolver_condicion(regla, estacion)
 
 
+def eventos_sistema_recientes(unidades=None, estacion=None, limite=12):
+    """Los eventos de Windows que el help desk tiene que mirar, listos para la plantilla.
+
+    Existe porque hasta el 23-sep-2026 esta información **no se podía ver**: estaban el
+    agente, el catálogo administrable, la ingesta y la regla de alerta, y la única puerta
+    era el admin de Django, detrás de permisos de staff. Se recolectaban apagones
+    inesperados y errores de hardware que nadie del turno podía mirar.
+
+    Resuelve el nombre legible y la severidad contra el catálogo (ver
+    `catalogo_eventos_por_clave`), porque `EventoSistemaDetectado` guarda log/origen/id
+    sueltos y "System/41" no le dice nada a quien está de guardia — "Apagón inesperado"
+    sí.
+
+    Un evento que ya no está en el catálogo igual se muestra, con su identificador crudo:
+    se dio de baja el seguimiento, no la historia.
+    """
+    from .models import EventoSistemaDetectado, catalogo_eventos_por_clave
+
+    qs = EventoSistemaDetectado.objects.select_related('estacion', 'estacion__farmacia')
+    if estacion is not None:
+        qs = qs.filter(estacion=estacion)
+    if unidades is not None:
+        qs = qs.filter(estacion__farmacia__unidad_negocio__in=unidades)
+
+    catalogo = catalogo_eventos_por_clave()
+    filas = []
+    for d in qs.order_by('-ultima_vez')[:limite]:
+        vigilado = catalogo.get((d.log, d.origen, d.identificador))
+        filas.append({
+            'detectado': d,
+            'nombre': vigilado.nombre if vigilado else f'{d.log}/{d.identificador}',
+            'severidad': vigilado.severidad if vigilado else '',
+            # Un evento fuera del catálogo se marca: puede ser historia de algo dado de
+            # baja, o —más interesante— una estación reportando con un catálogo viejo.
+            'fuera_de_catalogo': vigilado is None,
+        })
+    return filas
+
+
 def evaluar_regla_autocorrecciones_reloj(estacion) -> None:
     """Alerta sobre la estacion que se corrige el reloj sola DEMASIADAS veces.
 

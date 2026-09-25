@@ -1070,6 +1070,38 @@ class EventoSistemaVigilado(models.Model):
         return f'{self.log}/{self.proveedor} {self.identificador} — {self.nombre}'
 
 
+_CACHE_CATALOGO_EVENTOS = {'expira': None, 'valor': {}}
+_TTL_CATALOGO_EVENTOS_SEGUNDOS = 60
+
+
+def catalogo_eventos_por_clave() -> dict:
+    """`{(log, proveedor, identificador): EventoSistemaVigilado}` de TODO el catálogo.
+
+    `EventoSistemaDetectado` guarda log/origen/identificador sueltos y no una FK al
+    catálogo, a propósito: el agente reporta lo que el visor le devuelve, y una fila que
+    llega de una estación con un catálogo viejo —o de un evento que alguien dio de baja
+    entre medio— tiene que poder guardarse igual en vez de perderse por una FK que no
+    resuelve.
+
+    El costo de esa decisión es que el nombre legible y la severidad hay que resolverlos
+    acá. Se cachea 60 s, igual que `nombres_de_servicios_pos` y por el mismo motivo: son
+    diez filas que casi nunca cambian y esto se consulta desde una pantalla que se
+    refresca sola cada minuto.
+
+    Incluye los inactivos: el historial de un evento dado de baja se sigue mirando, y
+    mostrarlo como "System/41" en vez de "Apagón inesperado" sería un retroceso.
+    """
+    ahora = timezone.now()
+    cache = _CACHE_CATALOGO_EVENTOS
+    if cache['expira'] is None or ahora >= cache['expira']:
+        cache['valor'] = {
+            (v.log, v.proveedor, v.identificador): v
+            for v in EventoSistemaVigilado.objects.all()
+        }
+        cache['expira'] = ahora + timedelta(seconds=_TTL_CATALOGO_EVENTOS_SEGUNDOS)
+    return cache['valor']
+
+
 class EventoSistemaDetectado(models.Model):
     """Un evento de Windows visto en una estación, AGREGADO por tipo.
 

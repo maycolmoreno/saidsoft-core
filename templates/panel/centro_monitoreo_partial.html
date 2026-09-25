@@ -215,6 +215,44 @@ no ve este caso.
     {% endfor %}
 </div>
 
+{% comment %}
+Eventos del visor de Windows. Va al final del tablero a propósito: casi nunca exige
+acción en el momento, a diferencia de un enlace caído o un POS sin base. Lo que evita es
+que un disco muriendo, una caja apagándose sola o el propio agente cayéndose pasen meses
+sin que nadie los vea — que es exactamente lo que estaba pasando: la recolección funcionó
+desde el 21-sep y hasta hoy solo se podía mirar desde el admin de Django.
+{% endcomment %}
+<div class="card p-4">
+    <div class="text-sm font-medium mb-3">
+        Eventos de Windows
+        <span class="text-xs font-normal text-[var(--text-faint)]">— hardware y sistema, no acción inmediata</span>
+    </div>
+    {% for f in eventos_windows %}
+    <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
+        <div class="min-w-0">
+            <a href="{% url 'panel:estaciones_lista' %}?q={{ f.detectado.estacion.codigo }}"
+               class="font-medium">{{ f.detectado.estacion.codigo }}</a>
+            <span class="text-[var(--text-dim)]">{{ f.nombre }}</span>
+            {% if f.fuera_de_catalogo %}
+            <span class="text-xs text-[var(--text-faint)]" title="Ya no está en el catálogo vigilado, o la estación reporta con un catálogo viejo">(fuera de catálogo)</span>
+            {% endif %}
+            <div class="text-xs text-[var(--text-faint)] truncate">{{ f.detectado.ultimo_mensaje|truncatechars:110 }}</div>
+        </div>
+        <div class="shrink-0 text-right">
+            <span class="pill {% if f.severidad == 'critical' %}danger{% else %}warning{% endif %}">
+                {{ f.detectado.cantidad_total }}×
+            </span>
+            <div class="text-xs text-[var(--text-faint)]">hace {{ f.detectado.ultima_vez|timesince }}</div>
+        </div>
+    </div>
+    {% empty %}
+    <div class="text-sm text-[var(--text-faint)]">
+        Ningún evento vigilado en la flota. Con estaciones sanas es lo normal — no
+        significa que la recolección esté apagada.
+    </div>
+    {% endfor %}
+</div>
+
 <div class="text-xs text-[var(--text-faint)] mt-4 text-right">
     Calculado {{ r.calculado_en|date:"H:i:s" }}
 </div>

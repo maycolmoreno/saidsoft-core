@@ -13,7 +13,7 @@ from apps.catalogo.services import (
     url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
-from apps.monitoreo.services import ventana_mantenimiento_activa
+from apps.monitoreo.services import eventos_sistema_recientes, ventana_mantenimiento_activa
 
 from ..paginacion import paginar
 
@@ -31,6 +31,10 @@ def _render_info_modal(request, estacion, **extra):
         # exige `monitorear_recursos`, que en producción tienen 2 de 10 estaciones — y
         # ninguna de ellas es la que reporta servicios. Esta ficha cubre todas.
         'servicios_pos': estacion.servicios_pos.all(),
+        # Eventos del visor de Windows de ESTA estación. Es donde se investiga un equipo
+        # puntual, y hasta el 23-sep-2026 el dato existía y no se podía ver mas que desde
+        # el admin de Django.
+        'eventos_windows': eventos_sistema_recientes(estacion=estacion, limite=10),
         **extra,
     }
     return render(request, 'panel/estacion_info_modal.html', contexto)
