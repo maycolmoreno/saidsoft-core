@@ -6413,6 +6413,15 @@ class EjecucionesQueNadieCierraTests(TestCase):
 
         return caducar_resultados_vencidos()
 
+    def _envio_vencido_pero_reciente(self):
+        """Pasado el plazo (300 s + 300 s de margen) pero dentro de la hora en que el
+        estado actual de la estación todavía explica lo que pasó.
+
+        Los casos de motivo TIENEN que usar esto: con una fecha de días atrás el
+        diagnóstico se niega a opinar, y con razón."""
+        self.resultado.fecha_envio = timezone.now() - timedelta(seconds=700)
+        self.resultado.save(update_fields=['fecha_envio'])
+
     def test_cierra_lo_que_lleva_39_dias_abierto(self):
         from apps.scripts.models import EjecucionScript, ResultadoEjecucionScript
 
@@ -6460,6 +6469,7 @@ class EjecucionesQueNadieCierraTests(TestCase):
         """La causa que más desconcierta: la estación está en línea, parece sana, y
         descarta todo comando en silencio."""
         Estacion.objects.filter(pk=self.estacion.pk).update(desfase_reloj_segundos=-270)
+        self._envio_vencido_pero_reciente()
         self._caducar()
         self.resultado.refresh_from_db()
         self.assertIn('reloj', self.resultado.motivo_sin_respuesta.lower())
@@ -6467,6 +6477,7 @@ class EjecucionesQueNadieCierraTests(TestCase):
 
     def test_una_estacion_pausada_lo_dice(self):
         Estacion.objects.filter(pk=self.estacion.pk).update(pausado=True)
+        self._envio_vencido_pero_reciente()
         self._caducar()
         self.resultado.refresh_from_db()
         self.assertIn('pausada', self.resultado.motivo_sin_respuesta.lower())
@@ -6477,6 +6488,7 @@ class EjecucionesQueNadieCierraTests(TestCase):
         Estacion.objects.filter(pk=self.estacion.pk).update(
             estado_conexion=Estacion.EstadoConexion.OFFLINE,
         )
+        self._envio_vencido_pero_reciente()
         self._caducar()
         self.resultado.refresh_from_db()
         self.assertIn('volver a lanzarlo', self.resultado.motivo_sin_respuesta)
@@ -6488,10 +6500,28 @@ class EjecucionesQueNadieCierraTests(TestCase):
 
         self.resultado.estado = ResultadoEjecucionScript.Estado.EJECUTANDO
         self.resultado.save(update_fields=['estado'])
+        self._envio_vencido_pero_reciente()
         self._caducar()
         self.resultado.refresh_from_db()
         self.assertIn('nunca reportó el final', self.resultado.motivo_sin_respuesta)
 
+
+    def test_ante_algo_viejo_NO_inventa_un_diagnostico(self):
+        """El diagnóstico mira el estado ACTUAL de la estación. Para algo que lleva días
+        colgado eso no dice nada sobre lo que pasaba entonces, y afirmarlo es peor que
+        callarse.
+
+        Lo enseñó el despliegue del 25-sep-2026: los 21 resultados viejos de la cola se
+        cerraron con "la estación está en línea y no contestó", cuando la causa real
+        había sido el reloj corrido de días antes — ya corregido para ese momento. El
+        mensaje era cierto sobre el presente y falso sobre el incidente, que es la peor
+        combinación: manda a revisar el log de una estación sana.
+        """
+        # setUp ya lo deja con 39 días: es exactamente el caso.
+        self._caducar()
+        self.resultado.refresh_from_db()
+        self.assertIn('no dice qué pasaba entonces', self.resultado.motivo_sin_respuesta)
+        self.assertNotIn('Revisar su log', self.resultado.motivo_sin_respuesta)
 
     def test_la_tarea_esta_agendada(self):
         """Un barrido que nadie corre deja el problema igual que antes."""

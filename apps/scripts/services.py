@@ -175,6 +175,16 @@ def generar_ejecuciones_vencidas() -> int:
 # timeout de 300 s.
 MARGEN_VENCIMIENTO_SEGUNDOS = 300
 
+# Hasta cuando el estado ACTUAL de la estacion sirve para explicar por que no contesto.
+#
+# El diagnostico mira lo que la estacion tiene AHORA. Eso vale mientras la condicion siga
+# siendo la misma —y lo es, porque el barrido corre cada 10 min y el plazo tipico son
+# 10— pero deja de valer para algo que lleva dias colgado: la causa pudo resolverse en el
+# medio y afirmar lo contrario es peor que no decir nada.
+#
+# Una hora: holgado frente al ciclo del barrido y corto frente a "esto quedo abandonado".
+VENTANA_DIAGNOSTICO_CONFIABLE_SEGUNDOS = 3600
+
 
 def _motivo_sin_respuesta(resultado) -> str:
     """Por qué esta estación no contestó, mirando su estado AHORA.
@@ -191,6 +201,23 @@ def _motivo_sin_respuesta(resultado) -> str:
     from apps.catalogo.models import Estacion
 
     e = resultado.estacion
+
+    # Si el comando se mandó hace mucho más que el plazo, el estado ACTUAL no dice nada
+    # sobre lo que pasaba entonces, y afirmarlo es peor que no decir nada.
+    #
+    # Se vio al desplegar esto el 25-sep-2026: los 21 resultados viejos de la cola se
+    # cerraron con "la estación está en línea y no contestó", cuando la causa real había
+    # sido el reloj corrido de días antes — que para ese momento ya estaba corregido. El
+    # mensaje era correcto sobre el presente y falso sobre el incidente.
+    antiguedad = (timezone.now() - resultado.fecha_envio).total_seconds()
+    if antiguedad > VENTANA_DIAGNOSTICO_CONFIABLE_SEGUNDOS:
+        dias = int(antiguedad // 86400)
+        cuanto = f'{dias} día(s)' if dias else f'{int(antiguedad // 3600)} hora(s)'
+        return (
+            f'Se envió hace {cuanto} y recién se cierra ahora: lo que la estación tenga '
+            'hoy no dice qué pasaba entonces. No hay diagnóstico confiable para este caso.'
+        )
+
     if e.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
         return f'La estación no está aprobada ({e.get_estado_aprobacion_display()}).'
     if e.pausado:
