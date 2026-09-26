@@ -199,28 +199,14 @@ class Api {
     }
     if (codigo == 403) throw const SinPermiso();
     if (codigo == 404) throw const NoEncontrado();
-    if (codigo == 409) throw _conflictoDe(respuesta);
+    if (codigo == 409) {
+      final conflicto = conflictoDesdeCuerpo(utf8.decode(respuesta.bodyBytes));
+      // Un 409 sin nuestro contrato no es el nuestro (puede venir de un intermediario):
+      // se cae al error generico de abajo, que SI se reintenta.
+      if (conflicto != null) throw conflicto;
+    }
     if (codigo >= 500) throw const ErrorServidor();
     throw DatosRechazados(_mensajeDe(respuesta));
-  }
-
-  /// Arma el conflicto con lo que el servidor conto. Si el cuerpo no trae el `codigo`
-  /// esperado se cae a `DatosRechazados`: un 409 sin ese contrato no es el nuestro.
-  ErrorApi _conflictoDe(http.Response respuesta) {
-    try {
-      final cuerpo = jsonDecode(utf8.decode(respuesta.bodyBytes));
-      if (cuerpo is Map && cuerpo['codigo'] == 'conflicto_de_estado') {
-        return ConflictoDeEstado(
-          cuerpo['detail']?.toString() ?? 'El servidor rechazo la accion por conflicto.',
-          estadoActual: cuerpo['estado_actual']?.toString() ?? '',
-          modificadoPor: cuerpo['modificado_por']?.toString(),
-          modificadoEn: DateTime.tryParse(cuerpo['modificado_en']?.toString() ?? ''),
-        );
-      }
-    } catch (_) {
-      // Cuerpo no-JSON: se cae al generico de abajo.
-    }
-    return DatosRechazados(_mensajeDe(respuesta));
   }
 
   /// Extrae algo legible del cuerpo de error de DRF, que puede ser
@@ -242,4 +228,28 @@ class Api {
     }
     return 'El servidor rechazo los datos (${respuesta.statusCode}).';
   }
+}
+
+
+/// Lee el cuerpo de un 409 y arma el conflicto, o `null` si no trae nuestro contrato.
+///
+/// Funcion aparte y publica a proposito, igual que `destinoDeAccion`: es la unica parte
+/// de la traduccion que tiene reglas propias, y asi se puede probar sin levantar los
+/// plugins de plataforma que `Api` necesita para funcionar.
+ConflictoDeEstado? conflictoDesdeCuerpo(String cuerpo) {
+  try {
+    final json = jsonDecode(cuerpo);
+    if (json is Map && json['codigo'] == 'conflicto_de_estado') {
+      final por = json['modificado_por']?.toString();
+      return ConflictoDeEstado(
+        json['detail']?.toString() ?? 'El servidor rechazo la accion por conflicto.',
+        estadoActual: json['estado_actual']?.toString() ?? '',
+        modificadoPor: por == null || por.isEmpty || por == 'null' ? null : por,
+        modificadoEn: DateTime.tryParse(json['modificado_en']?.toString() ?? ''),
+      );
+    }
+  } catch (_) {
+    // Cuerpo no-JSON: no es nuestro contrato.
+  }
+  return null;
 }

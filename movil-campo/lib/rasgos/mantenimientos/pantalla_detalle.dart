@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:signature/signature.dart';
 
 import '../../comun/tema.dart';
+import '../../nucleo/almacen/cola_offline.dart';
 import '../../nucleo/catalogos.dart';
 import '../../nucleo/imagen/marca_agua.dart';
 import '../../nucleo/red/api.dart';
@@ -334,6 +335,9 @@ class _PantallaDetalleState extends State<PantallaDetalle> {
                 children: [
                   _Cabecera(mantenimiento: m),
                   const SizedBox(height: 16),
+                  // Si el cierre que este tecnico hizo sin senal quedo en conflicto, se
+                  // lo dice acá y no en un contador de pendientes que nunca baja.
+                  _AvisoEnConflicto(mantenimientoId: widget.id, alEntender: _recargar),
                   if (m.enProceso || m.cerrado) ...[
                     _Checklist(
                       items: datos.checklist,
@@ -890,6 +894,98 @@ class _HojaRepuestoState extends State<_HojaRepuesto> {
           ),
         ],
       ),
+    );
+  }
+}
+
+
+/// Lo que se le muestra al tecnico cuando su accion quedo en conflicto.
+///
+/// El caso: cerro el mantenimiento sin senal y, mientras tanto, alguien lo movio desde
+/// el panel. Antes esto terminaba en un `ultimo_error` que ninguna pantalla mostraba y
+/// en un contador de pendientes que no bajaba nunca. El punto de esta tarjeta es decir
+/// las dos cosas que importan: QUE paso y que el trabajo NO se perdio.
+class _AvisoEnConflicto extends StatefulWidget {
+  const _AvisoEnConflicto({required this.mantenimientoId, required this.alEntender});
+
+  final int mantenimientoId;
+  final VoidCallback alEntender;
+
+  @override
+  State<_AvisoEnConflicto> createState() => _AvisoEnConflictoState();
+}
+
+class _AvisoEnConflictoState extends State<_AvisoEnConflicto> {
+  late Future<List<AccionPendiente>> _futuro;
+
+  @override
+  void initState() {
+    super.initState();
+    _futuro = ColaOffline.instancia.enConflicto();
+  }
+
+  Future<void> _entendido(AccionPendiente accion) async {
+    await ColaOffline.instancia.descartarConflicto(accion.id);
+    if (!mounted) return;
+    setState(() => _futuro = ColaOffline.instancia.enConflicto());
+    widget.alEntender();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<AccionPendiente>>(
+      future: _futuro,
+      builder: (context, snap) {
+        final propias = (snap.data ?? const <AccionPendiente>[])
+            .where((a) => a.mantenimientoId == widget.mantenimientoId)
+            .toList();
+        if (propias.isEmpty) return const SizedBox.shrink();
+
+        return Column(
+          children: [
+            for (final accion in propias)
+              Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                color: Tema.advertencia.withValues(alpha: 0.10),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.pending_actions, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Tu cierre esta en revision',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(accion.ultimoError),
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Lo que registraste quedo guardado en el servidor. Mesa de ayuda '
+                        'tiene que decidir si se aplica. No hace falta que lo repitas.',
+                      ),
+                      const SizedBox(height: 10),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: () => _entendido(accion),
+                          child: const Text('Entendido'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }

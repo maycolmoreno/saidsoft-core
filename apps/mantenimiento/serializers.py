@@ -259,10 +259,19 @@ class ConsentimientoMonitoreoSerializer(serializers.ModelSerializer):
 
 
 class UbicacionTecnicoSerializer(serializers.ModelSerializer):
+    # `origen_id` viaja en el cuerpo pero NO es un campo del modelo: lo consume
+    # `_idempotente` en la vista. Se declara para que quede explicito que se espera, en
+    # vez de depender de que el ModelSerializer ignore lo que no conoce.
+    origen_id = campo_origen_id()
+
     class Meta:
         model = UbicacionTecnico
-        fields = ['id', 'latitud', 'longitud', 'precision_metros', 'timestamp_captura']
+        fields = ['id', 'latitud', 'longitud', 'precision_metros', 'timestamp_captura', 'origen_id']
         read_only_fields = ['id']
+
+    def create(self, validated_data):
+        validated_data.pop('origen_id', None)
+        return super().create(validated_data)
 
 
 class UsuarioActualSerializer(serializers.Serializer):

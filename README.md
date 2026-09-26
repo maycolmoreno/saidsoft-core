@@ -1979,6 +1979,41 @@ Del lado Android, `MainActivity` extiende `FlutterFragmentActivity` — el promp
 `androidx.biometric` lo necesita para montarse, y con `FlutterActivity` falla en
 ejecución, no al compilar.
 
+## Cuando el cierre de campo choca con el panel
+
+Un técnico cierra un mantenimiento desde la app, en una farmacia sin señal. Mientras
+tanto, alguien desde el panel lo cancela. Cuando el teléfono recupera conexión, esas dos
+verdades chocan.
+
+**El guard no se relaja**: pisar la decisión más nueva sería peor, porque se tomó con
+más contexto. Lo que cambió (26-sep-2026) es lo que pasa después, que antes era nada: el
+trabajo del técnico se quedaba en el teléfono con el motivo en un `ultimo_error` que
+ninguna pantalla mostraba, y mesa de ayuda no se enteraba.
+
+Ahora el rechazo es un **409** con `codigo: conflicto_de_estado` —distinguible de un 400
+de datos inválidos, que sí se arregla reintentando— y el cierre queda guardado en
+`CierreEnConflicto` **en el mismo momento**, antes de contestarle al técnico que no se
+pudo aplicar.
+
+En **Mantenimientos → Cierres en conflicto** (`/mantenimientos/conflictos/`) hay dos
+salidas, y el sistema no elige por vos:
+
+- **Aplicar el cierre del técnico** — reabre el mantenimiento y lo cierra con lo que él
+  mandó, con la hora real en que lo hizo en la farmacia. Pasa por el cierre completo, así
+  que el activo vuelve de reparación y el plan programado avanza.
+- **Descartar con motivo** — el motivo queda registrado y el payload del técnico **no se
+  borra**: es la constancia de que hubo un trabajo de campo que no se contabilizó.
+
+**No hace falta acordarse de mirarlo.** El conteo sin revisar sale en el Centro de
+Monitoreo, y a las 4 horas sin revisión el aviso se reenvía solo (media jornada, para que
+caiga antes del cambio de turno). Mesa de Ayuda **ve** la bandeja pero no la resuelve:
+aplicar un cierre es intervenir, y eso es segunda línea — mismo criterio que con las
+alertas.
+
+Del lado de la app, esa acción deja de reintentarse (reintentar no arregla un conflicto)
+y aparece una tarjeta en la pantalla del mantenimiento diciendo que el cierre está en
+revisión, en vez del contador de pendientes que no bajaba nunca.
+
 ## Del RMM al inventario, sin cargar nada a mano
 
 El agente ya reporta número de serie, procesador, RAM, disco y en qué farmacia está.

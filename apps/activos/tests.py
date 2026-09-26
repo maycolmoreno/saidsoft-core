@@ -51,13 +51,18 @@ class SeedPermisosTests(TestCase):
         Centro de Monitoreo: sin ellos el rol implicaba una pantalla que sus permisos le
         cerraban, igual que le habia pasado a 'Operador RMM'. Son de lectura, que es
         justo lo que este test protege — abajo se verifica que no entro ninguna accion.
+
+        `view_cierreenconflicto` se sumo el 26-sep-2026 por el mismo motivo: el conteo
+        de cierres de campo en conflicto sale en ese mismo Centro de Monitoreo. `view` y
+        nada mas -- aplicar el cierre de un tecnico reabre y vuelve a cerrar un
+        mantenimiento, y eso es intervencion, no diagnostico.
         """
         call_command('seed_permisos')
         grupo = Group.objects.get(name='Mesa de Ayuda')
         codenames = set(grupo.permissions.values_list('codename', flat=True))
         self.assertEqual(codenames, {
             'acceso_remoto_estacion', 'consultar_info_estacion', 'view_estacion',
-            'view_alerta', 'view_estadoenlacefarmacia',
+            'view_alerta', 'view_estadoenlacefarmacia', 'view_cierreenconflicto',
         })
         # La invariante de verdad, independiente de la lista de arriba: nada que escriba.
         for codename in codenames:
@@ -2030,6 +2035,20 @@ class SeedPermisosIdempotenteTests(TestCase):
                          'add_ubicaciontecnico', 'add_activo'):
             with self.subTest(codename=codename):
                 self.assertIn(codename, codenames)
+
+    def test_mesa_de_ayuda_ve_los_conflictos_pero_no_los_resuelve(self):
+        """Primera linea diagnostica, no interviene: aplicar el cierre de un tecnico
+        reabre y vuelve a cerrar un mantenimiento, y eso es intervencion."""
+        call_command('seed_permisos', verbosity=0)
+        codenames = set(Group.objects.get(name='Mesa de Ayuda').permissions.values_list('codename', flat=True))
+        self.assertIn('view_cierreenconflicto', codenames)
+        self.assertNotIn('change_cierreenconflicto', codenames)
+
+    def test_soporte_tecnico_si_los_resuelve(self):
+        call_command('seed_permisos', verbosity=0)
+        codenames = set(Group.objects.get(name='Soporte Técnico').permissions.values_list('codename', flat=True))
+        self.assertIn('view_cierreenconflicto', codenames)
+        self.assertIn('change_cierreenconflicto', codenames)
 
     def test_el_rol_tecnico_heredado_quedo_con_el_mismo_set(self):
         call_command('seed_permisos', verbosity=0)

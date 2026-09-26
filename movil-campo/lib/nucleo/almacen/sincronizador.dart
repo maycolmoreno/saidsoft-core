@@ -29,6 +29,13 @@ class Sincronizador {
       } on SesionExpirada {
         // Sin sesión no se puede subir nada: se conserva todo para el próximo login.
         break;
+      } on ConflictoDeEstado catch (e) {
+        // NO se reintenta: alguien mas ya movio esto y reintentar no lo arregla. El
+        // backend ya guardo el trabajo del tecnico para que mesa de ayuda lo revise
+        // (ver CierreEnConflicto), asi que acá solo queda mostrarselo en vez de dejar
+        // un contador de pendientes que nunca baja.
+        await _cola.marcarEnConflicto(accion.id, e.mensaje);
+        dev.log('Accion ${accion.id} (${accion.tipo}) en conflicto: ${e.mensaje}');
       } on ErrorApi catch (e) {
         // El servidor la rechazó (datos inválidos, ya cerrado, sin permiso). Se
         // conserva con el motivo: descartar trabajo del técnico en silencio sería
@@ -70,17 +77,26 @@ class Sincronizador {
   //
   // Mismo patron que `timestamp_captura` en repo_gps.dart, que ya lo hacia bien.
   final ocurridoEn = accion.creadaEn.toUtc().toIso8601String();
+  // Clave de idempotencia: el id de la fila en la cola, unico por telefono. Si el
+  // servidor ya proceso esta accion pero la respuesta se perdio (el timeout de 20 s se
+  // traduce a SinConexion), el reintento devuelve la respuesta original en vez de
+  // duplicar el hecho o rebotar con un error que dejaria la accion trabada para siempre.
+  final origenId = accion.id;
 
   return switch (accion.tipo) {
     ColaOffline.tipoIniciar => (
         ruta: '/mantenimientos/${d['id']}/iniciar/',
-        cuerpo: {'ocurrido_en': ocurridoEn},
+        cuerpo: {'ocurrido_en': ocurridoEn, 'origen_id': origenId},
       ),
     // El checklist NO lleva hora: `registrar_actividad_checklist` hace
     // update_or_create sobre el estado actual, no registra un instante.
     ColaOffline.tipoChecklist => (
         ruta: '/mantenimientos/${d['mantenimiento_id']}/checklist/actualizar/',
-        cuerpo: {'actividad_id': d['actividad_id'], 'realizada': d['realizada']},
+        cuerpo: {
+          'actividad_id': d['actividad_id'],
+          'realizada': d['realizada'],
+          'origen_id': origenId,
+        },
       ),
     ColaOffline.tipoFirmar => (
         ruta: '/mantenimientos/${d['mantenimiento_id']}/firmar/',
@@ -88,6 +104,7 @@ class Sincronizador {
           'tipo_firma': d['tipo_firma'],
           'firma_base64': d['firma_base64'],
           'ocurrido_en': ocurridoEn,
+          'origen_id': origenId,
         },
       ),
     ColaOffline.tipoCerrar => (
@@ -95,22 +112,28 @@ class Sincronizador {
         cuerpo: {
           ...Map<String, dynamic>.from(d)..remove('mantenimiento_id'),
           'ocurrido_en': ocurridoEn,
+          'origen_id': origenId,
         },
       ),
     ColaOffline.tipoIniciarVisita => (
         ruta: '/visitas/${d['id']}/iniciar/',
-        cuerpo: {'ocurrido_en': ocurridoEn},
+        cuerpo: {'ocurrido_en': ocurridoEn, 'origen_id': origenId},
       ),
     ColaOffline.tipoCerrarVisita => (
         ruta: '/visitas/${d['id']}/cerrar/',
         cuerpo: {
           'observaciones': d['observaciones'] ?? '',
           'ocurrido_en': ocurridoEn,
+          'origen_id': origenId,
         },
       ),
     // La ubicacion ya viajaba con su propia hora (`timestamp_captura`), que es el
-    // patron del que salio todo lo de arriba.
-    ColaOffline.tipoUbicacion => (ruta: '/ubicaciones-tecnico/', cuerpo: d),
+    // patron del que salio todo lo de arriba. Suma la clave de idempotencia para no
+    // duplicar posiciones cuando se reintenta.
+    ColaOffline.tipoUbicacion => (
+        ruta: '/ubicaciones-tecnico/',
+        cuerpo: {...d, 'origen_id': origenId},
+      ),
     _ => null,
   };
 }

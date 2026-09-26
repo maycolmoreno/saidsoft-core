@@ -343,10 +343,17 @@ class UbicacionTecnicoView(generics.ListCreateAPIView):
                 {'detail': 'Falta registrar el consentimiento de monitoreo antes de enviar ubicación.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save(usuario=request.user)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        def ejecutar():
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(usuario=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        # Tambien pasa por la idempotencia: una posicion duplicada no rompe el calculo
+        # de distancia (que toma el minimo), pero infla una tabla que ya crece sola y
+        # que hoy no tiene purga.
+        return _idempotente(request, 'enviar_ubicacion', ejecutar)
 
 
 class ActividadChecklistView(generics.ListAPIView):

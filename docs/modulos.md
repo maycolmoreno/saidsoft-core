@@ -424,14 +424,35 @@ teléfono **sin que nada lo avise**: no hay versionado de API ni contrato compar
 > distribuye a mano, así que durante semanas conviven APKs con y sin él, y el que no lo
 > manda se sigue fechando con la hora del servidor.
 >
-> **EN DISEÑO — conflictos y reintentos.** Si el servidor procesa la acción y la
-> respuesta se pierde, la app la reencola y la reintenta; y si mesa de ayuda actúa sobre
-> el mismo mantenimiento desde el panel mientras el técnico lo cerró sin señal, el cierre
-> rebota con un 400 genérico, queda en la cola del teléfono para siempre y el trabajo
-> real del técnico no llega a nadie. Cerrado ya el caso de **firmar** (unicidad
-> `(mantenimiento, tipo_firma)` + `update_or_create`: reintentar es un no-op, no una
-> segunda firma). Lo demás —clave de idempotencia, código de conflicto distinguible y
-> bandeja de revisión para mesa de ayuda— está propuesto y **sin implementar**.
+> **RESUELTO (26-sep-2026) — reintentos y conflictos.** Eran dos problemas con el
+> mismo síntoma ("1 pendiente" que nunca baja):
+>
+> - **Reintento.** El timeout de 20 s de `api.dart` se traduce a `SinConexion`, así que
+>   una acción que el servidor SÍ procesó se reencolaba y se reintentaba. Ahora cada
+>   acción viaja con `origen_id` —el id de su fila en `ColaOffline`, clave natural por
+>   dispositivo— y `AccionOfflineAplicada` devuelve la respuesta original en vez de
+>   duplicar el hecho o re-fallar. Para **firmar** alcanzó con la unicidad
+>   `(mantenimiento, tipo_firma)` + `update_or_create`: firmar dos veces no es un hecho
+>   nuevo, es el mismo hecho.
+> - **Conflicto real.** Si alguien mueve el mantenimiento desde el panel mientras el
+>   técnico lo cierra sin señal, el guard **no se relaja** (pisar la decisión más nueva
+>   sería peor), pero ahora el rechazo es un **409** con `codigo: conflicto_de_estado`
+>   en vez de un 400 genérico: la app lo distingue, deja de reintentar y se lo muestra
+>   al técnico. El trabajo se guarda en **`CierreEnConflicto`** en el mismo momento en
+>   que se devuelve el 409, y mesa de ayuda lo resuelve desde
+>   `/mantenimientos/conflictos/` con dos acciones: *aplicar el cierre del técnico*
+>   (reabre y cierra con su payload y su hora real, pasando por `cerrar_mantenimiento`
+>   completo para que el activo vuelva de reparación) o *descartar con motivo*.
+>
+> **No espera a que alguien se acuerde de mirarlo:** el conteo sin revisar sale en el
+> Centro de Monitoreo, y `escalar_cierres_en_conflicto` (Celery Beat, cada 15 min)
+> reenvía el aviso pasadas **4 h** sin revisión — media jornada, para que caiga antes
+> del cambio de turno y lo reciba quien ya tiene el contexto.
+>
+> **Hueco conocido:** `CierreEnConflicto` cubre solo el cierre de mantenimiento. Una
+> visita que llega tarde devuelve el 409 (la app deja de reintentar) pero sus
+> observaciones no se guardan en ninguna bandeja — `VisitaTecnica` no tiene modelo de
+> eventos propio.
 
 > **Gotcha — el certificado va empaquetado** (`movil-campo/assets/certs/cert.pem`). Si el
 > servidor rota el suyo, la app deja de conectar con "el certificado del servidor no

@@ -3483,3 +3483,83 @@ se entera de que hubo un cierre de campo en conflicto. Queda propuesto y pendien
 decisión: código de error distinguible, y bandeja de revisión manual para mesa de ayuda
 con la forma de `MensajeMqttFallido` (triage operativo con `revisado`, no registro
 inmutable).
+
+## §10-AÑ — Idempotencia, conflictos y la bandeja que no espera a nadie (26-sep-2026)
+
+Cierra la parte de §10-AN que había quedado en diseño. El diseño se aprobó con un
+agregado del usuario: que un conflicto sin revisar **escale solo**, en vez de quedar
+esperando a que alguien se acuerde de mirarlo — el mismo tipo de "estado silencioso"
+que este proyecto ya encontró varias veces.
+
+**1. Idempotencia por clave natural.** `AccionOfflineAplicada(usuario, origen_id, tipo,
+respuesta_json, estado_http)` con `unique_together(usuario, origen_id)`. La clave no es
+un UUID inventado: `ColaOffline` ya numera sus filas con un autoincremental único por
+teléfono, y el usuario acota el espacio — mismo criterio que el resto del proyecto, que
+resuelve idempotencia con clave natural + `get_or_create`. Se guarda la respuesta
+original y se repite en el reintento: al técnico le tiene que constar que su acción se
+aplicó, no recibir un error por algo que salió bien. Se recuerdan las respuestas
+**terminales** (2xx y 409); un 400 no, porque no cambió nada y reintentarlo es inocuo.
+
+**2. 409 distinguible.** `ConflictoDeEstado` aplica en `cerrar`/`cancelar` mantenimiento
+e `iniciar`/`cerrar` visita. La API la captura ANTES que `ValueError` y la traduce a 409
+en vez de 400; esa diferencia es la que necesita la app, porque un `ValueError` se
+arregla mandando otra cosa y un conflicto no se arregla reintentando.
+
+**Hereda de `ValueError`, y no es un detalle menor.** La primera versión la hacía
+heredar de `Exception`, lo que convertía en un **500** tres cosas que el panel ya
+resolvía bien: `mantenimiento_cerrar`, `mantenimiento_cancelar` y `visita_tecnica_accion`
+capturan `ValueError` y lo muestran como error del formulario. Cancelar dos veces desde
+la web habría pasado de "ese mantenimiento ya está cancelado" a una pantalla de error.
+Hay pruebas que lo fijan (`ConflictoNoRompeElPanelTests`). El cuerpo lleva `codigo: conflicto_de_estado`,
+`estado_actual`, `modificado_por` y `modificado_en`; el autor sale de
+`EventoMantenimiento` y no de `cerrado_por`, porque ese campo solo existe para el cierre
+y acá también hace falta la cancelación. Las visitas viajan sin autor: no tienen modelo
+de eventos propio.
+
+**3. `CierreEnConflicto`.** Bandeja de triage con la forma de `MensajeMqttFallido`
+(`revisado`, borrable) y no un registro inmutable como `EventoMantenimiento`. Se crea en
+el MISMO momento en que se devuelve el 409: si el trabajo se perdiera ahí, el 409 sería
+solo una forma más prolija de tirarlo a la basura. Dos acciones en el panel:
+- *Aplicar el cierre del técnico*: reabre y vuelve a cerrar pasando por
+  `cerrar_mantenimiento` **completo**, con la hora real en que se cerró en campo.
+  Escribir los campos a mano habría dejado el mantenimiento con cara de cerrado y el
+  activo "en reparación" para siempre, sin recomendación de baja ni avance del plan
+  programado.
+- *Descartar con motivo*: el payload NO se borra — es la constancia de que hubo un
+  trabajo de campo que no se contabilizó.
+
+**4. Escalamiento — el agregado.** `escalar_cierres_en_conflicto`, misma mecánica que
+`escalar_alertas_abiertas` (incluido `escalado_en` para no insistir en cada corrida).
+Umbral: **4 horas**. El criterio es el mismo que el resto de los intervalos del
+proyecto: el costo de enterarse tarde. Acá nadie espera la respuesta en el momento —el
+técnico ya se fue y su trabajo está guardado—, así que no es el caso de
+`caducar_resultados_vencidos` (10 min). Pero mientras no se resuelva, el mantenimiento
+miente: figura cancelado cuando el equipo se reparó, el SLA cuenta mal, el activo no
+volvió de reparación y se puede despachar a otro técnico a un trabajo ya hecho. Media
+jornada y no una entera para que el reenvío caiga ANTES del cambio de turno y lo reciba
+quien ya tiene el contexto. La tarea corre cada 15 min (intervalo numérico y no
+`crontab` porque es corto: la trampa del estado de beat que se pierde en cada despliegue
+solo muerde a los intervalos de un día).
+
+**5. Visibilidad sin entrar a buscarla.** El conteo sin revisar sale en el Centro de
+Monitoreo, junto al resto del triage. El Centro sigue siendo de **solo lectura** —"una
+acción destructiva a un clic de distancia en algo que se mira de reojo es una mala
+idea"—, así que ahí va el número y las acciones viven en `/mantenimientos/conflictos/`,
+igual que hace cada fila de ese tablero con su pantalla de detalle. Mesa de Ayuda recibe
+`view_cierreenconflicto` (ve la bandeja) y NO `change_`: aplicar el cierre de un técnico
+reabre y vuelve a cerrar un mantenimiento, y eso es intervención — mismo criterio que ya
+rige para las alertas.
+
+**Lado app.** `ConflictoDeEstado extends ErrorApi`; `ColaOffline` pasa a v2 con
+`en_conflicto` (migración con `ALTER TABLE`, no borrar la base: adentro hay trabajo del
+técnico que todavía no llegó al servidor). `pendientes()` deja afuera lo que está en
+conflicto —reintentarlo choca contra el mismo 409 en cada corrida— y el contador de
+pendientes deja de incluirlo. En la pantalla del mantenimiento aparece una tarjeta que
+dice las dos cosas que importan: qué pasó y que el trabajo NO se perdió.
+
+**Hueco conocido y deliberado:** `CierreEnConflicto` cubre solo el cierre de
+mantenimiento (es lo que se aprobó). Una visita que llega tarde devuelve el 409 y la app
+deja de reintentar, pero sus observaciones no quedan en ninguna bandeja.
+
+**Requiere versión nueva de la app, la MISMA que lleva `ocurrido_en` de §10-AM** —
+`origen_id` viaja en el mismo payload, a propósito, para no distribuir dos veces a mano.

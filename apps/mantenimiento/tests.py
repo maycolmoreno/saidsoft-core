@@ -2,6 +2,7 @@ from datetime import date, timedelta
 
 from django.contrib.auth.models import Permission, User
 from django.test import TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 
 from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoConsumible
@@ -12,7 +13,8 @@ from .forms import (
     ActividadPlanificadaForm, MantenimientoManualForm, MantenimientoProgramadoForm, VisitaTecnicaForm,
 )
 from .models import (
-    AcuerdoNivelServicio, EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento, MantenimientoProgramado,
+    AcuerdoNivelServicio, CierreEnConflicto, EstadoGeneralEquipo, EventoMantenimiento, Mantenimiento,
+    MantenimientoProgramado,
     Notificacion, PrioridadMantenimiento, RADIO_VERIFICACION_METROS, RepuestoUtilizado, ResultadoTecnico,
     TipoMantenimiento, TipoOrigenMantenimiento, UbicacionTecnico, VisitaTecnica,
 )
@@ -22,6 +24,10 @@ from .services import (
     iniciar_mantenimiento, iniciar_reparacion_desde_activo, mantenimientos_atrasados,
     mantenimientos_programados_por_vencer, notificar_mantenimientos_proximos_y_atrasados,
     registrar_repuesto_utilizado,
+)
+from .services import (
+    HORAS_ESCALAMIENTO_CONFLICTO, aplicar_cierre_en_conflicto, descartar_cierre_en_conflicto,
+    escalar_cierres_en_conflicto,
 )
 
 
@@ -1189,9 +1195,14 @@ class VisitaTecnicaApiMovilTests(TestCase):
         self.assertEqual(resp.json()['presencia_en_sitio'], 'sin_datos')
 
     def test_no_se_puede_iniciar_dos_veces(self):
+        """409 y no 400 desde el 26-sep-2026: que la visita ya este en curso no se
+        arregla mandando otros datos, asi que la app tiene que poder distinguirlo de un
+        error de validacion y dejar de reintentar (ver ConflictoDeEstado)."""
         self.client.post(f'/api/v1/visitas/{self.visita.pk}/iniciar/', **self._auth())
         resp = self.client.post(f'/api/v1/visitas/{self.visita.pk}/iniciar/', **self._auth())
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()['codigo'], 'conflicto_de_estado')
+        self.assertEqual(resp.json()['estado_actual'], 'en_curso')
 
 
 class AvisoAlAsignarTests(TestCase):
@@ -2143,3 +2154,393 @@ class FirmaIdempotenteTests(TestCase):
             FirmaMantenimiento.objects.create(
                 mantenimiento=self.mantenimiento, tipo_firma='custodio', firma_base64='otra',
             )
+
+
+class _BaseConflictoTests(TestCase):
+    """Armado común de los tres escenarios de BUG-4."""
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_conf', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
+        PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
+        self.token = Token.objects.create(user=self.tecnico)
+
+        self.mesa = User.objects.create_user(username='mesa_conf', password='x')
+        otorgar(
+            self.mesa, 'mantenimiento.view_mantenimiento', 'mantenimiento.change_mantenimiento',
+            'mantenimiento.view_cierreenconflicto', 'mantenimiento.change_cierreenconflicto',
+        )
+        PerfilUsuario.objects.create(usuario=self.mesa, acceso_todas_unidades=True)
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML910', grupo=Grupo.objects.create(codigo='TRX910'), unidad_negocio=sg,
+            nombre='Farmacia conflicto', latitud=-2.170998, longitud=-79.922359,
+        )
+        self.equipo = Activo.objects.create(
+            codigo='CR-DSK-9910', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia,
+            estado=Activo.Estado.EN_REPARACION,
+        )
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.tecnico, descripcion='POS no enciende',
+            fecha_programada=timezone.now() - timedelta(hours=2), usuario=self.tecnico,
+        )
+        iniciar_mantenimiento(mantenimiento=self.mantenimiento, usuario=self.tecnico)
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def _cerrar(self, **extra):
+        cuerpo = {'resultado_tecnico': ResultadoTecnico.REPARADO, 'tiempo_real_minutos': 40}
+        cuerpo.update(extra)
+        return self.client.post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            cuerpo, content_type='application/json', **self._auth(),
+        )
+
+
+class EscenarioReintentoSimpleTests(_BaseConflictoTests):
+    """(a) Se corta la red DESPUÉS de que el servidor proceso: la app reencola y
+    reintenta la misma acción. No puede duplicar ni re-fallar."""
+
+    def test_reintentar_un_cierre_devuelve_lo_mismo_sin_re_fallar(self):
+        primera = self._cerrar(origen_id=7)
+        self.assertEqual(primera.status_code, 200)
+
+        segunda = self._cerrar(origen_id=7)
+        # Sin idempotencia esto seria un 409 ("ya esta cerrado") y la accion quedaria
+        # trabada en el telefono para siempre.
+        self.assertEqual(segunda.status_code, 200)
+        self.assertEqual(segunda.json()['id'], primera.json()['id'])
+        self.assertEqual(segunda.json()['estado_interno'], 'cerrado')
+
+    def test_el_reintento_no_crea_un_conflicto_fantasma(self):
+        self._cerrar(origen_id=7)
+        self._cerrar(origen_id=7)
+        self.assertEqual(CierreEnConflicto.objects.count(), 0)
+
+    def test_el_reintento_no_duplica_eventos_ni_mueve_el_activo(self):
+        self._cerrar(origen_id=7)
+        eventos = self.mantenimiento.eventos.filter(
+            tipo_evento=EventoMantenimiento.TipoEvento.CERRADO,
+        ).count()
+        self._cerrar(origen_id=7)
+        self.assertEqual(
+            self.mantenimiento.eventos.filter(
+                tipo_evento=EventoMantenimiento.TipoEvento.CERRADO,
+            ).count(),
+            eventos,
+        )
+
+    def test_reintentar_una_firma_no_la_duplica(self):
+        cuerpo = {'tipo_firma': 'custodio', 'firma_base64': 'AAA', 'origen_id': 11}
+        for _ in range(2):
+            resp = self.client.post(
+                f'/api/v1/mantenimientos/{self.mantenimiento.pk}/firmar/',
+                cuerpo, content_type='application/json', **self._auth(),
+            )
+            self.assertEqual(resp.status_code, 201)
+        self.assertEqual(self.mantenimiento.firmas.count(), 1)
+
+    def test_una_accion_distinta_del_mismo_telefono_si_se_aplica(self):
+        """La clave es por acción, no por dispositivo: otro origen_id es otro hecho."""
+        self.assertEqual(self._cerrar(origen_id=7).status_code, 200)
+        otro = Activo.objects.create(codigo='CR-DSK-9911', tipo=Activo.Tipo.DESKTOP)
+        resp = self.client.post(
+            '/api/v1/mantenimientos/',
+            {'equipos': [otro.pk], 'descripcion': 'otro', 'estado_general': 'no_operativo'},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 201)
+
+    def test_sin_origen_id_se_comporta_como_siempre(self):
+        """APK viejo: no manda la clave, no tiene proteccion -- pero no se rompe."""
+        self.assertEqual(self._cerrar().status_code, 200)
+        self.assertEqual(self._cerrar().status_code, 409)
+
+
+class EscenarioConflictoRealTests(_BaseConflictoTests):
+    """(b) El técnico cierra sin señal mientras mesa de ayuda cancela desde el panel."""
+
+    def _cancelar_desde_el_panel(self):
+        cancelar_mantenimiento(
+            mantenimiento=self.mantenimiento, motivo='Falsa alarma', usuario=self.mesa,
+        )
+
+    def test_devuelve_409_con_codigo_distinguible(self):
+        self._cancelar_desde_el_panel()
+        resp = self._cerrar(origen_id=3)
+        self.assertEqual(resp.status_code, 409)
+        cuerpo = resp.json()
+        self.assertEqual(cuerpo['codigo'], 'conflicto_de_estado')
+        self.assertEqual(cuerpo['estado_actual'], 'cancelado')
+        self.assertEqual(cuerpo['modificado_por'], 'mesa_conf')
+        self.assertIsNotNone(cuerpo['modificado_en'])
+
+    def test_no_pisa_la_decision_del_panel(self):
+        self._cancelar_desde_el_panel()
+        self._cerrar(origen_id=3)
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(self.mantenimiento.estado_interno, Mantenimiento.EstadoInterno.CANCELADO)
+
+    def test_el_trabajo_del_tecnico_queda_guardado(self):
+        self._cancelar_desde_el_panel()
+        hace_tres_horas = timezone.now() - timedelta(hours=3)
+        self._cerrar(origen_id=3, ocurrido_en=hace_tres_horas.isoformat())
+
+        conflicto = CierreEnConflicto.objects.get()
+        self.assertEqual(conflicto.mantenimiento, self.mantenimiento)
+        self.assertEqual(conflicto.tecnico, self.tecnico)
+        self.assertEqual(conflicto.payload_rechazado['resultado_tecnico'], ResultadoTecnico.REPARADO)
+        self.assertEqual(conflicto.payload_rechazado['tiempo_real_minutos'], 40)
+        self.assertEqual(conflicto.estado_al_llegar, 'cancelado')
+        self.assertFalse(conflicto.revisado)
+        self.assertAlmostEqual(conflicto.ocurrido_en, hace_tres_horas, delta=timedelta(seconds=2))
+
+    def test_sale_la_notificacion_apenas_se_crea(self):
+        self._cancelar_desde_el_panel()
+        self._cerrar(origen_id=3)
+        avisos = Notificacion.objects.filter(usuario=self.mesa, mantenimiento=self.mantenimiento)
+        self.assertTrue(avisos.filter(mensaje__contains='Necesita revisión').exists())
+
+    def test_no_se_le_avisa_al_tecnico_que_lo_cerro(self):
+        """Su app ya se lo dice; el aviso in-app es para que alguien del panel actúe."""
+        self._cancelar_desde_el_panel()
+        self._cerrar(origen_id=3)
+        self.assertFalse(
+            Notificacion.objects.filter(
+                usuario=self.tecnico, mensaje__contains='Necesita revisión',
+            ).exists(),
+        )
+
+    def test_reintentar_el_mismo_conflicto_no_lo_duplica(self):
+        self._cancelar_desde_el_panel()
+        self._cerrar(origen_id=3)
+        self._cerrar(origen_id=3)
+        self.assertEqual(CierreEnConflicto.objects.count(), 1)
+
+    # --- Las dos acciones del panel -------------------------------------------
+
+    def test_aplicar_el_cierre_del_tecnico(self):
+        self._cancelar_desde_el_panel()
+        ocurrido = timezone.now() - timedelta(hours=3)
+        self._cerrar(origen_id=3, ocurrido_en=ocurrido.isoformat())
+        conflicto = CierreEnConflicto.objects.get()
+
+        self.client.force_login(self.mesa)
+        resp = self.client.post(reverse('panel:cierre_en_conflicto_aplicar', args=[conflicto.pk]))
+        self.assertEqual(resp.status_code, 302)
+
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(self.mantenimiento.estado_interno, Mantenimiento.EstadoInterno.CERRADO)
+        self.assertEqual(self.mantenimiento.resultado_tecnico, ResultadoTecnico.REPARADO)
+        self.assertEqual(self.mantenimiento.tiempo_real_minutos, 40)
+        # Con la hora REAL del cierre en campo, no la de la revisión.
+        self.assertAlmostEqual(self.mantenimiento.fecha_cierre, ocurrido, delta=timedelta(seconds=2))
+
+        conflicto.refresh_from_db()
+        self.assertTrue(conflicto.revisado)
+        self.assertEqual(conflicto.revisado_por, self.mesa)
+        self.assertIsNotNone(conflicto.revisado_en)
+
+    def test_aplicar_pasa_por_el_servicio_completo_y_devuelve_el_activo(self):
+        """Reabre y cierra de verdad, no escribe los campos a mano: si no, el activo se
+        quedaría 'en reparación' para siempre."""
+        self._cancelar_desde_el_panel()
+        self._cerrar(origen_id=3, estado_general=EstadoGeneralEquipo.OPERATIVO)
+        conflicto = CierreEnConflicto.objects.get()
+
+        self.client.force_login(self.mesa)
+        self.client.post(reverse('panel:cierre_en_conflicto_aplicar', args=[conflicto.pk]))
+
+        self.equipo.refresh_from_db()
+        self.assertNotEqual(self.equipo.estado, Activo.Estado.EN_REPARACION)
+
+    def test_descartar_con_motivo(self):
+        self._cancelar_desde_el_panel()
+        self._cerrar(origen_id=3)
+        conflicto = CierreEnConflicto.objects.get()
+
+        self.client.force_login(self.mesa)
+        resp = self.client.post(
+            reverse('panel:cierre_en_conflicto_descartar', args=[conflicto.pk]),
+            {'motivo': 'El equipo se reemplazo entero, el cierre no aplica.'},
+        )
+        self.assertEqual(resp.status_code, 302)
+
+        conflicto.refresh_from_db()
+        self.assertTrue(conflicto.revisado)
+        self.assertEqual(conflicto.revisado_por, self.mesa)
+        self.assertIn('se reemplazo entero', conflicto.resolucion)
+        # El payload NO se borra: es la constancia de un trabajo que no se contabilizo.
+        self.assertEqual(conflicto.payload_rechazado['resultado_tecnico'], ResultadoTecnico.REPARADO)
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(self.mantenimiento.estado_interno, Mantenimiento.EstadoInterno.CANCELADO)
+
+    def test_no_se_puede_resolver_dos_veces(self):
+        self._cancelar_desde_el_panel()
+        self._cerrar(origen_id=3)
+        conflicto = CierreEnConflicto.objects.get()
+        descartar_cierre_en_conflicto(conflicto=conflicto, usuario=self.mesa, motivo='ya')
+        with self.assertRaises(ValueError):
+            aplicar_cierre_en_conflicto(conflicto=conflicto, usuario=self.mesa)
+
+    def test_la_lista_del_panel_lo_muestra(self):
+        self._cancelar_desde_el_panel()
+        self._cerrar(origen_id=3)
+        self.client.force_login(self.mesa)
+        resp = self.client.get(reverse('panel:cierres_en_conflicto_lista'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, f'#{self.mantenimiento.pk}')
+
+    def test_sin_permiso_de_resolver_no_se_puede_aplicar(self):
+        """Mesa de Ayuda VE la bandeja pero no interviene."""
+        self._cancelar_desde_el_panel()
+        self._cerrar(origen_id=3)
+        conflicto = CierreEnConflicto.objects.get()
+
+        mirona = User.objects.create_user(username='solo_mira', password='x')
+        otorgar(mirona, 'mantenimiento.view_cierreenconflicto')
+        PerfilUsuario.objects.create(usuario=mirona, acceso_todas_unidades=True)
+        self.client.force_login(mirona)
+
+        self.assertEqual(self.client.get(reverse('panel:cierres_en_conflicto_lista')).status_code, 200)
+        resp = self.client.post(reverse('panel:cierre_en_conflicto_aplicar', args=[conflicto.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_una_visita_ya_cerrada_tambien_da_409(self):
+        visita = crear_visita_tecnica(
+            farmacia=self.farmacia, tecnico=self.tecnico, fecha_planificada=timezone.localdate(),
+            motivo='ruta', usuario=self.tecnico,
+        )
+        cerrar_visita_tecnica(visita=visita, usuario=self.mesa)
+        resp = self.client.post(
+            f'/api/v1/visitas/{visita.pk}/cerrar/', {'observaciones': 'tarde'},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()['codigo'], 'conflicto_de_estado')
+
+
+class EscenarioEscalamientoTests(_BaseConflictoTests):
+    """(c) Un conflicto que nadie revisó tiene que insistir solo."""
+
+    def _crear_conflicto(self):
+        cancelar_mantenimiento(
+            mantenimiento=self.mantenimiento, motivo='Falsa alarma', usuario=self.mesa,
+        )
+        self._cerrar(origen_id=3)
+        return CierreEnConflicto.objects.get()
+
+    def _envejecer(self, conflicto, horas):
+        CierreEnConflicto.objects.filter(pk=conflicto.pk).update(
+            creado_en=timezone.now() - timedelta(hours=horas),
+        )
+
+    def test_uno_viejo_sin_revisar_escala(self):
+        conflicto = self._crear_conflicto()
+        self._envejecer(conflicto, HORAS_ESCALAMIENTO_CONFLICTO + 1)
+        avisos_antes = Notificacion.objects.filter(usuario=self.mesa).count()
+
+        self.assertEqual(escalar_cierres_en_conflicto(), 1)
+
+        conflicto.refresh_from_db()
+        self.assertIsNotNone(conflicto.escalado_en)
+        self.assertGreater(Notificacion.objects.filter(usuario=self.mesa).count(), avisos_antes)
+        self.assertTrue(
+            Notificacion.objects.filter(
+                usuario=self.mesa, mensaje__startswith='SIGUE SIN REVISARSE',
+            ).exists(),
+        )
+
+    def test_uno_reciente_no_escala(self):
+        conflicto = self._crear_conflicto()
+        self._envejecer(conflicto, HORAS_ESCALAMIENTO_CONFLICTO - 1)
+        self.assertEqual(escalar_cierres_en_conflicto(), 0)
+
+    def test_uno_ya_revisado_no_escala(self):
+        conflicto = self._crear_conflicto()
+        self._envejecer(conflicto, HORAS_ESCALAMIENTO_CONFLICTO + 5)
+        descartar_cierre_en_conflicto(conflicto=conflicto, usuario=self.mesa, motivo='visto')
+        self.assertEqual(escalar_cierres_en_conflicto(), 0)
+
+    def test_no_escala_dos_veces(self):
+        """`escalado_en` corta: si no, insistiría en cada corrida de beat (cada 15 min)."""
+        conflicto = self._crear_conflicto()
+        self._envejecer(conflicto, HORAS_ESCALAMIENTO_CONFLICTO + 1)
+        self.assertEqual(escalar_cierres_en_conflicto(), 1)
+        self.assertEqual(escalar_cierres_en_conflicto(), 0)
+
+    def test_la_tarea_de_celery_lo_corre(self):
+        from apps.mantenimiento.tasks import escalar_cierres_en_conflicto_task
+
+        conflicto = self._crear_conflicto()
+        self._envejecer(conflicto, HORAS_ESCALAMIENTO_CONFLICTO + 1)
+        self.assertIn('1 cierre(s)', escalar_cierres_en_conflicto_task())
+
+    def test_el_centro_de_monitoreo_muestra_el_conteo(self):
+        from apps.monitoreo.services import resumen_operacion
+
+        self._crear_conflicto()
+        self.assertEqual(resumen_operacion()['cierres_en_conflicto'], 1)
+
+    def test_el_conteo_baja_al_revisarlo(self):
+        from apps.monitoreo.services import resumen_operacion
+
+        conflicto = self._crear_conflicto()
+        descartar_cierre_en_conflicto(conflicto=conflicto, usuario=self.mesa, motivo='visto')
+        self.assertEqual(resumen_operacion()['cierres_en_conflicto'], 0)
+
+
+class ConflictoNoRompeElPanelTests(TestCase):
+    """`ConflictoDeEstado` hereda de `ValueError` a propósito.
+
+    Las tres vistas del panel que llaman a estos servicios ya capturaban `ValueError` y
+    lo mostraban como error del formulario. Si el conflicto fuera un `Exception` suelto,
+    cancelar dos veces desde la web —que hoy funciona— pasaría a ser un 500.
+    """
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='panel_conf', password='x')
+        otorgar(
+            self.usuario, 'mantenimiento.view_mantenimiento', 'mantenimiento.change_mantenimiento',
+            'mantenimiento.view_visitatecnica', 'mantenimiento.change_visitatecnica',
+        )
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        equipo = Activo.objects.create(codigo='CR-DSK-9920', tipo=Activo.Tipo.DESKTOP)
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[equipo], tecnico=self.usuario, descripcion='x',
+            fecha_programada=timezone.now(), usuario=self.usuario,
+        )
+
+    def test_es_un_valueerror(self):
+        from apps.mantenimiento.services import ConflictoDeEstado
+
+        self.assertTrue(issubclass(ConflictoDeEstado, ValueError))
+
+    def test_cancelar_dos_veces_desde_el_panel_no_es_un_500(self):
+        cancelar_mantenimiento(
+            mantenimiento=self.mantenimiento, motivo='primera', usuario=self.usuario,
+        )
+        self.client.force_login(self.usuario)
+        resp = self.client.post(
+            reverse('panel:mantenimiento_cancelar', args=[self.mantenimiento.pk]),
+            {'motivo': 'segunda'},
+        )
+        # 200 = vuelve a mostrar el formulario con el error, que es lo que hacía antes.
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'no puede cancelarse de nuevo')
+
+    def test_cerrar_uno_ya_cerrado_desde_el_panel_tampoco(self):
+        iniciar_mantenimiento(mantenimiento=self.mantenimiento, usuario=self.usuario)
+        cerrar_mantenimiento(
+            mantenimiento=self.mantenimiento, resultado_tecnico=ResultadoTecnico.REPARADO,
+            usuario=self.usuario,
+        )
+        self.client.force_login(self.usuario)
+        resp = self.client.post(
+            reverse('panel:mantenimiento_cerrar', args=[self.mantenimiento.pk]),
+            {'resultado_tecnico': ResultadoTecnico.REPARADO},
+        )
+        self.assertEqual(resp.status_code, 200)

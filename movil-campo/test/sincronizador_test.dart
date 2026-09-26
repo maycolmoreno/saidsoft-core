@@ -82,6 +82,46 @@ void main() {
     });
   });
 
+  group('clave de idempotencia', () {
+    test('toda accion viaja con el id de su fila en la cola', () {
+      // Si el servidor ya proceso la accion pero la respuesta se perdio, el reintento
+      // llega con el MISMO origen_id y el backend devuelve la respuesta original en vez
+      // de duplicar el hecho o rebotar con un error que la dejaria trabada para siempre.
+      final casos = <String, Map<String, dynamic>>{
+        ColaOffline.tipoIniciar: {'id': 1},
+        ColaOffline.tipoChecklist: {'mantenimiento_id': 1, 'actividad_id': 2, 'realizada': true},
+        ColaOffline.tipoFirmar: {'mantenimiento_id': 1, 'tipo_firma': 'tecnico', 'firma_base64': 'x'},
+        ColaOffline.tipoCerrar: {'mantenimiento_id': 1, 'resultado_tecnico': 'reparado'},
+        ColaOffline.tipoIniciarVisita: {'id': 1},
+        ColaOffline.tipoCerrarVisita: {'id': 1, 'observaciones': ''},
+        ColaOffline.tipoUbicacion: {'latitud': -2.17, 'longitud': -79.92},
+      };
+      casos.forEach((tipo, datos) {
+        final destino = destinoDeAccion(AccionPendiente(
+          id: 42,
+          tipo: tipo,
+          datos: datos,
+          creadaEn: hechaALas10,
+          intentos: 0,
+          ultimoError: '',
+        ))!;
+        expect(destino.cuerpo['origen_id'], 42, reason: '$tipo deberia mandar origen_id');
+      });
+    });
+
+    test('el origen_id es el de la fila, no el del mantenimiento', () {
+      final destino = destinoDeAccion(AccionPendiente(
+        id: 99,
+        tipo: ColaOffline.tipoCerrar,
+        datos: const {'mantenimiento_id': 7, 'resultado_tecnico': 'reparado'},
+        creadaEn: hechaALas10,
+        intentos: 0,
+        ultimoError: '',
+      ))!;
+      expect(destino.cuerpo['origen_id'], 99);
+    });
+  });
+
   group('lo que NO cambia', () {
     test('el checklist no lleva hora: es un estado, no un instante', () {
       final destino = destinoDeAccion(accion(ColaOffline.tipoChecklist, {

@@ -24,14 +24,21 @@ from .models import (
 __all__ = ['AccionOfflineAplicada', 'CierreEnConflicto']  # reexport para los llamadores
 
 
-class ConflictoDeEstado(Exception):
+class ConflictoDeEstado(ValueError):
     """Alguien más ya movió esto, y no desde acá.
 
-    Se separa de `ValueError` —que el resto de los servicios usa para "los datos que
-    mandaste no sirven"— porque son dos cosas distintas para quien las recibe: un
-    `ValueError` se arregla mandando otra cosa, un conflicto no se arregla reintentando.
-    La API la traduce a **409** y la app deja de reintentar en vez de dejar la acción
-    dando vueltas en la cola para siempre.
+    Es un caso PARTICULAR de `ValueError` —el que el resto de los servicios usa para
+    "los datos que mandaste no sirven"— y no un hermano suyo, por una razón práctica: el
+    panel ya captura `ValueError` en las tres vistas que llaman a estos servicios
+    (`mantenimiento_cerrar`, `mantenimiento_cancelar`, `visita_tecnica_accion`) y lo
+    muestra como error del formulario. Heredar de `Exception` habría convertido en un
+    500 algo que hoy el panel resuelve bien: cancelar dos veces desde la web.
+
+    Lo que sí cambia es la API, que la captura ANTES que `ValueError` y la traduce a
+    **409** en vez de 400. Esa diferencia importa del lado de la app: un `ValueError` se
+    arregla mandando otra cosa, un conflicto no se arregla reintentando, y el
+    sincronizador necesita distinguirlos para no dejar la acción dando vueltas en la
+    cola para siempre.
 
     Lleva el estado actual y quién lo dejó así para que el mensaje pueda decir QUÉ pasó,
     no solo que falló.
