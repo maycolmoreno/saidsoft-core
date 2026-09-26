@@ -48,7 +48,6 @@ INSTALLED_APPS = [
     'apps.cumplimiento',
     'apps.aperturas',
     'apps.software',
-    'apps.integraciones',
     'apps.facturacion',
     'apps.viaticos',
     'apps.panel',
@@ -437,6 +436,16 @@ CELERY_BEAT_SCHEDULE = {
     # Cada 10 min y no diaria: una ejecucion colgada es alguien esperando una respuesta,
     # y enterarse manana no sirve. Recorre solo los resultados abiertos, que en operacion
     # normal son pocos.
+    # Cada 15 min y no diaria: el umbral de escalamiento son 4 h (ver
+    # HORAS_ESCALAMIENTO_CONFLICTO), asi que revisar cuatro veces por hora alcanza de
+    # sobra y el recorrido es barato -- solo mira los conflictos sin revisar, que en
+    # operacion normal son cero. Intervalo numerico y no crontab porque es corto: la
+    # trampa documentada arriba (el estado de beat se pierde en cada despliegue) solo
+    # muerde a los intervalos de un dia.
+    'escalar-cierres-en-conflicto': {
+        'task': 'apps.mantenimiento.tasks.escalar_cierres_en_conflicto_task',
+        'schedule': 60.0 * 15,
+    },
     'caducar-resultados-de-script': {
         'task': 'apps.scripts.tasks.caducar_resultados_vencidos_task',
         'schedule': 600.0,
