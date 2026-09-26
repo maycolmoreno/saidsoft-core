@@ -3,7 +3,7 @@ from celery import shared_task
 from .models import Mantenimiento
 from .services import (
     escalar_cierres_en_conflicto, generar_informe_pdf, generar_mantenimientos_vencidos,
-    notificar_mantenimientos_proximos_y_atrasados,
+    notificar_mantenimientos_proximos_y_atrasados, purgar_ubicaciones_antiguas,
 )
 
 
@@ -37,3 +37,12 @@ def escalar_cierres_en_conflicto_task():
     mirarla es una bandeja que no se mira. Segura de repetir: `escalado_en` corta."""
     escalados = escalar_cierres_en_conflicto()
     return f'{escalados} cierre(s) en conflicto escalado(s).'
+
+
+@shared_task(name='apps.mantenimiento.tasks.purgar_ubicaciones_task')
+def purgar_ubicaciones_task():
+    """Diaria (ver CELERY_BEAT_SCHEDULE). Retención de las posiciones GPS de los
+    técnicos, que hasta el 26-sep-2026 no se purgaban NUNCA -- pese a que el comentario
+    de `cerrar_mantenimiento` decía lo contrario. Ver DIAS_RETENCION_UBICACIONES."""
+    borradas = purgar_ubicaciones_antiguas()
+    return f'{borradas} posicion(es) de tecnico purgada(s).'

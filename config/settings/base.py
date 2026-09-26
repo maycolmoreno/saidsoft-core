@@ -404,6 +404,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.monitoreo.tasks.purgar_muestras_red_task',
         'schedule': crontab(hour=3, minute=20),
     },
+    # Ubicaciones de los tecnicos. Diaria y con crontab como el resto de las purgas.
+    # La ventana (60 dias) esta ATADA a serializers.ANTIGUEDAD_MAXIMA: ver
+    # DIAS_RETENCION_UBICACIONES, las dos tienen que moverse juntas.
+    'purgar-ubicaciones-tecnico-viejas': {
+        'task': 'apps.mantenimiento.tasks.purgar_ubicaciones_task',
+        'schedule': crontab(hour=3, minute=40),
+    },
     'purgar-muestras-servicios-pos-viejas': {
         'task': 'apps.monitoreo.tasks.purgar_muestras_servicio_pos_task',
         'schedule': crontab(hour=3, minute=30),

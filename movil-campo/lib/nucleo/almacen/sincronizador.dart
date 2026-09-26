@@ -29,6 +29,13 @@ class Sincronizador {
       } on SesionExpirada {
         // Sin sesión no se puede subir nada: se conserva todo para el próximo login.
         break;
+      } on SinConsentimiento catch (e) {
+        // Se DESCARTA, no se conserva. La persona retiro (o nunca dio) el
+        // consentimiento de monitoreo: reintentar no va a funcionar nunca, y dejar la
+        // posicion en la cola seria guardar en el telefono justo el dato que pidio no
+        // registrar. Es la unica accion que se tira: el resto es trabajo de campo.
+        await _cola.quitar(accion.id);
+        dev.log('Posicion ${accion.id} descartada sin consentimiento: ${e.mensaje}');
       } on ConflictoDeEstado catch (e) {
         // NO se reintenta: alguien mas ya movio esto y reintentar no lo arregla. El
         // backend ya guardo el trabajo del tecnico para que mesa de ayuda lo revise

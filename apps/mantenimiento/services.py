@@ -201,6 +201,71 @@ def _metros_entre(lat1, lon1, lat2, lon2) -> float:
     return radio_tierra_m * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+# --- Consentimiento de monitoreo y retención de posiciones -------------------------
+#
+# Rastrear la posición de una persona durante su jornada necesita su acuerdo, y ese
+# acuerdo tiene que poder retirarse. Hasta el 26-sep-2026 no podía: el endpoint validaba
+# con `.filter(aceptado=True).exists()` sobre el HISTÓRICO, así que una revocación
+# posterior no revocaba nada — el `True` viejo seguía ahí y el servidor seguía
+# aceptando posiciones.
+
+
+def consentimiento_vigente(usuario):
+    """El ÚLTIMO consentimiento del usuario, o None si nunca registró ninguno.
+
+    `ConsentimientoMonitoreo` es append-only a propósito (hay que poder demostrar qué se
+    aceptó y cuándo), así que "vigente" es el más reciente y no "existe alguno": una
+    revocación es una fila nueva con `aceptado=False`, no un borrado.
+    """
+    from .models import ConsentimientoMonitoreo
+
+    return ConsentimientoMonitoreo.objects.filter(usuario=usuario).order_by('-timestamp', '-pk').first()
+
+
+def puede_registrar_ubicacion(usuario) -> bool:
+    """True solo si el último consentimiento del usuario está aceptado."""
+    consentimiento = consentimiento_vigente(usuario)
+    return consentimiento is not None and consentimiento.aceptado
+
+
+# Cuánto se conservan las posiciones crudas.
+#
+# Hasta hoy no se purgaban NUNCA, pese a que el comentario de `cerrar_mantenimiento`
+# afirmaba lo contrario ("las posiciones se purgan") para justificar persistir la
+# distancia. Se escribe una fila cada 30 segundos por técnico en jornada: es telemetría
+# de alta frecuencia sobre la ubicación de una persona, y guardarla para siempre no
+# tiene ningún uso que la justifique.
+#
+# 60 días = el DOBLE de `serializers.ANTIGUEDAD_MAXIMA` (30 días), que es lo máximo que
+# una acción puede quedar en la cola offline de un teléfono. Purgar a 30 correría contra
+# esa ventana: un cierre que llega el día 29 verificaría la presencia contra posiciones
+# recién borradas y saldría 'sin_datos' para un técnico que sí fue.
+#
+# **Las dos ventanas tienen que moverse juntas**: si alguien sube ANTIGUEDAD_MAXIMA,
+# esto tiene que subir con ella. Mismo criterio que la retención de métricas y su
+# política nativa de TimescaleDB (ver purgar_metricas_antiguas).
+DIAS_RETENCION_UBICACIONES = 60
+
+
+def purgar_ubicaciones_antiguas(*, dias: int = DIAS_RETENCION_UBICACIONES) -> int:
+    """Borra UbicacionTecnico más viejas que `dias`.
+
+    Lo que se pierde es la posición cruda, no el hecho verificado: la distancia a la
+    farmacia se calcula y se PERSISTE al cerrar (`distancia_verificacion_metros`), justo
+    para que el dato auditable sobreviva a esta purga.
+
+    Límite conocido: un mantenimiento que siga abierto más que la ventana pierde sus
+    posiciones más viejas. Como la verificación toma el MÍNIMO de la ventana, alcanza
+    con que quede una posición cerca de la farmacia; y un mantenimiento abierto 60 días
+    ya es una anomalía que el aviso de atrasados reporta por su cuenta.
+    """
+    from .models import UbicacionTecnico
+
+    umbral = timezone.now() - timedelta(days=dias)
+    borradas, _ = UbicacionTecnico.objects.filter(timestamp_captura__lt=umbral).delete()
+    return borradas
+
+
 def distancia_minima_a_farmacia(*, tecnico_id, farmacia, desde, hasta):
     """Distancia MÍNIMA en metros entre las posiciones GPS del técnico en la ventana
     [desde, hasta] y la farmacia, o None si no se puede determinar.

@@ -72,6 +72,29 @@ class EstadoGps extends ChangeNotifier {
     }
   }
 
+  /// Retira el consentimiento y corta el envío en el acto.
+  ///
+  /// `detener()` primero y no despues: si la llamada al servidor tardara, el
+  /// temporizador seguiria mandando posiciones de alguien que ya dijo que no.
+  Future<bool> revocarConsentimiento() async {
+    detener();
+    _error = null;
+    try {
+      await _repo.revocarConsentimiento(versionTerminos: versionTerminos);
+      _consentimiento = false;
+      _enviadas = 0;
+      _ultimo = '';
+      notifyListeners();
+      return true;
+    } on ErrorApi catch (e) {
+      // Se deja el consentimiento como estaba: decir que se revoco cuando el servidor
+      // no se entero seria peor que el error, porque el backend seguiria aceptando.
+      _error = e.mensaje;
+      notifyListeners();
+      return false;
+    }
+  }
+
   /// Arranca el envío. Devuelve false si no se pudo (sin consentimiento, sin permiso
   /// o con la ubicación del teléfono apagada) y deja el motivo en [error].
   Future<bool> comenzar() async {

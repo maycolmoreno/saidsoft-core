@@ -26,8 +26,8 @@ from .services import (
     registrar_repuesto_utilizado,
 )
 from .services import (
-    HORAS_ESCALAMIENTO_CONFLICTO, aplicar_cierre_en_conflicto, descartar_cierre_en_conflicto,
-    escalar_cierres_en_conflicto,
+    DIAS_RETENCION_UBICACIONES, HORAS_ESCALAMIENTO_CONFLICTO, aplicar_cierre_en_conflicto,
+    descartar_cierre_en_conflicto, escalar_cierres_en_conflicto, purgar_ubicaciones_antiguas,
 )
 
 
@@ -2544,3 +2544,183 @@ class ConflictoNoRompeElPanelTests(TestCase):
             {'resultado_tecnico': ResultadoTecnico.REPARADO},
         )
         self.assertEqual(resp.status_code, 200)
+
+
+class ConsentimientoVigenteTests(TestCase):
+    """BUG-6: el consentimiento se validaba con `.exists()` sobre el HISTÓRICO, así que
+    una revocación no revocaba nada — el `True` viejo seguía ahí y el servidor seguía
+    guardando posiciones de alguien que había dicho que no.
+    """
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_gps', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
+        PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
+        self.token = Token.objects.create(user=self.tecnico)
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def _consentir(self, aceptado=True):
+        return self.client.post(
+            '/api/v1/consentimiento-monitoreo/',
+            {'aceptado': aceptado, 'version_terminos': '1.0'},
+            content_type='application/json', **self._auth(),
+        )
+
+    def _enviar_posicion(self, **extra):
+        cuerpo = {
+            'latitud': -2.170998, 'longitud': -79.922359,
+            'timestamp_captura': timezone.now().isoformat(),
+        }
+        cuerpo.update(extra)
+        return self.client.post(
+            '/api/v1/ubicaciones-tecnico/', cuerpo,
+            content_type='application/json', **self._auth(),
+        )
+
+    # --- Lo que ya funcionaba ---------------------------------------------------
+
+    def test_sin_consentimiento_no_se_acepta_la_posicion(self):
+        resp = self._enviar_posicion()
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(UbicacionTecnico.objects.count(), 0)
+
+    def test_con_consentimiento_se_acepta(self):
+        self._consentir()
+        self.assertEqual(self._enviar_posicion().status_code, 201)
+        self.assertEqual(UbicacionTecnico.objects.count(), 1)
+
+    # --- El bug ------------------------------------------------------------------
+
+    def test_revocar_corta_el_registro_de_posiciones(self):
+        self._consentir(aceptado=True)
+        self.assertEqual(self._enviar_posicion().status_code, 201)
+
+        self._consentir(aceptado=False)
+
+        resp = self._enviar_posicion(origen_id=2)
+        # Antes esto daba 201: el `.exists()` seguía encontrando el True viejo.
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.json()['codigo'], 'sin_consentimiento')
+        self.assertEqual(UbicacionTecnico.objects.count(), 1)
+
+    def test_volver_a_aceptar_lo_reactiva(self):
+        """Revocar no es irreversible: el vigente es siempre el último."""
+        self._consentir(aceptado=True)
+        self._consentir(aceptado=False)
+        self.assertEqual(self._enviar_posicion(origen_id=1).status_code, 403)
+
+        self._consentir(aceptado=True)
+        self.assertEqual(self._enviar_posicion(origen_id=2).status_code, 201)
+
+    def test_la_revocacion_queda_registrada_y_no_borra_el_historial(self):
+        """Append-only: hay que poder demostrar qué se aceptó y cuándo, y retirarlo es
+        un hecho tan registrable como darlo."""
+        from apps.mantenimiento.models import ConsentimientoMonitoreo
+
+        self._consentir(aceptado=True)
+        self._consentir(aceptado=False)
+        filas = ConsentimientoMonitoreo.objects.filter(usuario=self.tecnico).order_by('timestamp', 'pk')
+        self.assertEqual([f.aceptado for f in filas], [True, False])
+
+    def test_el_get_refleja_el_estado_vigente(self):
+        """Las dos mitades del mismo flujo tienen que coincidir: antes el GET miraba el
+        último y el POST de ubicación miraba el histórico."""
+        self._consentir(aceptado=True)
+        self.assertTrue(self.client.get('/api/v1/consentimiento-monitoreo/', **self._auth()).json()['aceptado'])
+
+        self._consentir(aceptado=False)
+        self.assertFalse(self.client.get('/api/v1/consentimiento-monitoreo/', **self._auth()).json()['aceptado'])
+
+    def test_el_consentimiento_de_otro_no_habilita_el_propio(self):
+        otro = User.objects.create_user(username='otro_gps', password='x')
+        from apps.mantenimiento.models import ConsentimientoMonitoreo
+        ConsentimientoMonitoreo.objects.create(usuario=otro, aceptado=True, version_terminos='1.0')
+        self.assertEqual(self._enviar_posicion().status_code, 403)
+
+
+class RetencionDeUbicacionesTests(TestCase):
+    """PROCESO-5: las posiciones no se purgaban NUNCA, pese a que el comentario de
+    `cerrar_mantenimiento` lo afirmaba para justificar persistir la distancia."""
+
+    def setUp(self):
+        self.tecnico = User.objects.create_user(username='tec_purga', password='x')
+
+    def _posicion(self, dias_atras):
+        return UbicacionTecnico.objects.create(
+            usuario=self.tecnico, latitud=-2.17, longitud=-79.92,
+            timestamp_captura=timezone.now() - timedelta(days=dias_atras),
+        )
+
+    def test_borra_las_viejas_y_conserva_las_recientes(self):
+        vieja = self._posicion(DIAS_RETENCION_UBICACIONES + 5)
+        reciente = self._posicion(1)
+
+        self.assertEqual(purgar_ubicaciones_antiguas(), 1)
+
+        self.assertFalse(UbicacionTecnico.objects.filter(pk=vieja.pk).exists())
+        self.assertTrue(UbicacionTecnico.objects.filter(pk=reciente.pk).exists())
+
+    def test_la_ventana_cubre_la_cola_offline_mas_larga_posible(self):
+        """La retención está ATADA a ANTIGUEDAD_MAXIMA: un cierre puede tardar hasta 30
+        días en llegar, y purgar antes lo dejaría verificando contra posiciones ya
+        borradas. Si alguien mueve una, tiene que mover la otra."""
+        from apps.mantenimiento.serializers import ANTIGUEDAD_MAXIMA
+
+        self.assertGreater(DIAS_RETENCION_UBICACIONES, ANTIGUEDAD_MAXIMA.days)
+
+    def test_un_cierre_que_llega_tarde_todavia_verifica_la_presencia(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        farmacia = Farmacia.objects.create(
+            codigo='ML930', grupo=Grupo.objects.create(codigo='TRX930'), unidad_negocio=sg,
+            nombre='Farmacia purga', latitud=-2.170998, longitud=-79.922359,
+        )
+        equipo = Activo.objects.create(
+            codigo='CR-DSK-9930', tipo=Activo.Tipo.DESKTOP, farmacia=farmacia,
+        )
+        hace_25_dias = timezone.now() - timedelta(days=25)
+        mantenimiento = crear_mantenimiento_manual(
+            equipos=[equipo], tecnico=self.tecnico, descripcion='POS',
+            fecha_programada=hace_25_dias, usuario=self.tecnico,
+        )
+        iniciar_mantenimiento(
+            mantenimiento=mantenimiento, usuario=self.tecnico, ocurrido_en=hace_25_dias,
+        )
+        UbicacionTecnico.objects.create(
+            usuario=self.tecnico, latitud=farmacia.latitud, longitud=farmacia.longitud,
+            timestamp_captura=hace_25_dias + timedelta(minutes=5),
+        )
+
+        purgar_ubicaciones_antiguas()
+
+        cerrar_mantenimiento(
+            mantenimiento=mantenimiento, resultado_tecnico=ResultadoTecnico.REPARADO,
+            usuario=self.tecnico, ocurrido_en=hace_25_dias + timedelta(hours=1),
+        )
+        mantenimiento.refresh_from_db()
+        self.assertEqual(mantenimiento.presencia_en_sitio, 'verificada')
+
+    def test_la_tarea_de_celery_lo_corre(self):
+        from apps.mantenimiento.tasks import purgar_ubicaciones_task
+
+        self._posicion(DIAS_RETENCION_UBICACIONES + 1)
+        self.assertIn('1 posicion', purgar_ubicaciones_task())
+
+    def test_purgar_no_borra_la_distancia_ya_verificada(self):
+        """Lo que se pierde es la posición cruda, no el hecho: la distancia se persiste
+        al cerrar justo para sobrevivir a esta purga."""
+        equipo = Activo.objects.create(codigo='CR-DSK-9931', tipo=Activo.Tipo.DESKTOP)
+        mantenimiento = crear_mantenimiento_manual(
+            equipos=[equipo], tecnico=self.tecnico, descripcion='x',
+            fecha_programada=timezone.now(), usuario=self.tecnico,
+        )
+        Mantenimiento.objects.filter(pk=mantenimiento.pk).update(distancia_verificacion_metros=12.5)
+        self._posicion(DIAS_RETENCION_UBICACIONES + 1)
+
+        purgar_ubicaciones_antiguas()
+
+        mantenimiento.refresh_from_db()
+        self.assertEqual(mantenimiento.distancia_verificacion_metros, 12.5)
+        self.assertEqual(mantenimiento.presencia_en_sitio, 'verificada')

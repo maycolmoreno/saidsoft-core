@@ -291,7 +291,12 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class ConsentimientoMonitoreoView(generics.GenericAPIView):
-    """GET: último consentimiento del usuario autenticado. POST: registra uno nuevo."""
+    """GET: consentimiento vigente del usuario. POST: registra uno nuevo.
+
+    **Revocar es un POST con `aceptado: false`**, no un DELETE: el modelo es append-only
+    porque hay que poder demostrar qué se aceptó, cuándo y desde qué IP -- y retirar el
+    acuerdo es un hecho tan registrable como darlo. El vigente es siempre el último.
+    """
 
     # `IsAuthenticated` a secas, y es deliberado: esto es el consentimiento legal de la
     # PROPIA persona sobre su propia ubicación. Exigir un permiso para poder consentir
@@ -301,10 +306,12 @@ class ConsentimientoMonitoreoView(generics.GenericAPIView):
     serializer_class = ConsentimientoMonitoreoSerializer
 
     def get(self, request):
-        ultimo = ConsentimientoMonitoreo.objects.filter(usuario=request.user).order_by('-timestamp').first()
-        if ultimo is None:
+        # Mismo servicio que usa el endpoint de ubicaciones: una sola definición de
+        # "vigente", para que no vuelvan a discrepar las dos mitades del mismo flujo.
+        vigente = services.consentimiento_vigente(request.user)
+        if vigente is None:
             return Response({'aceptado': False})
-        return Response(ConsentimientoMonitoreoSerializer(ultimo).data)
+        return Response(ConsentimientoMonitoreoSerializer(vigente).data)
 
     def post(self, request):
         serializer = self.get_serializer(data=request.data)
@@ -318,8 +325,10 @@ class ConsentimientoMonitoreoView(generics.GenericAPIView):
 class UbicacionTecnicoView(generics.ListCreateAPIView):
     """Registra/consulta posiciones GPS del técnico autenticado.
 
-    Exige un ConsentimientoMonitoreo vigente (aceptado=True) antes de aceptar
-    una posición — igual que el flujo de consentimiento legal en InvTICS.
+    Exige que el ÚLTIMO ConsentimientoMonitoreo del usuario esté aceptado. Antes miraba
+    si existía alguno aceptado alguna vez, con lo cual una revocación posterior no
+    revocaba nada: el `True` viejo seguía en la tabla y el servidor seguía guardando
+    posiciones de alguien que había dicho que no. Ver services.puede_registrar_ubicacion.
     """
     permission_classes = [PermisoDeclarado]
     # No tiene equivalente en el panel (la ubicación es una superficie solo de la app),
@@ -335,12 +344,16 @@ class UbicacionTecnicoView(generics.ListCreateAPIView):
         return UbicacionTecnico.objects.filter(usuario=self.request.user).order_by('-timestamp_captura')[:100]
 
     def create(self, request, *args, **kwargs):
-        tiene_consentimiento = ConsentimientoMonitoreo.objects.filter(
-            usuario=request.user, aceptado=True,
-        ).exists()
-        if not tiene_consentimiento:
+        if not services.puede_registrar_ubicacion(request.user):
+            # `codigo` para que la app pueda distinguirlo de un 403 por permisos: una
+            # posición sin consentimiento no se reintenta, se DESCARTA. Reintentarla no
+            # va a funcionar nunca, y guardarla en el teléfono mientras tanto es
+            # conservar justo el dato que la persona pidió no registrar.
             return Response(
-                {'detail': 'Falta registrar el consentimiento de monitoreo antes de enviar ubicación.'},
+                {
+                    'detail': 'No hay un consentimiento de monitoreo vigente para registrar tu ubicación.',
+                    'codigo': 'sin_consentimiento',
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 

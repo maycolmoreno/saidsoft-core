@@ -41,6 +41,19 @@ class SinPermiso extends ErrorApi {
   const SinPermiso([super.mensaje = 'No tenes permiso para esta accion.']);
 }
 
+/// No hay un consentimiento de monitoreo vigente: la persona nunca lo acepto, o lo
+/// retiro.
+///
+/// Se distingue de `SinPermiso` porque lo que corresponde hacer es DISTINTO: una
+/// posicion rechazada por esto no se reintenta ni se conserva, se descarta. Reintentarla
+/// no va a funcionar nunca, y guardarla en el telefono mientras tanto seria conservar
+/// justo el dato que la persona pidio no registrar.
+class SinConsentimiento extends ErrorApi {
+  const SinConsentimiento([
+    super.mensaje = 'No hay un consentimiento de monitoreo vigente.',
+  ]);
+}
+
 class NoEncontrado extends ErrorApi {
   const NoEncontrado([super.mensaje = 'El servidor no tiene ese recurso.']);
 }
@@ -197,7 +210,12 @@ class Api {
       if (alExpirar != null) unawaited(alExpirar());
       throw const SesionExpirada();
     }
-    if (codigo == 403) throw const SinPermiso();
+    if (codigo == 403) {
+      final cuerpo = utf8.decode(respuesta.bodyBytes);
+      throw esFaltaDeConsentimiento(cuerpo)
+          ? const SinConsentimiento()
+          : const SinPermiso();
+    }
     if (codigo == 404) throw const NoEncontrado();
     if (codigo == 409) {
       final conflicto = conflictoDesdeCuerpo(utf8.decode(respuesta.bodyBytes));
@@ -252,4 +270,23 @@ ConflictoDeEstado? conflictoDesdeCuerpo(String cuerpo) {
     // Cuerpo no-JSON: no es nuestro contrato.
   }
   return null;
+}
+
+
+/// True si un 403 viene por falta de consentimiento de monitoreo y no por permisos.
+///
+/// Funcion aparte y publica, igual que `conflictoDesdeCuerpo`: es una decision con
+/// reglas propias --de ella depende que la posicion se descarte en vez de reintentarse
+/// para siempre-- y asi se puede probar sin levantar los plugins de plataforma.
+///
+/// Fail-safe hacia `SinPermiso`: un 403 sin el codigo se trata como falta de permisos,
+/// que es el caso conservador (se conserva la accion en vez de tirarla).
+bool esFaltaDeConsentimiento(String cuerpo) {
+  try {
+    final json = jsonDecode(cuerpo);
+    return json is Map && json['codigo'] == 'sin_consentimiento';
+  } catch (_) {
+    // Cuerpo no-JSON: no es nuestro contrato.
+    return false;
+  }
 }

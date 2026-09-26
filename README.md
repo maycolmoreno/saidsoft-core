@@ -1718,6 +1718,16 @@ Cuatro tablas crecen sin parar: `muestra_metrica` (CPU/RAM/disco/red por estaci�
 (tráfico del Mikrotik de cada sitio) y `evento_monitoreo` (transiciones en línea/fuera
 de línea). Todas se quedan con **30 días**.
 
+Una quinta desde el 26-sep-2026: **`ubicacion_tecnico`**, que hasta entonces no se
+purgaba nunca pese a que el código afirmaba lo contrario. Se escribe una fila cada 30 s
+por técnico en jornada — es telemetría de alta frecuencia sobre la ubicación de una
+persona. Se queda con **60 días** (diaria a las 3:40), y ese número **no es libre**: es
+el doble de `ANTIGUEDAD_MAXIMA`, lo máximo que una acción puede quedar en la cola
+offline de un teléfono. Purgar a 30 dejaría a un cierre que llega el día 29 verificando
+contra posiciones recién borradas. Si alguien mueve una ventana, tiene que mover la
+otra. Lo que se pierde es la posición cruda, no el hecho: la distancia a la farmacia se
+persiste al cerrar justo para sobrevivir a esta purga.
+
 Lo que hay detrás, después de arreglarlo el 20-sep-2026:
 
 - **Purgas por antigüedad** (`apps.monitoreo.tasks.purgar_*`, diarias a las 3:00, 3:10,
@@ -1978,6 +1988,28 @@ Decisiones que valen más que el código (`movil-campo/lib/rasgos/sesion/`):
 Del lado Android, `MainActivity` extiende `FlutterFragmentActivity` — el prompt de
 `androidx.biometric` lo necesita para montarse, y con `FlutterActivity` falla en
 ejecución, no al compilar.
+
+## Ubicación del técnico: consentimiento y retención
+
+Rastrear la posición de una persona durante su jornada necesita su acuerdo, y ese
+acuerdo tiene que poder **retirarse**. Hasta el 26-sep-2026 no podía: el backend
+validaba si existía *algún* consentimiento aceptado alguna vez, así que una revocación
+no revocaba nada — y de todos modos ninguna pantalla permitía revocar.
+
+Ahora vale **el último** consentimiento. Retirarlo es un `POST` con `aceptado: false` y
+no un borrado: el historial es append-only porque hay que poder demostrar qué se aceptó,
+cuándo y desde qué IP, y retirar el acuerdo es un hecho tan registrable como darlo.
+
+En la app, la pantalla **Ubicación** tiene "Retirar el consentimiento" con confirmación.
+Al retirarlo el envío se corta en el acto, y el backend deja de aceptar posiciones. Se
+puede volver a aceptar cuando se quiera.
+
+Una posición que llega sin consentimiento vigente se **descarta** del teléfono en vez de
+reintentarse: es la única acción de la cola offline que se tira. Reintentarla no va a
+funcionar nunca, y conservarla mientras tanto sería guardar justo el dato que la persona
+pidió no registrar.
+
+Ver también la retención de `ubicacion_tecnico` en "Retención de las series de tiempo".
 
 ## Cuando el cierre de campo choca con el panel
 

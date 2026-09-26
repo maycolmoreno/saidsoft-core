@@ -454,6 +454,32 @@ teléfono **sin que nada lo avise**: no hay versionado de API ni contrato compar
 > observaciones no se guardan en ninguna bandeja — `VisitaTecnica` no tiene modelo de
 > eventos propio.
 
+> **RESUELTO (26-sep-2026) — el consentimiento de ubicación se podía retirar en
+> teoría y no en la práctica.** El endpoint validaba con `.filter(aceptado=True)
+> .exists()` sobre el HISTÓRICO, así que una revocación no revocaba nada: el `True`
+> viejo seguía en la tabla y el servidor seguía guardando posiciones de alguien que
+> había dicho que no. Además ninguna superficie permitía revocar. Ahora vale **el
+> último** consentimiento (`services.puede_registrar_ubicacion`, la misma función que
+> usa el GET, para que las dos mitades del flujo no vuelvan a discrepar), y la app tiene
+> "Retirar el consentimiento" con confirmación. Revocar es un `POST` con
+> `aceptado: false` y no un DELETE: el historial es append-only porque hay que poder
+> demostrar qué se aceptó y cuándo.
+>
+> Una posición rechazada por esto llega con `codigo: sin_consentimiento` y la app la
+> **descarta** en vez de reintentarla: es la única acción de la cola que se tira, porque
+> reintentarla no va a funcionar nunca y conservarla en el teléfono sería guardar justo
+> el dato que la persona pidió no registrar.
+
+> **RESUELTO (26-sep-2026) — las posiciones ahora se purgan de verdad.** No se purgaban
+> nunca, pese a que el comentario de `cerrar_mantenimiento` lo afirmaba para justificar
+> persistir la distancia. Retención: **60 días** (`DIAS_RETENCION_UBICACIONES`, tarea
+> diaria a las 3:40). El número está **atado a `ANTIGUEDAD_MAXIMA`** (30 días, lo máximo
+> que una acción puede quedar en la cola offline): purgar a 30 correría contra esa
+> ventana y un cierre que llega el día 29 verificaría contra posiciones recién borradas.
+> **Las dos tienen que moverse juntas.** Lo que se pierde es la posición cruda, no el
+> hecho: `distancia_verificacion_metros` se persiste al cerrar justo para sobrevivir a
+> esto.
+
 > **Gotcha — el certificado va empaquetado** (`movil-campo/assets/certs/cert.pem`). Si el
 > servidor rota el suyo, la app deja de conectar con "el certificado del servidor no
 > coincide" y hay que **regenerar el asset y publicar un APK nuevo**. Es la única copia

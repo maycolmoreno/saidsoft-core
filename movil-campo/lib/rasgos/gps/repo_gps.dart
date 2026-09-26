@@ -26,6 +26,19 @@ class RepoGps {
     });
   }
 
+  /// Retira el consentimiento. Es un POST con `aceptado: false` y no un DELETE: el
+  /// historial es append-only porque hay que poder demostrar que se acepto, cuando y
+  /// desde donde -- y retirar el acuerdo es un hecho tan registrable como darlo.
+  ///
+  /// A partir de acá el backend rechaza las posiciones nuevas: el consentimiento
+  /// vigente es el ULTIMO, no "alguno que dijo que si alguna vez".
+  Future<void> revocarConsentimiento({required String versionTerminos}) {
+    return _api.publicar('/consentimiento-monitoreo/', {
+      'aceptado': false,
+      'version_terminos': versionTerminos,
+    });
+  }
+
   /// Encola si no hay red: la posición de un técnico DENTRO de una farmacia sin
   /// señal es justamente la que hace falta para verificar que estuvo ahí.
   Future<bool> enviarUbicacion({

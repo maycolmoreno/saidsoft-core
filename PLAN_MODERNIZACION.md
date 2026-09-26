@@ -3563,3 +3563,57 @@ deja de reintentar, pero sus observaciones no quedan en ninguna bandeja.
 
 **Requiere versión nueva de la app, la MISMA que lleva `ocurrido_en` de §10-AM** —
 `origen_id` viaja en el mismo payload, a propósito, para no distribuir dos veces a mano.
+
+## §10-AO — Consentimiento de ubicación que se puede retirar, y posiciones que se purgan (26-sep-2026)
+
+Cierra BUG-6 y PROCESO-5 de la revisión de consistencia. Los dos son sobre lo mismo:
+rastrear la posición de una persona durante su jornada.
+
+**El consentimiento se podía retirar en teoría y no en la práctica.**
+`UbicacionTecnicoView.create` validaba con `.filter(usuario, aceptado=True).exists()` —
+sobre el HISTÓRICO. Como `ConsentimientoMonitoreo` es append-only (a propósito: hay que
+poder demostrar qué se aceptó y cuándo), una revocación es una fila nueva con
+`aceptado=False`, y el `True` viejo seguía ahí. El servidor seguía guardando posiciones
+de alguien que había dicho que no.
+
+Peor: las dos mitades del mismo flujo usaban criterios distintos. El GET
+(`ConsentimientoMonitoreoView.get`) sí miraba el último; el POST de ubicación miraba el
+histórico. La app podía mostrar "no estás consintiendo" mientras el backend aceptaba
+posiciones.
+
+Ahora las dos usan `services.consentimiento_vigente` / `puede_registrar_ubicacion`: una
+sola definición de "vigente", que es **el último**. Y revocar ahora es posible: la app
+tiene "Retirar el consentimiento" (con confirmación, porque tiene consecuencia real —
+deja de poder verificarse la presencia) y `detener()` corta el temporizador ANTES de
+llamar al servidor, para que no siga mandando posiciones mientras la petición viaja.
+
+**Una posición sin consentimiento se descarta, no se reintenta.** El 403 viaja con
+`codigo: sin_consentimiento` y la app lo distingue de un 403 por permisos
+(`SinConsentimiento` vs `SinPermiso`). Es la **única** acción de la cola offline que se
+tira: el resto es trabajo de campo y se conserva. Acá reintentar no va a funcionar
+nunca, y dejarla en el teléfono sería conservar justo el dato que la persona pidió no
+registrar. El fail-safe va hacia `SinPermiso`: un 403 sin el código se trata como falta
+de permisos, que es el caso conservador (conserva la acción en vez de tirarla).
+
+**Las posiciones no se purgaban nunca**, pese a que el comentario de
+`cerrar_mantenimiento` lo afirmaba ("las posiciones se purgan") para justificar
+persistir la distancia. Se escribe una fila cada 30 s por técnico en jornada: es
+telemetría de alta frecuencia sobre la ubicación de una persona.
+
+Retención: **60 días** (`DIAS_RETENCION_UBICACIONES`, tarea diaria a las 3:40, con
+`crontab` como el resto de las purgas). El número no es arbitrario: es el **doble de
+`serializers.ANTIGUEDAD_MAXIMA`** (30 días, lo máximo que una acción puede quedar en la
+cola offline de un teléfono). Purgar a 30 correría contra esa ventana — un cierre que
+llega el día 29 verificaría la presencia contra posiciones recién borradas y saldría
+'sin_datos' para un técnico que sí fue. **Las dos ventanas tienen que moverse juntas**,
+y hay una prueba que lo fija.
+
+Lo que se pierde es la posición cruda, no el hecho verificado:
+`distancia_verificacion_metros` se calcula y se persiste al cerrar, justo para que el
+dato auditable sobreviva a la purga. Límite conocido: un mantenimiento abierto más que
+la ventana pierde sus posiciones más viejas; como la verificación toma el MÍNIMO,
+alcanza con que quede una cerca de la farmacia, y un mantenimiento abierto 60 días ya es
+una anomalía que el aviso de atrasados reporta por su cuenta.
+
+**Requiere versión nueva de la app** (el botón de revocar y el descarte de posiciones):
+la MISMA que ya lleva `ocurrido_en` y `origen_id`.

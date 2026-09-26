@@ -21,6 +21,46 @@ class _PantallaGpsState extends State<PantallaGps> {
     if (!gps.consultado) gps.cargarConsentimiento();
   }
 
+  /// Se confirma antes de revocar: es una decision con consecuencia (deja de poder
+  /// verificarse su presencia en la farmacia) y un toque accidental no deberia tomarla.
+  Future<void> _confirmarRevocacion(BuildContext context) async {
+    final gps = context.read<EstadoGps>();
+    final confirmado = await showDialog<bool>(
+      context: context,
+      builder: (dialogo) => AlertDialog(
+        title: const Text('Retirar el consentimiento'),
+        content: const Text(
+          'Se deja de enviar tu ubicacion. Mientras este retirado no se va a poder '
+          'confirmar tu presencia en las farmacias que visites.\n\n'
+          'Podes volver a aceptarlo cuando quieras.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogo, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogo, true),
+            style: TextButton.styleFrom(foregroundColor: Tema.critico),
+            child: const Text('Retirar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmado != true) return;
+    final ok = await gps.revocarConsentimiento();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Consentimiento retirado. Ya no se envia tu ubicacion.'
+              : 'No se pudo retirar: ${gps.error ?? "sin conexion"}',
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final gps = context.watch<EstadoGps>();
@@ -109,6 +149,25 @@ class _PantallaGpsState extends State<PantallaGps> {
                   Text(
                     'El envio sigue activo aunque cambies de pantalla. Se detiene si '
                     'cerras la app.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                  // Retirar el consentimiento tiene que ser tan posible como darlo. Va
+                  // abajo y como boton de texto, no porque importe menos, sino porque
+                  // no es la accion de todos los dias: el camino normal es
+                  // comenzar/detener el envio, que no toca el acuerdo.
+                  const SizedBox(height: 24),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: () => _confirmarRevocacion(context),
+                    icon: const Icon(Icons.gpp_bad_outlined, size: 18),
+                    style: TextButton.styleFrom(foregroundColor: Tema.critico),
+                    label: const Text('Retirar el consentimiento'),
+                  ),
+                  Text(
+                    'Deja de enviarse tu ubicacion. Podes volver a aceptarlo cuando '
+                    'quieras.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                   ),
