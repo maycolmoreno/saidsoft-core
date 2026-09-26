@@ -1982,3 +1982,59 @@ class ComandosSimulanPorDefectoTests(TestCase):
             if '--dry-run' in texto and '--aplicar' not in texto:
                 invertidos.append(archivo.name)
         self.assertEqual(invertidos, [], f'usan --dry-run sin --aplicar: {invertidos}')
+from django.contrib.auth.models import Group
+from django.core.management import call_command
+from django.test import TestCase
+
+
+class SeedPermisosIdempotenteTests(TestCase):
+    """Paso 1 de la Parte A: hay que saber si se puede re-correr en produccion."""
+
+    def test_correrlo_dos_veces_converge_y_no_duplica(self):
+        call_command('seed_permisos', verbosity=0)
+        primera = {g.name: sorted(g.permissions.values_list('codename', flat=True))
+                   for g in Group.objects.all()}
+        cantidad_grupos = Group.objects.count()
+
+        call_command('seed_permisos', verbosity=0)
+        segunda = {g.name: sorted(g.permissions.values_list('codename', flat=True))
+                   for g in Group.objects.all()}
+
+        self.assertEqual(Group.objects.count(), cantidad_grupos)
+        self.assertEqual(primera, segunda)
+
+    def test_no_pisa_los_permisos_individuales_de_una_persona(self):
+        """crear_tecnicos_soporte da `aprobar_ejecucionscript` por user_permissions y NO
+        por grupo, a proposito. Re-correr seed_permisos no puede borrarlo."""
+        from django.contrib.auth.models import Permission, User
+
+        call_command('seed_permisos', verbosity=0)
+        usuario = User.objects.create_user(username='supervisor', password='x')
+        usuario.groups.add(Group.objects.get(name='Soporte Técnico'))
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='scripts', codename='aprobar_ejecucionscript'),
+        )
+
+        call_command('seed_permisos', verbosity=0)
+
+        usuario = User.objects.get(pk=usuario.pk)
+        self.assertTrue(usuario.has_perm('scripts.aprobar_ejecucionscript'))
+
+    def test_el_grupo_de_los_tecnicos_reales_habilita_la_app_de_campo(self):
+        """El fix de BUG-2: los 9 tecnicos reales estan en 'Soporte Tecnico'."""
+        call_command('seed_permisos', verbosity=0)
+        codenames = set(
+            Group.objects.get(name='Soporte Técnico').permissions.values_list('codename', flat=True),
+        )
+        for codename in ('view_visitatecnica', 'change_visitatecnica',
+                         'add_ubicaciontecnico', 'add_activo'):
+            with self.subTest(codename=codename):
+                self.assertIn(codename, codenames)
+
+    def test_el_rol_tecnico_heredado_quedo_con_el_mismo_set(self):
+        call_command('seed_permisos', verbosity=0)
+        codenames = set(Group.objects.get(name='Técnico').permissions.values_list('codename', flat=True))
+        for codename in ('view_visitatecnica', 'change_visitatecnica',
+                         'add_ubicaciontecnico', 'add_activo'):
+            with self.subTest(codename=codename):
+                self.assertIn(codename, codenames)

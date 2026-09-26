@@ -3288,3 +3288,198 @@ para descartar casi todas — el mismo patrón que la auditoría ya marcó en
 `_publicar_ejecucion`. Ahora el vencimiento se calcula en la base con aritmética de
 intervalos sobre `ejecucion__timeout_segundos`. Verificado: con 32 abiertos y 2 vencidos,
 2 SELECT y 2 UPDATE.
+
+## Los tres gaps de completitud de mesa de ayuda (26-sep-2026)
+
+Salieron del relevamiento de `docs/modulos.md`. Los tres tenían la maquinaria escrita y
+algo sin enganchar — el valor estuvo en no construir nada desde cero.
+
+### El único callejón sin salida literal: viáticos observados
+
+`observar_reporte` dice en su docstring que "devuelve el reporte al técnico para que lo
+corrija". El técnico **veía el comentario en su lista y no tenía con qué responderle**:
+no existía vista de edición ni de reenvío. El reporte quedaba en OBSERVADO para siempre,
+que en un módulo con dinero de por medio significa un gasto que nadie puede subsanar.
+
+`viatico_editar` reusa `ReporteViaticoForm` **sobre el mismo registro**: el reporte
+conserva su historial, su comentario y su lugar en el consolidado del mes. Crear uno
+nuevo habría dejado dos filas para un solo gasto.
+
+Vuelve a **PENDIENTE** y no a un estado nuevo: PENDIENTE ya significa "esperando
+revisión", y la bandeja del coordinador filtra por él. `comentario_coordinador` **no se
+borra** —es lo que explica por qué el reporte cambió— pero `revisado_por`/`revisado_en`
+sí, porque pasan a ser de la revisión que viene. Las alertas se re-evalúan: el técnico
+pudo corregir justo lo que las disparó.
+
+El permiso es `add_reporteviatico` y no `change_`: corregir lo propio es parte de cargar,
+no de revisar. El dueño se verifica en la vista, no en la plantilla — el botón se puede
+ocultar, la URL se puede escribir.
+
+### Las dos notificaciones que faltaban
+
+**Viáticos no notificaba nada.** Ahora observar avisa al técnico y reenviar avisa al
+coordinador que lo había observado.
+
+**Mantenimiento avisaba al asignar, al vencer y al atrasarse — no al terminar.** Quien
+abre un ticket es justamente el que está esperando, y tenía que volver a mirar.
+
+Las dos reusan `Notificacion` de `apps.mantenimiento`: vive ahí por dónde nació, pero su
+tabla se llama `notificacion` y sus tres FK son opcionales, así que sirve tal cual.
+Duplicar el modelo habría dado dos bandejas separadas para mirar.
+
+> **Lo que obligó a desviarse:** `Mantenimiento` **no tiene campo `creado_por`**. Solo
+> guarda `cerrado_por`. Quien lo abrió sale del evento `PROGRAMADO` (`_quien_lo_abrio`),
+> que ya tenía el dato — agregar la columna habría sido una migración sobre información
+> que ya estaba. Los mantenimientos que abre el sistema (una alerta, la tarea de
+> programados) tienen `usuario=None` y no avisan a nadie, que es lo correcto.
+
+### El botón que faltaba en las alertas
+
+`abrir_mantenimiento_desde_alerta` existía y solo se disparaba sola, cuando la regla
+tenía `abre_mantenimiento`. Para el resto alguien tenía que ir a Mantenimientos, crear la
+orden y volver a escribir de qué alerta venía.
+
+Se reusa la función **tal cual**: mismo criterio de prioridad por severidad, misma
+descripción con el número de alerta, mismo rechazo si el equipo ya tiene uno abierto. Lo
+único que se le agregó es un `usuario=None` opcional para atribuir quién la disparó.
+
+> **La revisión decía "vista de detalle de alerta" y esa vista no existe.** Las acciones
+> de alerta viven inline en la lista (`alertas_lista`), así que el botón va ahí, junto a
+> Reconocer y Resolver.
+
+> **Por qué la vista explica cuando NO creó nada:** la función nunca lanza y devuelve
+> `None` con el motivo en el log, que es correcto para la ruta automática —corre sobre
+> toda la flota y no puede tumbar la evaluación de alertas—. Pero con alguien esperando,
+> un botón que no hace nada y no dice por qué es peor que no tenerlo.
+
+## Baja de `apps.integraciones` (26-sep-2026)
+
+La app se creó como andamiaje para conectores externos (Odoo, AD, ESET). Nunca llegó
+ninguno. Antes de sacarla se verificó punto por punto que no hubiera uso real:
+
+| Qué se verificó | Resultado |
+|---|---|
+| Llamadas a `registrar_conector` / `ConectorExterno` fuera de la app | Ninguna. Adentro, solo dos dobles de prueba en `tests.py` |
+| `git log -S registrar_sync_pendiente` | **Un solo commit** (`cbe6535`, el que creó la app) — nunca se llamó desde afuera |
+| Admin | `has_add_permission` y `has_delete_permission` en `False`: no había forma de crear filas a mano |
+| Tareas en `CELERY_BEAT_SCHEDULE` | Ninguna |
+| Migraciones de otras apps que dependan de ella | Ninguna |
+| Referencias en todo el repo (`.py`, `.md`, `.html`, `.yml`, `.txt`) | Dos: `INSTALLED_APPS` y `docs/modulos.md` |
+| Filas en la base local | `SincronizacionExterna: 0`, `EventoSyncExterno: 0` |
+
+> **Lo que NO se pudo verificar directamente: las filas en producción.** El servidor
+> (`10.111.6.20`) no responde por SSH desde el 25-sep. Que estén en cero está **deducido
+> del código y del historial** —el único creador de filas nunca se llamó y el admin no
+> dejaba crearlas— no leído de la base.
+
+Por eso la migración `catalogo/0033_baja_de_integraciones` **no borra a ciegas**: cuenta
+las filas y, si encuentra alguna, lanza `RuntimeError` y corta el deploy. El
+`entrypoint` corre `migrate` solo, así que sin esa guarda un despliegue rutinario podría
+tirar datos que nadie sabía que existían. Si las tablas no existen (base nueva, donde la
+app ya no está), no hace nada.
+
+El drop vive en `catalogo` y no en la propia app porque al salir de `INSTALLED_APPS` sus
+migraciones dejan de correr; `catalogo` es el destino natural porque
+`sincronizacion_externa` tenía una FK a `catalogo.unidad_negocio`. La migración también
+limpia las filas de `django_migrations` de la app, que si no quedan huérfanas y sin que
+`showmigrations` las liste.
+
+**Para volver atrás:** `git revert` del commit y `migrate integraciones` recrea las
+tablas desde su `0001_initial`.
+
+## §10-AL — La API móvil no exigía permisos, y el rol real no los tenía (26-sep-2026)
+
+Salió de la revisión de consistencia entre las tres superficies (`docs/modulos.md`,
+sección de la app de campo). Dos bugs que se tapaban mutuamente.
+
+**1. La API era `IsAuthenticated` a secas.** `apps/mantenimiento/api_views.py` no
+evaluaba ningún codename salvo `activos.add_activo`, mientras el panel exigía
+`view_`/`change_mantenimiento` y `view_`/`change_visitatecnica` para las mismas
+operaciones. El README de `movil-campo` y el docstring de `UsuarioActualView` afirmaban
+lo contrario ("la app y la web habilitan lo mismo y no pueden desincronizarse"): el
+gating de `sesion.dart` era **cosmético**, escondía botones que la API aceptaba igual.
+Un usuario sin permisos podía cerrar, firmar o cancelar por API lo que el panel le
+negaba con 403.
+
+**2. El rol real no tenía los permisos de la mitad de la app.** El grupo **'Soporte
+Técnico'** —donde están los 9 técnicos de campo reales (ver `crear_tecnicos_soporte.py`),
+no el grupo 'Técnico'— no tenía `view/change_visitatecnica` ni `add_ubicaciontecnico`.
+La app les ocultaba las pestañas **Visitas** y **Ubicación**, y como sin esa última no
+se registra ninguna `UbicacionTecnico`, `presencia_en_sitio` devolvía `sin_datos`
+siempre: la verificación por GPS del panel no tenía con qué trabajar. A 'Técnico'
+(heredado de InvTICS, sin usuarios hoy) le faltaba además `activos.add_activo`, que el
+fix del 4-sep-2026 había aplicado solo al otro rol pese a que el comentario afirmaba
+"mismo set".
+
+**Por qué un mapa explícito y no `DjangoModelPermissions`.** Se verificó contra DRF:
+`perms_map['GET'] == []` (las lecturas no exigen nada, así que `view_mantenimiento`
+nunca se evaluaría) y `perms_map['POST'] == ['add_%(model_name)s']`, que mandaría
+TODAS las acciones custom (`iniciar`/`cerrar`/`cancelar`/`firmar`/`repuestos`) a
+`add_mantenimiento` cuando el panel pide `change_` — codename equivocado y hacia el
+lado permisivo. `apps/mantenimiento/api_permissions.py` declara el mapa por acción y es
+**fail-closed**: un `@action` nuevo sin permiso declarado se rechaza, en vez de nacer
+abierto como nacieron estos.
+
+**Orden de despliegue — no es opcional.** Primero `seed_permisos`, después el código.
+Al revés, los 9 técnicos quedan con 403 en toda la app. No hace falta un comando de
+backfill: los permisos se resuelven por pertenencia al grupo, así que actualizar el
+`Group` alcanza para todos sus miembros. `seed_permisos` es idempotente y re-correrlo
+no pisa los `user_permissions` individuales (los de supervisor regional), lo que quedó
+cubierto con pruebas en `apps/activos/tests.py`.
+
+## §10-AM — La cola offline no mandaba la hora real de la acción (26-sep-2026)
+
+Mismo relevamiento. `ColaOffline` guardaba `creada_en` al encolar pero
+`sincronizador.dart` no lo enviaba, así que el backend fechaba con `timezone.now()` al
+recibir. Un cierre hecho a las 10:00 en una farmacia sin señal y sincronizado a las
+18:00 quedaba registrado a las 18:00, y de ahí salían tres datos falsos: el SLA de
+resolución (`fecha_cierre`), el de respuesta (`inicio_real`, que sale del
+`EventoMantenimiento` de inicio) y la ventana contra la que se verifica la presencia por
+GPS — que dejaba de cubrir el rato en que el técnico sí estuvo en la farmacia.
+
+El patrón correcto ya existía en la misma app: `repo_gps.dart` mandaba
+`timestamp_captura` explícito desde siempre. Ahora `destinoDeAccion` (extraída de
+`_ejecutar` justamente para poder probarla sin sqflite ni red) agrega `ocurrido_en` a
+cierre, llegada, firma y a las dos transiciones de visita. El checklist no lo lleva:
+`registrar_actividad_checklist` hace `update_or_create` sobre el estado actual, no
+registra un instante.
+
+`EventoMantenimiento.timestamp` y `FirmaMantenimiento.firmado_en` pasaron de
+`auto_now_add=True` a `default=timezone.now` — `auto_now_add` **impide** fijar la hora
+al crear, que es exactamente lo que hacía falta. Para todo llamador que no la pasa, el
+comportamiento es idéntico.
+
+**El campo es opcional y tiene que seguir siéndolo.** La app se distribuye a mano
+(§10-AH), así que conviven APKs con y sin él durante semanas; ausente, se usa la hora
+del servidor como siempre. Se valida contra una ventana ancha a propósito (30 días
+atrás, 5 minutos de tolerancia hacia adelante): un técnico puede estar días sin señal y
+su trabajo sigue siendo válido, pero lo que cae afuera no es una acción vieja sino un
+teléfono con el reloj roto, y fechar con un reloj roto corrompe justo lo que esto
+arregla.
+
+**Requiere versión nueva de la app**: el backend solo, sin APK nuevo, no cambia nada.
+
+## §10-AN — Idempotencia y conflictos de la cola offline (26-sep-2026, parcial)
+
+De lo mismo. Dos problemas distintos que comparten síntoma.
+
+**Reintento (cerrado para firmas).** El timeout de 20 s de `api.dart` se traduce a
+`SinConexion`, así que una petición que el servidor SÍ procesó se reencola y se
+reintenta. `firmar_mantenimiento` hacía `create()` y dejaba **dos firmas del mismo
+custodio**. Se resolvió con la unicidad natural —`UniqueConstraint(mantenimiento,
+tipo_firma)` + `update_or_create`— y no con maquinaria de claves de idempotencia:
+firmar dos veces no es un hecho nuevo, es el mismo hecho. La migración `0022` limpia
+duplicados previos (conserva el más reciente) antes de crear la constraint, porque si
+no `AddConstraint` corta el despliegue a la mitad; imprime lo que borra antes de
+borrarlo.
+
+**Conflicto real (SIN implementar).** Si mesa de ayuda cancela o cierra desde el panel
+mientras el técnico cerró sin señal, al subir la acción `cerrar_mantenimiento` corta con
+`ValueError` → 400 genérico. No pisa el cambio más reciente (los guards de estado lo
+impiden), pero el trabajo del técnico —resultado, tiempo real, estado del equipo— se
+queda en el teléfono: `sincronizador.dart` guarda el motivo en `ultimo_error` y ninguna
+pantalla lo muestra, así que el técnico ve "1 pendiente" para siempre y mesa de ayuda no
+se entera de que hubo un cierre de campo en conflicto. Queda propuesto y pendiente de
+decisión: código de error distinguible, y bandeja de revisión manual para mesa de ayuda
+con la forma de `MensajeMqttFallido` (triage operativo con `revisado`, no registro
+inmutable).

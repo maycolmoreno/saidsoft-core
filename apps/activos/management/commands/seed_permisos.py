@@ -9,7 +9,12 @@ from django.db import transaction
 ROLES = {
     'Administrador': None,  # None = todos los permisos existentes
     'Técnico': [
-        ('activos', 'activo', ['view', 'change']),
+        # `add` sumado el 26-sep-2026: el comentario de 'Soporte Técnico' mas abajo
+        # afirma tener "mismo set que el rol 'Técnico'", pero el fix del 4-sep-2026
+        # (habilitar "Registrar equipo" de la app) se aplico solo a aquel. Sin `add`,
+        # un tecnico de este rol parado frente a una maquina no inventariada no puede
+        # cargarla NI atenderla -- exactamente el callejon que aquel fix cerro.
+        ('activos', 'activo', ['view', 'add', 'change']),
         ('activos', 'eventoactivo', ['view', 'add']),
         ('activos', 'ubicacion', ['view']),
         ('activos', 'colaborador', ['view']),
@@ -19,6 +24,14 @@ ROLES = {
         # Las sub-acciones de Mantenimiento (checklist/firma/imagen/repuesto) están TODAS
         # gateadas por change_mantenimiento, no por permisos propios.
         ('mantenimiento', 'mantenimiento', ['view', 'add', 'change']),
+        # Las tres superficies de la app de campo que este rol NO podia usar (26-sep-2026,
+        # ver docs/modulos.md): sin view/change_visitatecnica la pestana "Visitas" queda
+        # oculta, y sin add_ubicaciontecnico la de "Ubicacion". Sin esa ultima no se
+        # registra ninguna posicion, asi que `presencia_en_sitio` devuelve 'sin_datos'
+        # SIEMPRE -- la verificacion por GPS del panel no podia funcionar para este rol.
+        ('mantenimiento', 'visitatecnica', ['view', 'change']),
+        ('mantenimiento', 'ubicaciontecnico', ['view', 'add']),
+        ('mantenimiento', 'cierreenconflicto', ['view', 'change']),
     ],
     'Bodeguero': [
         ('activos', 'activo', ['view', 'add', 'change']),
@@ -52,6 +65,11 @@ ROLES = {
     # acciones quedan atribuidas vía apps.auditoria.registrar_evento.
     'Mesa de Ayuda': [
         ('catalogo', 'estacion', ['view']),
+        # Los cierres de campo en conflicto aparecen en el Centro de Monitoreo, que este
+        # rol deja abierto todo el turno. `view` y nada mas, mismo criterio que con las
+        # alertas: primera linea diagnostica, no interviene -- aplicar el cierre de un
+        # tecnico reabre y vuelve a cerrar un mantenimiento, y eso es intervencion.
+        ('mantenimiento', 'cierreenconflicto', ['view']),
         # Sin esto el Centro de Monitoreo —la pantalla de triage que este rol deja
         # abierta todo el turno— le queda cerrada, y con ella el menu de Alertas. Mismo
         # caso que 'Operador RMM' arriba: el rol implicaba una pantalla que sus permisos
@@ -80,6 +98,17 @@ ROLES = {
         # Mismo motivo que en 'Técnico' de arriba: "enviar a reparación" abre un
         # Mantenimiento vinculado, y sin este permiso no podrían cerrarlo ellos mismos.
         ('mantenimiento', 'mantenimiento', ['view', 'add', 'change']),
+        # Las visitas y la ubicacion de la app de campo (26-sep-2026, ver
+        # docs/modulos.md). Este es el grupo donde estan los 9 tecnicos REALES (ver
+        # crear_tecnicos_soporte.py), asi que es el que importa en produccion: hasta
+        # hoy la app les ocultaba las pestanas "Visitas" y "Ubicacion" por falta de
+        # estos permisos, y sin posiciones GPS la verificacion de presencia del panel
+        # no tenia con que trabajar.
+        ('mantenimiento', 'visitatecnica', ['view', 'change']),
+        ('mantenimiento', 'ubicaciontecnico', ['view', 'add']),
+        # Segunda linea: ademas de ver la bandeja de cierres en conflicto, decide cual
+        # de las dos versiones vale (ver CierreEnConflicto).
+        ('mantenimiento', 'cierreenconflicto', ['view', 'change']),
         # Rol "Solicitante" del control de viáticos (GFI-GTC-PR002): carga su propio
         # gasto y ve el suyo. SIN `change`: corregir un reporte ya revisado o aprobar
         # el propio es justamente lo que el módulo viene a impedir.

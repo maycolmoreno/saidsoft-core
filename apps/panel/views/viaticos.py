@@ -113,6 +113,70 @@ def viaticos_mis_reportes(request):
     })
 
 
+
+@login_required
+@permission_required('viaticos.add_reporteviatico', raise_exception=True)
+def viatico_editar(request, pk):
+    """El técnico corrige un reporte que le observaron y lo reenvía.
+
+    Cerraba un callejón sin salida: `observar_reporte` existe para "devolverlo al técnico
+    para que lo corrija" y hasta el 26-sep-2026 no había con qué. El reporte quedaba en
+    OBSERVADO para siempre.
+
+    Reusa `ReporteViaticoForm` **sobre el mismo registro** en vez de crear uno nuevo: el
+    reporte conserva su historial, su comentario del coordinador y su lugar en el
+    consolidado del mes. Duplicarlo habría dejado dos filas para un solo gasto.
+
+    El permiso es `add_reporteviatico` —el mismo que para cargar uno— y no
+    `change_reporteviatico`, que es el del coordinador: corregir lo propio es parte de
+    cargar, no de revisar. El dueño se verifica abajo, que es el control que de verdad
+    importa acá.
+    """
+    colaborador = viaticos_services.colaborador_de(request.user)
+    if colaborador is None:
+        return render(request, 'panel/viaticos_sin_colaborador.html', status=409)
+
+    reporte = get_object_or_404(ReporteViatico, pk=pk)
+    # Solo el dueño, y solo si está observado. Las dos condiciones se comprueban acá y
+    # no en la plantilla: el botón se puede no mostrar, pero la URL se puede escribir.
+    if reporte.colaborador_id != colaborador.pk:
+        raise PermissionDenied('Este reporte no es tuyo.')
+    if reporte.estado != EstadoReporteViatico.OBSERVADO:
+        messages.error(
+            request,
+            f'Solo se corrige un reporte observado; este está '
+            f'{reporte.get_estado_display().lower()}.',
+        )
+        return redirect('panel:viaticos_mis_reportes')
+
+    if request.method == 'POST':
+        form = ReporteViaticoForm(request.POST, request.FILES, instance=reporte, user=request.user)
+        if form.is_valid():
+            form.save()
+            reporte.refresh_from_db()
+            viaticos_services.reenviar_reporte(reporte=reporte, usuario=request.user)
+            registrar_evento(usuario=request.user, accion='viatico.reenviar', objeto=reporte, request=request)
+            reporte.refresh_from_db()
+            if reporte.alertas.exists():
+                messages.warning(
+                    request,
+                    f'Reporte corregido y reenviado, todavía con {reporte.alertas.count()} '
+                    f'alerta(s). Tu coordinador va a tener que justificarlas para aprobarlo.',
+                )
+            else:
+                messages.success(request, 'Reporte corregido y reenviado para revisión.')
+            return redirect('panel:viaticos_mis_reportes')
+    else:
+        form = ReporteViaticoForm(instance=reporte, user=request.user)
+
+    return render(request, 'panel/viatico_form.html', {
+        'form': form, 'colaborador': colaborador,
+        'titulo': 'Corregir reporte observado',
+        # La plantilla lo muestra arriba del formulario: es lo que hay que corregir, y
+        # tenerlo que buscar en otra pantalla mientras se edita no tiene sentido.
+        'comentario_a_corregir': reporte.comentario_coordinador,
+    })
+
 @login_required
 @permission_required('viaticos.view_reporteviatico', raise_exception=True)
 def viaticos_farmacias_partial(request):

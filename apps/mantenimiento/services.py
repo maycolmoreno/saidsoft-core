@@ -13,12 +13,60 @@ from apps.activos import services as activos_services
 from apps.activos.models import Activo, MovimientoInventario
 
 from .models import (
-    AcuerdoNivelServicio, ActividadChecklist, ActividadPlanificada, ActividadRealizada, EstadoGeneralEquipo,
+    AccionOfflineAplicada, AcuerdoNivelServicio, ActividadChecklist, ActividadPlanificada, ActividadRealizada,
+    CierreEnConflicto, EstadoGeneralEquipo,
     EventoMantenimiento,
     FirmaMantenimiento, ImagenMantenimiento, Mantenimiento, MantenimientoEquipo, MantenimientoProgramado,
     Notificacion, PrioridadActividad, PrioridadMantenimiento, RepuestoUtilizado, ResultadoTecnico,
     TipoMantenimiento, TipoOrigenMantenimiento, VisitaTecnica,
 )
+
+__all__ = ['AccionOfflineAplicada', 'CierreEnConflicto']  # reexport para los llamadores
+
+
+class ConflictoDeEstado(Exception):
+    """Alguien más ya movió esto, y no desde acá.
+
+    Se separa de `ValueError` —que el resto de los servicios usa para "los datos que
+    mandaste no sirven"— porque son dos cosas distintas para quien las recibe: un
+    `ValueError` se arregla mandando otra cosa, un conflicto no se arregla reintentando.
+    La API la traduce a **409** y la app deja de reintentar en vez de dejar la acción
+    dando vueltas en la cola para siempre.
+
+    Lleva el estado actual y quién lo dejó así para que el mensaje pueda decir QUÉ pasó,
+    no solo que falló.
+    """
+
+    def __init__(self, mensaje, *, estado_actual, modificado_por=None, modificado_en=None):
+        super().__init__(mensaje)
+        self.mensaje = mensaje
+        self.estado_actual = estado_actual
+        self.modificado_por = modificado_por
+        self.modificado_en = modificado_en
+
+    def como_respuesta(self):
+        """Cuerpo del 409. `codigo` es lo que la app mira para distinguirlo de un 400."""
+        return {
+            'detail': self.mensaje,
+            'codigo': 'conflicto_de_estado',
+            'estado_actual': self.estado_actual,
+            'modificado_por': str(self.modificado_por) if self.modificado_por else None,
+            'modificado_en': self.modificado_en.isoformat() if self.modificado_en else None,
+        }
+
+
+def _quien_dejo_asi(mantenimiento):
+    """Quién y cuándo dejó el mantenimiento en el estado en que está.
+
+    Sale de EventoMantenimiento —la fuente de verdad inmutable— y no de `cerrado_por`,
+    porque ese campo solo existe para el cierre y acá también hace falta la cancelación.
+    """
+    evento = mantenimiento.eventos.filter(
+        tipo_evento__in=(EventoMantenimiento.TipoEvento.CERRADO, EventoMantenimiento.TipoEvento.CANCELADO),
+    ).select_related('usuario').order_by('-timestamp', '-pk').first()
+    if evento is None:
+        return None, None
+    return evento.usuario, evento.timestamp
 
 
 def _tipo_mantenimiento(codigo):
@@ -190,7 +238,7 @@ def _verificar_presencia_en_sitio(mantenimiento):
     )
 
 
-def abrir_mantenimiento_desde_alerta(alerta):
+def abrir_mantenimiento_desde_alerta(alerta, *, usuario=None):
     """Abre un Mantenimiento para el equipo de la estación que disparó `alerta`.
 
     Cierra el círculo del RMM: hasta ahora una alerta avisaba, pero alguien tenía que
@@ -201,6 +249,10 @@ def abrir_mantenimiento_desde_alerta(alerta):
     sobre toda la flota; un problema acá no puede tumbar la evaluación de alertas ni
     impedir que la alerta se abra. Devuelve el Mantenimiento creado, o None con el
     motivo logueado.
+
+    `usuario` es quien la dispara: vacio cuando la abre la regla sola (el caso original)
+    y el operador cuando la abre a mano desde la pantalla de alertas. Solo cambia a quien
+    se le atribuye el evento; el mantenimiento que se crea es el mismo.
 
     Casos en que no crea nada (ninguno es un error):
     - La estación no tiene un Activo vinculado todavía (el cruce por número de serie
@@ -239,7 +291,7 @@ def abrir_mantenimiento_desde_alerta(alerta):
                 f'"{alerta.regla.nombre}" en {estacion.codigo} (valor: {alerta.valor_disparador}).'
             ),
             tipo_mantenimiento=_tipo_mantenimiento('correctivo'),
-            fecha_programada=timezone.now(), usuario=None, prioridad=prioridad,
+            fecha_programada=timezone.now(), usuario=usuario, prioridad=prioridad,
         )
     except ValueError as exc:
         # Típicamente "ya hay un mantenimiento abierto para este equipo".
@@ -257,13 +309,23 @@ def abrir_mantenimiento_desde_alerta(alerta):
     return mantenimiento
 
 
-def iniciar_mantenimiento(*, mantenimiento, usuario):
+def iniciar_mantenimiento(*, mantenimiento, usuario, ocurrido_en=None):
+    """Marca la llegada del técnico.
+
+    `ocurrido_en` es la hora REAL en que se marcó la llegada, que la app manda cuando
+    la acción venía encolada sin señal. Sin esto, el evento quedaba fechado con la hora
+    de SINCRONIZACIÓN: una llegada a las 10:00 subida a las 18:00 daba `inicio_real`
+    18:00, y de ahí salían un `sla_respuesta_incumplido` falso y una ventana de
+    verificación GPS que no cubría el rato en que el técnico estuvo en la farmacia.
+    Ausente (teléfonos sin actualizar) se sigue usando la hora del servidor.
+    """
     if mantenimiento.estado_interno != Mantenimiento.EstadoInterno.PENDIENTE:
         raise ValueError('Solo un mantenimiento pendiente puede iniciarse.')
     mantenimiento.estado_interno = Mantenimiento.EstadoInterno.EN_PROCESO
     mantenimiento.save(update_fields=['estado_interno'])
     EventoMantenimiento.objects.create(
         mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.INICIADO, usuario=usuario,
+        timestamp=ocurrido_en or timezone.now(),
     )
 
 
@@ -279,14 +341,29 @@ def registrar_actividad_checklist(*, mantenimiento, actividad, realizada, usuari
 
 
 @transaction.atomic
-def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_real_minutos=None, estado_general=''):
-    if mantenimiento.estado_interno == Mantenimiento.EstadoInterno.CERRADO:
-        raise ValueError('El mantenimiento ya está cerrado.')
-    if mantenimiento.estado_interno == Mantenimiento.EstadoInterno.CANCELADO:
-        raise ValueError('Un mantenimiento cancelado no puede cerrarse.')
+def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_real_minutos=None,
+                         estado_general='', ocurrido_en=None):
+    """Cierra el mantenimiento. `ocurrido_en` = hora REAL del cierre (ver
+    iniciar_mantenimiento): un cierre hecho sin señal conserva su hora, en vez de
+    quedar fechado cuando el teléfono recuperó conexión -- que corría el SLA de
+    resolución y la ventana contra la que se verifica la presencia por GPS."""
+    if mantenimiento.estado_interno in (
+        Mantenimiento.EstadoInterno.CERRADO, Mantenimiento.EstadoInterno.CANCELADO,
+    ):
+        # Conflicto y no ValueError: esto no se arregla mandando otros datos. Alguien
+        # mas ya lo movio, probablemente desde el panel mientras el tecnico lo cerraba
+        # sin señal. Ver ConflictoDeEstado.
+        quien, cuando = _quien_dejo_asi(mantenimiento)
+        cerrado = mantenimiento.estado_interno == Mantenimiento.EstadoInterno.CERRADO
+        raise ConflictoDeEstado(
+            'El mantenimiento ya está cerrado.' if cerrado
+            else 'Un mantenimiento cancelado no puede cerrarse.',
+            estado_actual=mantenimiento.estado_interno,
+            modificado_por=quien, modificado_en=cuando,
+        )
     mantenimiento.estado_interno = Mantenimiento.EstadoInterno.CERRADO
     mantenimiento.resultado_tecnico = resultado_tecnico
-    mantenimiento.fecha_cierre = timezone.now()
+    mantenimiento.fecha_cierre = ocurrido_en or timezone.now()
     mantenimiento.cerrado_por = usuario
     mantenimiento.tiempo_real_minutos = tiempo_real_minutos
     campos = ['estado_interno', 'resultado_tecnico', 'fecha_cierre', 'cerrado_por', 'tiempo_real_minutos']
@@ -301,6 +378,7 @@ def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_re
     EventoMantenimiento.objects.create(
         mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.CERRADO, usuario=usuario,
         detalle={'resultado_tecnico': resultado_tecnico},
+        timestamp=mantenimiento.fecha_cierre,
     )
     if resultado_tecnico in (ResultadoTecnico.REQUIERE_BAJA, ResultadoTecnico.IRREPARABLE):
         for me in mantenimiento.equipos.select_related('equipo'):
@@ -326,16 +404,65 @@ def cerrar_mantenimiento(*, mantenimiento, resultado_tecnico, usuario, tiempo_re
         programado.fecha_proximo = hoy + timedelta(days=programado.frecuencia_dias)
         programado.save(update_fields=['fecha_ultimo', 'fecha_proximo'])
 
+    _avisar_cierre(mantenimiento, usuario=usuario, verbo='cerró')
+
+
+def _quien_lo_abrio(mantenimiento):
+    """El usuario que abrió el mantenimiento, o None.
+
+    Sale del evento PROGRAMADO y no de un campo del modelo porque **no existe un campo**:
+    `Mantenimiento` guarda `cerrado_por` pero no `creado_por`, y el único rastro de quién
+    lo abrió es ese evento. Agregar la columna habría sido una migración sobre una tabla
+    que ya tiene el dato; esto lo lee de donde ya está.
+
+    Devuelve None cuando lo abrió el sistema (una alerta con `abre_mantenimiento`, o la
+    tarea de mantenimientos programados): ahí `usuario` queda vacío a propósito y no hay
+    a quién avisarle.
+    """
+    evento = mantenimiento.eventos.filter(
+        tipo_evento=EventoMantenimiento.TipoEvento.PROGRAMADO,
+        usuario__isnull=False,
+    ).order_by('timestamp').first()
+    return evento.usuario if evento else None
+
+
+def _avisar_cierre(mantenimiento, *, usuario, verbo):
+    """Le avisa a quien lo abrió que su mantenimiento se cerró o se canceló.
+
+    Era el gap silencioso del módulo: se avisaba al asignar, al vencer y al atrasarse,
+    pero no al terminar. Quien pedía el trabajo no se enteraba de que estaba hecho salvo
+    que volviera a mirar — y el que abre un ticket es justamente el que está esperando.
+
+    No se avisa a quien ejecutó la acción: ya sabe lo que hizo.
+    """
+    destinatario = _quien_lo_abrio(mantenimiento)
+    if destinatario is None or destinatario == usuario:
+        return
+    codigos = ', '.join(e.equipo.codigo for e in mantenimiento.equipos.select_related('equipo'))
+    notificar(
+        usuario=destinatario,
+        mensaje=f'Se {verbo} el mantenimiento de {codigos} que abriste.',
+        mantenimiento=mantenimiento,
+    )
+
 
 def cancelar_mantenimiento(*, mantenimiento, motivo, usuario):
     if mantenimiento.estado_interno in (Mantenimiento.EstadoInterno.CERRADO, Mantenimiento.EstadoInterno.CANCELADO):
-        raise ValueError('Un mantenimiento cerrado o ya cancelado no puede cancelarse de nuevo.')
+        quien, cuando = _quien_dejo_asi(mantenimiento)
+        raise ConflictoDeEstado(
+            'Un mantenimiento cerrado o ya cancelado no puede cancelarse de nuevo.',
+            estado_actual=mantenimiento.estado_interno,
+            modificado_por=quien, modificado_en=cuando,
+        )
     mantenimiento.estado_interno = Mantenimiento.EstadoInterno.CANCELADO
     mantenimiento.save(update_fields=['estado_interno'])
     EventoMantenimiento.objects.create(
         mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.CANCELADO, usuario=usuario,
         detalle={'motivo': motivo},
     )
+    # Cancelar tambien termina el ticket, y a quien lo abrio le importa igual —
+    # posiblemente mas, porque su pedido NO se resolvio.
+    _avisar_cierre(mantenimiento, usuario=usuario, verbo='canceló')
 
 
 def generar_proximo_mantenimiento_programado(*, programado, usuario=None):
@@ -379,14 +506,24 @@ def generar_mantenimientos_vencidos() -> int:
     return total
 
 
-def firmar_mantenimiento(*, mantenimiento, tipo_firma, firma_base64, usuario, ip_origen=None):
-    firma = FirmaMantenimiento.objects.create(
-        mantenimiento=mantenimiento, tipo_firma=tipo_firma, firma_base64=firma_base64,
-        ip_origen=ip_origen, firmado_por=usuario,
+def firmar_mantenimiento(*, mantenimiento, tipo_firma, firma_base64, usuario, ip_origen=None, ocurrido_en=None):
+    """`ocurrido_en` = cuándo firmó de verdad el custodio (ver iniciar_mantenimiento).
+    Una firma es prueba de conformidad: fecharla cuando el teléfono recuperó señal la
+    ubica en un momento en que el técnico ya no estaba en la farmacia."""
+    momento = ocurrido_en or timezone.now()
+    # `update_or_create` y no `create`: reintentar una firma que el servidor ya habia
+    # aceptado (la respuesta se perdio y la cola offline la reencolo) tiene que ser un
+    # no-op, no una segunda firma del mismo custodio. Ver el constraint en el modelo.
+    firma, _ = FirmaMantenimiento.objects.update_or_create(
+        mantenimiento=mantenimiento, tipo_firma=tipo_firma,
+        defaults={
+            'firma_base64': firma_base64, 'ip_origen': ip_origen,
+            'firmado_por': usuario, 'firmado_en': momento,
+        },
     )
     EventoMantenimiento.objects.create(
         mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.FIRMADO, usuario=usuario,
-        detalle={'tipo_firma': tipo_firma},
+        detalle={'tipo_firma': tipo_firma}, timestamp=momento,
     )
     return firma
 
@@ -680,30 +817,44 @@ def crear_visita_tecnica(*, farmacia, tecnico, fecha_planificada, motivo='', usu
     )
 
 
-def iniciar_visita_tecnica(*, visita, usuario=None):
+def iniciar_visita_tecnica(*, visita, usuario=None, ocurrido_en=None):
     """Marca la llegada del técnico. A partir de acá corre la ventana contra la que se
-    verifica el GPS al cerrar."""
+    verifica el GPS al cerrar.
+
+    `ocurrido_en` = hora REAL de la llegada (ver iniciar_mantenimiento). Acá pesa doble:
+    `fecha_inicio` es el borde de esa ventana, así que fecharla con la hora de
+    sincronización la corre entera y la verificación por GPS deja de encontrar las
+    posiciones que sí se registraron en la farmacia.
+    """
     if visita.estado != VisitaTecnica.Estado.PLANIFICADA:
-        raise ValueError('Solo una visita planificada puede iniciarse.')
+        # VisitaTecnica no guarda quién la movió (no tiene modelo de eventos propio,
+        # ver docs/modulos.md), así que el 409 viaja con el estado y sin autor.
+        raise ConflictoDeEstado(
+            'Solo una visita planificada puede iniciarse.', estado_actual=visita.estado,
+        )
     visita.estado = VisitaTecnica.Estado.EN_CURSO
-    visita.fecha_inicio = timezone.now()
+    visita.fecha_inicio = ocurrido_en or timezone.now()
     visita.save(update_fields=['estado', 'fecha_inicio'])
     return visita
 
 
-def cerrar_visita_tecnica(*, visita, usuario=None, observaciones=''):
+def cerrar_visita_tecnica(*, visita, usuario=None, observaciones='', ocurrido_en=None):
     """Cierra la visita y verifica por GPS que el técnico haya estado en la farmacia.
 
     La ventana arranca en fecha_inicio si la visita se inició; si el técnico cerró sin
     marcar la llegada, se usa el día planificado completo, que es lo más justo que se
     puede hacer sin ese dato.
     """
-    if visita.estado == VisitaTecnica.Estado.REALIZADA:
-        raise ValueError('La visita ya está cerrada.')
-    if visita.estado == VisitaTecnica.Estado.CANCELADA:
-        raise ValueError('Una visita cancelada no puede cerrarse.')
+    if visita.estado in (VisitaTecnica.Estado.REALIZADA, VisitaTecnica.Estado.CANCELADA):
+        raise ConflictoDeEstado(
+            'La visita ya está cerrada.' if visita.estado == VisitaTecnica.Estado.REALIZADA
+            else 'Una visita cancelada no puede cerrarse.',
+            estado_actual=visita.estado, modificado_en=visita.fecha_cierre,
+        )
 
-    ahora = timezone.now()
+    # `ocurrido_en`: hora real del cierre, que ademas es el borde superior de la
+    # ventana GPS de abajo (ver iniciar_visita_tecnica).
+    ahora = ocurrido_en or timezone.now()
     if visita.fecha_inicio:
         desde = visita.fecha_inicio
     else:
@@ -731,3 +882,176 @@ def cancelar_visita_tecnica(*, visita, motivo='', usuario=None):
         visita.observaciones = motivo
     visita.save(update_fields=['estado', 'observaciones'])
     return visita
+
+
+# --- Cierres de campo que llegaron tarde (BUG-4, ver docs/modulos.md) --------------
+#
+# Un cierre hecho sin señal que, al llegar, se encuentra el mantenimiento ya cerrado o
+# cancelado desde el panel. El guard NO se relaja: pisar la decisión más nueva sería
+# peor, porque se tomó con más contexto. Lo que se agrega es que el trabajo del técnico
+# no se pierda y que alguien tenga que decidir.
+
+# Cuánto puede quedar un conflicto sin que nadie lo mire antes de insistir.
+#
+# Cuatro horas, con el mismo criterio que el resto de los intervalos del proyecto: se
+# elige por el costo de enterarse tarde, no por comodidad. Acá nadie está esperando la
+# respuesta en el momento —el técnico ya se fue de la farmacia y su trabajo ya está
+# guardado—, así que no es el caso de `caducar_resultados_vencidos` (10 min, "alguien
+# esperando una respuesta"). Pero mientras no se resuelva, el mantenimiento miente:
+# figura cancelado cuando el equipo se reparó, el SLA cuenta mal, el activo no volvió de
+# reparación y se puede despachar a otro técnico a un trabajo ya hecho.
+#
+# Media jornada y no una entera (8 h) para que el reenvío caiga ANTES del cambio de
+# turno: quien lo recibe es la misma persona que ya tiene el contexto, no alguien que
+# llega y encuentra una bandeja ajena. Es el mismo razonamiento por el que
+# `escalar_alertas_abiertas` usa 30 min y no 4 h -- la escala cambia, el criterio no.
+HORAS_ESCALAMIENTO_CONFLICTO = 4
+
+
+def registrar_cierre_en_conflicto(*, mantenimiento, tecnico, payload, motivo, ocurrido_en=None):
+    """Guarda el cierre que no se pudo aplicar y avisa a quien corresponda.
+
+    Se llama en el MISMO momento en que se devuelve el 409: el trabajo del técnico queda
+    del lado del servidor antes de contestarle que no se pudo aplicar, no después.
+    """
+    conflicto = CierreEnConflicto.objects.create(
+        mantenimiento=mantenimiento, tecnico=tecnico,
+        ocurrido_en=ocurrido_en or timezone.now(),
+        payload_rechazado=payload, estado_al_llegar=mantenimiento.estado_interno,
+        motivo=motivo,
+    )
+    _avisar_conflicto(conflicto)
+    return conflicto
+
+
+def _destinatarios_de_conflicto(conflicto):
+    """A quién le importa: quien abrió el mantenimiento y quien lo dejó como está.
+
+    No al técnico que cerró: su app ya se lo dice, y el aviso in-app es para que alguien
+    del panel lo resuelva. Se evita duplicar si son la misma persona.
+    """
+    quien_lo_movio, _ = _quien_dejo_asi(conflicto.mantenimiento)
+    candidatos = [_quien_lo_abrio(conflicto.mantenimiento), quien_lo_movio]
+    vistos, destinatarios = set(), []
+    for usuario in candidatos:
+        if usuario is None or usuario == conflicto.tecnico or usuario.pk in vistos:
+            continue
+        vistos.add(usuario.pk)
+        destinatarios.append(usuario)
+    return destinatarios
+
+
+def _avisar_conflicto(conflicto, *, escalamiento=False):
+    from django.urls import reverse
+
+    prefijo = 'SIGUE SIN REVISARSE: ' if escalamiento else ''
+    estados = dict(Mantenimiento.EstadoInterno.choices)
+    mensaje = (
+        f'{prefijo}{conflicto.tecnico} cerró en campo el mantenimiento '
+        f'#{conflicto.mantenimiento_id} y no se pudo aplicar: ya figuraba como '
+        f'"{estados.get(conflicto.estado_al_llegar, conflicto.estado_al_llegar)}". Necesita revisión.'
+    )
+    for destinatario in _destinatarios_de_conflicto(conflicto):
+        notificar(
+            usuario=destinatario, mensaje=mensaje[:255],
+            url=reverse('panel:cierres_en_conflicto_lista'),
+            mantenimiento=conflicto.mantenimiento,
+        )
+
+
+@transaction.atomic
+def aplicar_cierre_en_conflicto(*, conflicto, usuario):
+    """Le da la razón al técnico: reabre el mantenimiento y lo cierra con SU payload.
+
+    Reabrir y volver a cerrar, en vez de escribir los campos a mano, para que el cierre
+    pase por `cerrar_mantenimiento` completo -- que es lo que devuelve el activo de
+    reparación, recomienda la baja si corresponde y avanza el plan programado. Saltarse
+    eso dejaría el mantenimiento con cara de cerrado y el resto del sistema sin enterarse.
+    """
+    if conflicto.revisado:
+        raise ValueError('Este conflicto ya fue revisado.')
+
+    mantenimiento = conflicto.mantenimiento
+    payload = conflicto.payload_rechazado
+    estado_previo = mantenimiento.estado_interno
+
+    # Se reabre para que el guard de `cerrar_mantenimiento` deje pasar el cierre. Queda
+    # el evento de por medio: el historial tiene que mostrar que esto lo decidió una
+    # persona, no que el mantenimiento se cerró dos veces solo.
+    mantenimiento.estado_interno = Mantenimiento.EstadoInterno.EN_PROCESO
+    mantenimiento.fecha_cierre = None
+    mantenimiento.save(update_fields=['estado_interno', 'fecha_cierre'])
+    EventoMantenimiento.objects.create(
+        mantenimiento=mantenimiento, tipo_evento=EventoMantenimiento.TipoEvento.INICIADO, usuario=usuario,
+        detalle={
+            'motivo': 'Reapertura para aplicar el cierre de campo en conflicto',
+            'estado_previo': estado_previo, 'conflicto_id': conflicto.pk,
+        },
+    )
+
+    cerrar_mantenimiento(
+        mantenimiento=mantenimiento,
+        resultado_tecnico=payload.get('resultado_tecnico'),
+        usuario=conflicto.tecnico,
+        tiempo_real_minutos=payload.get('tiempo_real_minutos'),
+        estado_general=payload.get('estado_general', '') or '',
+        ocurrido_en=conflicto.ocurrido_en,
+    )
+
+    conflicto.revisado = True
+    conflicto.revisado_por = usuario
+    conflicto.revisado_en = timezone.now()
+    conflicto.resolucion = f'Se aplicó el cierre de campo (estaba en "{estado_previo}").'
+    conflicto.save(update_fields=['revisado', 'revisado_por', 'revisado_en', 'resolucion'])
+    return conflicto
+
+
+def descartar_cierre_en_conflicto(*, conflicto, usuario, motivo):
+    """Le da la razón al panel. El conflicto queda cerrado pero el payload NO se borra:
+    es el registro de que hubo un trabajo de campo que no se contabilizó."""
+    if conflicto.revisado:
+        raise ValueError('Este conflicto ya fue revisado.')
+    if not (motivo or '').strip():
+        raise ValueError('Hace falta un motivo para descartar el cierre del técnico.')
+
+    conflicto.revisado = True
+    conflicto.revisado_por = usuario
+    conflicto.revisado_en = timezone.now()
+    conflicto.resolucion = motivo.strip()
+    conflicto.save(update_fields=['revisado', 'revisado_por', 'revisado_en', 'resolucion'])
+    return conflicto
+
+
+def escalar_cierres_en_conflicto() -> int:
+    """Celery Beat periódico. Reenvía el aviso de cualquier CierreEnConflicto sin revisar
+    más viejo que HORAS_ESCALAMIENTO_CONFLICTO.
+
+    Mismo mecanismo que `escalar_alertas_abiertas`, incluido el `escalado_en` para no
+    repetir el aviso en cada corrida. El motivo de que exista es el mismo que se repite en
+    todo este proyecto: una bandeja que depende de que alguien se acuerde de mirarla es
+    una bandeja que no se mira.
+    """
+    umbral = timezone.now() - timedelta(hours=HORAS_ESCALAMIENTO_CONFLICTO)
+    candidatos = CierreEnConflicto.objects.filter(
+        revisado=False, escalado_en__isnull=True, creado_en__lte=umbral,
+    ).select_related('mantenimiento', 'tecnico')
+
+    escalados = 0
+    for conflicto in candidatos:
+        _avisar_conflicto(conflicto, escalamiento=True)
+        conflicto.escalado_en = timezone.now()
+        conflicto.save(update_fields=['escalado_en'])
+        escalados += 1
+    return escalados
+
+
+def contar_cierres_en_conflicto(unidades=None) -> int:
+    """Cuántos conflictos esperan revisión. Lo usa el Centro de Monitoreo.
+
+    `count()` y no traer filas: esa pantalla la dejan abierta todo el día y se refresca
+    sola cada minuto -- mismo criterio que `resumen_operacion`.
+    """
+    queryset = CierreEnConflicto.objects.filter(revisado=False)
+    if unidades is not None:
+        queryset = queryset.filter(mantenimiento__cliente__unidad_negocio__in=unidades)
+    return queryset.count()

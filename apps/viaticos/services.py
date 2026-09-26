@@ -280,6 +280,14 @@ def observar_reporte(*, reporte, coordinador, comentario):
     reporte.revisado_por = coordinador
     reporte.revisado_en = timezone.now()
     reporte.save(update_fields=['estado', 'comentario_coordinador', 'revisado_por', 'revisado_en'])
+    # El tecnico veia el comentario en su lista, pero solo si entraba a mirar — y
+    # observar un reporte es pedirle algo, no archivarlo. Sin el aviso, el pedido
+    # quedaba esperando a que se le ocurriera revisar.
+    _avisar(
+        _usuario_del_colaborador(reporte.colaborador),
+        f'Te observaron el viático del {reporte.fecha:%d/%m}: {comentario[:120]}',
+        url='/viaticos/mis-reportes/',
+    )
     return reporte
 
 
@@ -367,3 +375,76 @@ def tendencia_ultimos_meses(queryset, anio: int, mes: int, meses: int = 3) -> li
             'reportes': del_mes.count(),
         })
     return resultado
+
+
+@transaction.atomic
+def reenviar_reporte(*, reporte, usuario):
+    """El técnico corrige un reporte observado y lo vuelve a mandar a revisión.
+
+    Cerraba un callejón sin salida: `observar_reporte` dice en su propio docstring que
+    "devuelve el reporte al técnico para que lo corrija", y hasta el 26-sep-2026 el
+    técnico **no tenía cómo corregirlo**. Veía el comentario del coordinador en su lista
+    y el reporte se quedaba en OBSERVADO para siempre. La política exige que un gasto
+    observado se subsane, no que se abandone.
+
+    Vuelve a PENDIENTE y no a un estado nuevo: PENDIENTE ya significa exactamente
+    "esperando revisión", que es donde queda. Inventar un EN_REVISION duplicaría ese
+    significado y obligaría a tocar la bandeja del coordinador, que filtra por PENDIENTE.
+
+    **No se borra `comentario_coordinador`.** Es el pedido de corrección y es lo que
+    explica por qué el reporte cambió: perderlo al reenviar dejaría al coordinador
+    revisando de nuevo sin saber qué había pedido. Sí se limpian `revisado_por` y
+    `revisado_en`, que pasan a ser de la revisión que viene, no de la anterior.
+
+    Las alertas se re-evalúan: el técnico pudo corregir justamente lo que las disparó
+    (un monto, una farmacia), y arrastrar las viejas haría que el coordinador tenga que
+    justificar algo que ya no pasa.
+    """
+    if reporte.estado != EstadoReporteViatico.OBSERVADO:
+        raise TransicionInvalida(
+            f'Solo se reenvía un reporte observado; este está {reporte.get_estado_display().lower()}.'
+        )
+
+    # Se guarda ANTES de limpiarlo: es a quien hay que avisarle, y abajo queda en None.
+    coordinador = reporte.revisado_por
+
+    reporte.estado = EstadoReporteViatico.PENDIENTE
+    reporte.revisado_por = None
+    reporte.revisado_en = None
+    reporte.save(update_fields=['estado', 'revisado_por', 'revisado_en'])
+
+    # Las alertas viejas se cierran y se vuelven a evaluar sobre el reporte corregido.
+    reporte.alertas.all().delete()
+    evaluar_alertas(reporte)
+
+    _avisar(
+        coordinador,
+        f'{reporte.colaborador} corrigió y reenvió un viático observado '
+        f'de {reporte.fecha:%d/%m}.',
+        url=f'/viaticos/{reporte.pk}/',
+    )
+    return reporte
+
+
+def _usuario_del_colaborador(colaborador):
+    """El User detrás de un Colaborador, o None. Sin esto no hay a quién notificar."""
+    return getattr(colaborador, 'usuario', None)
+
+
+def _avisar(usuario, mensaje, url=''):
+    """Bandeja in-app, reusando la de `apps.mantenimiento`.
+
+    Import diferido y no a nivel de módulo, mismo criterio que el resto de los cruces
+    entre apps de este proyecto (ver `abrir_o_mantener_alerta` llamando a
+    `abrir_mantenimiento_desde_alerta`).
+
+    `Notificacion` vive en `mantenimiento` por dónde nació, pero su tabla se llama
+    `notificacion` y sus tres FK son opcionales: sirve tal cual para esto sin tocar el
+    esquema. Duplicar el modelo para viáticos habría dado dos bandejas que el usuario
+    tendría que mirar por separado.
+    """
+    if usuario is None:
+        return
+    from apps.mantenimiento.services import notificar
+
+    notificar(usuario=usuario, mensaje=mensaje, url=url)

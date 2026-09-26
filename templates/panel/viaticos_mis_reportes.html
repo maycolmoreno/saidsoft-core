@@ -35,7 +35,18 @@
                         {{ r.get_estado_display }}
                     </span>
                 </td>
-                <td class="px-4 py-3 text-[var(--text-dim)] text-xs">{{ r.comentario_coordinador|default:"—" }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)] text-xs">
+                    {{ r.comentario_coordinador|default:"—" }}
+                    {% comment %}
+                    El botón vive acá, pegado al comentario: el comentario ES el pedido de
+                    corrección, y hasta el 26-sep-2026 el técnico lo leía sin tener con qué
+                    responderle. El reporte se quedaba en observado para siempre.
+                    {% endcomment %}
+                    {% if r.estado == 'observado' %}
+                    <a href="{% url 'panel:viatico_editar' r.pk %}" class="btn secondary"
+                       style="margin-top:.4rem; display:inline-block;">Corregir y reenviar</a>
+                    {% endif %}
+                </td>
             </tr>
         {% empty %}
             <tr><td colspan="6" class="px-4 py-8 text-center text-[var(--text-faint)]">

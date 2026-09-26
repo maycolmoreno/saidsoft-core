@@ -115,6 +115,58 @@ def alerta_reconocer(request, pk):
     return redirect('panel:alertas_lista')
 
 
+
+@login_required
+@permission_required('mantenimiento.add_mantenimiento', raise_exception=True)
+@require_POST
+def alerta_abrir_mantenimiento(request, pk):
+    """Abre a mano la orden de trabajo de una alerta.
+
+    `abrir_mantenimiento_desde_alerta` ya existía y solo se disparaba sola, cuando la
+    regla tenía `abre_mantenimiento`. Para todo lo demás alguien tenía que ir a
+    Mantenimientos, crear uno y volver a escribir de qué alerta venía — o no hacerlo.
+
+    Se reusa la función **tal cual**: mismo criterio de prioridad según la severidad,
+    misma descripción con el número de alerta, mismo rechazo si el equipo ya tiene un
+    mantenimiento abierto. Lo único que se agrega es a quién atribuirlo.
+
+    Por qué el mensaje explica cuando NO se creó: la función nunca lanza y devuelve
+    `None` con el motivo en el log, que es lo correcto para la ruta automática (corre
+    sobre toda la flota y no puede tumbar la evaluación de alertas). Pero acá hay alguien
+    esperando: un botón que no hace nada y no dice por qué es peor que no tenerlo.
+    """
+    from apps.mantenimiento.services import abrir_mantenimiento_desde_alerta
+
+    alerta = get_object_or_404(
+        Alerta.objects.select_related('regla', 'estacion__farmacia'), pk=pk,
+    )
+    verificar_acceso(request.user, alerta.estacion.farmacia.unidad_negocio)
+
+    # Se mira antes para poder explicar la causa más común en vez de un "no se pudo".
+    if getattr(alerta.estacion, 'activo_vinculado', None) is None:
+        messages.error(
+            request,
+            f'{alerta.estacion.codigo} todavía no tiene un equipo del inventario vinculado, '
+            f'así que no hay a qué asociar el mantenimiento. El cruce por número de serie '
+            f'corre a diario; si el equipo no está cargado, cargalo en Activos.',
+        )
+        return redirect('panel:alertas_lista')
+
+    mantenimiento = abrir_mantenimiento_desde_alerta(alerta, usuario=request.user)
+    if mantenimiento is None:
+        messages.warning(
+            request,
+            f'No se abrió un mantenimiento nuevo: ese equipo ya tiene uno abierto. '
+            f'Buscalo en Mantenimientos.',
+        )
+        return redirect('panel:alertas_lista')
+
+    registrar_evento(
+        usuario=request.user, accion='alerta.abrir_mantenimiento', objeto=alerta, request=request,
+    )
+    messages.success(request, f'Mantenimiento #{mantenimiento.pk} abierto desde la alerta.')
+    return redirect('panel:mantenimiento_detalle', pk=mantenimiento.pk)
+
 @login_required
 @permission_required('monitoreo.change_alerta', raise_exception=True)
 @require_POST

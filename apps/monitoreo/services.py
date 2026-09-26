@@ -1241,6 +1241,14 @@ def resumen_operacion(unidades=None) -> dict:
         MuestraRedFarmacia.objects.all(), unidades, 'farmacia__unidad_negocio',
     ).order_by('-timestamp').values_list('timestamp', flat=True).first()
 
+    # Cierres de campo que no se pudieron aplicar y esperan que alguien decida. Van acá
+    # y no en una pantalla aparte a la que haya que entrar: el punto de esa bandeja es
+    # que NO dependa de que alguien se acuerde de mirarla (ver
+    # apps.mantenimiento.services.CierreEnConflicto).
+    from apps.mantenimiento.services import contar_cierres_en_conflicto
+
+    cierres_en_conflicto = contar_cierres_en_conflicto(unidades)
+
     return {
         'estaciones_total': total_estaciones,
         'estaciones_en_linea': en_linea,
@@ -1251,6 +1259,7 @@ def resumen_operacion(unidades=None) -> dict:
         'pos_criticos': pos_criticos,
         'pos_no_criticos': pos_no_criticos,
         'activos_sin_sondeo': sin_sondeo,
+        'cierres_en_conflicto': cierres_en_conflicto,
         'ultimo_sondeo_red': ultima_muestra,
         'calculado_en': ahora,
     }

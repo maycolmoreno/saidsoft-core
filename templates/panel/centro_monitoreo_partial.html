@@ -63,6 +63,26 @@ existe — anotado como pendiente en PLAN_MODERNIZACION §10-AK.
         <div class="text-2xl font-semibold {% if r.pos_criticos %}text-[var(--critical)]{% elif r.pos_no_criticos %}text-[var(--warning)]{% endif %}">{{ r.pos_criticos }}<span class="text-base text-[var(--text-faint)]"> + {{ r.pos_no_criticos }}</span></div>
         <div class="text-xs text-[var(--text-faint)] mt-1">críticos + no críticos</div>
     </div>
+    {% comment %}
+    Cierres de campo en conflicto. Acá y no en una pantalla aparte a la que haya que
+    entrar: el punto de esa bandeja es que NO dependa de que alguien se acuerde de
+    mirarla. El número enlaza a donde están las acciones, igual que el resto del
+    tablero — el Centro es de solo lectura a propósito.
+    {% endcomment %}
+    {% if r.cierres_en_conflicto or perms.mantenimiento.view_cierreenconflicto %}
+    <div class="card p-4">
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-xs text-[var(--text-faint)]">Cierres en conflicto</span>
+            {% if r.cierres_en_conflicto %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
+        </div>
+        <div class="text-2xl font-semibold {% if r.cierres_en_conflicto %}text-[var(--warning)]{% endif %}">
+            {% if perms.mantenimiento.view_cierreenconflicto %}
+            <a href="{% url 'panel:cierres_en_conflicto_lista' %}" class="link">{{ r.cierres_en_conflicto }}</a>
+            {% else %}{{ r.cierres_en_conflicto }}{% endif %}
+        </div>
+        <div class="text-xs text-[var(--text-faint)] mt-1">cierres de campo sin revisar</div>
+    </div>
+    {% endif %}
 </div>
 
 {% comment %}

@@ -55,6 +55,38 @@ class ErrorServidor extends ErrorApi {
   const ErrorServidor([super.mensaje = 'El servidor tuvo un problema.']);
 }
 
+/// Alguien mas ya movio esto desde el panel mientras el tecnico lo hacia sin senal.
+///
+/// Se distingue de `DatosRechazados` porque NO se arregla reintentando: el servidor
+/// contesta 409 con `codigo: conflicto_de_estado`. El sincronizador la saca de la cola
+/// de reintento en vez de dejarla dando vueltas para siempre, y el backend ya guardo el
+/// trabajo del tecnico para que mesa de ayuda decida (ver CierreEnConflicto).
+class ConflictoDeEstado extends ErrorApi {
+  const ConflictoDeEstado(
+    super.mensaje, {
+    this.estadoActual = '',
+    this.modificadoPor,
+    this.modificadoEn,
+  });
+
+  /// En que estado quedo del lado del servidor ('cerrado', 'cancelado', ...).
+  final String estadoActual;
+
+  /// Quien lo dejo asi. Puede faltar: las visitas no guardan autor.
+  final String? modificadoPor;
+  final DateTime? modificadoEn;
+
+  /// Lo que se le muestra al tecnico: que paso y que va a pasar ahora.
+  String get explicacion {
+    final quien = modificadoPor;
+    final base = quien == null || quien.isEmpty
+        ? 'Alguien lo modifico desde el panel mientras trabajabas sin senal.'
+        : '$quien lo modifico desde el panel mientras trabajabas sin senal.';
+    return '$base Tu trabajo NO se perdio: quedo guardado y mesa de ayuda '
+        'tiene que revisarlo.';
+  }
+}
+
 typedef AlExpirarSesion = Future<void> Function();
 
 /// Cliente HTTP de la API. Todo pasa por acá: una sola definición del transporte,
@@ -167,8 +199,28 @@ class Api {
     }
     if (codigo == 403) throw const SinPermiso();
     if (codigo == 404) throw const NoEncontrado();
+    if (codigo == 409) throw _conflictoDe(respuesta);
     if (codigo >= 500) throw const ErrorServidor();
     throw DatosRechazados(_mensajeDe(respuesta));
+  }
+
+  /// Arma el conflicto con lo que el servidor conto. Si el cuerpo no trae el `codigo`
+  /// esperado se cae a `DatosRechazados`: un 409 sin ese contrato no es el nuestro.
+  ErrorApi _conflictoDe(http.Response respuesta) {
+    try {
+      final cuerpo = jsonDecode(utf8.decode(respuesta.bodyBytes));
+      if (cuerpo is Map && cuerpo['codigo'] == 'conflicto_de_estado') {
+        return ConflictoDeEstado(
+          cuerpo['detail']?.toString() ?? 'El servidor rechazo la accion por conflicto.',
+          estadoActual: cuerpo['estado_actual']?.toString() ?? '',
+          modificadoPor: cuerpo['modificado_por']?.toString(),
+          modificadoEn: DateTime.tryParse(cuerpo['modificado_en']?.toString() ?? ''),
+        );
+      }
+    } catch (_) {
+      // Cuerpo no-JSON: se cae al generico de abajo.
+    }
+    return DatosRechazados(_mensajeDe(respuesta));
   }
 
   /// Extrae algo legible del cuerpo de error de DRF, que puede ser

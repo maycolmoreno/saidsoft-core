@@ -9,6 +9,17 @@
     </p>
 </div>
 
+{% comment %}
+Qué pidió corregir el coordinador, arriba del formulario y no en otra pantalla: es lo
+único que el técnico necesita tener a la vista mientras edita.
+{% endcomment %}
+{% if comentario_a_corregir %}
+<div class="card p-4 max-w-2xl mb-4" style="border-left:3px solid var(--warning);">
+    <div class="text-sm font-medium mb-1">Qué te pidieron corregir</div>
+    <div class="text-sm text-[var(--text-dim)]">{{ comentario_a_corregir }}</div>
+</div>
+{% endif %}
+
 <form method="post" enctype="multipart/form-data" class="card p-5 max-w-2xl">
     {% csrf_token %}
     {% if form.non_field_errors %}

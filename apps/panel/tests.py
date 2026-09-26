@@ -854,6 +854,12 @@ class MantenimientoApiCrearTests(TestCase):
     def setUp(self):
         from rest_framework.authtoken.models import Token
         self.tecnico = User.objects.create_user(username='tec', password='x')
+        # Desde el 26-sep-2026 la API exige los mismos codenames que el panel (ver
+        # apps/mantenimiento/api_permissions.py); antes alcanzaba con el token.
+        self.tecnico.user_permissions.add(
+            Permission.objects.get(content_type__app_label='mantenimiento', codename='add_mantenimiento'),
+            Permission.objects.get(content_type__app_label='mantenimiento', codename='view_mantenimiento'),
+        )
         self.token = Token.objects.create(user=self.tecnico)
         self.equipo = Activo.objects.create(codigo='CR-DSK-0100', tipo=Activo.Tipo.DESKTOP)
         self.cliente = Colaborador.objects.create(nombre='Beto', cedula='8888')
@@ -6736,3 +6742,336 @@ class EjecucionesVencidasBordesTests(TestCase):
         self.assertEqual(caducar_resultados_vencidos(), 0)
         r.refresh_from_db()
         self.assertEqual(r.estado, ResultadoEjecucionScript.Estado.COMPLETADO)
+
+
+class ReenviarViaticoObservadoTests(TestCase):
+    """Un reporte observado se puede corregir y reenviar.
+
+    Cerraba el único callejón sin salida literal del sistema: `observar_reporte` dice en
+    su docstring que "devuelve el reporte al técnico para que lo corrija", y hasta el
+    26-sep-2026 el técnico **veía el comentario en su lista y no tenía con qué
+    responderle**. El reporte se quedaba en OBSERVADO para siempre.
+    """
+
+    def setUp(self):
+        from apps.activos.models import Colaborador
+        from apps.viaticos.models import EstadoReporteViatico, ReporteViatico, RubroViatico
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX840')
+        self.farmacia = Farmacia.objects.create(codigo='ML840', grupo=grupo, unidad_negocio=self.sg)
+
+        self.tecnico_user = User.objects.create_user(username='tec_viat', password='x')
+        self.tecnico = Colaborador.objects.create(
+            nombre='Tec Campo', cedula='0900000840',
+            unidad_negocio=self.sg, usuario=self.tecnico_user,
+        )
+        self.coordinador = User.objects.create_user(username='coord_viat', password='x')
+
+        self.reporte = ReporteViatico.objects.create(
+            colaborador=self.tecnico, farmacia_visitada=self.farmacia,
+            fecha=timezone.localdate(), rubro=RubroViatico.MOVILIZACION, monto=Decimal('12.00'),
+            estado=EstadoReporteViatico.PENDIENTE,
+        )
+
+    def _observar(self):
+        from apps.viaticos import services
+
+        return services.observar_reporte(
+            reporte=self.reporte, coordinador=self.coordinador,
+            comentario='Falta el origen y el destino.',
+        )
+
+    # --- el servicio ---
+
+    def test_reenviar_lo_deja_PENDIENTE_y_no_inventa_un_estado(self):
+        """PENDIENTE ya significa "esperando revisión", que es donde queda. Un estado
+        nuevo duplicaría ese significado y obligaría a tocar la bandeja del coordinador,
+        que filtra por PENDIENTE."""
+        from apps.viaticos import services
+        from apps.viaticos.models import EstadoReporteViatico
+
+        self._observar()
+        services.reenviar_reporte(reporte=self.reporte, usuario=self.tecnico_user)
+        self.reporte.refresh_from_db()
+        self.assertEqual(self.reporte.estado, EstadoReporteViatico.PENDIENTE)
+
+    def test_conserva_el_comentario_del_coordinador(self):
+        """Es el pedido de corrección y explica por qué el reporte cambió. Borrarlo
+        dejaría al coordinador revisando de nuevo sin saber qué había pedido."""
+        from apps.viaticos import services
+
+        self._observar()
+        services.reenviar_reporte(reporte=self.reporte, usuario=self.tecnico_user)
+        self.reporte.refresh_from_db()
+        self.assertIn('origen', self.reporte.comentario_coordinador)
+
+    def test_limpia_quien_reviso_porque_la_revision_que_viene_es_otra(self):
+        from apps.viaticos import services
+
+        self._observar()
+        services.reenviar_reporte(reporte=self.reporte, usuario=self.tecnico_user)
+        self.reporte.refresh_from_db()
+        self.assertIsNone(self.reporte.revisado_por)
+        self.assertIsNone(self.reporte.revisado_en)
+
+    def test_no_se_reenvia_algo_que_no_esta_observado(self):
+        from apps.viaticos import services
+        from apps.viaticos.services import TransicionInvalida
+
+        with self.assertRaises(TransicionInvalida):
+            services.reenviar_reporte(reporte=self.reporte, usuario=self.tecnico_user)
+
+    # --- las notificaciones, que era la mitad silenciosa ---
+
+    def test_observar_le_avisa_al_tecnico(self):
+        """Observar es pedirle algo, no archivarlo. Sin aviso, el pedido esperaba a que
+        se le ocurriera mirar."""
+        from apps.mantenimiento.models import Notificacion
+
+        self._observar()
+        avisos = Notificacion.objects.filter(usuario=self.tecnico_user)
+        self.assertEqual(avisos.count(), 1)
+        self.assertIn('observaron', avisos.first().mensaje)
+
+    def test_reenviar_le_avisa_al_coordinador_que_lo_habia_observado(self):
+        from apps.mantenimiento.models import Notificacion
+        from apps.viaticos import services
+
+        self._observar()
+        services.reenviar_reporte(reporte=self.reporte, usuario=self.tecnico_user)
+        avisos = Notificacion.objects.filter(usuario=self.coordinador)
+        self.assertEqual(avisos.count(), 1)
+        self.assertIn('reenvió', avisos.first().mensaje)
+
+    def test_usa_la_bandeja_que_ya_existia_y_no_una_nueva(self):
+        """`Notificacion` vive en `mantenimiento` por dónde nació, pero sus tres FK son
+        opcionales y su tabla se llama `notificacion`. Duplicar el modelo para viáticos
+        habría dado dos bandejas que el usuario tendría que mirar por separado."""
+        from apps.mantenimiento.models import Notificacion
+
+        self._observar()
+        aviso = Notificacion.objects.get(usuario=self.tecnico_user)
+        self.assertIsNone(aviso.mantenimiento)
+        self.assertTrue(aviso.url)
+
+    # --- la pantalla ---
+
+    def test_el_tecnico_puede_corregirlo_desde_el_panel(self):
+        from django.contrib.auth.models import Permission
+
+        from apps.viaticos.models import EstadoReporteViatico
+
+        self._observar()
+        self.tecnico_user.user_permissions.add(
+            Permission.objects.get(content_type__app_label='viaticos', codename='add_reporteviatico'),
+        )
+        self.client.force_login(self.tecnico_user)
+        resp = self.client.get(reverse('panel:viatico_editar', args=[self.reporte.pk]))
+        self.assertEqual(resp.status_code, 200)
+        # El pedido de corrección se ve mientras edita, no en otra pantalla.
+        self.assertContains(resp, 'Falta el origen')
+
+    def test_nadie_corrige_el_reporte_de_otro(self):
+        from django.contrib.auth.models import Permission
+
+        from apps.activos.models import Colaborador
+
+        self._observar()
+        otro_user = User.objects.create_user(username='otro_tec', password='x')
+        Colaborador.objects.create(
+            nombre='Otro Tec', cedula='0900000841',
+            unidad_negocio=self.sg, usuario=otro_user,
+        )
+        otro_user.user_permissions.add(
+            Permission.objects.get(content_type__app_label='viaticos', codename='add_reporteviatico'),
+        )
+        self.client.force_login(otro_user)
+        resp = self.client.get(reverse('panel:viatico_editar', args=[self.reporte.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+
+class NotificarCierreDeMantenimientoTests(TestCase):
+    """Quien abre un mantenimiento se entera de que se cerró.
+
+    El módulo avisaba al asignar, al vencer y al atrasarse — no al terminar. El que pide
+    el trabajo es justamente el que está esperando, y tenía que volver a mirar.
+    """
+
+    def setUp(self):
+        from apps.activos.models import Activo, CategoriaEquipo, Colaborador, Marca
+        from apps.mantenimiento.models import TipoMantenimiento
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.quien_abre = User.objects.create_user(username='abre_mant', password='x')
+        self.quien_cierra = User.objects.create_user(username='cierra_mant', password='x')
+        self.tipo, _ = TipoMantenimiento.objects.get_or_create(
+            codigo='correctivo', defaults={'nombre': 'Correctivo'},
+        )
+        self.equipo = Activo.objects.create(
+            codigo='EQ-840', categoria=CategoriaEquipo.objects.create(nombre='PC-840'),
+            marca=Marca.objects.create(nombre='M-840'), unidad_negocio=self.sg,
+        )
+
+    def _abrir(self, usuario):
+        from apps.mantenimiento.services import crear_mantenimiento_manual
+
+        return crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=None, descripcion='Falla',
+            fecha_programada=timezone.now(), usuario=usuario,
+            tipo_mantenimiento=self.tipo,
+        )
+
+    def test_cerrar_le_avisa_a_quien_lo_abrio(self):
+        from apps.mantenimiento.models import Notificacion
+        from apps.mantenimiento.services import cerrar_mantenimiento
+
+        m = self._abrir(self.quien_abre)
+        Notificacion.objects.all().delete()  # el aviso de asignación no interesa acá
+        cerrar_mantenimiento(
+            mantenimiento=m, resultado_tecnico='Reemplazado', usuario=self.quien_cierra,
+        )
+        avisos = Notificacion.objects.filter(usuario=self.quien_abre)
+        self.assertEqual(avisos.count(), 1)
+        self.assertIn('cerró', avisos.first().mensaje)
+
+    def test_cancelar_tambien_avisa(self):
+        """Posiblemente importe más: el pedido NO se resolvió."""
+        from apps.mantenimiento.models import Notificacion
+        from apps.mantenimiento.services import cancelar_mantenimiento
+
+        m = self._abrir(self.quien_abre)
+        Notificacion.objects.all().delete()
+        cancelar_mantenimiento(mantenimiento=m, motivo='Duplicado', usuario=self.quien_cierra)
+        self.assertIn('canceló', Notificacion.objects.get(usuario=self.quien_abre).mensaje)
+
+    def test_no_se_avisa_a_si_mismo(self):
+        """Quien cierra ya sabe lo que hizo."""
+        from apps.mantenimiento.models import Notificacion
+        from apps.mantenimiento.services import cerrar_mantenimiento
+
+        m = self._abrir(self.quien_abre)
+        Notificacion.objects.all().delete()
+        cerrar_mantenimiento(mantenimiento=m, resultado_tecnico='ok', usuario=self.quien_abre)
+        self.assertEqual(Notificacion.objects.filter(usuario=self.quien_abre).count(), 0)
+
+    def test_un_mantenimiento_abierto_por_el_sistema_no_avisa_a_nadie(self):
+        """Los que abre una alerta o la tarea de programados tienen `usuario=None`: no
+        hay a quién avisarle, y no puede explotar por eso."""
+        from apps.mantenimiento.models import Notificacion
+        from apps.mantenimiento.services import cerrar_mantenimiento
+
+        m = self._abrir(None)
+        Notificacion.objects.all().delete()
+        cerrar_mantenimiento(mantenimiento=m, resultado_tecnico='ok', usuario=self.quien_cierra)
+        self.assertEqual(Notificacion.objects.count(), 0)
+
+
+class AbrirMantenimientoDesdeLaAlertaTests(TestCase):
+    """El botón manual en la pantalla de alertas.
+
+    `abrir_mantenimiento_desde_alerta` ya existía y solo se disparaba sola cuando la
+    regla tenía `abre_mantenimiento`. Para el resto, alguien tenía que ir a
+    Mantenimientos, crear una orden y volver a escribir de qué alerta venía.
+    """
+
+    def setUp(self):
+        from django.contrib.auth.models import Permission
+
+        from apps.activos.models import Activo, CategoriaEquipo, Marca
+        from apps.mantenimiento.models import TipoMantenimiento
+        from apps.monitoreo.models import Alerta, Metrica, ReglaAlerta
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX841')
+        farmacia = Farmacia.objects.create(codigo='ML841', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML841-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        TipoMantenimiento.objects.get_or_create(codigo='correctivo', defaults={'nombre': 'Correctivo'})
+        autor = User.objects.create_user(username='autor_ra', password='x')
+        regla = ReglaAlerta.objects.create(
+            nombre='Disco lleno', metrica=Metrica.DISCO_USADO_PCT, umbral=95,
+            duracion_minutos=0, severidad=ReglaAlerta.Severidad.CRITICAL, creado_por=autor,
+            abre_mantenimiento=False,
+        )
+        self.alerta = Alerta.objects.create(
+            regla=regla, estacion=self.estacion, valor_disparador=99,
+        )
+        self.operador = User.objects.create_user(username='op_ra', password='x')
+        PerfilUsuario.objects.create(usuario=self.operador, acceso_todas_unidades=True)
+        for app, code in (('mantenimiento', 'add_mantenimiento'), ('monitoreo', 'view_alerta')):
+            self.operador.user_permissions.add(
+                Permission.objects.get(content_type__app_label=app, codename=code),
+            )
+        self.categoria = CategoriaEquipo.objects.create(nombre='PC-841')
+        self.marca = Marca.objects.create(nombre='M-841')
+
+    def _vincular_equipo(self):
+        from apps.activos.models import Activo
+
+        return Activo.objects.create(
+            codigo='EQ-841', categoria=self.categoria, marca=self.marca,
+            unidad_negocio=self.sg, estacion=self.estacion,
+        )
+
+    def _url(self):
+        return reverse('panel:alerta_abrir_mantenimiento', args=[self.alerta.pk])
+
+    def test_crea_el_mantenimiento_reusando_la_funcion_existente(self):
+        from apps.mantenimiento.models import Mantenimiento
+
+        self._vincular_equipo()
+        self.client.force_login(self.operador)
+        resp = self.client.post(self._url())
+        self.assertEqual(resp.status_code, 302)
+        m = Mantenimiento.objects.filter(equipos__equipo__codigo='EQ-841').first()
+        self.assertIsNotNone(m)
+        # La descripción que arma la función original menciona la alerta.
+        self.assertIn(f'#{self.alerta.pk}', m.descripcion)
+
+    def test_queda_a_nombre_de_quien_lo_apreto(self):
+        """Es lo único que se le agregó a la función: antes siempre era `usuario=None`."""
+        from apps.mantenimiento.models import EventoMantenimiento, Mantenimiento
+
+        self._vincular_equipo()
+        self.client.force_login(self.operador)
+        self.client.post(self._url())
+        m = Mantenimiento.objects.filter(equipos__equipo__codigo='EQ-841').first()
+        evento = EventoMantenimiento.objects.filter(
+            mantenimiento=m, tipo_evento=EventoMantenimiento.TipoEvento.PROGRAMADO,
+        ).first()
+        self.assertEqual(evento.usuario, self.operador)
+
+    def test_sin_equipo_vinculado_explica_por_que_y_no_falla_en_silencio(self):
+        """La función devuelve None y loguea el motivo, que es correcto para la ruta
+        automática. Acá hay alguien esperando: un botón que no hace nada y no dice por
+        qué es peor que no tenerlo."""
+        from apps.mantenimiento.models import Mantenimiento
+
+        self.client.force_login(self.operador)
+        resp = self.client.post(self._url(), follow=True)
+        self.assertEqual(Mantenimiento.objects.count(), 0)
+        self.assertContains(resp, 'no tiene un equipo del inventario vinculado')
+
+    def test_no_duplica_si_el_equipo_ya_tiene_uno_abierto(self):
+        from apps.mantenimiento.models import Mantenimiento
+
+        self._vincular_equipo()
+        self.client.force_login(self.operador)
+        self.client.post(self._url())
+        self.assertEqual(Mantenimiento.objects.count(), 1)
+        resp = self.client.post(self._url(), follow=True)
+        self.assertEqual(Mantenimiento.objects.count(), 1)
+        self.assertContains(resp, 'ya tiene uno abierto')
+
+    def test_sin_permiso_no_puede(self):
+        sin = User.objects.create_user(username='sin_ra', password='x')
+        PerfilUsuario.objects.create(usuario=sin, acceso_todas_unidades=True)
+        self.client.force_login(sin)
+        self.assertEqual(self.client.post(self._url()).status_code, 403)
+
+    def test_no_acepta_GET(self):
+        self.client.force_login(self.operador)
+        self.assertEqual(self.client.get(self._url()).status_code, 405)

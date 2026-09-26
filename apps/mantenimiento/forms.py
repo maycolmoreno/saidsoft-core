@@ -194,6 +194,17 @@ class CancelarMantenimientoForm(forms.Form):
     motivo = forms.CharField(widget=forms.Textarea(attrs={'class': INPUT_CLASS, 'rows': 2}))
 
 
+class DescartarCierreEnConflictoForm(forms.Form):
+    """Descartar el cierre que un técnico hizo en campo exige decir por qué: es la única
+    constancia de por qué ese trabajo no se contabilizó."""
+
+    motivo = forms.CharField(
+        label='Por qué se descarta',
+        widget=forms.Textarea(attrs={'class': INPUT_CLASS, 'rows': 3}),
+        help_text='Queda registrado junto al cierre que mandó el técnico, que no se borra.',
+    )
+
+
 class RepuestoUtilizadoForm(forms.Form):
     tipo_consumible = forms.ModelChoiceField(
         queryset=TipoConsumible.objects.order_by('nombre'),

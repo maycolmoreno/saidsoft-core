@@ -1,7 +1,10 @@
 from celery import shared_task
 
 from .models import Mantenimiento
-from .services import generar_informe_pdf, generar_mantenimientos_vencidos, notificar_mantenimientos_proximos_y_atrasados
+from .services import (
+    escalar_cierres_en_conflicto, generar_informe_pdf, generar_mantenimientos_vencidos,
+    notificar_mantenimientos_proximos_y_atrasados,
+)
 
 
 @shared_task(name='apps.mantenimiento.tasks.generar_mantenimientos_programados_task')
@@ -25,3 +28,12 @@ def generar_informe_pdf_task(mantenimiento_id):
     mantenimiento = Mantenimiento.objects.get(pk=mantenimiento_id)
     generar_informe_pdf(mantenimiento=mantenimiento)
     return f'Informe PDF generado para mantenimiento #{mantenimiento_id}.'
+
+
+@shared_task(name='apps.mantenimiento.tasks.escalar_cierres_en_conflicto_task')
+def escalar_cierres_en_conflicto_task():
+    """Periódica (ver CELERY_BEAT_SCHEDULE). Reenvía el aviso de los cierres de campo en
+    conflicto que nadie revisó -- una bandeja que depende de que alguien se acuerde de
+    mirarla es una bandeja que no se mira. Segura de repetir: `escalado_en` corta."""
+    escalados = escalar_cierres_en_conflicto()
+    return f'{escalados} cierre(s) en conflicto escalado(s).'

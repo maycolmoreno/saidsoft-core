@@ -1,0 +1,91 @@
+{% extends "panel/base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold">Cierres de campo en conflicto</h1>
+    <a href="?{% if ver_todos %}{% else %}todos=1{% endif %}" class="btn secondary">
+        {% if ver_todos %}Solo sin revisar{% else %}Ver también los revisados{% endif %}
+    </a>
+</div>
+
+<p class="text-sm text-[var(--text-faint)] mb-4" style="max-width:70ch;">
+    Un técnico cerró estos mantenimientos desde la app, sin señal, y cuando la acción
+    llegó al servidor el mantenimiento ya estaba cerrado o cancelado desde el panel. El
+    trabajo de campo quedó guardado acá en vez de perderse, pero <strong>alguien tiene
+    que decidir cuál de las dos versiones vale</strong>. Sin revisar por más de
+    {{ horas_escalamiento }} h, el aviso se vuelve a mandar solo.
+</p>
+
+<div class="card overflow-x-auto">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr>
+                <th class="text-left px-4 py-3">Mantenimiento</th>
+                <th class="text-left px-4 py-3">Técnico</th>
+                <th class="text-left px-4 py-3">Cerró en campo</th>
+                <th class="text-left px-4 py-3">Resultado declarado</th>
+                <th class="text-left px-4 py-3">Al llegar figuraba</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Acciones</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for c in conflictos %}
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-4 py-3">
+                    <a href="{% url 'panel:mantenimiento_detalle' c.mantenimiento_id %}" class="link">
+                        #{{ c.mantenimiento_id }}
+                    </a>
+                </td>
+                <td class="px-4 py-3">{{ c.tecnico }}</td>
+                <td class="px-4 py-3 mono num" title="Hora real en la farmacia, no la de sincronización.">
+                    {{ c.ocurrido_en|date:"d/m/Y H:i" }}
+                </td>
+                <td class="px-4 py-3">{{ c.resultado_declarado|default:"—" }}</td>
+                <td class="px-4 py-3"><span class="pill neutral">{{ c.estado_al_llegar }}</span></td>
+                <td class="px-4 py-3">
+                    {% if c.revisado %}
+                        <span class="pill good" title="{{ c.resolucion }}">
+                            Revisado por {{ c.revisado_por|default:"—" }}
+                        </span>
+                    {% elif c.escalado_en %}
+                        <span class="pill critical"
+                              title="Sigue sin revisarse desde {{ c.creado_en|date:'d/m/Y H:i' }}; el aviso ya se reenvió.">
+                            Escalado
+                        </span>
+                    {% else %}
+                        <span class="pill warning">Sin revisar</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% if c.revisado %}
+                        <span class="text-xs text-[var(--text-faint)]">{{ c.resolucion|truncatechars:60 }}</span>
+                    {% elif perms.mantenimiento.change_cierreenconflicto %}
+                    <div class="flex gap-2">
+                        <form method="post" action="{% url 'panel:cierre_en_conflicto_aplicar' c.pk %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn primary"
+                                    title="Reabre el mantenimiento y lo cierra con lo que mandó el técnico, con la hora real en que lo hizo.">
+                                Aplicar el cierre del técnico
+                            </button>
+                        </form>
+                        <a href="{% url 'panel:cierre_en_conflicto_descartar' c.pk %}" data-modal class="btn secondary">
+                            Descartar con motivo
+                        </a>
+                    </div>
+                    {% else %}
+                        <span class="text-xs text-[var(--text-faint)]"
+                              title="Primera línea diagnostica; resolverlo necesita mantenimiento.change_cierreenconflicto.">
+                            Sin permiso para resolver
+                        </span>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="7">
+                {% include "panel/_estado_vacio.html" with titulo="No hay cierres de campo en conflicto" pista="Cuando un técnico cierre un mantenimiento sin señal y alguien lo haya movido mientras tanto desde el panel, va a aparecer acá para que se decida qué vale." %}
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

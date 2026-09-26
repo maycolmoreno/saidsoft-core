@@ -93,6 +93,19 @@
                         <button type="submit" class="btn secondary" style="font-size:12px; padding:6px 12px;">Reconocer</button>
                     </form>
                     {% endif %}
+                    {% comment %}
+                    Abrir la orden de trabajo a mano. La regla puede abrirla sola
+                    (`abre_mantenimiento`), pero para el resto de las alertas alguien
+                    tenía que ir a Mantenimientos, crear una y volver a escribir de qué
+                    alerta venía. Se ofrece solo mientras la alerta sigue viva: abrir un
+                    mantenimiento por algo ya resuelto no tiene sentido.
+                    {% endcomment %}
+                    {% if perms.mantenimiento.add_mantenimiento and a.estado != 'resuelta' %}
+                    <form method="post" action="{% url 'panel:alerta_abrir_mantenimiento' a.pk %}" class="inline">
+                        {% csrf_token %}
+                        <button type="submit" class="btn secondary" style="font-size:12px; padding:6px 12px;">Abrir mantenimiento</button>
+                    </form>
+                    {% endif %}
                     {% if a.estado != 'resuelta' %}
                     <form method="post" action="{% url 'panel:alerta_resolver' a.pk %}" class="inline">
                         {% csrf_token %}

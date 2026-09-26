@@ -366,7 +366,10 @@ class EventoMantenimiento(models.Model):
     tipo_evento = models.CharField(max_length=25, choices=TipoEvento.choices)
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     detalle = models.JSONField(default=dict, blank=True)
-    timestamp = models.DateTimeField(auto_now_add=True)
+    # `default` y no `auto_now_add`: una accion hecha sin señal se fecha con la hora en
+    # que OCURRIO (la que manda la cola offline de la app), no con la de llegada al
+    # servidor -- `auto_now_add` lo pisaba siempre. Ver services.iniciar_mantenimiento.
+    timestamp = models.DateTimeField(default=timezone.now)
 
     class Meta:
         db_table = 'evento_mantenimiento'
@@ -432,7 +435,9 @@ class FirmaMantenimiento(models.Model):
     mantenimiento = models.ForeignKey(Mantenimiento, on_delete=models.CASCADE, related_name='firmas')
     tipo_firma = models.CharField(max_length=10, choices=TipoFirma.choices)
     firma_base64 = models.TextField()
-    firmado_en = models.DateTimeField(auto_now_add=True)
+    # Mismo motivo que EventoMantenimiento.timestamp: una firma tomada sin señal
+    # conserva su hora real.
+    firmado_en = models.DateTimeField(default=timezone.now)
     ip_origen = models.GenericIPAddressField(null=True, blank=True)
     firmado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='firmas_mantenimiento',
@@ -441,6 +446,17 @@ class FirmaMantenimiento(models.Model):
     class Meta:
         db_table = 'firma_mantenimiento'
         ordering = ['-firmado_en']
+        # Una firma por tipo y por mantenimiento. Es la mitad barata del problema de
+        # idempotencia (BUG-4, ver docs/modulos.md): si el servidor procesa el POST y
+        # la respuesta se pierde en el camino, la app lo reencola y lo reintenta --
+        # `create()` a secas dejaba DOS firmas del mismo custodio. Acá la unicidad
+        # natural alcanza y no hace falta la maquinaria de claves de idempotencia:
+        # firmar dos veces no es un hecho nuevo, es el mismo hecho.
+        constraints = [
+            models.UniqueConstraint(
+                fields=['mantenimiento', 'tipo_firma'], name='firma_unica_por_tipo',
+            ),
+        ]
         verbose_name = 'Firma de mantenimiento'
         verbose_name_plural = 'Firmas de mantenimiento'
 
@@ -720,3 +736,128 @@ class VisitaTecnica(models.Model):
             self.estado in (self.Estado.PLANIFICADA, self.Estado.EN_CURSO)
             and self.fecha_planificada < timezone.localdate()
         )
+
+
+class AccionOfflineAplicada(models.Model):
+    """Qué acción de la cola offline de un teléfono ya se aplicó, para no aplicarla dos veces.
+
+    El problema: `api.dart` traduce su timeout de 20 s a `SinConexion`, así que una
+    petición que el servidor SÍ procesó —pero cuya respuesta se perdió en el camino— se
+    reencola y se reintenta. Sin esto, el reintento o duplicaba el hecho (dos firmas del
+    mismo custodio) o rebotaba con un error que dejaba la acción trabada en el teléfono
+    para siempre.
+
+    La clave es NATURAL, no un UUID inventado: `ColaOffline` ya numera sus filas con un
+    autoincremental único por teléfono, y el usuario acota el espacio. Mismo criterio que
+    el resto del proyecto, que resuelve idempotencia con clave natural + `get_or_create`
+    (ver `registrar_actividad_mensual`, `vincular_activos_por_numero_serie`).
+
+    Se guarda la RESPUESTA original para poder devolverla igual en el reintento: al
+    técnico le tiene que constar que su acción se aplicó, no recibir un error por algo
+    que en realidad salió bien.
+    """
+
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='acciones_offline_aplicadas',
+    )
+    origen_id = models.PositiveIntegerField(
+        help_text='id de la fila en la ColaOffline del teléfono (autoincremental por dispositivo).',
+    )
+    tipo = models.CharField(max_length=40, help_text='Acción aplicada, para poder leer la tabla.')
+    respuesta_json = models.JSONField(
+        default=dict, blank=True,
+        help_text='Cuerpo que se devolvió la primera vez; es lo que se repite en un reintento.',
+    )
+    estado_http = models.PositiveSmallIntegerField(
+        default=200, help_text='Código que se devolvió la primera vez (200/201, o 409 si fue conflicto).',
+    )
+    creado_en = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'accion_offline_aplicada'
+        ordering = ['-creado_en']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['usuario', 'origen_id'], name='accion_offline_unica_por_dispositivo',
+            ),
+        ]
+        verbose_name = 'Acción offline aplicada'
+        verbose_name_plural = 'Acciones offline aplicadas'
+
+    def __str__(self):
+        return f'{self.usuario} #{self.origen_id} ({self.tipo})'
+
+
+class CierreEnConflicto(models.Model):
+    """Un cierre hecho en campo que ya no se pudo aplicar, guardado para revisión manual.
+
+    El caso: el técnico cierra un mantenimiento sin señal y, mientras tanto, mesa de
+    ayuda lo cancela (o lo cierra con otro resultado) desde el panel. Cuando el teléfono
+    recupera conexión, el guard de estado de `cerrar_mantenimiento` rechaza la acción —
+    correctamente, porque pisar la decisión más nueva sería peor.
+
+    Lo que faltaba era el después: hasta el 26-sep-2026 el trabajo real del técnico
+    (resultado, tiempo, estado del equipo) se quedaba en el teléfono, con el motivo
+    guardado en un `ultimo_error` que ninguna pantalla mostraba. El técnico veía "1
+    pendiente" para siempre y mesa de ayuda no se enteraba de que había dos versiones de
+    la verdad.
+
+    Esto NO es un registro de negocio inmutable como `EventoMantenimiento`: es una
+    bandeja operativa de triage, igual que `MensajeMqttFallido` — se marca `revisado` y
+    se puede borrar una vez resuelta. No decide quién tiene razón; hace visible que hay
+    que decidir.
+    """
+
+    mantenimiento = models.ForeignKey(
+        Mantenimiento, on_delete=models.CASCADE, related_name='cierres_en_conflicto',
+    )
+    tecnico = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='cierres_en_conflicto',
+    )
+    ocurrido_en = models.DateTimeField(
+        help_text='Cuándo cerró el técnico de verdad, en la farmacia (no cuándo llegó al servidor).',
+    )
+    payload_rechazado = models.JSONField(
+        default=dict,
+        help_text='El cierre tal como lo mandó el técnico: resultado, tiempo real, estado del equipo.',
+    )
+    estado_al_llegar = models.CharField(
+        max_length=20,
+        help_text='En qué estado estaba el mantenimiento cuando la acción llegó al servidor.',
+    )
+    motivo = models.TextField(help_text='Por qué se rechazó, en los términos del servicio que lo rechazó.')
+
+    revisado = models.BooleanField(default=False)
+    revisado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='cierres_en_conflicto_revisados',
+    )
+    revisado_en = models.DateTimeField(null=True, blank=True)
+    resolucion = models.TextField(
+        blank=True, help_text='Qué se decidió: se aplicó el cierre del técnico, o por qué se descartó.',
+    )
+    escalado_en = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Cuándo se reenvió el aviso por seguir sin revisar (ver '
+                  'apps.mantenimiento.services.escalar_cierres_en_conflicto). Evita reescalar en cada corrida.',
+    )
+    creado_en = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'cierre_en_conflicto'
+        ordering = ['-creado_en']
+        verbose_name = 'Cierre en conflicto'
+        verbose_name_plural = 'Cierres en conflicto'
+
+    def __str__(self):
+        return f'Cierre en conflicto de {self.tecnico} - Mantenimiento #{self.mantenimiento_id}'
+
+    @property
+    def unidad_negocio(self):
+        """Para el scope multi-tenant del panel, por la misma vía que el mantenimiento."""
+        return self.mantenimiento.cliente.unidad_negocio if self.mantenimiento.cliente_id else None
+
+    @property
+    def resultado_declarado(self):
+        """El resultado que puso el técnico, para mostrarlo sin desarmar el JSON en la plantilla."""
+        return self.payload_rechazado.get('resultado_tecnico', '')

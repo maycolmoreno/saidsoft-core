@@ -110,6 +110,8 @@ urlpatterns = [
     path('alertas/', views.alertas_lista, name='alertas_lista'),
     path('alertas/errores-pos/', views.pos_errores_flota, name='pos_errores_flota'),
     path('alertas/<int:pk>/reconocer/', views.alerta_reconocer, name='alerta_reconocer'),
+    path('alertas/<int:pk>/abrir-mantenimiento/', views.alerta_abrir_mantenimiento,
+         name='alerta_abrir_mantenimiento'),
     path('alertas/<int:pk>/resolver/', views.alerta_resolver, name='alerta_resolver'),
     path('alertas/reglas/', views.reglas_alerta_lista, name='reglas_alerta_lista'),
     path('alertas/reglas/nueva/', views.regla_alerta_crear, name='regla_alerta_crear'),
@@ -173,6 +175,12 @@ urlpatterns = [
 
     # Módulo de Mantenimiento
     path('mantenimientos/', views.mantenimientos_lista, name='mantenimientos_lista'),
+    # Cierres de campo que no se pudieron aplicar (ver CierreEnConflicto).
+    path('mantenimientos/conflictos/', views.cierres_en_conflicto_lista, name='cierres_en_conflicto_lista'),
+    path('mantenimientos/conflictos/<int:pk>/aplicar/', views.cierre_en_conflicto_aplicar,
+         name='cierre_en_conflicto_aplicar'),
+    path('mantenimientos/conflictos/<int:pk>/descartar/', views.cierre_en_conflicto_descartar,
+         name='cierre_en_conflicto_descartar'),
     path('mantenimientos/nuevo/', views.mantenimiento_crear, name='mantenimiento_crear'),
     path('mantenimientos/equipos-por-cliente/', views.equipos_por_cliente_partial, name='equipos_por_cliente_partial'),
     path('mantenimientos/<int:pk>/', views.mantenimiento_detalle, name='mantenimiento_detalle'),
@@ -279,6 +287,7 @@ urlpatterns = [
     path('viaticos/consolidado.csv', views.viaticos_consolidado_csv, name='viaticos_consolidado_csv'),
     path('viaticos/zonas/', views.zonas_lista, name='viaticos_zonas_lista'),
     path('viaticos/zonas/nueva/', views.zona_crear, name='viaticos_zona_crear'),
+    path('viaticos/<int:pk>/corregir/', views.viatico_editar, name='viatico_editar'),
     path('viaticos/<int:pk>/', views.viatico_detalle, name='viatico_detalle'),
     path('viaticos/<int:pk>/<str:accion>/', views.viatico_revisar, name='viatico_revisar'),
 ]

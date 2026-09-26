@@ -25,6 +25,33 @@ from .services import (
 )
 
 
+def otorgar(usuario, *etiquetas):
+    """Da permisos por codename completo ('app.codename') a un usuario de prueba.
+
+    Desde el 26-sep-2026 la API móvil exige los MISMOS codenames que el panel (ver
+    apps/mantenimiento/api_permissions.py), así que un usuario de prueba pelado
+    —que es como se creaban hasta ahora— recibe 403 en todos lados. Esto arma el
+    usuario con exactamente lo que su rol real tendría, ni más ni menos: pedir un
+    permiso de más acá esconde justamente el bug que el chequeo viene a evitar.
+    """
+    for etiqueta in etiquetas:
+        app_label, codename = etiqueta.split('.')
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label=app_label, codename=codename),
+        )
+
+
+# Lo que la app de campo necesita, alineado con el grupo 'Soporte Técnico' de
+# seed_permisos.py (donde están los 9 técnicos reales, ver crear_tecnicos_soporte.py).
+PERMISOS_APP_CAMPO = (
+    'mantenimiento.view_mantenimiento', 'mantenimiento.add_mantenimiento',
+    'mantenimiento.change_mantenimiento',
+    'mantenimiento.view_visitatecnica', 'mantenimiento.change_visitatecnica',
+    'mantenimiento.view_ubicaciontecnico', 'mantenimiento.add_ubicaciontecnico',
+    'activos.view_activo', 'activos.add_activo',
+)
+
+
 class CrearMantenimientoManualTests(TestCase):
     def setUp(self):
         self.usuario = User.objects.create_user(username='u', password='x')
@@ -975,6 +1002,7 @@ class MantenimientoApiMovilTests(TestCase):
     def setUp(self):
         from rest_framework.authtoken.models import Token
         self.tecnico = User.objects.create_user(username='tec_api', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
         self.token = Token.objects.create(user=self.tecnico)
         sg = UnidadNegocio.objects.get(codigo='SG')
         grupo = Grupo.objects.create(codigo='TRX001')
@@ -1048,6 +1076,7 @@ class EquiposYNotificacionesApiTests(TestCase):
     def setUp(self):
         from rest_framework.authtoken.models import Token
         self.usuario = User.objects.create_user(username='tec_dash', password='x')
+        otorgar(self.usuario, *PERMISOS_APP_CAMPO)
         self.token = Token.objects.create(user=self.usuario)
         PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
         sg = UnidadNegocio.objects.get(codigo='SG')
@@ -1111,6 +1140,7 @@ class VisitaTecnicaApiMovilTests(TestCase):
     def setUp(self):
         from rest_framework.authtoken.models import Token
         self.tecnico = User.objects.create_user(username='tec_vis_api', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
         self.token = Token.objects.create(user=self.tecnico)
         sg = UnidadNegocio.objects.get(codigo='SG')
         grupo = Grupo.objects.create(codigo='TRX001')
@@ -1205,6 +1235,7 @@ class CrearDesdeAppTests(TestCase):
         from rest_framework.authtoken.models import Token
         from django.contrib.auth.models import Permission
         self.tecnico = User.objects.create_user(username='tec_campo', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
         self.token = Token.objects.create(user=self.tecnico)
         PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
         self.tecnico.user_permissions.add(
@@ -1306,6 +1337,7 @@ class BuscarEquiposTests(TestCase):
     def setUp(self):
         from rest_framework.authtoken.models import Token
         self.tecnico = User.objects.create_user(username='tec_busca', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
         self.token = Token.objects.create(user=self.tecnico)
         PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
         sg = UnidadNegocio.objects.get(codigo='SG')
@@ -1393,6 +1425,7 @@ class EquipoListApiScopeTests(TestCase):
             codigo='CR-DSK-9003', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.mia,
         )
         self.tecnico = User.objects.create_user(username='tec_scope_equipos', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
         perfil = PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=False)
         perfil.unidades_negocio.add(self.sg)
         self.token = Token.objects.create(user=self.tecnico)
@@ -1424,6 +1457,7 @@ class MantenimientoApiCancelarYRepuestosTests(TestCase):
     def setUp(self):
         from rest_framework.authtoken.models import Token
         self.tecnico = User.objects.create_user(username='tec_huecos', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
         self.token = Token.objects.create(user=self.tecnico)
         PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
         sg = UnidadNegocio.objects.get(codigo='SG')
@@ -1473,6 +1507,10 @@ class MantenimientoApiCancelarYRepuestosTests(TestCase):
 
     def test_no_se_cancela_el_de_otro_tecnico(self):
         otro = User.objects.create_user(username='otro_tec_huecos', password='x')
+        # CON permisos a proposito: lo que se prueba es el aislamiento por tecnico, no
+        # el permiso. Sin otorgarlos, el 403 de PermisoDeclarado saltaria primero y el
+        # test pasaria sin haber ejercitado nunca el filtro `tecnico=request.user`.
+        otorgar(otro, *PERMISOS_APP_CAMPO)
         PerfilUsuario.objects.create(usuario=otro, acceso_todas_unidades=True)
         from rest_framework.authtoken.models import Token
         token = Token.objects.create(user=otro)
@@ -1645,3 +1683,463 @@ class TecnicoAutoAsignadoTests(TestCase):
         self.assertIn(self.otro, campo.queryset)
         self.assertTrue(campo.disabled)
         self.assertEqual(form['tecnico'].value(), self.otro.pk)
+
+
+class ApiExigeLosMismosPermisosQueElPanelTests(TestCase):
+    """Regresión de BUG-1 (docs/modulos.md): hasta el 26-sep-2026 la API móvil era
+    `IsAuthenticated` a secas, así que un usuario SIN permisos podía cerrar, firmar y
+    cancelar por API lo que el panel le negaba con 403. El gating de la app era
+    cosmético.
+
+    Un usuario autenticado y pelado tiene que rebotar en TODO lo que el panel protege.
+    """
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.pelado = User.objects.create_user(username='sin_permisos', password='x')
+        PerfilUsuario.objects.create(usuario=self.pelado, acceso_todas_unidades=True)
+        self.token = Token.objects.create(user=self.pelado)
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML900', grupo=Grupo.objects.create(codigo='TRX900'), unidad_negocio=sg,
+            nombre='Farmacia permisos', latitud=-2.17, longitud=-79.92,
+        )
+        equipo = Activo.objects.create(codigo='CR-DSK-9900', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia)
+        # Asignados al usuario PELADO: así el 403 solo puede venir del permiso, nunca
+        # del filtro `tecnico=request.user` (que devolvería 404 y taparía el punto).
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[equipo], tecnico=self.pelado, descripcion='POS caido',
+            fecha_programada=timezone.now(), usuario=self.pelado,
+        )
+        self.visita = crear_visita_tecnica(
+            farmacia=self.farmacia, tecnico=self.pelado, fecha_planificada=timezone.localdate(),
+            motivo='relevamiento', usuario=self.pelado,
+        )
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def test_lecturas_sin_permiso_dan_403(self):
+        for ruta in (
+            '/api/v1/mantenimientos/',
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/',
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/checklist/',
+            '/api/v1/visitas/',
+            '/api/v1/equipos/',
+            '/api/v1/catalogos/',
+            '/api/v1/actividades-checklist/',
+            '/api/v1/ubicaciones-tecnico/',
+        ):
+            with self.subTest(ruta=ruta):
+                self.assertEqual(self.client.get(ruta, **self._auth()).status_code, 403)
+
+    def test_mutaciones_sin_permiso_dan_403(self):
+        casos = [
+            (f'/api/v1/mantenimientos/{self.mantenimiento.pk}/iniciar/', {}),
+            (f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+             {'resultado_tecnico': ResultadoTecnico.REPARADO}),
+            (f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cancelar/', {'motivo': 'duplicado'}),
+            (f'/api/v1/mantenimientos/{self.mantenimiento.pk}/firmar/',
+             {'tipo_firma': 'tecnico', 'firma_base64': 'x'}),
+            (f'/api/v1/mantenimientos/{self.mantenimiento.pk}/repuestos/',
+             {'tipo_consumible': 1, 'cantidad': 1}),
+            (f'/api/v1/visitas/{self.visita.pk}/iniciar/', {}),
+            (f'/api/v1/visitas/{self.visita.pk}/cerrar/', {'observaciones': 'ok'}),
+            ('/api/v1/ubicaciones-tecnico/',
+             {'latitud': -2.17, 'longitud': -79.92, 'timestamp_captura': timezone.now().isoformat()}),
+        ]
+        for ruta, cuerpo in casos:
+            with self.subTest(ruta=ruta):
+                resp = self.client.post(ruta, cuerpo, content_type='application/json', **self._auth())
+                self.assertEqual(resp.status_code, 403, f'{ruta} devolvio {resp.status_code}')
+
+    def test_nada_se_movio_en_la_base(self):
+        """El 403 tiene que cortar ANTES del servicio, no después de escribir."""
+        self.client.post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': ResultadoTecnico.REPARADO},
+            content_type='application/json', **self._auth(),
+        )
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(self.mantenimiento.estado_interno, Mantenimiento.EstadoInterno.PENDIENTE)
+        self.assertIsNone(self.mantenimiento.fecha_cierre)
+
+    def test_una_accion_nueva_sin_permiso_declarado_se_rechaza(self):
+        """Fail-closed: el mapa es la lista blanca. Si alguien agrega un @action y se
+        olvida de declararlo, tiene que fallar acá y no quedar abierto en producción."""
+        from apps.mantenimiento.api_permissions import PermisoDeclarado
+
+        class VistaFalsa:
+            action = 'accion_inventada'
+            permisos_por_accion = {'list': ['mantenimiento.view_mantenimiento']}
+
+        self.assertIsNone(PermisoDeclarado._requeridos(VistaFalsa(), None))
+        self.assertFalse(PermisoDeclarado().has_permission(_PeticionFalsa(self.pelado), VistaFalsa()))
+
+
+class _PeticionFalsa:
+    """Lo mínimo que mira PermisoDeclarado.has_permission."""
+
+    def __init__(self, usuario, metodo='GET'):
+        self.user = usuario
+        self.method = metodo
+
+
+class FlujoRolRealEnLaAppTests(TestCase):
+    """Paso 5 del fix de BUG-1/BUG-2: el técnico REAL (grupo 'Soporte Técnico', que es
+    donde están los 9 de campo — ver crear_tecnicos_soporte.py) tiene que poder hacer
+    su jornada completa por API, sin ser superusuario.
+
+    Se arma con `seed_permisos` de verdad y no con una lista a mano: si el comando y la
+    API se desincronizan otra vez, esto falla, que es exactamente lo que no pasó antes.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.core.management import call_command
+        call_command('seed_permisos', verbosity=0)
+
+    def setUp(self):
+        from django.contrib.auth.models import Group
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_real', password='x')
+        self.tecnico.groups.add(Group.objects.get(name='Soporte Técnico'))
+        PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
+        self.token = Token.objects.create(user=self.tecnico)
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML901', grupo=Grupo.objects.create(codigo='TRX901'), unidad_negocio=sg,
+            nombre='Farmacia rol real', latitud=-2.170998, longitud=-79.922359,
+        )
+        self.equipo = Activo.objects.create(
+            codigo='CR-DSK-9901', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia,
+        )
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.tecnico, descripcion='POS no enciende',
+            fecha_programada=timezone.now(), usuario=self.tecnico,
+        )
+        self.visita = crear_visita_tecnica(
+            farmacia=self.farmacia, tecnico=self.tecnico, fecha_planificada=timezone.localdate(),
+            motivo='preventivo de ruta', usuario=self.tecnico,
+        )
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def _post(self, ruta, cuerpo=None):
+        return self.client.post(
+            ruta, cuerpo or {}, content_type='application/json', **self._auth(),
+        )
+
+    def test_la_app_le_habilita_las_cuatro_pantallas(self):
+        """Los codenames que gatea sesion.dart. Sin estos, la app esconde 'Visitas',
+        'Ubicacion' y 'Registrar equipo' — que es como estaba hasta hoy (BUG-2)."""
+        permisos = self.client.get('/api/v1/auth/yo/', **self._auth()).json()['permisos']
+        for codename in (
+            'mantenimiento.view_mantenimiento', 'mantenimiento.add_mantenimiento',
+            'mantenimiento.change_mantenimiento',
+            'mantenimiento.view_visitatecnica', 'mantenimiento.change_visitatecnica',
+            'mantenimiento.add_ubicaciontecnico', 'activos.add_activo',
+        ):
+            with self.subTest(codename=codename):
+                self.assertIn(codename, permisos)
+
+    def test_jornada_completa_de_mantenimiento(self):
+        self.assertEqual(self.client.get('/api/v1/mantenimientos/', **self._auth()).status_code, 200)
+        self.assertEqual(
+            self.client.get(f'/api/v1/mantenimientos/{self.mantenimiento.pk}/checklist/', **self._auth()).status_code,
+            200,
+        )
+        self.assertEqual(self._post(f'/api/v1/mantenimientos/{self.mantenimiento.pk}/iniciar/').status_code, 200)
+        self.assertEqual(
+            self._post(
+                f'/api/v1/mantenimientos/{self.mantenimiento.pk}/firmar/',
+                {'tipo_firma': 'tecnico', 'firma_base64': 'data:image/png;base64,xx'},
+            ).status_code,
+            201,
+        )
+        self.assertEqual(
+            self._post(
+                f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+                {'resultado_tecnico': ResultadoTecnico.REPARADO, 'tiempo_real_minutos': 30},
+            ).status_code,
+            200,
+        )
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(self.mantenimiento.estado_interno, Mantenimiento.EstadoInterno.CERRADO)
+
+    def test_jornada_completa_de_visita(self):
+        self.assertEqual(self.client.get('/api/v1/visitas/', **self._auth()).status_code, 200)
+        self.assertEqual(self._post(f'/api/v1/visitas/{self.visita.pk}/iniciar/').status_code, 200)
+        self.assertEqual(
+            self._post(f'/api/v1/visitas/{self.visita.pk}/cerrar/', {'observaciones': 'todo ok'}).status_code,
+            200,
+        )
+        self.visita.refresh_from_db()
+        self.assertEqual(self.visita.estado, VisitaTecnica.Estado.REALIZADA)
+
+    def test_consentimiento_y_envio_de_ubicacion(self):
+        self.assertEqual(
+            self._post('/api/v1/consentimiento-monitoreo/', {'aceptado': True, 'version_terminos': '1.0'}).status_code,
+            201,
+        )
+        resp = self._post('/api/v1/ubicaciones-tecnico/', {
+            'latitud': -2.170998, 'longitud': -79.922359, 'precision_metros': 8.0,
+            'timestamp_captura': timezone.now().isoformat(),
+        })
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(self.client.get('/api/v1/ubicaciones-tecnico/', **self._auth()).status_code, 200)
+
+    def test_catalogos_equipos_y_alta_de_equipo(self):
+        for ruta in ('/api/v1/catalogos/', '/api/v1/equipos/', '/api/v1/actividades-checklist/'):
+            with self.subTest(ruta=ruta):
+                self.assertEqual(self.client.get(ruta, **self._auth()).status_code, 200)
+        resp = self._post('/api/v1/equipos/nuevo/', {
+            'tipo': Activo.Tipo.DESKTOP, 'modelo': 'OptiPlex 3080', 'farmacia': self.farmacia.pk,
+        })
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+    def test_puede_abrir_un_mantenimiento_desde_el_campo(self):
+        otro = Activo.objects.create(
+            codigo='CR-DSK-9902', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia,
+        )
+        resp = self._post('/api/v1/mantenimientos/', {
+            'equipos': [otro.pk], 'descripcion': 'No imprime',
+            'estado_general': EstadoGeneralEquipo.NO_OPERATIVO,
+        })
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+
+class HoraRealDeAccionesOfflineTests(TestCase):
+    """BUG-3 (docs/modulos.md): la cola offline no mandaba CUÁNDO ocurrió la acción, y
+    el backend la fechaba al recibirla. Un cierre hecho a las 10:00 sin señal y subido
+    a las 18:00 quedaba a las 18:00 — corriendo el SLA y la ventana de verificación GPS.
+    """
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_hora', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
+        PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
+        self.token = Token.objects.create(user=self.tecnico)
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML902', grupo=Grupo.objects.create(codigo='TRX902'), unidad_negocio=sg,
+            nombre='Farmacia hora real', latitud=-2.170998, longitud=-79.922359,
+        )
+        self.equipo = Activo.objects.create(
+            codigo='CR-DSK-9903', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia,
+        )
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.tecnico, descripcion='POS no enciende',
+            fecha_programada=timezone.now() - timedelta(hours=9), usuario=self.tecnico,
+        )
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def _post(self, ruta, cuerpo=None):
+        return self.client.post(ruta, cuerpo or {}, content_type='application/json', **self._auth())
+
+    # --- Se respeta la hora declarada ------------------------------------------
+
+    def test_el_cierre_conserva_la_hora_en_que_ocurrio(self):
+        hace_ocho_horas = timezone.now() - timedelta(hours=8)
+        resp = self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': ResultadoTecnico.REPARADO, 'ocurrido_en': hace_ocho_horas.isoformat()},
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.mantenimiento.refresh_from_db()
+        self.assertAlmostEqual(
+            self.mantenimiento.fecha_cierre, hace_ocho_horas, delta=timedelta(seconds=2),
+        )
+
+    def test_la_llegada_conserva_su_hora_y_arregla_el_sla_de_respuesta(self):
+        """El caso que motivó todo: llegó en plazo pero sincronizó tarde."""
+        AcuerdoNivelServicio.objects.update_or_create(
+            prioridad=PrioridadMantenimiento.NORMAL,
+            defaults={'horas_respuesta': 4, 'horas_resolucion': 24, 'activo': True},
+        )
+        llegada_en_plazo = self.mantenimiento.fecha_programada + timedelta(hours=1)
+        resp = self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/iniciar/',
+            {'ocurrido_en': llegada_en_plazo.isoformat()},
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.mantenimiento.refresh_from_db()
+        self.assertAlmostEqual(self.mantenimiento.inicio_real, llegada_en_plazo, delta=timedelta(seconds=2))
+        # Sin el fix, `inicio_real` seria AHORA (9 h despues de la fecha programada,
+        # contra un SLA de respuesta de 4 h) y esto daria True.
+        self.assertFalse(self.mantenimiento.sla_respuesta_incumplido)
+
+    def test_la_firma_conserva_la_hora_en_que_firmo_el_custodio(self):
+        iniciar_mantenimiento(mantenimiento=self.mantenimiento, usuario=self.tecnico)
+        firmado = timezone.now() - timedelta(hours=6)
+        resp = self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/firmar/',
+            {'tipo_firma': 'tecnico', 'firma_base64': 'xx', 'ocurrido_en': firmado.isoformat()},
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertAlmostEqual(
+            self.mantenimiento.firmas.get().firmado_en, firmado, delta=timedelta(seconds=2),
+        )
+
+    def test_la_visita_conserva_llegada_y_cierre(self):
+        visita = crear_visita_tecnica(
+            farmacia=self.farmacia, tecnico=self.tecnico, fecha_planificada=timezone.localdate(),
+            motivo='ruta', usuario=self.tecnico,
+        )
+        llegada = timezone.now() - timedelta(hours=7)
+        cierre = timezone.now() - timedelta(hours=5)
+        self.assertEqual(
+            self._post(f'/api/v1/visitas/{visita.pk}/iniciar/', {'ocurrido_en': llegada.isoformat()}).status_code,
+            200,
+        )
+        self.assertEqual(
+            self._post(
+                f'/api/v1/visitas/{visita.pk}/cerrar/',
+                {'observaciones': 'ok', 'ocurrido_en': cierre.isoformat()},
+            ).status_code,
+            200,
+        )
+        visita.refresh_from_db()
+        self.assertAlmostEqual(visita.fecha_inicio, llegada, delta=timedelta(seconds=2))
+        self.assertAlmostEqual(visita.fecha_cierre, cierre, delta=timedelta(seconds=2))
+
+    def test_la_ventana_gps_de_la_visita_usa_las_horas_reales(self):
+        """Lo que hacía fallar la verificación: la posición se registró EN la farmacia
+        a media mañana, pero la ventana se corría al momento de sincronizar."""
+        visita = crear_visita_tecnica(
+            farmacia=self.farmacia, tecnico=self.tecnico, fecha_planificada=timezone.localdate(),
+            motivo='ruta', usuario=self.tecnico,
+        )
+        llegada = timezone.now() - timedelta(hours=7)
+        UbicacionTecnico.objects.create(
+            usuario=self.tecnico, latitud=self.farmacia.latitud, longitud=self.farmacia.longitud,
+            timestamp_captura=llegada + timedelta(minutes=10),
+        )
+        self._post(f'/api/v1/visitas/{visita.pk}/iniciar/', {'ocurrido_en': llegada.isoformat()})
+        self._post(
+            f'/api/v1/visitas/{visita.pk}/cerrar/',
+            {'ocurrido_en': (llegada + timedelta(hours=1)).isoformat()},
+        )
+        visita.refresh_from_db()
+        self.assertEqual(visita.presencia_en_sitio, 'verificada')
+
+    # --- Compatibilidad con telefonos sin actualizar ---------------------------
+
+    def test_sin_el_campo_sigue_usando_la_hora_del_servidor(self):
+        """CRÍTICO: la app se distribuye a mano, así que conviven APKs con y sin este
+        campo durante semanas. El viejo NO puede romperse."""
+        antes = timezone.now()
+        resp = self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': ResultadoTecnico.REPARADO},
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.mantenimiento.refresh_from_db()
+        self.assertGreaterEqual(self.mantenimiento.fecha_cierre, antes)
+
+    def test_iniciar_sin_cuerpo_sigue_funcionando(self):
+        """El APK viejo hace POST sin cuerpo: no puede dar 400."""
+        resp = self.client.post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/iniciar/', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    def test_el_campo_en_null_equivale_a_no_mandarlo(self):
+        resp = self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': ResultadoTecnico.REPARADO, 'ocurrido_en': None},
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    # --- Validacion ------------------------------------------------------------
+
+    def test_una_hora_futura_se_rechaza(self):
+        resp = self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': ResultadoTecnico.REPARADO,
+             'ocurrido_en': (timezone.now() + timedelta(hours=3)).isoformat()},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(self.mantenimiento.estado_interno, Mantenimiento.EstadoInterno.PENDIENTE)
+
+    def test_una_hora_absurdamente_vieja_se_rechaza(self):
+        resp = self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': ResultadoTecnico.REPARADO,
+             'ocurrido_en': (timezone.now() - timedelta(days=400)).isoformat()},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_un_desfase_chico_de_reloj_se_tolera(self):
+        """Ningún teléfono tiene el reloj perfecto; un minuto adelantado no es un error."""
+        resp = self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': ResultadoTecnico.REPARADO,
+             'ocurrido_en': (timezone.now() + timedelta(minutes=1)).isoformat()},
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    def test_varios_dias_sin_senal_siguen_siendo_validos(self):
+        """Un técnico puede estar días sin conexión: su trabajo no se rechaza."""
+        resp = self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': ResultadoTecnico.REPARADO,
+             'ocurrido_en': (timezone.now() - timedelta(days=6)).isoformat()},
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+
+class FirmaIdempotenteTests(TestCase):
+    """Mitad barata de BUG-4: el reintento de la cola offline duplicaba firmas.
+
+    Si el servidor procesa el POST y la respuesta se pierde (timeout de 20 s en
+    api.dart, que la app traduce a SinConexion), la accion se reencola y se reintenta.
+    `create()` a secas dejaba DOS firmas del mismo custodio.
+    """
+
+    def setUp(self):
+        self.tecnico = User.objects.create_user(username='tec_firma', password='x')
+        equipo = Activo.objects.create(codigo='CR-DSK-9904', tipo=Activo.Tipo.DESKTOP)
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[equipo], tecnico=self.tecnico, descripcion='firma',
+            fecha_programada=timezone.now(), usuario=self.tecnico,
+        )
+
+    def _firmar(self, firma_base64='AAA', tipo='custodio'):
+        from apps.mantenimiento.services import firmar_mantenimiento
+        return firmar_mantenimiento(
+            mantenimiento=self.mantenimiento, tipo_firma=tipo,
+            firma_base64=firma_base64, usuario=self.tecnico,
+        )
+
+    def test_reintentar_la_misma_firma_no_la_duplica(self):
+        primera = self._firmar()
+        segunda = self._firmar()
+        self.assertEqual(primera.pk, segunda.pk)
+        self.assertEqual(self.mantenimiento.firmas.count(), 1)
+
+    def test_custodio_y_tecnico_conviven(self):
+        self._firmar(tipo='custodio')
+        self._firmar(tipo='tecnico')
+        self.assertEqual(self.mantenimiento.firmas.count(), 2)
+
+    def test_volver_a_firmar_reemplaza_en_vez_de_acumular(self):
+        self._firmar(firma_base64='vieja')
+        self._firmar(firma_base64='corregida')
+        self.assertEqual(self.mantenimiento.firmas.count(), 1)
+        self.assertEqual(self.mantenimiento.firmas.get().firma_base64, 'corregida')
+
+    def test_la_base_lo_impide_aunque_alguien_esquive_el_servicio(self):
+        from django.db import IntegrityError, transaction
+
+        from apps.mantenimiento.models import FirmaMantenimiento
+        self._firmar()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            FirmaMantenimiento.objects.create(
+                mantenimiento=self.mantenimiento, tipo_firma='custodio', firma_base64='otra',
+            )

@@ -1,5 +1,8 @@
 """Serializers de la API móvil (apps Flutter). Delegan toda mutación a services.py:
 la API es una capa de transporte, no reimplementa reglas de negocio."""
+from datetime import timedelta
+
+from django.utils import timezone
 from rest_framework import serializers
 
 from apps.activos.models import Activo, Bodega, CategoriaEquipo, Colaborador, Marca, TipoConsumible
@@ -10,6 +13,63 @@ from .models import (
     ImagenMantenimiento, Mantenimiento, MantenimientoProgramado, Notificacion, ResultadoTecnico, TipoFirma,
     PrioridadMantenimiento, TipoMantenimiento, UbicacionTecnico, VisitaTecnica,
 )
+
+
+# --- Hora real de una acción encolada sin señal (BUG-3, ver docs/modulos.md) --------
+#
+# La cola offline de la app guarda CUÁNDO se hizo cada acción, pero hasta el
+# 26-sep-2026 no la mandaba, así que el backend la fechaba con `timezone.now()` al
+# recibirla: un cierre hecho a las 10:00 en una farmacia sin señal y sincronizado a
+# las 18:00 quedaba registrado a las 18:00, corriendo el SLA y la verificación GPS.
+#
+# El campo es OPCIONAL y tiene que seguir siéndolo: la app se distribuye a mano, así
+# que durante semanas conviven teléfonos con y sin esta versión. Ausente => hora del
+# servidor, igual que siempre.
+
+# Ventana deliberadamente ancha: un técnico puede estar días sin señal y su trabajo
+# sigue siendo válido. Lo que cae afuera no es "una acción vieja" sino un teléfono con
+# el reloj roto, y fechar con un reloj roto corrompe justo lo que esto viene a arreglar.
+ANTIGUEDAD_MAXIMA = timedelta(days=30)
+# Tolerancia de desfase hacia adelante: ningún reloj está perfecto, pero el futuro
+# lejano no es desfase, es un reloj mal puesto.
+TOLERANCIA_FUTURO = timedelta(minutes=5)
+
+
+def _validar_ocurrido_en(valor):
+    if valor is None:
+        return valor
+    ahora = timezone.now()
+    if valor > ahora + TOLERANCIA_FUTURO:
+        raise serializers.ValidationError(
+            'La hora declarada está en el futuro: revisá el reloj del teléfono.',
+        )
+    if valor < ahora - ANTIGUEDAD_MAXIMA:
+        raise serializers.ValidationError(
+            f'La hora declarada tiene más de {ANTIGUEDAD_MAXIMA.days} días: '
+            'revisá el reloj del teléfono.',
+        )
+    return valor
+
+
+def campo_ocurrido_en():
+    """Campo `ocurrido_en` para las acciones que la cola offline puede diferir."""
+    return serializers.DateTimeField(
+        required=False, allow_null=True, default=None, validators=[_validar_ocurrido_en],
+        help_text='Hora real en que el técnico ejecutó la acción. Si falta, se usa la del servidor.',
+    )
+
+
+def campo_origen_id():
+    """id de la fila en la ColaOffline del telefono: la clave de idempotencia.
+
+    Natural y no un UUID inventado -- `ColaOffline` ya numera sus filas con un
+    autoincremental unico por dispositivo, y el usuario acota el espacio. Opcional por
+    el mismo motivo que `ocurrido_en`: los APKs viejos no lo mandan.
+    """
+    return serializers.IntegerField(
+        required=False, allow_null=True, default=None, min_value=1,
+        help_text='id de la accion en la cola offline del telefono. Repetirlo devuelve la respuesta original.',
+    )
 
 
 class ActivoResumenSerializer(serializers.ModelSerializer):
@@ -142,6 +202,8 @@ class CerrarMantenimientoSerializer(serializers.Serializer):
     mantenimiento y los pide el panel; faltaban acá, así que desde la app no se podían
     registrar."""
     resultado_tecnico = serializers.ChoiceField(choices=ResultadoTecnico.choices)
+    ocurrido_en = campo_ocurrido_en()
+    origen_id = campo_origen_id()
     tiempo_real_minutos = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     estado_general = serializers.ChoiceField(
         choices=EstadoGeneralEquipo.choices, required=False, allow_blank=True, default='',
@@ -153,6 +215,7 @@ class CancelarMantenimientoSerializer(serializers.Serializer):
     mantenimiento abierto BLOQUEA abrir otro sobre el mismo equipo, así que sin
     cancelar --y sin saber por qué-- el equipo queda trabado para siempre."""
     motivo = serializers.CharField(min_length=3)
+    origen_id = campo_origen_id()
 
 
 class RepuestoUtilizadoSerializer(serializers.Serializer):
@@ -180,6 +243,8 @@ class ChecklistActualizarSerializer(serializers.Serializer):
 class FirmarMantenimientoSerializer(serializers.Serializer):
     tipo_firma = serializers.ChoiceField(choices=TipoFirma.choices)
     firma_base64 = serializers.CharField()
+    ocurrido_en = campo_ocurrido_en()
+    origen_id = campo_origen_id()
 
 
 class ImagenAdjuntarSerializer(serializers.Serializer):
@@ -290,6 +355,17 @@ class VisitaTecnicaSerializer(serializers.ModelSerializer):
 
 class CerrarVisitaSerializer(serializers.Serializer):
     observaciones = serializers.CharField(required=False, allow_blank=True, default='')
+    ocurrido_en = campo_ocurrido_en()
+    origen_id = campo_origen_id()
+
+
+class AccionDiferidaSerializer(serializers.Serializer):
+    """Para las acciones sin cuerpo propio (iniciar mantenimiento / iniciar visita),
+    que igual pueden venir de la cola offline con su hora real y su clave de
+    idempotencia. Tambien se usa suelto para leer esos dos campos de cualquier cuerpo."""
+
+    ocurrido_en = campo_ocurrido_en()
+    origen_id = campo_origen_id()
 
 
 class ActivoCrearSerializer(serializers.Serializer):

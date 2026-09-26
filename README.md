@@ -9,6 +9,11 @@ extensión multi-tenant/RMM) — esta es la copia viva del plan, se actualiza aq
 
 Este es un proyecto independiente: no comparte carpeta con el sistema viejo.
 
+> **¿Buscás orientarte rápido en el código?** [`docs/modulos.md`](docs/modulos.md) explica
+> qué hace cada uno de los 16 apps, cómo se relacionan y **qué mirar primero cuando algo
+> falla**. Está escrito para mesa de ayuda y equipo interno: contexto técnico, sin tener
+> que leer el código.
+
 Nació como el reemplazo del panel de una sola operación (despliegues de POS +
 inventario de activos IT para CRESIO), y se extendió a una plataforma multi-cliente
 tipo RMM/MSP: cada unidad de negocio de CRESIO (San Gregorio, MIA, 7DIAS — modelo
@@ -2034,6 +2039,25 @@ así `EventoAuditoria` por fin atribuye cada acción a una persona concreta.
 el proyecto — más sensibles, se otorgan persona por persona, no por grupo): ver
 `catalogo.ver_clave_bitlocker` en "BitLocker" y `catalogo.supervision_auditoria_estacion`
 en "Acceso remoto (MeshCentral)" arriba.
+
+**La API móvil evalúa los mismos codenames que el panel** (26-sep-2026, ver §10-AL del
+plan). Hasta entonces `/api/v1/` era `IsAuthenticated` a secas: el gating de la app
+Flutter escondía botones que la API aceptaba igual, así que un usuario sin permisos
+podía cerrar o firmar por API lo que el panel le negaba con 403. El mapa por acción vive
+en `apps/mantenimiento/api_permissions.py` y es **fail-closed** — un `@action` nuevo sin
+permiso declarado se rechaza en vez de nacer abierto.
+
+En el mismo cambio, `Soporte Técnico` (el grupo de los 9 técnicos de campo reales) sumó
+`mantenimiento.view/change_visitatecnica` y `mantenimiento.view/add_ubicaciontecnico`:
+sin ellos la app les ocultaba las pestañas **Visitas** y **Ubicación**, y como nunca se
+registraba una posición, la verificación de presencia por GPS del panel devolvía
+"Sin datos" siempre.
+
+> **Al desplegar, `seed_permisos` va PRIMERO y el código después.** Al revés, los
+> técnicos quedan con 403 en toda la app hasta que alguien lo corra. No hace falta un
+> backfill por usuario: los permisos se resuelven por pertenencia al grupo, así que
+> actualizar el `Group` alcanza para todos sus miembros. El comando es idempotente y
+> re-correrlo no pisa los `user_permissions` individuales.
 
 ## Seguridad y robustez
 
