@@ -83,7 +83,6 @@ Catalogos _catalogosDePrueba({int farmacias = 3}) => Catalogos(
       marcas: const [Opcion('1', 'HP')],
       categorias: const [Opcion('1', 'POS')],
       tiposMantenimiento: const [Opcion('1', 'Preventivo')],
-      estadosGenerales: const [Opcion('operativo', 'Operativo')],
       prioridades: const [Opcion('normal', 'Normal')],
       farmacias: List.generate(farmacias, (i) => Opcion('$i', 'ML${i.toString().padLeft(3, '0')}')),
       bodegas: const [Opcion('1', 'BOD-LOJ')],

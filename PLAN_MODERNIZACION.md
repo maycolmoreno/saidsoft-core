@@ -3617,3 +3617,69 @@ una anomalía que el aviso de atrasados reporta por su cuenta.
 
 **Requiere versión nueva de la app** (el botón de revocar y el descarte de posiciones):
 la MISMA que ya lleva `ocurrido_en` y `origen_id`.
+
+## §10-AP — Tres huecos que el diff no explica: tenant, auditoría y catálogo duplicado (26-sep-2026)
+
+Cierra BUG-7, BUG-8 y BUG-9 de la revisión de consistencia. Ninguno es grande; los tres
+son de la clase "nadie se entera hasta que falla".
+
+**BUG-9 — los altas de la API aceptaban ids de cualquier unidad de negocio.** Un
+`PrimaryKeyRelatedField` valida contra un queryset que se define en tiempo de import, no
+por petición. `MantenimientoCrearSerializer.equipos` usaba
+`Activo.objects.exclude(dado_de_baja)` y `ActivoCrearSerializer` usaba todas las
+farmacias y bodegas activas: un técnico de MIA podía abrir un mantenimiento sobre un
+activo de San Gregorio pasando el id directo, o dar de alta un equipo en una farmacia
+ajena. El panel nunca tuvo ese agujero porque sus formularios arman los desplegables ya
+acotados (ver `apps/mantenimiento/forms.py`), y la API los tenía abiertos.
+
+`AcotadoPorUnidadNegocioMixin` reescribe el queryset de los campos declarados usando el
+`request` del contexto. Detalles que importan:
+- **`scope_opcional_*` y no la estricta**, por el mismo motivo documentado en
+  `EquipoListView`: `Activo.unidad_negocio` es nullable y el panel trata el vacío como
+  "compartido". Con la estricta, un técnico acotado no habría podido abrir NINGÚN
+  mantenimiento, porque `registrar_ingreso` no setea `unidad_negocio`.
+- **Sin `request` no se acota en vez de vaciar el queryset**: romper un llamador legítimo
+  (un comando, una prueba) sería peor que el agujero que esto cierra, y la API siempre
+  pasa el request.
+- `many=True` envuelve el campo en un `ListSerializer`, así que hay que tocar
+  `child_relation` y no el campo de afuera.
+
+**BUG-7 — lo que se hacía desde la app no dejaba rastro.** El panel registraba 15
+acciones vía `registrar_evento` y la API cero. Para mantenimientos el hueco era parcial
+(`EventoMantenimiento` ya quedaba, creado desde services); para **visitas no quedaba
+rastro en ningún lado**, porque `VisitaTecnica` no tiene modelo de eventos propio: una
+visita cerrada desde el celular era invisible, mientras la misma acción desde la web
+dejaba su fila.
+
+Ahora las 12 acciones mutantes de la API auditan con **los mismos nombres que el panel**
+(`mantenimiento.cerrar`, `visita.iniciar`, `activo.ingreso`…), para que una consulta de
+auditoría no tenga que saber por qué superficie entró cada cosa. Lo que sí las distingue
+es `detalle={'origen': 'app_movil'}`: saber que vino del celular importa cuando alguien
+reconstruye qué pasó. Se audita solo lo que ocurrió —un 400 corta antes— y un reintento
+idempotente no duplica la fila, porque la respuesta cacheada no vuelve a ejecutar la
+acción.
+
+**BUG-8 — dos fuentes del mismo catálogo dentro de la misma app.** `estadosGenerales`
+estaba compilado en `mantenimiento.dart` (lo usaba el cierre) y además venía por API en
+`/catalogos/` (lo usaba el alta). Dos definiciones de los mismos tres valores, en el
+mismo binario.
+
+Se colapsó a la compilada, y la dirección no es arbitraria: **el cierre tiene que
+funcionar sin señal**, así que la copia compilada es la que no puede faltar — mismo
+razonamiento que ya justificaba `resultadosTecnicos`. El alta pasa a usar ese `const`, y
+`estados_generales` sale del modelo `Catalogos` (la API lo sigue mandando; simplemente
+ya no lo consume nadie).
+
+El costo de compilar un catálogo es que puede desviarse del backend en silencio, así que
+se agregó el guard: `catalogos_sin_desfase_test.dart` compara las claves de
+`estadosGenerales` contra `test/datos/catalogos_produccion.json`, que es una respuesta
+REAL de `/api/v1/catalogos/`. Se comparan claves y no etiquetas, porque la clave es lo
+que viaja y las etiquetas difieren por acentos en toda la app a propósito.
+
+**`resultadosTecnicos` sigue sin ese guard** y es el mismo riesgo (PROCESO-4): no se
+puede comparar porque `/catalogos/` no expone `resultados_tecnicos`. Exponerlo es un
+cambio de una línea en `CatalogosSerializer` y refrescar el fixture; queda pendiente de
+decisión.
+
+**Requiere versión nueva de la app** (BUG-8): la MISMA que ya acumula `ocurrido_en`,
+`origen_id` y el botón de revocar el consentimiento.

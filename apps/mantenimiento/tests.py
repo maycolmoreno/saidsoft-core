@@ -2724,3 +2724,207 @@ class RetencionDeUbicacionesTests(TestCase):
         mantenimiento.refresh_from_db()
         self.assertEqual(mantenimiento.distancia_verificacion_metros, 12.5)
         self.assertEqual(mantenimiento.presencia_en_sitio, 'verificada')
+
+
+class AltaAcotadaPorUnidadNegocioTests(TestCase):
+    """BUG-9: los serializers de alta validaban contra TODA la base.
+
+    Un `PrimaryKeyRelatedField` define su queryset en tiempo de import, así que aceptaba
+    cualquier id existente aunque fuera de otra unidad de negocio. El panel no tiene ese
+    agujero porque sus formularios arman los desplegables ya acotados.
+    """
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_mia', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
+        self.token = Token.objects.create(user=self.tecnico)
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        mia = UnidadNegocio.objects.get(codigo='MIA')
+        # El técnico ve SOLO MIA.
+        PerfilUsuario.objects.create(usuario=self.tecnico).unidades_negocio.add(mia)
+
+        self.farmacia_mia = Farmacia.objects.create(
+            codigo='MM940', grupo=Grupo.objects.create(codigo='TRX940'), unidad_negocio=mia,
+            nombre='Farmacia MIA',
+        )
+        self.farmacia_sg = Farmacia.objects.create(
+            codigo='ML940', grupo=Grupo.objects.create(codigo='TRX941'), unidad_negocio=sg,
+            nombre='Farmacia SG',
+        )
+        # `unidad_negocio` explícita: es nullable y el vacío significa "compartido".
+        self.equipo_ajeno = Activo.objects.create(
+            codigo='CR-DSK-9940', tipo=Activo.Tipo.DESKTOP,
+            farmacia=self.farmacia_sg, unidad_negocio=sg,
+        )
+        self.equipo_propio = Activo.objects.create(
+            codigo='CR-DSK-9941', tipo=Activo.Tipo.DESKTOP,
+            farmacia=self.farmacia_mia, unidad_negocio=mia,
+        )
+        self.equipo_compartido = Activo.objects.create(
+            codigo='CR-DSK-9942', tipo=Activo.Tipo.DESKTOP,
+        )
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def _crear_mantenimiento(self, equipo_pk):
+        return self.client.post(
+            '/api/v1/mantenimientos/',
+            {'equipos': [equipo_pk], 'descripcion': 'x',
+             'estado_general': EstadoGeneralEquipo.NO_OPERATIVO},
+            content_type='application/json', **self._auth(),
+        )
+
+    def test_no_puede_abrir_un_mantenimiento_sobre_un_equipo_de_otra_unidad(self):
+        resp = self._crear_mantenimiento(self.equipo_ajeno.pk)
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(Mantenimiento.objects.count(), 0)
+
+    def test_sobre_el_propio_si(self):
+        self.assertEqual(self._crear_mantenimiento(self.equipo_propio.pk).status_code, 201)
+
+    def test_un_equipo_sin_unidad_sigue_siendo_de_todos(self):
+        """`scope_opcional_*` y no la estricta: unidad_negocio es nullable y el panel
+        trata el vacío como compartido. Con la estricta, un técnico acotado no habría
+        podido abrir NINGÚN mantenimiento (registrar_ingreso no setea unidad_negocio)."""
+        self.assertEqual(self._crear_mantenimiento(self.equipo_compartido.pk).status_code, 201)
+
+    def test_no_puede_dar_de_alta_un_equipo_en_una_farmacia_ajena(self):
+        resp = self.client.post(
+            '/api/v1/equipos/nuevo/',
+            {'tipo': Activo.Tipo.DESKTOP, 'farmacia': self.farmacia_sg.pk},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_en_la_propia_si(self):
+        resp = self.client.post(
+            '/api/v1/equipos/nuevo/',
+            {'tipo': Activo.Tipo.DESKTOP, 'farmacia': self.farmacia_mia.pk},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+    def test_quien_ve_todo_sigue_viendo_todo(self):
+        sin_limite = User.objects.create_user(username='tec_total', password='x')
+        otorgar(sin_limite, *PERMISOS_APP_CAMPO)
+        PerfilUsuario.objects.create(usuario=sin_limite, acceso_todas_unidades=True)
+        from rest_framework.authtoken.models import Token
+        token = Token.objects.create(user=sin_limite)
+        resp = self.client.post(
+            '/api/v1/mantenimientos/',
+            {'equipos': [self.equipo_ajeno.pk], 'descripcion': 'x',
+             'estado_general': EstadoGeneralEquipo.NO_OPERATIVO},
+            content_type='application/json', HTTP_AUTHORIZATION=f'Token {token.key}',
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+
+class AuditoriaDeLaAppTests(TestCase):
+    """BUG-7: la API no auditaba nada y el panel auditaba 15 acciones.
+
+    Para mantenimientos el hueco era parcial (EventoMantenimiento queda igual); para
+    VISITAS no quedaba rastro en ningún lado, porque VisitaTecnica no tiene modelo de
+    eventos propio.
+    """
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_audit', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
+        PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
+        self.token = Token.objects.create(user=self.tecnico)
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML950', grupo=Grupo.objects.create(codigo='TRX950'), unidad_negocio=sg,
+            nombre='Farmacia auditoria', latitud=-2.17, longitud=-79.92,
+        )
+        equipo = Activo.objects.create(
+            codigo='CR-DSK-9950', tipo=Activo.Tipo.DESKTOP, farmacia=self.farmacia,
+        )
+        self.mantenimiento = crear_mantenimiento_manual(
+            equipos=[equipo], tecnico=self.tecnico, descripcion='POS',
+            fecha_programada=timezone.now(), usuario=self.tecnico,
+        )
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def _post(self, ruta, cuerpo=None):
+        return self.client.post(ruta, cuerpo or {}, content_type='application/json', **self._auth())
+
+    def _acciones(self):
+        from apps.auditoria.models import EventoAuditoria
+
+        return list(EventoAuditoria.objects.values_list('accion', flat=True))
+
+    def test_la_jornada_de_un_mantenimiento_queda_auditada(self):
+        self._post(f'/api/v1/mantenimientos/{self.mantenimiento.pk}/iniciar/')
+        self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/firmar/',
+            {'tipo_firma': 'tecnico', 'firma_base64': 'x'},
+        )
+        self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': ResultadoTecnico.REPARADO},
+        )
+        acciones = self._acciones()
+        self.assertIn('mantenimiento.iniciar', acciones)
+        self.assertIn('mantenimiento.firmar', acciones)
+        self.assertIn('mantenimiento.cerrar', acciones)
+
+    def test_la_visita_tambien_y_es_su_UNICO_rastro(self):
+        visita = crear_visita_tecnica(
+            farmacia=self.farmacia, tecnico=self.tecnico,
+            fecha_planificada=timezone.localdate(), motivo='ruta', usuario=self.tecnico,
+        )
+        self._post(f'/api/v1/visitas/{visita.pk}/iniciar/')
+        self._post(f'/api/v1/visitas/{visita.pk}/cerrar/', {'observaciones': 'ok'})
+        acciones = self._acciones()
+        self.assertIn('visita.iniciar', acciones)
+        self.assertIn('visita.cerrar', acciones)
+
+    def test_usa_los_mismos_nombres_que_el_panel(self):
+        """Para que una consulta de auditoría no tenga que saber por qué superficie
+        entró cada cosa."""
+        self._post(f'/api/v1/mantenimientos/{self.mantenimiento.pk}/iniciar/')
+        from apps.auditoria.models import EventoAuditoria
+
+        evento = EventoAuditoria.objects.get(accion='mantenimiento.iniciar')
+        self.assertEqual(evento.usuario, self.tecnico)
+        self.assertEqual(evento.objeto_id, str(self.mantenimiento.pk))
+
+    def test_se_distingue_que_vino_del_celular(self):
+        self._post(f'/api/v1/mantenimientos/{self.mantenimiento.pk}/iniciar/')
+        from apps.auditoria.models import EventoAuditoria
+
+        evento = EventoAuditoria.objects.get(accion='mantenimiento.iniciar')
+        self.assertEqual(evento.detalle.get('origen'), 'app_movil')
+
+    def test_una_accion_rechazada_no_deja_fila(self):
+        """Solo se audita lo que pasó: el 400 corta antes."""
+        resp = self._post(
+            f'/api/v1/mantenimientos/{self.mantenimiento.pk}/cerrar/',
+            {'resultado_tecnico': 'invento'},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertNotIn('mantenimiento.cerrar', self._acciones())
+
+    def test_un_reintento_idempotente_no_duplica_la_fila(self):
+        """La respuesta cacheada no vuelve a ejecutar la acción, así que tampoco la
+        vuelve a auditar."""
+        self._post(f'/api/v1/mantenimientos/{self.mantenimiento.pk}/iniciar/', {'origen_id': 5})
+        self._post(f'/api/v1/mantenimientos/{self.mantenimiento.pk}/iniciar/', {'origen_id': 5})
+        self.assertEqual(self._acciones().count('mantenimiento.iniciar'), 1)
+
+    def test_el_alta_de_equipo_usa_el_nombre_del_panel(self):
+        resp = self.client.post(
+            '/api/v1/equipos/nuevo/',
+            {'tipo': Activo.Tipo.DESKTOP, 'farmacia': self.farmacia.pk},
+            content_type='application/json', **self._auth(),
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertIn('activo.ingreso', self._acciones())

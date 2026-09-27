@@ -2107,6 +2107,13 @@ el proyecto — más sensibles, se otorgan persona por persona, no por grupo): v
 `catalogo.ver_clave_bitlocker` en "BitLocker" y `catalogo.supervision_auditoria_estacion`
 en "Acceso remoto (MeshCentral)" arriba.
 
+**La API móvil audita con los mismos nombres que el panel** (26-sep-2026, §10-AP). Hasta
+entonces el panel registraba 15 acciones en `auditoria` y la API ninguna: una visita
+cerrada desde el celular no dejaba rastro en ningún lado, porque `VisitaTecnica` tampoco
+tiene eventos propios. Ahora las acciones de la app quedan con el mismo nombre
+(`mantenimiento.cerrar`, `visita.iniciar`, …) y con `origen: app_movil` en el detalle,
+para poder distinguirlas sin tener dos vocabularios.
+
 **La API móvil evalúa los mismos codenames que el panel** (26-sep-2026, ver §10-AL del
 plan). Hasta entonces `/api/v1/` era `IsAuthenticated` a secas: el gating de la app
 Flutter escondía botones que la API aceptaba igual, así que un usuario sin permisos

@@ -391,11 +391,19 @@ consentimiento-monitoreo/  ubicaciones-tecnico/
 `Activo`. Un cambio de forma en cualquiera de ellos sale por el serializer y llega al
 teléfono **sin que nada lo avise**: no hay versionado de API ni contrato compartido.
 
-> **Gotcha — la app no es "el panel en chico".** Dos reglas viven en Dart y no tienen
-> equivalente en Python: el **orden por SLA** (`pantalla_mantenimientos.dart`, el panel
-> ordena por `-fecha_programada`) y el **catálogo de resultados de cierre**
-> (`mantenimiento.dart`, copia a mano de `ResultadoTecnico`). Las dos se desincronizan
-> en silencio.
+> **Gotcha — la app no es "el panel en chico".** Queda UNA regla que vive en Dart y no
+> tiene equivalente en Python: el **orden por SLA** (`pantalla_mantenimientos.dart`; el
+> panel ordena por `-fecha_programada`), así que mesa de ayuda y el técnico ven el mismo
+> trabajo en órdenes distintos.
+>
+> Los **catálogos compilados** (`resultadosTecnicos`, `estadosGenerales` en
+> `mantenimiento.dart`) siguen siendo copias a mano de las choices del backend, y eso es
+> deliberado: el cierre tiene que funcionar sin señal. Desde el 26-sep-2026 hay UNA sola
+> copia por catálogo dentro de la app —el alta usaba la de la API y el cierre la
+> compilada— y una prueba (`catalogos_sin_desfase_test.dart`) compara `estadosGenerales`
+> contra una respuesta real de `/api/v1/catalogos/`, para que el desfase rompa el build
+> en vez de aparecer en una farmacia. `resultadosTecnicos` todavía no tiene ese guard:
+> `/catalogos/` no lo expone.
 >
 > **RESUELTO (26-sep-2026) — el gating por permisos.** Era la tercera: `sesion.dart`
 > escondía botones que la API aceptaba igual, porque sus endpoints eran
@@ -453,6 +461,26 @@ teléfono **sin que nada lo avise**: no hay versionado de API ni contrato compar
 > visita que llega tarde devuelve el 409 (la app deja de reintentar) pero sus
 > observaciones no se guardan en ninguna bandeja — `VisitaTecnica` no tiene modelo de
 > eventos propio.
+
+> **RESUELTO (26-sep-2026) — lo que se hace desde la app ahora deja rastro.** El panel
+> registraba 15 acciones en `auditoria` y la API ninguna. Para mantenimientos el hueco
+> era parcial (`EventoMantenimiento` ya quedaba, desde services); para **visitas no
+> quedaba rastro en ningún lado**, porque `VisitaTecnica` no tiene modelo de eventos
+> propio — una visita cerrada desde el celular era invisible mientras la misma acción
+> desde la web dejaba fila. Ahora las 12 acciones de la API auditan con **los mismos
+> nombres** que el panel (`mantenimiento.cerrar`, `visita.iniciar`, `activo.ingreso`…),
+> y el `detalle` lleva `origen: app_movil` para poder distinguirlas. Un reintento
+> idempotente no duplica la fila: la respuesta cacheada no vuelve a ejecutar la acción.
+
+> **RESUELTO (26-sep-2026) — los altas de la API ya no aceptan ids de otro tenant.** Un
+> `PrimaryKeyRelatedField` valida contra un queryset fijado en tiempo de import, así que
+> `MantenimientoCrearSerializer.equipos` y `ActivoCrearSerializer.farmacia`/`bodega`
+> aceptaban cualquier id existente: un técnico de MIA podía abrir un mantenimiento sobre
+> un activo de San Gregorio pasando el id directo. El panel no tenía el agujero porque
+> sus formularios arman los desplegables ya acotados. `AcotadoPorUnidadNegocioMixin` los
+> acota con el mismo `scope_opcional_*` que usa `EquipoListView` — la variante opcional
+> y no la estricta, porque `Activo.unidad_negocio` es nullable y el vacío significa
+> "compartido".
 
 > **RESUELTO (26-sep-2026) — el consentimiento de ubicación se podía retirar en
 > teoría y no en la práctica.** El endpoint validaba con `.filter(aceptado=True)

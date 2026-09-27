@@ -30,13 +30,17 @@ class Opcion {
 ///
 /// Se piden juntos a propósito: en una farmacia con enlace intermitente, cinco
 /// llamadas para llenar un formulario son cinco oportunidades de fallar.
+///
+/// `estados_generales` NO está acá aunque la API lo mande: lo consume el cierre, que
+/// tiene que funcionar SIN SEÑAL, así que vive compilado en `estadosGenerales`
+/// (mantenimiento.dart) y el alta usa ese mismo. Una prueba lo compara contra el
+/// catálogo real del backend para que no se desincronicen en silencio.
 class Catalogos {
   const Catalogos({
     required this.tiposEquipo,
     required this.marcas,
     required this.categorias,
     required this.tiposMantenimiento,
-    required this.estadosGenerales,
     required this.prioridades,
     required this.farmacias,
     required this.bodegas,
@@ -48,7 +52,6 @@ class Catalogos {
   final List<Opcion> marcas;
   final List<Opcion> categorias;
   final List<Opcion> tiposMantenimiento;
-  final List<Opcion> estadosGenerales;
   final List<Opcion> prioridades;
   final List<Opcion> farmacias;
   final List<Opcion> bodegas;
@@ -67,7 +70,6 @@ class Catalogos {
 
   factory Catalogos.desdeJson(Map<String, dynamic> json) => Catalogos(
         tiposEquipo: _choices(json['tipos_equipo']),
-        estadosGenerales: _choices(json['estados_generales']),
         prioridades: _choices(json['prioridades']),
         marcas: _modelos(json['marcas']),
         categorias: _modelos(json['categorias']),

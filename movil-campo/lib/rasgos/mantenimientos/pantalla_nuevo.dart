@@ -260,8 +260,12 @@ class _PantallaNuevoMantenimientoState extends State<PantallaNuevoMantenimiento>
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Estado del equipo *'),
                 items: [
-                  for (final o in catalogos.estadosGenerales)
-                    DropdownMenuItem(value: o.valor, child: Text(o.etiqueta)),
+                  // El MISMO `estadosGenerales` que usa el cierre. Antes el alta lo
+                  // pedia por API y el cierre lo tenia compilado: dos fuentes para el
+                  // mismo catalogo dentro de la misma app, que es justo lo que se
+                  // desincroniza sin que nadie lo note.
+                  for (final e in estadosGenerales.entries)
+                    DropdownMenuItem(value: e.key, child: Text(e.value)),
                 ],
                 onChanged: (v) => setState(() => _estadoGeneral = v),
               ),

@@ -59,6 +59,47 @@ def campo_ocurrido_en():
     )
 
 
+class AcotadoPorUnidadNegocioMixin:
+    """Acota los desplegables de un serializer de alta a lo que el usuario puede ver.
+
+    Un `PrimaryKeyRelatedField` valida contra su `queryset`, y ese queryset se define en
+    tiempo de import: sin esto acepta CUALQUIER id que exista en la base, aunque sea de
+    otra unidad de negocio. El panel no tiene ese agujero porque sus formularios arman
+    los desplegables ya acotados (ver apps.mantenimiento.forms), y la API los tenia
+    abiertos -- un tecnico de MIA podia abrir un mantenimiento sobre un activo de San
+    Gregorio pasando el id directo.
+
+    `scope_opcional_*` y no la variante estricta, por el mismo motivo que
+    EquipoListView: `Activo.unidad_negocio` es nullable y el panel trata el vacio como
+    "compartido, visible para todos". La estricta EXCLUYE los nulos, que hoy son todos
+    los activos creados por `registrar_ingreso`.
+    """
+
+    #: {nombre_del_campo: lookup hacia UnidadNegocio}
+    campos_acotados: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from apps.cuentas.services import scope_opcional_por_unidad_negocio
+
+        peticion = self.context.get('request')
+        if peticion is None or not getattr(peticion, 'user', None):
+            # Sin request no hay a quien acotar (uso desde un comando o una prueba).
+            # Se deja el queryset como esta en vez de vaciarlo: romper un llamador
+            # legitimo seria peor que el agujero que esto cierra, y la API SIEMPRE
+            # pasa el request.
+            return
+        for nombre, lookup in self.campos_acotados.items():
+            campo = self.fields.get(nombre)
+            if campo is None:
+                continue
+            # many=True envuelve el campo real en un ListSerializer.
+            interno = getattr(campo, 'child_relation', campo)
+            interno.queryset = scope_opcional_por_unidad_negocio(
+                interno.queryset, peticion.user, lookup,
+            )
+
+
 def campo_origen_id():
     """id de la fila en la ColaOffline del telefono: la clave de idempotencia.
 
@@ -168,9 +209,12 @@ class MantenimientoDetalleSerializer(MantenimientoListSerializer):
         read_only_fields = fields
 
 
-class MantenimientoCrearSerializer(serializers.Serializer):
+class MantenimientoCrearSerializer(AcotadoPorUnidadNegocioMixin, serializers.Serializer):
     """Creación self-service desde la app móvil: el técnico se autoasigna (ver
     MantenimientoViewSet.create, que fija tecnico=request.user sin importar el payload)."""
+
+    campos_acotados = {'equipos': 'unidad_negocio', 'cliente': 'unidad_negocio'}
+
     equipos = serializers.PrimaryKeyRelatedField(
         many=True, queryset=Activo.objects.exclude(estado=Activo.Estado.DADO_DE_BAJA),
     )
@@ -377,14 +421,21 @@ class AccionDiferidaSerializer(serializers.Serializer):
     origen_id = campo_origen_id()
 
 
-class ActivoCrearSerializer(serializers.Serializer):
+class ActivoCrearSerializer(AcotadoPorUnidadNegocioMixin, serializers.Serializer):
     """Alta de un equipo desde el campo.
 
     Se pide farmacia O bodega, igual que el alta del panel: un técnico que encuentra
     un equipo sin registrar está parado en la farmacia, no en un almacén, y exigirle
     una bodega lo obligaría a inventar una por la que el equipo nunca pasó (ver
     apps.activos.services.registrar_ingreso).
+
+    Mismo agujero que el alta de mantenimiento y por el mismo motivo: `farmacia` y
+    `bodega` validaban contra TODAS las activas, asi que se podia dar de alta un equipo
+    en una farmacia de otra unidad de negocio pasando el id.
     """
+
+    campos_acotados = {'farmacia': 'unidad_negocio', 'bodega': 'unidad_negocio'}
+
     tipo = serializers.ChoiceField(choices=Activo.Tipo.choices)
     marca = serializers.PrimaryKeyRelatedField(
         queryset=Marca.objects.all(), required=False, allow_null=True, default=None,

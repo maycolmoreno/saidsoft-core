@@ -23,6 +23,28 @@ from .serializers import (
 )
 
 
+def _auditar(request, accion, objeto):
+    """Deja constancia de una acción de la app en el módulo de auditoría.
+
+    Hasta el 26-sep-2026 la API no auditaba NADA: el panel registraba 15 acciones y la
+    API cero. Para mantenimientos el hueco era parcial (EventoMantenimiento queda igual,
+    desde services), pero para VISITAS no quedaba rastro en ningún lado -- VisitaTecnica
+    no tiene modelo de eventos propio, así que una visita cerrada desde el celular era
+    invisible mientras la misma acción desde la web dejaba fila.
+
+    Se usan los MISMOS nombres de acción que el panel ('mantenimiento.cerrar',
+    'visita.iniciar', ...) para que una consulta de auditoría no tenga que saber por qué
+    superficie entró cada cosa. Lo que sí se distingue es el `detalle`: saber que vino
+    del celular importa cuando alguien reconstruye qué pasó.
+    """
+    from apps.auditoria.models import registrar_evento
+
+    return registrar_evento(
+        usuario=request.user, accion=accion, objeto=objeto,
+        detalle={'origen': 'app_movil'}, request=request,
+    )
+
+
 def _origen_id(request):
     """id de la fila en la ColaOffline del teléfono, si la acción vino de ahí.
 
@@ -139,6 +161,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        _auditar(request, 'mantenimiento.crear', mantenimiento)
         return Response(MantenimientoDetalleSerializer(mantenimiento).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['get'])
@@ -161,6 +184,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
                 )
             except ValueError as exc:
                 return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            _auditar(request, 'mantenimiento.iniciar', mantenimiento)
             return Response(MantenimientoDetalleSerializer(mantenimiento).data)
 
         return _idempotente(request, 'iniciar_mantenimiento', ejecutar)
@@ -174,6 +198,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
             mantenimiento=mantenimiento, actividad=serializer.validated_data['actividad_id'],
             realizada=serializer.validated_data['realizada'], usuario=request.user,
         )
+        _auditar(request, 'mantenimiento.checklist_actualizar', mantenimiento)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'])
@@ -208,6 +233,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
                 return _conflicto(exc)
             except ValueError as exc:
                 return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            _auditar(request, 'mantenimiento.cerrar', mantenimiento)
             return Response(MantenimientoDetalleSerializer(mantenimiento).data)
 
         return _idempotente(request, 'cerrar_mantenimiento', ejecutar)
@@ -234,6 +260,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
                 return _conflicto(exc)
             except ValueError as exc:
                 return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            _auditar(request, 'mantenimiento.cancelar', mantenimiento)
             return Response(MantenimientoDetalleSerializer(mantenimiento).data)
 
         return _idempotente(request, 'cancelar_mantenimiento', ejecutar)
@@ -260,6 +287,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
             # Stock insuficiente entra por acá: es un dato que el técnico puede
             # corregir, no un error del sistema.
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        _auditar(request, 'mantenimiento.repuesto_agregar', mantenimiento)
         return Response(MantenimientoDetalleSerializer(mantenimiento).data)
 
     @action(detail=True, methods=['post'])
@@ -275,6 +303,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
                 ip_origen=request.META.get('REMOTE_ADDR'),
                 ocurrido_en=serializer.validated_data.get('ocurrido_en'),
             )
+            _auditar(request, 'mantenimiento.firmar', mantenimiento)
             return Response(FirmaMantenimientoSerializer(firma).data, status=status.HTTP_201_CREATED)
 
         return _idempotente(request, 'firmar_mantenimiento', ejecutar)
@@ -287,6 +316,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
         imagen = services.adjuntar_imagen_mantenimiento(
             mantenimiento=mantenimiento, archivo=serializer.validated_data['archivo'], usuario=request.user,
         )
+        _auditar(request, 'mantenimiento.imagen_adjuntar', mantenimiento)
         return Response(ImagenMantenimientoSerializer(imagen).data, status=status.HTTP_201_CREATED)
 
 
@@ -525,6 +555,9 @@ class VisitaTecnicaViewSet(viewsets.ReadOnlyModelViewSet):
                 return _conflicto(exc)
             except ValueError as exc:
                 return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            # Acá la auditoría no es "otra copia del evento": VisitaTecnica no tiene
+            # modelo de eventos propio, así que esta fila es el ÚNICO rastro.
+            _auditar(request, 'visita.iniciar', visita)
             return Response(self.get_serializer(visita).data)
 
         return _idempotente(request, 'iniciar_visita', ejecutar)
@@ -546,6 +579,7 @@ class VisitaTecnicaViewSet(viewsets.ReadOnlyModelViewSet):
                 return _conflicto(exc)
             except ValueError as exc:
                 return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            _auditar(request, 'visita.cerrar', visita)
             return Response(self.get_serializer(visita).data)
 
         return _idempotente(request, 'cerrar_visita', ejecutar)
@@ -599,4 +633,5 @@ class ActivoCrearView(generics.CreateAPIView):
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        _auditar(request, 'activo.ingreso', activo)
         return Response(ActivoMovilSerializer(activo).data, status=status.HTTP_201_CREATED)

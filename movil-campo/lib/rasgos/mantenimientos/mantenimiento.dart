@@ -208,6 +208,13 @@ const resultadosTecnicos = <String, String>{
   'instalado': 'Instalado',
 };
 
+/// Condicion del equipo al cerrar (o al abrir) un mantenimiento.
+///
+/// Compilado y no pedido por API, por el mismo motivo que `resultadosTecnicos`: el
+/// cierre tiene que funcionar en una farmacia sin senal. Lo usan las DOS pantallas --
+/// el alta y el cierre-- para que no haya dos fuentes del mismo catalogo adentro de la
+/// app. Debe seguir a EstadoGeneralEquipo del backend, y hay una prueba que lo compara
+/// contra el catalogo real para que el desfase no sea silencioso.
 const estadosGenerales = <String, String>{
   'operativo': 'Operativo',
   'requiere_revision': 'Requiere revision',
