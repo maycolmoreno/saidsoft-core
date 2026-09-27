@@ -32,18 +32,30 @@ void main() {
     expect(estadosGenerales.keys.toSet(), clavesDe('estados_generales'));
   });
 
-  test('el catalogo compilado no ofrece nada que el servidor vaya a rechazar', () {
+  test('resultadosTecnicos coincide con ResultadoTecnico del backend', () {
+    expect(resultadosTecnicos.keys.toSet(), clavesDe('resultados_tecnicos'));
+  });
+
+  test('ningun catalogo compilado ofrece algo que el servidor vaya a rechazar', () {
     // La direccion que rompe en campo: el tecnico elige una opcion y el cierre vuelve
     // con un 400 -- que ademas, viniendo de la cola offline, llega horas despues,
     // cuando ya se fue de la farmacia.
-    final delBackend = clavesDe('estados_generales');
-    for (final clave in estadosGenerales.keys) {
-      expect(delBackend, contains(clave), reason: '"$clave" no existe en el backend');
-    }
+    final casos = {
+      'estados_generales': estadosGenerales.keys,
+      'resultados_tecnicos': resultadosTecnicos.keys,
+    };
+    casos.forEach((catalogo, claves) {
+      final delBackend = clavesDe(catalogo);
+      for (final clave in claves) {
+        expect(delBackend, contains(clave),
+            reason: '"$clave" no existe en $catalogo del backend');
+      }
+    });
   });
 
   test('ninguna etiqueta quedo vacia', () {
-    for (final entrada in estadosGenerales.entries) {
+    final todas = {...estadosGenerales, ...resultadosTecnicos};
+    for (final entrada in todas.entries) {
       expect(entrada.value.trim(), isNotEmpty, reason: '${entrada.key} sin etiqueta');
     }
   });

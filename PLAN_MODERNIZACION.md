@@ -3800,3 +3800,42 @@ cambiar de máquina, de rotar la passphrase o de mover el archivo de sitio. Es b
 es lo único que distingue "tengo una copia" de "tengo una copia que sirve" — la misma
 lección que este proyecto ya aprendió con el CI en verde que no lo estaba (§10 del plan)
 y con los respaldos del servidor que existen pero no salen del servidor.
+
+## §10-AS — El guard de catálogos compilados, y por qué el primero no alcanzaba (26-sep-2026)
+
+PROCESO-4 de la revisión de consistencia. Al ir a cerrarlo apareció una debilidad en el
+guard que §10-AP había dejado para `estadosGenerales`, así que se arregló de raíz.
+
+**El problema original.** La app tiene `resultadosTecnicos` y `estadosGenerales`
+escritos a mano en Dart, y es deliberado: el cierre de un mantenimiento tiene que
+funcionar en una farmacia sin señal. El costo es que pueden desviarse del backend en
+silencio — nada falla, la app simplemente ofrece una opción que el servidor rechaza, o
+deja de ofrecer una que existe. Y como el cierre puede venir de la cola offline, ese 400
+llega horas después, cuando el técnico ya se fue del sitio.
+
+**Por qué el primer guard no alcanzaba.** La prueba de Flutter compara contra
+`test/datos/catalogos_produccion.json`, que es un **snapshot**. Si alguien agrega un
+valor al backend y nadie refresca ese archivo, la prueba pasa igual: compara la app
+contra una foto vieja. Es la misma familia de problema que veníamos persiguiendo —un
+control que parece estar y no está— y habría sido peor que no tener guard, porque da
+confianza.
+
+**El guard que manda vive del lado de Django.** `CatalogosCompiladosEnLaAppTests` lee el
+fuente `mantenimiento.dart` como texto, extrae las claves de los dos mapas `const` y las
+compara contra `ResultadoTecnico.choices` y `EstadoGeneralEquipo.choices`. Lee las
+choices REALES, así que falla en el mismo commit que introduce la diferencia, sin
+depender de que alguien refresque nada. Además comprueba que el fixture de Flutter esté
+al día, para que aquella prueba no se vuelva decorativa.
+
+Leer un `.dart` desde una prueba de Django es inusual, pero es exactamente el tipo de
+cruce que esto viene a cuidar, y `DivisionDeVistasTests` ya hace lo mismo con los `.py`.
+El archivo está versionado, así que corre igual en un checkout limpio — la lección de
+§10: una prueba que lee algo ignorado por git no puede pasar en CI.
+
+**Se expone `resultados_tecnicos` en `/api/v1/catalogos/`**, que es lo que faltaba para
+poder escribir el guard (la app lo sigue usando COMPILADO; exponerlo es para poder
+comparar, no para que lo pida).
+
+**Se verificó que el guard detecta de verdad.** Se borró un valor del mapa de Dart a
+propósito: la prueba falla con el mensaje que corresponde. Un guard que nunca se vio
+fallar es una suposición — mismo criterio que con el respaldo del keystore (§10-AR).

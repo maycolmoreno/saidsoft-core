@@ -476,6 +476,10 @@ class CatalogosSerializer(serializers.Serializer):
     categorias = serializers.SerializerMethodField()
     tipos_mantenimiento = serializers.SerializerMethodField()
     estados_generales = serializers.SerializerMethodField()
+    # Se expone aunque la app lo tenga COMPILADO (el cierre tiene que funcionar sin
+    # senal, ver mantenimiento.dart): tenerlo acá es lo que permite comparar la copia de
+    # la app contra la fuente y que un desfase deje de ser silencioso.
+    resultados_tecnicos = serializers.SerializerMethodField()
     prioridades = serializers.SerializerMethodField()
     farmacias = serializers.SerializerMethodField()
     bodegas = serializers.SerializerMethodField()
@@ -491,6 +495,9 @@ class CatalogosSerializer(serializers.Serializer):
 
     def get_estados_generales(self, _):
         return self._opciones(EstadoGeneralEquipo.choices)
+
+    def get_resultados_tecnicos(self, _):
+        return self._opciones(ResultadoTecnico.choices)
 
     def get_prioridades(self, _):
         return self._opciones(PrioridadMantenimiento.choices)

@@ -3109,3 +3109,116 @@ class OrdenCompartidoEntreSuperficiesTests(TestCase):
             reverse('panel:mantenimientos_lista'), {'estado': Mantenimiento.EstadoInterno.PENDIENTE},
         )
         self.assertEqual(len(resp.context['mantenimientos']), 2)
+
+
+class CatalogosCompiladosEnLaAppTests(TestCase):
+    """Que los catálogos COMPILADOS en la app de campo no se desvíen del backend.
+
+    La app tiene `resultadosTecnicos` y `estadosGenerales` escritos a mano en Dart, y es
+    deliberado: el cierre de un mantenimiento tiene que funcionar en una farmacia sin
+    señal, y pedirlos por API lo haría imposible. El costo de esa decisión es que pueden
+    desviarse en silencio — nada falla, la app simplemente ofrece una opción que el
+    servidor rechaza, o deja de ofrecer una que existe. Y como el cierre puede venir de
+    la cola offline, ese 400 llega horas después, cuando el técnico ya se fue.
+
+    **Por qué esta prueba vive del lado de Django y no solo en Flutter.** La prueba de
+    Flutter compara contra `test/datos/catalogos_produccion.json`, que es un SNAPSHOT: si
+    alguien agrega un valor al backend y nadie refresca ese archivo, la prueba de Flutter
+    pasa igual y el desfase sigue siendo invisible. Esta lee las choices REALES, así que
+    falla en el mismo commit que introduce la diferencia.
+
+    Lee el fuente de Dart como texto. Es inusual, pero es exactamente el tipo de cruce
+    que esto viene a cuidar, y `DivisionDeVistasTests` ya hace lo mismo con los .py. El
+    archivo está versionado, así que la prueba corre igual en un checkout limpio — la
+    lección de §10 del plan: una prueba que lee algo ignorado por git no puede pasar en CI.
+    """
+
+    ARCHIVO_DART = 'movil-campo/lib/rasgos/mantenimientos/mantenimiento.dart'
+
+    def _fuente_dart(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        ruta = Path(settings.BASE_DIR) / self.ARCHIVO_DART
+        self.assertTrue(
+            ruta.is_file(),
+            f'no se encontró {self.ARCHIVO_DART}. Si la app se movió o se renombró, hay que '
+            f'actualizar esta prueba: sin ella, los catálogos compilados vuelven a poder '
+            f'desviarse del backend sin que nada avise.',
+        )
+        return ruta.read_text(encoding='utf-8')
+
+    def _claves_del_mapa(self, nombre):
+        """Las claves de un `const nombre = <String, String>{...}` del fuente Dart."""
+        import re
+
+        fuente = self._fuente_dart()
+        bloque = re.search(
+            r'const\s+%s\s*=\s*<String,\s*String>\s*\{(.*?)\};' % re.escape(nombre),
+            fuente, re.S,
+        )
+        self.assertIsNotNone(bloque, f'no se encontró el mapa `{nombre}` en {self.ARCHIVO_DART}')
+        return set(re.findall(r"'([^']+)'\s*:", bloque.group(1)))
+
+    def test_resultados_tecnicos_coincide_con_el_backend(self):
+        del_backend = {valor for valor, _ in ResultadoTecnico.choices}
+        self.assertEqual(
+            self._claves_del_mapa('resultadosTecnicos'), del_backend,
+            'el catálogo de resultados de cierre de la app no coincide con ResultadoTecnico. '
+            'Actualizá `resultadosTecnicos` en mantenimiento.dart (y acordate de que hace '
+            'falta publicar un APK nuevo para que llegue a los teléfonos).',
+        )
+
+    def test_estados_generales_coincide_con_el_backend(self):
+        del_backend = {valor for valor, _ in EstadoGeneralEquipo.choices}
+        self.assertEqual(
+            self._claves_del_mapa('estadosGenerales'), del_backend,
+            'el catálogo de estado del equipo de la app no coincide con EstadoGeneralEquipo.',
+        )
+
+    def test_la_api_expone_los_resultados_para_poder_compararlos(self):
+        """`/catalogos/` no los exponía, y por eso este guard no se podía escribir."""
+        from rest_framework.authtoken.models import Token
+
+        usuario = User.objects.create_user(username='tec_cat', password='x')
+        otorgar(usuario, *PERMISOS_APP_CAMPO)
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        token = Token.objects.create(user=usuario)
+
+        datos = self.client.get(
+            '/api/v1/catalogos/', HTTP_AUTHORIZATION=f'Token {token.key}',
+        ).json()
+        self.assertIn('resultados_tecnicos', datos)
+        self.assertEqual(
+            {o['valor'] for o in datos['resultados_tecnicos']},
+            {valor for valor, _ in ResultadoTecnico.choices},
+        )
+
+    def test_el_fixture_de_flutter_esta_al_dia(self):
+        """El snapshot que usa la prueba de Flutter tiene que reflejar el backend.
+
+        Si se desactualiza, aquella prueba deja de servir — pasa comparando la app
+        contra una foto vieja. Esta lo detecta.
+        """
+        import json
+        from pathlib import Path
+
+        from django.conf import settings
+
+        ruta = Path(settings.BASE_DIR) / 'movil-campo/test/datos/catalogos_produccion.json'
+        self.assertTrue(ruta.is_file(), 'falta el fixture de catálogos de la app')
+        fixture = json.loads(ruta.read_text(encoding='utf-8'))
+
+        for clave, choices in (
+            ('resultados_tecnicos', ResultadoTecnico.choices),
+            ('estados_generales', EstadoGeneralEquipo.choices),
+        ):
+            with self.subTest(catalogo=clave):
+                self.assertIn(clave, fixture, f'el fixture no trae `{clave}`')
+                self.assertEqual(
+                    {o['valor'] for o in fixture[clave]},
+                    {valor for valor, _ in choices},
+                    f'el fixture quedó viejo para `{clave}`: refrescalo con una respuesta '
+                    f'nueva de /api/v1/catalogos/.',
+                )

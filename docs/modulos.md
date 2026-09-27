@@ -409,10 +409,15 @@ teléfono **sin que nada lo avise**: no hay versionado de API ni contrato compar
 > `mantenimiento.dart`) siguen siendo copias a mano de las choices del backend, y eso es
 > deliberado: el cierre tiene que funcionar sin señal. Desde el 26-sep-2026 hay UNA sola
 > copia por catálogo dentro de la app —el alta usaba la de la API y el cierre la
-> compilada— y una prueba (`catalogos_sin_desfase_test.dart`) compara `estadosGenerales`
-> contra una respuesta real de `/api/v1/catalogos/`, para que el desfase rompa el build
-> en vez de aparecer en una farmacia. `resultadosTecnicos` todavía no tiene ese guard:
-> `/catalogos/` no lo expone.
+> compilada— y **los dos tienen guard de desfase**.
+>
+> El guard que manda es `CatalogosCompiladosEnLaAppTests`, del lado de Django: lee el
+> fuente Dart y lo compara contra `ResultadoTecnico.choices` /
+> `EstadoGeneralEquipo.choices`, así que falla en el mismo commit que introduce la
+> diferencia. La prueba de Flutter compara contra
+> `test/datos/catalogos_produccion.json`, que es un **snapshot** y por sí sola no
+> alcanzaba: si nadie lo refresca, pasa comparando la app contra una foto vieja. Por eso
+> la de Django comprueba **también que el fixture esté al día**.
 >
 > **RESUELTO (26-sep-2026) — el gating por permisos.** Era la tercera: `sesion.dart`
 > escondía botones que la API aceptaba igual, porque sus endpoints eran
