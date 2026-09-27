@@ -99,11 +99,18 @@ corre sobre `timescale/timescaledb`.
   huella antes de empaquetar y `verificar` prueba que la copia se puede restaurar.
   Correr `verificar` sobre la copia ya movida, cada tanto y después de cualquier cambio
   de máquina: un respaldo que nunca se restauró es una suposición, no un respaldo.
-- **APK**: el release ya se firma con el keystore de CRESIO (§10-AH). Queda el **canal de
-  distribución**: se sigue copiando a mano a `/media/movil/`, la app no avisa que hay
-  versión nueva, y hay **cinco cambios acumulados sin distribuir** (hora real de la cola
-  offline, clave de idempotencia, revocar el consentimiento de ubicación, catálogo
-  unificado y orden por urgencia desde el servidor).
+- **APK**: el release ya se firma con el keystore de CRESIO (§10-AH) y desde el
+  26-sep-2026 hay `publicar_apk` + `/api/v1/version-app/`, así que la app **avisa** que
+  hay versión nueva (§10-AT). La distribución en sí **sigue siendo manual**: se copia a
+  `/media/movil/` y alguien lo instala teléfono por teléfono. Y hay **seis cambios
+  acumulados sin distribuir** (hora real de la cola offline, clave de idempotencia,
+  revocar el consentimiento de ubicación, catálogo unificado, orden por urgencia desde el
+  servidor y el propio aviso de versión). Ojo con la vuelta: los teléfonos que hoy están
+  en la calle **no tienen el aviso**, así que de esta tanda se enteran como siempre.
+- **Certificado TLS**: `deploy/verificar-certificado.sh` compara lo que sirve el servidor
+  contra lo que empaqueta la app y avisa si vence pronto. Si hay que rotar, el orden es
+  **primero el APK, después el servidor** — al revés deja a toda la flota de teléfonos
+  fuera de servicio (runbook en `deploy/README-produccion.md`).
 - Decisiones abiertas del usuario: **crear visitas desde la app** (hoy el ViewSet es de
   solo lectura) y **abrir el mapa hacia la farmacia** (el backend ya manda coordenadas
   y nada las usa).

@@ -3839,3 +3839,72 @@ comparar, no para que lo pida).
 **Se verificó que el guard detecta de verdad.** Se borró un valor del mapa de Dart a
 propósito: la prueba falla con el mensaje que corresponde. Un guard que nunca se vio
 fallar es una suposición — mismo criterio que con el respaldo del keystore (§10-AR).
+
+## §10-AT — Rotación de certificado y aviso de versión: los dos procesos que dependían de que alguien se acordara (26-sep-2026)
+
+PROCESO-1 y PROCESO-3 de la revisión de consistencia. Ninguno era un bug: el código
+hacía lo correcto. Lo que faltaba era que alguien se enterara a tiempo.
+
+### PROCESO-1 — rotar el certificado no es solo redesplegar
+
+`deploy/certs/cert.pem` tiene **cinco** consumidores: nginx (panel 8084), EMQX (listener
+TLS), el worker MQTT y tres tareas de Celery (`MQTT_CA_CERT`), el instalador del agente,
+y **la app de campo, que empaqueta una copia dentro del APK**. Los primeros cuatro se
+arreglan redesplegando. El quinto no: esa copia vive en el APK ya instalado en los
+teléfonos, así que una rotación sin publicar versión nueva deja a **cada técnico sin
+poder trabajar**, con el servidor y el panel perfectos.
+
+Eso no estaba escrito en ningún lado fuera del README de `movil-campo`, que solo tenía
+el comando de `openssl` para regenerar el asset —sin decir cuándo hacía falta ni qué
+pasaba si no.
+
+`deploy/verificar-certificado.sh` compara la huella del certificado que **sirve el
+servidor** contra la que **empaqueta la app**, y avisa si le quedan menos de 90 días de
+vigencia — que es lo que tarda de verdad el camino completo: rotar, recompilar, firmar y
+recorrer los teléfonos a mano. Acepta `host:puerto` o un archivo, porque el NUC vive en
+la red del sitio y no se llega desde cualquier máquina; la forma con archivo además es
+la que permitió probar las dos ramas (coincide / no coincide) de forma determinista.
+
+El runbook quedó en `deploy/README-produccion.md`, con la tabla de consumidores y **el
+orden**: primero el APK, después el servidor. Al revés deja a toda la flota fuera de
+servicio el tiempo que tarde la distribución manual, que hoy son días.
+
+> El certificado que empaqueta la app vence el **8-nov-2028**. El aviso empieza a
+> aparecer solo desde agosto de 2028.
+
+### PROCESO-3 — nadie se enteraba de que había versión nueva
+
+La distribución del APK es manual: se copia a `media/movil/` y alguien lo instala
+teléfono por teléfono. El problema nunca fue copiar el archivo, era que **un técnico
+podía pasar semanas con una versión vieja sin ninguna señal** — y con distribución a
+mano eso es lo normal, no la excepción. Al momento de escribir esto había **cinco
+cambios acumulados** sin llegar a ningún teléfono.
+
+Tres piezas:
+
+- **`publicar_apk`** (management command, simula por defecto y exige `--aplicar` como el
+  resto). Copia el APK con nombre canónico y escribe `media/movil/version.json`. La
+  versión **sale de `pubspec.yaml`**, no de un parámetro: escribirla a mano es garantizar
+  que algún día no coincida con el APK. Avisa si se republica el mismo build, que es
+  justo el descuido que deja al técnico sin enterarse (compilar cambios sin subir el
+  `+N`: la app compara ese número y no vería diferencia).
+- **`GET /api/v1/version-app/`** lee ese manifiesto. No adivina mirando la carpeta: con
+  tres APK sueltos, cuál es "el bueno" es una decisión de quien publica. Un manifiesto
+  ausente o roto devuelve `publicada: false` con 200 — la app consulta esto al abrir y
+  un JSON corrupto no puede dejar al técnico sin poder entrar.
+- **Aviso en la app**: banner descartable arriba del de pendientes. No bloquea nada; el
+  técnico puede seguir trabajando con la versión vieja. `consultarVersionPublicada`
+  nunca lanza: sin señal, o contra un servidor viejo que no tiene el endpoint, no se
+  muestra nada.
+
+**El guard que evita que el aviso mienta.** `buildActual` está escrito a mano en
+`version.dart` para no sumar un plugin nativo por un entero; el costo es que puede
+desviarse de `pubspec.yaml`, y entonces la app compararía contra un número que no es el
+suyo —avisando de una versión que ya tiene, o callando una que le falta—. `version_test.dart`
+lo compara contra `pubspec.yaml` y falla si no coinciden. Mismo criterio que los
+catálogos compilados (§10-AS).
+
+**Requiere versión nueva de la app**, y acá hay una vuelta que conviene tener presente:
+**los teléfonos que hoy están en la calle no tienen el aviso**, así que de esta versión
+se van a enterar como siempre —porque alguien se lo diga—. El mecanismo empieza a servir
+a partir de la siguiente.

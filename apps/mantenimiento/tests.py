@@ -3222,3 +3222,178 @@ class CatalogosCompiladosEnLaAppTests(TestCase):
                     f'el fixture quedó viejo para `{clave}`: refrescalo con una respuesta '
                     f'nueva de /api/v1/catalogos/.',
                 )
+
+
+class AvisoDeVersionNuevaTests(TestCase):
+    """PROCESO-3: la distribución del APK es manual y nadie se enteraba de que había
+    una versión nueva. Un técnico podía pasar semanas con un APK viejo sin ninguna señal.
+    """
+
+    def setUp(self):
+        import tempfile
+        from rest_framework.authtoken.models import Token
+
+        self.tecnico = User.objects.create_user(username='tec_ver', password='x')
+        self.token = Token.objects.create(user=self.tecnico)
+        self.media = tempfile.mkdtemp()
+
+    def _get(self):
+        return self.client.get(
+            '/api/v1/version-app/', HTTP_AUTHORIZATION=f'Token {self.token.key}',
+        )
+
+    def _publicar(self, contenido):
+        import json
+        from pathlib import Path
+
+        carpeta = Path(self.media) / 'movil'
+        carpeta.mkdir(parents=True, exist_ok=True)
+        (carpeta / 'version.json').write_text(
+            contenido if isinstance(contenido, str) else json.dumps(contenido),
+            encoding='utf-8',
+        )
+
+    def test_sin_nada_publicado_responde_que_no_hay(self):
+        """200 y no 404: "todavía no se publicó ninguna" es una respuesta válida, y un
+        404 haría que la app lo tratara como error."""
+        with override_settings(MEDIA_ROOT=self.media):
+            resp = self._get()
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()['publicada'])
+
+    def test_devuelve_la_version_publicada_con_su_url(self):
+        self._publicar({
+            'version': '1.10.0', 'build': 13,
+            'archivo': 'saidsoft-campo-1.10.0+13.apk',
+            'notas': 'Hora real de la cola offline',
+            'publicado_en': '2026-09-26T20:00:00Z',
+        })
+        with override_settings(MEDIA_ROOT=self.media):
+            datos = self._get().json()
+        self.assertTrue(datos['publicada'])
+        self.assertEqual(datos['version'], '1.10.0')
+        self.assertEqual(datos['build'], 13)
+        self.assertEqual(datos['notas'], 'Hora real de la cola offline')
+        self.assertTrue(datos['url'].endswith('/media/movil/saidsoft-campo-1.10.0+13.apk'))
+
+    def test_un_manifiesto_roto_no_tumba_la_pantalla_de_inicio(self):
+        """La app consulta esto al abrir. Un JSON corrupto no puede dejar al técnico
+        sin poder entrar."""
+        self._publicar('{ esto no es json')
+        with override_settings(MEDIA_ROOT=self.media):
+            resp = self._get()
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()['publicada'])
+
+    def test_sin_token_no_responde(self):
+        with override_settings(MEDIA_ROOT=self.media):
+            self.assertEqual(self.client.get('/api/v1/version-app/').status_code, 401)
+
+    def test_no_exige_permisos_de_negocio(self):
+        """Saber que hay una versión nueva no es información de negocio. Exigir un
+        codename dejaría sin aviso justo al técnico cuya app quedó tan vieja que ya no
+        se entiende bien con el servidor."""
+        self._publicar({'version': '1.10.0', 'build': 13, 'archivo': 'x.apk'})
+        pelado = User.objects.create_user(username='sin_nada', password='x')
+        from rest_framework.authtoken.models import Token
+        token = Token.objects.create(user=pelado)
+        with override_settings(MEDIA_ROOT=self.media):
+            resp = self.client.get(
+                '/api/v1/version-app/', HTTP_AUTHORIZATION=f'Token {token.key}',
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()['publicada'])
+
+
+class PublicarApkTests(TestCase):
+    """El comando que deja el APK en su lugar y escribe el manifiesto.
+
+    Sin el manifiesto el aviso no existe: el endpoint no adivina cuál de los APK
+    sueltos de la carpeta es el bueno.
+    """
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self.media = tempfile.mkdtemp()
+        self.origen = Path(tempfile.mkdtemp()) / 'app-arm64-v8a-release.apk'
+        self.origen.write_bytes(b'no soy un apk de verdad')
+
+    def _correr(self, *extra):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        salida = StringIO()
+        with override_settings(MEDIA_ROOT=self.media):
+            call_command('publicar_apk', str(self.origen), *extra, stdout=salida)
+        return salida.getvalue()
+
+    def _manifiesto(self):
+        import json
+        from pathlib import Path
+
+        return json.loads((Path(self.media) / 'movil' / 'version.json').read_text(encoding='utf-8'))
+
+    def test_simula_por_defecto(self):
+        """CLAUDE.md: los comandos que escriben simulan por defecto y exigen --aplicar."""
+        from pathlib import Path
+
+        salida = self._correr()
+        self.assertIn('SIMULACRO', salida)
+        self.assertFalse((Path(self.media) / 'movil').exists())
+
+    def test_con_aplicar_copia_y_escribe_el_manifiesto(self):
+        from pathlib import Path
+
+        self._correr('--aplicar', '--notas', 'Orden por urgencia')
+        carpeta = Path(self.media) / 'movil'
+        self.assertTrue((carpeta / 'saidsoft-campo-1.9.0+12.apk').is_file())
+        datos = self._manifiesto()
+        self.assertEqual(datos['version'], '1.9.0')
+        self.assertEqual(datos['build'], 12)
+        self.assertEqual(datos['notas'], 'Orden por urgencia')
+
+    def test_la_version_sale_de_pubspec_y_no_de_un_parametro(self):
+        """Escribirla a mano es garantizar que algún día no coincida con el APK."""
+        from apps.mantenimiento.management.commands.publicar_apk import leer_version_de_pubspec
+        from pathlib import Path
+
+        from django.conf import settings
+
+        version, build = leer_version_de_pubspec(Path(settings.BASE_DIR))
+        self.assertRegex(version, r'^\d+\.\d+\.\d+$')
+        self.assertGreater(build, 0)
+
+    def test_avisa_si_se_republica_el_mismo_build(self):
+        """El caso que deja al técnico sin enterarse: compilar cambios nuevos sin subir
+        el `+N`. La app compara ese número y no vería ninguna diferencia."""
+        self._correr('--aplicar')
+        salida = self._correr('--aplicar')
+        self.assertIn('ya existe', salida)
+        self.assertIn('pubspec.yaml', salida)
+
+    def test_rechaza_lo_que_no_es_un_apk(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            with override_settings(MEDIA_ROOT=self.media):
+                call_command('publicar_apk', str(self.origen.with_suffix('.txt')))
+
+    def test_el_endpoint_lee_lo_que_el_comando_escribio(self):
+        """La prueba que une las dos mitades: publicar tiene que resultar en un aviso."""
+        from rest_framework.authtoken.models import Token
+
+        self._correr('--aplicar', '--notas', 'de punta a punta')
+        usuario = User.objects.create_user(username='tec_e2e', password='x')
+        token = Token.objects.create(user=usuario)
+        with override_settings(MEDIA_ROOT=self.media):
+            datos = self.client.get(
+                '/api/v1/version-app/', HTTP_AUTHORIZATION=f'Token {token.key}',
+            ).json()
+        self.assertTrue(datos['publicada'])
+        self.assertEqual(datos['build'], 12)
+        self.assertEqual(datos['notas'], 'de punta a punta')
+        self.assertTrue(datos['url'].endswith('saidsoft-campo-1.9.0+12.apk'))

@@ -5,6 +5,7 @@ from .api_views import (
     ActividadChecklistView, ActivoCrearView, CatalogosView, ConsentimientoMonitoreoView, EquipoListView,
     MantenimientoViewSet,
     NotificacionConteoView, NotificacionLeerView, NotificacionListView, UbicacionTecnicoView, UsuarioActualView,
+    VersionAppView,
     VisitaTecnicaViewSet,
 )
 
@@ -20,6 +21,8 @@ urlpatterns = router.urls + [
     path('equipos/', EquipoListView.as_view(), name='api-equipos'),
     path('equipos/nuevo/', ActivoCrearView.as_view(), name='api-equipo-crear'),
     path('catalogos/', CatalogosView.as_view(), name='api-catalogos'),
+    # Aviso de version nueva (ver VersionAppView y el comando publicar_apk).
+    path('version-app/', VersionAppView.as_view(), name='api-version-app'),
     path('notificaciones/', NotificacionListView.as_view(), name='api-notificaciones'),
     path('notificaciones/count/', NotificacionConteoView.as_view(), name='api-notificaciones-count'),
     path('notificaciones/<int:pk>/leer/', NotificacionLeerView.as_view(), name='api-notificaciones-leer'),

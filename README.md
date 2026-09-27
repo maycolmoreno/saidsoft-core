@@ -1989,6 +1989,32 @@ Del lado Android, `MainActivity` extiende `FlutterFragmentActivity` — el promp
 `androidx.biometric` lo necesita para montarse, y con `FlutterActivity` falla en
 ejecución, no al compilar.
 
+## Publicar una versión de la app de campo
+
+La distribución es manual —se copia el APK a `media/movil/` y alguien lo instala
+teléfono por teléfono— y lo va a seguir siendo. Lo que cambió el 26-sep-2026 es que el
+técnico **se entera**: antes podía pasar semanas con una versión vieja sin ninguna señal
+de que existía otra.
+
+```sh
+python manage.py publicar_apk build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+    --notas "Qué trae, en una línea"              # simula
+python manage.py publicar_apk ... --aplicar       # escribe
+```
+
+Copia el APK con nombre canónico y escribe `media/movil/version.json`, que es lo que lee
+`GET /api/v1/version-app/`. La app compara el número de build contra el suyo y muestra un
+banner descartable si quedó vieja; no bloquea nada.
+
+La versión sale de `movil-campo/pubspec.yaml`, no de un parámetro: escribirla a mano es
+garantizar que algún día no coincida con el APK. Si republicás el mismo build el comando
+avisa — ese es justo el descuido que deja al técnico sin enterarse, porque la app compara
+ese número y no vería ninguna diferencia.
+
+> **Una vuelta que conviene tener presente:** los teléfonos que ya están en la calle no
+> tienen el aviso todavía. Empieza a servir a partir de la versión *siguiente* a la que
+> lo introduce.
+
 ## Qué va primero: el orden por urgencia
 
 El listado de mantenimientos ordena por **urgencia de SLA**, no por fecha: un correctivo

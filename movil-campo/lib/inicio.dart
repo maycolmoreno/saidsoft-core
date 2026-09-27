@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'comun/tema.dart';
 import 'nucleo/almacen/cola_offline.dart';
 import 'nucleo/red/api.dart';
+import 'nucleo/version.dart';
 import 'nucleo/almacen/sincronizador.dart';
 import 'rasgos/avisos/pantalla_avisos.dart';
 import 'rasgos/avisos/repo_avisos.dart';
@@ -31,6 +32,7 @@ class _InicioState extends State<Inicio> {
   int _indice = 0;
   int _pendientes = 0;
   int _avisos = 0;
+  VersionPublicada? _versionNueva;
   StreamSubscription<List<ConnectivityResult>>? _suscripcionRed;
 
   @override
@@ -38,6 +40,7 @@ class _InicioState extends State<Inicio> {
     super.initState();
     _sincronizar();
     _contarAvisos();
+    _buscarVersionNueva();
     // Al recuperar señal se sube solo lo que quedó pendiente: el técnico no tiene
     // que acordarse de nada ni apretar un botón de "sincronizar".
     _suscripcionRed = Connectivity().onConnectivityChanged.listen((estado) {
@@ -59,6 +62,20 @@ class _InicioState extends State<Inicio> {
       if (mounted) setState(() => _avisos = total);
     } catch (_) {
       // Sin conexión o sin permiso: el contador queda como estaba.
+    }
+  }
+
+  /// Avisa si el APK que tiene el tecnico quedo viejo.
+  ///
+  /// La distribucion es manual --alguien instala el APK telefono por telefono-- asi
+  /// que sin esto un tecnico puede pasar semanas con una version vieja sin ninguna
+  /// senal. `consultarVersionPublicada` nunca lanza: si no hay red, o el servidor es
+  /// viejo y no tiene el endpoint, simplemente no se muestra nada.
+  Future<void> _buscarVersionNueva() async {
+    final publicada = await consultarVersionPublicada(context.read<Api>());
+    if (!mounted) return;
+    if (publicada != null && publicada.hayQueActualizar) {
+      setState(() => _versionNueva = publicada);
     }
   }
 
@@ -147,6 +164,54 @@ class _InicioState extends State<Inicio> {
                       SizedBox(width: 8),
                       Text('Enviando tu ubicacion',
                           style: TextStyle(fontSize: 12, color: Tema.bien)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          // Version nueva disponible. Va ARRIBA de los pendientes y se puede
+          // descartar: no bloquea nada --el tecnico puede seguir trabajando con la
+          // version vieja-- pero deja de ser invisible, que era el problema.
+          if (_versionNueva != null)
+            Material(
+              color: Tema.primario.withValues(alpha: 0.12),
+              child: SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.system_update, size: 18, color: Tema.primario),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Hay una version nueva (${_versionNueva!.version})',
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Tema.primario,
+                                  fontWeight: FontWeight.w600),
+                            ),
+                            if (_versionNueva!.notas.isNotEmpty)
+                              Text(
+                                _versionNueva!.notas,
+                                style: const TextStyle(fontSize: 11, color: Tema.primario),
+                              ),
+                            const Text(
+                              'Pedila a soporte para instalarla.',
+                              style: TextStyle(fontSize: 11, color: Tema.primario),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 18),
+                        color: Tema.primario,
+                        tooltip: 'Ocultar hasta la proxima vez que abras la app',
+                        onPressed: () => setState(() => _versionNueva = null),
+                      ),
                     ],
                   ),
                 ),

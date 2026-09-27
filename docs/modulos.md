@@ -526,6 +526,20 @@ teléfono **sin que nada lo avise**: no hay versionado de API ni contrato compar
 > servidor rota el suyo, la app deja de conectar con "el certificado del servidor no
 > coincide" y hay que **regenerar el asset y publicar un APK nuevo**. Es la única copia
 > versionada del certificado de producción: `deploy/certs/*.pem` está fuera de git.
+>
+> **RESUELTO (26-sep-2026) — se puede comprobar antes de que lo note un técnico.**
+> `deploy/verificar-certificado.sh` compara la huella que sirve el servidor contra la
+> que empaqueta la app y avisa si quedan menos de 90 días de vigencia. El runbook, con
+> los cinco consumidores de `cert.pem` y **el orden** (primero el APK, después el
+> servidor), está en `deploy/README-produccion.md`.
+
+> **RESUELTO (26-sep-2026) — la app avisa que hay versión nueva.** La distribución sigue
+> siendo manual, pero el problema real era que nadie se enteraba: un técnico podía pasar
+> semanas con un APK viejo sin ninguna señal. `publicar_apk` deja el archivo con nombre
+> canónico y escribe `media/movil/version.json`; `GET /api/v1/version-app/` lo lee y la
+> app muestra un banner descartable. **Ojo con la vuelta:** los teléfonos que ya están en
+> la calle no tienen el aviso, así que empieza a servir recién a partir de la versión
+> siguiente a la que lo introduce.
 
 > **Gotcha — sin el keystore no hay actualizaciones.** El release se firma con
 > `movil-campo/android/cresio-campo-release.jks`, fuera de git. Perderlo obliga a

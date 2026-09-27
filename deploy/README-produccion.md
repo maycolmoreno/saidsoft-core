@@ -433,3 +433,51 @@ Dos cosas que NO son obvias y ya costaron caidas:
   deriva de la IP del contenedor y EMQX arranca con la base de usuarios/ACLs vacia en
   cada recreacion. Cambiar su valor tiene el mismo efecto: exportar antes
   (`emqx ctl data export`) e importar despues (`emqx ctl data import`).
+
+## Rotar el certificado TLS (y por qué no es solo redesplegar)
+
+`deploy/certs/cert.pem` **no lo usa una sola cosa**. Antes de tocarlo conviene saber
+quiénes son los cinco consumidores, porque cuatro se arreglan redesplegando y el quinto
+no:
+
+| Quién | Para qué | Cómo se actualiza |
+|---|---|---|
+| nginx | el panel en HTTPS (8084) | redespliegue — **recrear** el contenedor, no recargarlo (§10-AA) |
+| EMQX | certificado de su listener TLS (8883) | redespliegue |
+| worker MQTT + 3 tareas de Celery | `MQTT_CA_CERT` | redespliegue |
+| instalador del agente | lo copia a cada estación (`instalar-agente.ps1`) | rearmar el paquete de instalación |
+| **la app de campo** | lo **empaqueta adentro del APK** (`movil-campo/assets/certs/cert.pem`) | **compilar, firmar y distribuir un APK nuevo, a mano** |
+
+El quinto es el que duele. La copia vive dentro del APK ya instalado en los teléfonos:
+si el servidor rota su certificado y nadie publica una versión nueva, la app deja de
+conectar con *"el certificado del servidor no coincide"* y **cada técnico queda sin
+poder trabajar**, aunque el servidor y el panel estén perfectos.
+
+### Comprobarlo antes de que lo descubra un técnico
+
+```sh
+deploy/verificar-certificado.sh                     # contra el servidor por defecto
+deploy/verificar-certificado.sh 10.111.6.20:8084
+deploy/verificar-certificado.sh /ruta/a/cert.pem    # si no hay ruta de red hasta el NUC
+```
+
+Compara la huella del certificado que sirve el servidor contra la que empaqueta la app,
+y avisa si al certificado le quedan **menos de 90 días** — que es lo que tarda de verdad
+el camino completo: rotar, recompilar, firmar y recorrer los teléfonos. Sale 0 si
+coinciden, 1 si no.
+
+> El certificado que empaqueta la app hoy vence el **8-nov-2028**. No es urgente, pero es
+> una fecha conocida: el aviso empieza a aparecer solo a partir de agosto de 2028.
+
+### El orden, si hay que rotar
+
+1. **Primero el APK, no el servidor.** Generar el certificado nuevo, dejarlo en
+   `movil-campo/assets/certs/cert.pem`, compilar, firmar y **distribuir** la versión
+   nueva. Mientras tanto el servidor sigue con el viejo y nadie se queda afuera.
+2. Recién cuando los teléfonos estén actualizados, poner el certificado nuevo en el
+   servidor y redesplegar (recreando nginx, ver §10-AA del plan).
+3. Rearmar el paquete de instalación del agente.
+4. `deploy/verificar-certificado.sh` hasta que dé OK.
+
+Hacerlo al revés —servidor primero— deja a toda la flota de teléfonos fuera de servicio
+durante el tiempo que tarde la distribución manual, que hoy son días.

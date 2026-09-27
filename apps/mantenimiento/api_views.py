@@ -613,6 +613,55 @@ class CatalogosView(generics.GenericAPIView):
         return Response(self.get_serializer({}).data)
 
 
+class VersionAppView(generics.GenericAPIView):
+    """Qué versión de la app está publicada, para que la app pueda avisar que hay una nueva.
+
+    La distribución del APK es manual (se copia a `media/movil/` y alguien lo instala
+    teléfono por teléfono), así que el problema nunca fue copiar el archivo: era que
+    **nadie se enteraba**. Un técnico podía pasar semanas con una versión vieja sin
+    ninguna señal, y con distribución a mano eso es lo normal, no la excepción.
+
+    Lee `media/movil/version.json`, que escribe el comando `publicar_apk`. No adivina
+    mirando la carpeta: si hay tres APK sueltos, cuál es "el bueno" es una decisión de
+    quien publica, no algo que se deduzca del nombre del archivo.
+
+    Sin consentimiento ni permisos: saber que hay una versión nueva no es información
+    de negocio, y exigir algo para consultarla dejaría sin aviso justo al técnico cuya
+    app quedó tan vieja que ya no puede autenticarse bien.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = None
+
+    def get(self, request):
+        import json
+        from pathlib import Path
+
+        from django.conf import settings
+
+        manifiesto = Path(settings.MEDIA_ROOT) / 'movil' / 'version.json'
+        if not manifiesto.is_file():
+            # 200 y no 404: "todavía no se publicó ninguna versión" es una respuesta
+            # válida, no un error. La app la trata como "no hay nada nuevo" y sigue.
+            return Response({'publicada': False})
+
+        try:
+            datos = json.loads(manifiesto.read_text(encoding='utf-8'))
+        except (ValueError, OSError):
+            # Un manifiesto roto no puede tumbar la pantalla de inicio del técnico.
+            return Response({'publicada': False})
+
+        archivo = datos.get('archivo') or ''
+        return Response({
+            'publicada': True,
+            'version': datos.get('version', ''),
+            'build': datos.get('build', 0),
+            'notas': datos.get('notas', ''),
+            'publicado_en': datos.get('publicado_en', ''),
+            'url': request.build_absolute_uri(f'{settings.MEDIA_URL}movil/{archivo}') if archivo else '',
+        })
+
+
 class ActivoCrearView(generics.CreateAPIView):
     """Alta de un equipo desde el campo.
 
