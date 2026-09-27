@@ -99,6 +99,38 @@ arreglan con un parche:
   actualización que los teléfonos ya instalados acepten: hay que desinstalar y volver a
   instalar en cada equipo, perdiendo los datos locales de la app (cola offline incluida).
   Tiene que existir una copia fuera de esta máquina.
+
+### Respaldar el keystore
+
+```bash
+cd movil-campo/android
+./respaldar-keystore.sh crear     <carpeta-fuera-del-repo>
+./respaldar-keystore.sh verificar <archivo.tar.gz.gpg>
+```
+
+`crear` comprueba primero que el keystore en disco sea el de producción (compara la
+huella de más arriba), empaqueta el `.jks` **y** `key.properties`, y cifra con GPG
+AES256 — el mismo cifrado que los respaldos del servidor (`deploy/backup.sh`).
+
+Los dos archivos van juntos a propósito: una restauración no puede fallar a medias.
+"Tenemos el keystore pero nadie sabe la contraseña" deja exactamente igual de afuera que
+no tenerlo. El costo es que quien consiga el archivo **y** su passphrase consigue todo,
+así que **la passphrase no puede vivir al lado del archivo**: va a un gestor de
+contraseñas, en otro sitio. Guardarla en la misma carpeta convierte el cifrado en
+decoración.
+
+**El script no copia nada fuera de esta máquina, y es deliberado.** A dónde va una llave
+de firma es una decisión con consecuencias, no un parámetro por defecto. Produce el
+archivo y te dice qué falta; mover la copia lo hacés vos.
+
+`verificar` descifra en una carpeta temporal y comprueba que la huella sea la de
+producción. Es la mitad que se suele saltear: **un respaldo que nunca se restauró no es
+un respaldo, es una suposición** — mismo criterio que `deploy/restaurar-backup.sh`, que
+se probó contra una base real antes de confiar en él. Corrélo sobre la copia ya movida,
+no sobre la que quedó acá.
+
+Si la huella no coincide, el script se planta: respaldar el keystore equivocado es peor
+que no respaldar nada, porque crea confianza en una copia que no sirve.
 - **Si se filtra**, cualquiera puede firmar un APK que los teléfonos van a instalar
   encima del nuestro como si fuera una actualización legítima — con el certificado del
   servidor empaquetado adentro.

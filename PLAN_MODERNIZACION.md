@@ -2156,7 +2156,8 @@ Huella del certificado, para verificar un APK en circulación:
 
 **Lo que este cambio NO resuelve** (sigue pendiente del lado del front):
 
-- **Copia de respaldo del keystore fuera de esta máquina.** Hoy existe en un solo disco.
+- **Copia de respaldo del keystore fuera de esta máquina.** ~~Hoy existe en un solo
+  disco.~~ **Herramienta lista el 26-sep-2026** (ver §10-AR); falta hacer la copia.
   Si se pierde, no hay actualización posible para las apps ya instaladas: hay que
   desinstalar y reinstalar en cada equipo, perdiendo la cola offline pendiente. Es el
   mismo agujero que los respaldos del servidor (§AF: cifrados, con retención, y en la
@@ -3742,3 +3743,50 @@ qué hacer ("si un módulo lo pasa, la respuesta es dividirlo, no subir el lími
 vistas de cierres en conflicto se mudaron a `views/conflictos.py`: son un dominio
 distinto —triage de algo que quedó trabado— y no una acción más del ciclo de vida de un
 mantenimiento. Quedó en 441 + 126 líneas.
+
+
+## §10-AR — Respaldo del keystore: la parte que sí se puede automatizar (26-sep-2026)
+
+PROCESO-2 de la revisión de consistencia, y el único pendiente cuya materialización no
+se arregla con ningún parche posterior: si se pierde
+`movil-campo/android/cresio-campo-release.jks`, no hay actualización posible para las
+apps ya instaladas — hay que desinstalar y reinstalar en cada teléfono, perdiendo la
+cola offline pendiente, que es trabajo de campo que todavía no llegó al servidor.
+
+**Lo que esto NO hace.** La copia fuera de la máquina no la puede hacer un script: es
+una decisión sobre dónde vive una llave de firma. `respaldar-keystore.sh` produce el
+archivo cifrado y verificable, dice explícitamente qué falta, y no copia nada a ningún
+lado. Mientras el archivo siga en el mismo disco que el original, el riesgo es idéntico
+al de antes — el script lo imprime con esas palabras para que no se confunda "hice el
+respaldo" con "tengo un respaldo".
+
+**Lo que sí resuelve** es la fricción, que es la razón por la que esto llevaba semanas
+sin hacerse:
+
+- **Verifica antes de empaquetar.** Compara la huella del keystore en disco contra la de
+  producción (la que ya estaba documentada en el README). Si no coincide, se planta:
+  respaldar el keystore equivocado es *peor* que no respaldar, porque crea confianza en
+  una copia que no sirve.
+- **Empaqueta el `.jks` y `key.properties` juntos.** Una restauración no puede fallar a
+  medias: "tenemos el keystore pero nadie sabe la contraseña" deja igual de afuera que
+  no tenerlo. El costo es que el archivo + su passphrase son todo, así que la passphrase
+  tiene que vivir en otro lado — el script lo dice en mayúsculas y el README también.
+- **Cifra con GPG AES256 simétrico**, el mismo idioma que `deploy/backup.sh` (OPS-2).
+- **Se niega a escribir dentro del repo.** Un archivo con la llave de firma a un
+  `git add -A` de distancia es justo lo que `android/.gitignore` viene evitando.
+- **`verificar` descifra y comprueba la huella.** Es la mitad que se suele saltear: un
+  respaldo que nunca se restauró es una suposición, no un respaldo. Mismo criterio que
+  `deploy/restaurar-backup.sh`, que se probó contra una base real antes de confiar en él.
+
+**La contraseña nunca viaja por la línea de comandos**: se lee de `key.properties` y
+entra a `keytool` por stdin, porque en la línea de comandos quedaría visible en la lista
+de procesos y en el historial del shell.
+
+**Probado de punta a punta** antes de darlo por bueno, los cuatro caminos: crear (huella
+OK), verificar con la passphrase correcta (sale 0), con la equivocada (sale 1), y contra
+un keystore generado aparte con otra huella (se planta e imprime las dos huellas). La
+passphrase puede entrar por el descriptor 3 —`3< <(pass mostrar ...)`— que es lo que
+permitió probarlo sin volverlo interactivo; sin fd 3 el comportamiento es el de siempre.
+
+**Queda pendiente lo humano:** correr `crear`, mover el archivo fuera de esta máquina,
+guardar la passphrase en un gestor, y correr `verificar` sobre la copia ya movida.

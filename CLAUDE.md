@@ -93,10 +93,15 @@ corre sobre `timescale/timescaledb`.
 - **Push FCM real**: falta registrar la app en Firebase. El nombre de paquete es
   `com.cresio.cresio_campo`, **no** `com.cresio.campo` como decía este archivo hasta el
   9-sep — y cambiarlo ya no es gratis (ver §10-AH del plan).
-- **APK**: el release ya se firma con el keystore de CRESIO (§10-AH). Queda el **respaldo
-  del keystore fuera de esta máquina** — si se pierde, ninguna app instalada se puede
-  actualizar nunca más — y el **canal de distribución**: se sigue copiando a mano a
-  `/media/movil/` y la app no avisa que hay versión nueva.
+- **APK**: el release ya se firma con el keystore de CRESIO (§10-AH). El **respaldo del
+  keystore** ya tiene herramienta (`movil-campo/android/respaldar-keystore.sh`, §10-AR):
+  cifra, verifica la huella y comprueba que la copia se puede restaurar — pero **mover
+  el archivo fuera de esta máquina sigue sin hacerse**, y hasta que se haga el riesgo es
+  el mismo: si se pierde, ninguna app instalada se puede actualizar nunca más. Queda
+  además el **canal de distribución**: se sigue copiando a mano a `/media/movil/`, la app
+  no avisa que hay versión nueva, y hay **cinco cambios acumulados sin distribuir**
+  (hora real de la cola offline, clave de idempotencia, revocar el consentimiento de
+  ubicación, catálogo unificado y orden por urgencia desde el servidor).
 - Decisiones abiertas del usuario: **crear visitas desde la app** (hoy el ViewSet es de
   solo lectura) y **abrir el mapa hacia la farmacia** (el backend ya manda coordenadas
   y nada las usa).
