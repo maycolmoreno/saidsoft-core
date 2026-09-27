@@ -2156,8 +2156,8 @@ Huella del certificado, para verificar un APK en circulación:
 
 **Lo que este cambio NO resuelve** (sigue pendiente del lado del front):
 
-- **Copia de respaldo del keystore fuera de esta máquina.** ~~Hoy existe en un solo
-  disco.~~ **Herramienta lista el 26-sep-2026** (ver §10-AR); falta hacer la copia.
+- ~~**Copia de respaldo del keystore fuera de esta máquina.**~~ **RESUELTO el
+  26-sep-2026**: herramienta en §10-AR y copia hecha fuera de la máquina.
   Si se pierde, no hay actualización posible para las apps ya instaladas: hay que
   desinstalar y reinstalar en cada equipo, perdiendo la cola offline pendiente. Es el
   mismo agujero que los respaldos del servidor (§AF: cifrados, con retención, y en la
@@ -3788,5 +3788,15 @@ un keystore generado aparte con otra huella (se planta e imprime las dos huellas
 passphrase puede entrar por el descriptor 3 —`3< <(pass mostrar ...)`— que es lo que
 permitió probarlo sin volverlo interactivo; sin fd 3 el comportamiento es el de siempre.
 
-**Queda pendiente lo humano:** correr `crear`, mover el archivo fuera de esta máquina,
-guardar la passphrase en un gestor, y correr `verificar` sobre la copia ya movida.
+**El respaldo se hizo el 26-sep-2026**, el mismo día. Con eso cae el único pendiente
+del proyecto cuya materialización no se arreglaba con ningún parche posterior: hasta ese
+día, perder un disco significaba que ninguna de las apps instaladas se podía actualizar
+nunca más.
+
+**Lo que sigue siendo cierto, y conviene releerlo dentro de seis meses:** un respaldo
+que nunca se restauró es una suposición, no un respaldo. Vale correr
+`respaldar-keystore.sh verificar` sobre la copia cada tanto, y sobre todo después de
+cambiar de máquina, de rotar la passphrase o de mover el archivo de sitio. Es barato y
+es lo único que distingue "tengo una copia" de "tengo una copia que sirve" — la misma
+lección que este proyecto ya aprendió con el CI en verde que no lo estaba (§10 del plan)
+y con los respaldos del servidor que existen pero no salen del servidor.

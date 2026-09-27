@@ -93,15 +93,17 @@ corre sobre `timescale/timescaledb`.
 - **Push FCM real**: falta registrar la app en Firebase. El nombre de paquete es
   `com.cresio.cresio_campo`, **no** `com.cresio.campo` como decía este archivo hasta el
   9-sep — y cambiarlo ya no es gratis (ver §10-AH del plan).
-- **APK**: el release ya se firma con el keystore de CRESIO (§10-AH). El **respaldo del
-  keystore** ya tiene herramienta (`movil-campo/android/respaldar-keystore.sh`, §10-AR):
-  cifra, verifica la huella y comprueba que la copia se puede restaurar — pero **mover
-  el archivo fuera de esta máquina sigue sin hacerse**, y hasta que se haga el riesgo es
-  el mismo: si se pierde, ninguna app instalada se puede actualizar nunca más. Queda
-  además el **canal de distribución**: se sigue copiando a mano a `/media/movil/`, la app
-  no avisa que hay versión nueva, y hay **cinco cambios acumulados sin distribuir**
-  (hora real de la cola offline, clave de idempotencia, revocar el consentimiento de
-  ubicación, catálogo unificado y orden por urgencia desde el servidor).
+- ~~**Respaldo del keystore fuera de esta máquina.**~~ **HECHO el 26-sep-2026.** Era el
+  único pendiente irreversible del proyecto. La herramienta es
+  `movil-campo/android/respaldar-keystore.sh` (§10-AR): cifra con GPG, comprueba la
+  huella antes de empaquetar y `verificar` prueba que la copia se puede restaurar.
+  Correr `verificar` sobre la copia ya movida, cada tanto y después de cualquier cambio
+  de máquina: un respaldo que nunca se restauró es una suposición, no un respaldo.
+- **APK**: el release ya se firma con el keystore de CRESIO (§10-AH). Queda el **canal de
+  distribución**: se sigue copiando a mano a `/media/movil/`, la app no avisa que hay
+  versión nueva, y hay **cinco cambios acumulados sin distribuir** (hora real de la cola
+  offline, clave de idempotencia, revocar el consentimiento de ubicación, catálogo
+  unificado y orden por urgencia desde el servidor).
 - Decisiones abiertas del usuario: **crear visitas desde la app** (hoy el ViewSet es de
   solo lectura) y **abrir el mapa hacia la farmacia** (el backend ya manda coordenadas
   y nada las usa).
