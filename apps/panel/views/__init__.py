@@ -52,8 +52,10 @@ from .actividades import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,
 )
 from .archivos import mantenimiento_imagen, mantenimiento_informe
-from .mantenimiento import (
+from .conflictos import (
     cierre_en_conflicto_aplicar, cierre_en_conflicto_descartar, cierres_en_conflicto_lista,
+)
+from .mantenimiento import (
     equipos_por_cliente_partial, mantenimiento_cancelar, mantenimiento_cerrar, mantenimiento_checklist_actualizar,
     mantenimiento_crear, mantenimiento_detalle, mantenimiento_firmar, mantenimiento_generar_informe_pdf,
     mantenimiento_iniciar, mantenimiento_imagen_adjuntar, mantenimiento_orden_trabajo,

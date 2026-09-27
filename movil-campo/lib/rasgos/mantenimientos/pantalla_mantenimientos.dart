@@ -12,6 +12,12 @@ import 'repo_mantenimientos.dart';
 /// El orden lo decide el SLA, no la fecha: un correctivo crítico creado hace 10
 /// minutos va ANTES que un preventivo agendado la semana pasada. Ordenar por fecha
 /// —lo obvio— enterraría justamente lo que no puede esperar.
+///
+/// **Ese orden lo calcula el BACKEND** (`services.ordenar_por_urgencia`) y acá solo se
+/// renderiza. Hasta el 26-sep-2026 la regla estaba escrita dos veces —los pesos vivían
+/// también acá, en Dart— y el panel ordenaba por fecha: la misma lista en dos órdenes,
+/// en dos lenguajes, sin nada que delatara la diferencia. Si hace falta cambiar qué va
+/// primero, se cambia allá y las dos superficies se mueven juntas.
 class PantallaMantenimientos extends StatefulWidget {
   const PantallaMantenimientos({super.key});
 
@@ -36,39 +42,6 @@ class _PantallaMantenimientosState extends State<PantallaMantenimientos> {
     final futuro = _cargar();
     setState(() => _futuro = futuro);
     await futuro;
-  }
-
-  static const _pesoSla = {
-    EstadoSla.incumplido: 0,
-    EstadoSla.porVencer: 1,
-    EstadoSla.enPlazo: 2,
-    EstadoSla.sinSla: 3,
-    EstadoSla.cumplido: 4,
-  };
-  static const _pesoPrioridad = {'critica': 0, 'alta': 1, 'normal': 2, 'baja': 3};
-
-  List<Mantenimiento> _ordenar(List<Mantenimiento> items) {
-    final lista = [...items];
-    lista.sort((a, b) {
-      // Los abiertos primero: un cerrado nunca es lo próximo a hacer.
-      final abiertoA = a.abierto ? 0 : 1;
-      final abiertoB = b.abierto ? 0 : 1;
-      if (abiertoA != abiertoB) return abiertoA.compareTo(abiertoB);
-
-      final slaA = _pesoSla[a.estadoSla] ?? 9;
-      final slaB = _pesoSla[b.estadoSla] ?? 9;
-      if (slaA != slaB) return slaA.compareTo(slaB);
-
-      final prioA = _pesoPrioridad[a.prioridad] ?? 9;
-      final prioB = _pesoPrioridad[b.prioridad] ?? 9;
-      if (prioA != prioB) return prioA.compareTo(prioB);
-
-      final fa = a.limiteResolucion ?? a.fechaProgramada;
-      final fb = b.limiteResolucion ?? b.fechaProgramada;
-      if (fa == null || fb == null) return 0;
-      return fa.compareTo(fb);
-    });
-    return lista;
   }
 
   @override
@@ -107,10 +80,11 @@ class _PantallaMantenimientosState extends State<PantallaMantenimientos> {
             );
           }
 
-          final todos = _ordenar(snap.data ?? const []);
+          // Sin reordenar: viene ordenado por urgencia desde el servidor.
+          final todos = snap.data ?? const <Mantenimiento>[];
           final items = _soloAbiertos
               ? todos.where((m) => m.abierto).toList()
-              : todos;
+              : todos.toList();
 
           if (items.isEmpty) {
             return RefreshIndicator(

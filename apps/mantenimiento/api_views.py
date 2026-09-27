@@ -108,7 +108,13 @@ def _ocurrido_en(request):
 
 
 class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
-    """Mantenimientos asignados al técnico autenticado (nunca los de otro técnico)."""
+    """Mantenimientos asignados al técnico autenticado (nunca los de otro técnico).
+
+    La lista sale ORDENADA POR URGENCIA desde el servidor (ver
+    `services.ordenar_por_urgencia`). Antes ese orden lo calculaba la app por su cuenta,
+    con una copia de la regla escrita en Dart: la app y el panel mostraban el mismo
+    trabajo en ordenes distintos y nada lo delataba.
+    """
 
     permission_classes = [PermisoDeclarado]
     # Espejo exacto de apps/panel/views/mantenimiento.py. Las sub-acciones
@@ -132,6 +138,12 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
         return Mantenimiento.objects.filter(tecnico=self.request.user).select_related(
             'cliente', 'tecnico',
         ).prefetch_related('equipos__equipo__farmacia', 'firmas', 'imagenes', 'eventos__usuario')
+
+    def list(self, request, *args, **kwargs):
+        # Se ordena ACA y no en `get_queryset` porque el orden no es expresable en SQL:
+        # `estado_sla` se deriva de la hora actual y del estado, no es una columna.
+        ordenados = services.ordenar_por_urgencia(self.filter_queryset(self.get_queryset()))
+        return Response(self.get_serializer(ordenados, many=True).data)
 
     def get_serializer_class(self):
         if self.action == 'list':

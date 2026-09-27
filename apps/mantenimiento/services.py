@@ -201,6 +201,91 @@ def _metros_entre(lat1, lon1, lat2, lon2) -> float:
     return radio_tierra_m * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+# --- Urgencia: qué va primero ------------------------------------------------------
+#
+# Esta era la regla duplicada de BUG-4bis/BUG-5 (ver docs/modulos.md): vivía SOLO en
+# `pantalla_mantenimientos.dart` y decidía el orden de la app, mientras el panel
+# ordenaba por `-fecha_programada`. La misma lista, dos órdenes, en dos lenguajes —
+# mesa de ayuda y el técnico discutían sobre "lo primero de la lista" mirando cosas
+# distintas, y nada lo delataba.
+#
+# Ahora vive acá, la consumen las dos superficies, y la app solo renderiza lo que recibe.
+
+#: Cuán urgente es cada estado de SLA. Menor = va primero.
+PESO_ESTADO_SLA = {
+    'incumplido': 0,
+    'por_vencer': 1,
+    'en_plazo': 2,
+    # 'sin_sla' antes que 'cumplido' a propósito: que no haya acuerdo cargado para esa
+    # prioridad no lo vuelve menos urgente que algo ya resuelto -- solo lo vuelve
+    # imposible de medir.
+    'sin_sla': 3,
+    'cumplido': 4,
+}
+
+PESO_PRIORIDAD = {
+    PrioridadMantenimiento.CRITICA: 0,
+    PrioridadMantenimiento.ALTA: 1,
+    PrioridadMantenimiento.NORMAL: 2,
+    PrioridadMantenimiento.BAJA: 3,
+}
+
+#: Para lo que no esté en los mapas de arriba (un valor nuevo sin peso asignado): va al
+#: fondo de su grupo en vez de romper el orden.
+_PESO_DESCONOCIDO = 9
+
+
+def precargar_acuerdos_sla(mantenimientos):
+    """Carga los AcuerdoNivelServicio UNA vez y se los deja a cada mantenimiento.
+
+    Sin esto, `Mantenimiento.sla` consulta la base en cada acceso y `estado_sla` la
+    toca varias veces por fila: medido el 26-sep-2026, pintar la columna de SLA costaba
+    2 consultas por fila — unas 3.600 en un listado de 1.800 mantenimientos.
+
+    Devuelve la lista materializada: ordenar por urgencia obliga a traer las filas de
+    todos modos (el estado de SLA no es una columna, se deriva de la hora actual).
+    """
+    acuerdos = {
+        acuerdo.prioridad: acuerdo
+        for acuerdo in AcuerdoNivelServicio.objects.filter(activo=True)
+    }
+    materializados = list(mantenimientos)
+    for mantenimiento in materializados:
+        mantenimiento._acuerdos_precargados = acuerdos
+    return materializados
+
+
+def orden_de_urgencia(mantenimiento):
+    """Clave de orden de UN mantenimiento. Menor = más urgente.
+
+    El desempate va de lo más decisivo a lo más accesorio:
+    1. **Abierto antes que terminado.** Un cerrado nunca es lo próximo a hacer.
+    2. **Estado de SLA.** Lo incumplido primero, después lo que está por vencer.
+    3. **Prioridad.** Entre dos igual de apretados, manda la criticidad.
+    4. **Límite de resolución.** El que vence antes.
+
+    El punto de todo esto: un correctivo crítico abierto hace 10 minutos va ANTES que un
+    preventivo agendado la semana pasada. Ordenar por fecha —lo obvio— entierra
+    justamente lo que no puede esperar.
+    """
+    abierto = 0 if mantenimiento.estado_interno in (
+        Mantenimiento.EstadoInterno.PENDIENTE, Mantenimiento.EstadoInterno.EN_PROCESO,
+    ) else 1
+    peso_sla = PESO_ESTADO_SLA.get(mantenimiento.estado_sla, _PESO_DESCONOCIDO)
+    peso_prioridad = PESO_PRIORIDAD.get(mantenimiento.prioridad, _PESO_DESCONOCIDO)
+    limite = mantenimiento.limite_resolucion or mantenimiento.fecha_programada
+    return (abierto, peso_sla, peso_prioridad, limite)
+
+
+def ordenar_por_urgencia(mantenimientos):
+    """Los mantenimientos ordenados por urgencia real, con los acuerdos precargados.
+
+    Es la función que consumen el panel y la API: una sola implementación, para que las
+    dos superficies muestren el mismo trabajo en el mismo orden.
+    """
+    return sorted(precargar_acuerdos_sla(mantenimientos), key=orden_de_urgencia)
+
+
 # --- Consentimiento de monitoreo y retención de posiciones -------------------------
 #
 # Rastrear la posición de una persona durante su jornada necesita su acuerdo, y ese

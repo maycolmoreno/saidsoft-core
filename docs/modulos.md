@@ -391,10 +391,19 @@ consentimiento-monitoreo/  ubicaciones-tecnico/
 `Activo`. Un cambio de forma en cualquiera de ellos sale por el serializer y llega al
 teléfono **sin que nada lo avise**: no hay versionado de API ni contrato compartido.
 
-> **Gotcha — la app no es "el panel en chico".** Queda UNA regla que vive en Dart y no
-> tiene equivalente en Python: el **orden por SLA** (`pantalla_mantenimientos.dart`; el
-> panel ordena por `-fecha_programada`), así que mesa de ayuda y el técnico ven el mismo
-> trabajo en órdenes distintos.
+> **RESUELTO (26-sep-2026) — el orden por urgencia ya no está escrito dos veces.** La
+> regla vivía solo en `pantalla_mantenimientos.dart` y decidía el orden de la app,
+> mientras el panel ordenaba por `-fecha_programada`: la misma lista, dos órdenes, en
+> dos lenguajes — mesa de ayuda y el técnico hablaban de "lo primero de la lista"
+> mirando cosas distintas. Ahora vive en `services.ordenar_por_urgencia`, la consumen
+> las dos superficies, y la app renderiza lo que recibe. El panel ordena por urgencia
+> **por defecto** y conserva el orden por fecha en un selector, porque "qué entró hoy"
+> es otra pregunta.
+>
+> De paso se cerró un N+1 que nadie había medido: `estado_sla` y `limite_resolucion`
+> consultan `AcuerdoNivelServicio` en cada acceso, **2 consultas por fila** — unas 3.600
+> en un listado de 1.800 mantenimientos. `precargar_acuerdos_sla` los carga una vez;
+> para un objeto suelto (la pantalla de detalle) la propiedad sigue funcionando igual.
 >
 > Los **catálogos compilados** (`resultadosTecnicos`, `estadosGenerales` en
 > `mantenimiento.dart`) siguen siendo copias a mano de las choices del backend, y eso es

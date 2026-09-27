@@ -227,8 +227,25 @@ class Mantenimiento(models.Model):
     # Todas estas propiedades devuelven None si no hay SLA cargado para la prioridad:
     # sin acuerdo definido no se puede afirmar que algo esté incumplido.
 
+    #: Acuerdos precargados por `services.precargar_acuerdos_sla`, para listados.
+    #: None = todavía no se precargó y `sla` va a consultar la base.
+    _acuerdos_precargados = None
+
     @property
     def sla(self):
+        """El acuerdo de la prioridad de este mantenimiento.
+
+        **Ojo con los listados.** Esto consulta la base en CADA acceso, y
+        `estado_sla` lo toca varias veces por fila: medido el 26-sep-2026, pintar la
+        columna de SLA costaba 2 consultas por fila -- ~3.600 en un listado de 1.800
+        mantenimientos. Para recorrer muchos, pasar antes por
+        `services.precargar_acuerdos_sla`, que los carga UNA vez y los deja acá.
+
+        Se resuelve con un atributo y no cambiando la firma de la propiedad para que la
+        pantalla de detalle (un objeto suelto) siga funcionando sin saber nada de esto.
+        """
+        if self._acuerdos_precargados is not None:
+            return self._acuerdos_precargados.get(self.prioridad)
         return AcuerdoNivelServicio.objects.filter(prioridad=self.prioridad, activo=True).first()
 
     @property
@@ -270,14 +287,21 @@ class Mantenimiento(models.Model):
     @property
     def estado_sla(self):
         """Etiqueta para el panel: 'sin_sla' | 'cumplido' | 'incumplido' | 'en_plazo' | 'por_vencer'.
-        'por_vencer' = queda menos del 20% del tiempo de resolución."""
+        'por_vencer' = queda menos del 20% del tiempo de resolución.
+
+        **Esta es LA definición de urgencia del sistema.** Hasta el 26-sep-2026 existía
+        una segunda en Dart (`pantalla_mantenimientos.dart`), que era la que decidía el
+        orden en la app mientras el panel ordenaba por fecha: la misma lista, dos
+        órdenes, y nadie se enteraba. Ahora el orden sale de acá vía
+        `services.orden_de_urgencia` y la app renderiza lo que recibe.
+        """
         limite = self.limite_resolucion
-        if limite is None:
-            return 'sin_sla'
-        if self.estado_interno == self.EstadoInterno.CANCELADO:
+        if limite is None or self.estado_interno == self.EstadoInterno.CANCELADO:
             return 'sin_sla'
         if self.estado_interno == self.EstadoInterno.CERRADO:
-            return 'incumplido' if self.sla_resolucion_incumplido else 'cumplido'
+            # En línea y no vía `sla_resolucion_incumplido`: esa propiedad recalcula
+            # `limite_resolucion`, que es la consulta cara que ya se hizo arriba.
+            return 'incumplido' if (self.fecha_cierre or timezone.now()) > limite else 'cumplido'
         ahora = timezone.now()
         if ahora > limite:
             return 'incumplido'

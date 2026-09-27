@@ -27,7 +27,8 @@ from .services import (
 )
 from .services import (
     DIAS_RETENCION_UBICACIONES, HORAS_ESCALAMIENTO_CONFLICTO, aplicar_cierre_en_conflicto,
-    descartar_cierre_en_conflicto, escalar_cierres_en_conflicto, purgar_ubicaciones_antiguas,
+    descartar_cierre_en_conflicto, escalar_cierres_en_conflicto, ordenar_por_urgencia,
+    precargar_acuerdos_sla, purgar_ubicaciones_antiguas,
 )
 
 
@@ -2928,3 +2929,183 @@ class AuditoriaDeLaAppTests(TestCase):
         )
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertIn('activo.ingreso', self._acciones())
+
+
+class OrdenDeUrgenciaTests(TestCase):
+    """BUG-5: la regla de urgencia vivía SOLO en Dart y el panel ordenaba por fecha.
+
+    La misma lista en dos órdenes distintos, en dos lenguajes: mesa de ayuda y el
+    técnico hablaban de "lo primero de la lista" mirando cosas distintas.
+    """
+
+    def setUp(self):
+        self.tecnico = User.objects.create_user(username='tec_orden', password='x')
+        for prioridad, horas in (
+            (PrioridadMantenimiento.CRITICA, 4),
+            (PrioridadMantenimiento.ALTA, 8),
+            (PrioridadMantenimiento.NORMAL, 24),
+            (PrioridadMantenimiento.BAJA, 72),
+        ):
+            AcuerdoNivelServicio.objects.update_or_create(
+                prioridad=prioridad,
+                defaults={'horas_respuesta': horas // 2, 'horas_resolucion': horas, 'activo': True},
+            )
+
+    def _mantenimiento(self, codigo, *, prioridad, horas_atras, cerrado=False):
+        equipo = Activo.objects.create(codigo=codigo, tipo=Activo.Tipo.DESKTOP)
+        m = crear_mantenimiento_manual(
+            equipos=[equipo], tecnico=self.tecnico, descripcion=codigo,
+            fecha_programada=timezone.now() - timedelta(hours=horas_atras),
+            usuario=self.tecnico, prioridad=prioridad,
+        )
+        if cerrado:
+            iniciar_mantenimiento(mantenimiento=m, usuario=self.tecnico)
+            cerrar_mantenimiento(
+                mantenimiento=m, resultado_tecnico=ResultadoTecnico.REPARADO, usuario=self.tecnico,
+            )
+        return m
+
+    def test_lo_incumplido_va_antes_que_lo_reciente(self):
+        """El caso que define la regla: un crítico de hace 10 minutos antes que un
+        preventivo agendado la semana pasada."""
+        viejo_en_plazo = self._mantenimiento(
+            'CR-ORD-0001', prioridad=PrioridadMantenimiento.BAJA, horas_atras=24,
+        )
+        critico_reciente = self._mantenimiento(
+            'CR-ORD-0002', prioridad=PrioridadMantenimiento.CRITICA, horas_atras=6,
+        )
+        orden = ordenar_por_urgencia(Mantenimiento.objects.all())
+        # El crítico ya paso sus 4 h de resolución: incumplido. El de baja tiene 72 h.
+        self.assertEqual([m.pk for m in orden], [critico_reciente.pk, viejo_en_plazo.pk])
+
+    def test_los_cerrados_van_al_fondo(self):
+        cerrado = self._mantenimiento(
+            'CR-ORD-0010', prioridad=PrioridadMantenimiento.CRITICA, horas_atras=1, cerrado=True,
+        )
+        abierto = self._mantenimiento(
+            'CR-ORD-0011', prioridad=PrioridadMantenimiento.BAJA, horas_atras=1,
+        )
+        orden = ordenar_por_urgencia(Mantenimiento.objects.all())
+        self.assertEqual([m.pk for m in orden], [abierto.pk, cerrado.pk])
+
+    def test_a_igual_estado_de_sla_manda_la_prioridad(self):
+        normal = self._mantenimiento(
+            'CR-ORD-0020', prioridad=PrioridadMantenimiento.NORMAL, horas_atras=0,
+        )
+        critico = self._mantenimiento(
+            'CR-ORD-0021', prioridad=PrioridadMantenimiento.CRITICA, horas_atras=0,
+        )
+        orden = ordenar_por_urgencia(Mantenimiento.objects.all())
+        self.assertEqual([m.pk for m in orden], [critico.pk, normal.pk])
+
+    def test_sin_sla_cargado_va_antes_que_lo_ya_cumplido(self):
+        """No poder medirlo no lo vuelve menos urgente que algo ya resuelto."""
+        AcuerdoNivelServicio.objects.filter(prioridad=PrioridadMantenimiento.NORMAL).delete()
+        sin_sla = self._mantenimiento(
+            'CR-ORD-0030', prioridad=PrioridadMantenimiento.NORMAL, horas_atras=1,
+        )
+        cumplido = self._mantenimiento(
+            'CR-ORD-0031', prioridad=PrioridadMantenimiento.CRITICA, horas_atras=0, cerrado=True,
+        )
+        orden = ordenar_por_urgencia(Mantenimiento.objects.all())
+        self.assertEqual([m.pk for m in orden], [sin_sla.pk, cumplido.pk])
+
+    # --- El costo, que es la otra mitad del arreglo -----------------------------
+
+    def test_precargar_los_acuerdos_mata_el_n_mas_1(self):
+        """Medido el 26-sep-2026: pintar la columna de SLA costaba 2 consultas por
+        fila, ~3.600 en un listado de 1.800 mantenimientos."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        for i in range(15):
+            self._mantenimiento(
+                f'CR-ORD-1{i:03d}', prioridad=PrioridadMantenimiento.NORMAL, horas_atras=1,
+            )
+        materializados = precargar_acuerdos_sla(Mantenimiento.objects.all())
+        with CaptureQueriesContext(connection) as ctx:
+            for m in materializados:
+                m.estado_sla
+                m.limite_resolucion
+        self.assertEqual(len(ctx), 0, f'{len(ctx)} consultas: los acuerdos no se precargaron')
+
+    def test_un_objeto_suelto_sigue_funcionando_sin_precarga(self):
+        """La pantalla de detalle no sabe nada de la precarga y tiene que andar igual."""
+        m = self._mantenimiento(
+            'CR-ORD-2000', prioridad=PrioridadMantenimiento.NORMAL, horas_atras=1,
+        )
+        recargado = Mantenimiento.objects.get(pk=m.pk)
+        self.assertIsNotNone(recargado.limite_resolucion)
+        self.assertEqual(recargado.estado_sla, 'en_plazo')
+
+
+class OrdenCompartidoEntreSuperficiesTests(TestCase):
+    """Lo que el bug rompía: que el panel y la app muestren el MISMO orden."""
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_dos', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
+        PerfilUsuario.objects.create(usuario=self.tecnico, acceso_todas_unidades=True)
+        self.token = Token.objects.create(user=self.tecnico)
+        AcuerdoNivelServicio.objects.update_or_create(
+            prioridad=PrioridadMantenimiento.CRITICA,
+            defaults={'horas_respuesta': 2, 'horas_resolucion': 4, 'activo': True},
+        )
+        AcuerdoNivelServicio.objects.update_or_create(
+            prioridad=PrioridadMantenimiento.BAJA,
+            defaults={'horas_respuesta': 24, 'horas_resolucion': 72, 'activo': True},
+        )
+        self.viejo_tranquilo = self._mantenimiento(
+            'CR-DOS-0001', PrioridadMantenimiento.BAJA, horas_atras=20,
+        )
+        self.critico_nuevo = self._mantenimiento(
+            'CR-DOS-0002', PrioridadMantenimiento.CRITICA, horas_atras=6,
+        )
+
+    def _mantenimiento(self, codigo, prioridad, *, horas_atras):
+        equipo = Activo.objects.create(codigo=codigo, tipo=Activo.Tipo.DESKTOP)
+        return crear_mantenimiento_manual(
+            equipos=[equipo], tecnico=self.tecnico, descripcion=codigo,
+            fecha_programada=timezone.now() - timedelta(hours=horas_atras),
+            usuario=self.tecnico, prioridad=prioridad,
+        )
+
+    def test_la_api_devuelve_la_lista_ya_ordenada(self):
+        datos = self.client.get(
+            '/api/v1/mantenimientos/', HTTP_AUTHORIZATION=f'Token {self.token.key}',
+        ).json()
+        self.assertEqual([m['id'] for m in datos], [self.critico_nuevo.pk, self.viejo_tranquilo.pk])
+
+    def test_el_panel_muestra_el_mismo_orden_que_la_api(self):
+        self.client.force_login(self.tecnico)
+        resp = self.client.get(reverse('panel:mantenimientos_lista'))
+        self.assertEqual(resp.status_code, 200)
+        del_panel = [m.pk for m in resp.context['mantenimientos']]
+
+        datos = self.client.get(
+            '/api/v1/mantenimientos/', HTTP_AUTHORIZATION=f'Token {self.token.key}',
+        ).json()
+        self.assertEqual(del_panel, [m['id'] for m in datos])
+
+    def test_el_panel_puede_volver_al_orden_por_fecha(self):
+        """'Qué entró hoy' es otra pregunta y sigue siendo legítima."""
+        self.client.force_login(self.tecnico)
+        resp = self.client.get(reverse('panel:mantenimientos_lista'), {'orden': 'fecha'})
+        self.assertEqual(
+            [m.pk for m in resp.context['mantenimientos']],
+            [self.critico_nuevo.pk, self.viejo_tranquilo.pk],
+        )
+        self.assertEqual(resp.context['orden'], 'fecha')
+
+    def test_por_defecto_es_urgencia(self):
+        self.client.force_login(self.tecnico)
+        resp = self.client.get(reverse('panel:mantenimientos_lista'))
+        self.assertEqual(resp.context['orden'], 'urgencia')
+
+    def test_el_filtro_por_estado_sigue_andando(self):
+        self.client.force_login(self.tecnico)
+        resp = self.client.get(
+            reverse('panel:mantenimientos_lista'), {'estado': Mantenimiento.EstadoInterno.PENDIENTE},
+        )
+        self.assertEqual(len(resp.context['mantenimientos']), 2)

@@ -1989,6 +1989,30 @@ Del lado Android, `MainActivity` extiende `FlutterFragmentActivity` — el promp
 `androidx.biometric` lo necesita para montarse, y con `FlutterActivity` falla en
 ejecución, no al compilar.
 
+## Qué va primero: el orden por urgencia
+
+El listado de mantenimientos ordena por **urgencia de SLA**, no por fecha: un correctivo
+crítico abierto hace 10 minutos va antes que un preventivo agendado la semana pasada.
+Ordenar por fecha —lo obvio— entierra justamente lo que no puede esperar.
+
+El desempate, de lo más decisivo a lo más accesorio: abierto antes que terminado →
+estado de SLA (incumplido, por vencer, en plazo, sin SLA, cumplido) → prioridad → límite
+de resolución.
+
+Hasta el 26-sep-2026 esa regla estaba escrita **dos veces**: en Dart, donde decidía el
+orden de la app, y en ningún lado del panel, que ordenaba por fecha. La misma lista de
+trabajo en dos órdenes distintos, así que mesa de ayuda y el técnico hablaban de "lo
+primero de la lista" mirando cosas diferentes. Ahora vive una sola vez
+(`apps.mantenimiento.services.ordenar_por_urgencia`), la consumen el panel y la API, y
+la app renderiza lo que recibe.
+
+El selector del listado permite volver al **orden por fecha**: "qué entró hoy" es otra
+pregunta y sigue siendo legítima.
+
+> **`sin_sla` va antes que `cumplido`**, y es deliberado: que no haya acuerdo cargado
+> para esa prioridad no vuelve al trabajo menos urgente que algo ya resuelto — solo lo
+> vuelve imposible de medir.
+
 ## Ubicación del técnico: consentimiento y retención
 
 Rastrear la posición de una persona durante su jornada necesita su acuerdo, y ese

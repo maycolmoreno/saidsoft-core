@@ -3683,3 +3683,62 @@ decisión.
 
 **Requiere versión nueva de la app** (BUG-8): la MISMA que ya acumula `ocurrido_en`,
 `origen_id` y el botón de revocar el consentimiento.
+
+## §10-AQ — La regla de urgencia estaba escrita dos veces, en dos lenguajes (26-sep-2026)
+
+Cierra BUG-5, el último de la revisión de consistencia. Es el que más se parecía a un
+problema de diseño y el que menos se notaba en el uso diario.
+
+**Qué pasaba.** El orden "por urgencia real (SLA, no fecha)" vivía SOLO en
+`pantalla_mantenimientos.dart`: dos mapas de pesos en Dart decidían qué veía primero el
+técnico. El panel, en cambio, ordenaba por `-fecha_programada`. La misma lista de
+trabajo, dos órdenes distintos, y nada que lo delatara — mesa de ayuda y el técnico
+hablaban de "lo primero de la lista" mirando cosas distintas.
+
+**La regla ahora vive una sola vez**, en `services.orden_de_urgencia` /
+`ordenar_por_urgencia`, con el mismo desempate que tenía Dart: abierto antes que
+terminado, después estado de SLA, después prioridad, después límite de resolución. La
+API devuelve la lista ya ordenada y la app perdió sus mapas de pesos: renderiza lo que
+recibe.
+
+Un detalle del orden que conviene no revertir sin pensarlo: **`sin_sla` va antes que
+`cumplido`**. Que no haya acuerdo cargado para esa prioridad no vuelve al trabajo menos
+urgente que algo ya resuelto — solo lo vuelve imposible de medir. Hoy eso importa más
+de lo que parece, porque los módulos están vacíos y hay prioridades sin acuerdo.
+
+**Por qué en Python y no en SQL.** `estado_sla` no es una columna: se deriva de la hora
+actual, del estado y de un acuerdo que vive en otra tabla, con ramas (cerrado →
+cumplido/incumplido; queda menos del 20% → por vencer). Expresarlo como anotación es
+posible pero denso, y el listado se materializa entero igual. Si algún día hay que
+paginar, ahí sí vale la pena; mientras tanto, la versión legible es la correcta.
+
+**El N+1 que apareció al medirlo.** `Mantenimiento.sla` consulta
+`AcuerdoNivelServicio` en CADA acceso, y `estado_sla` lo toca varias veces por fila.
+Medido el 26-sep-2026: **2 consultas por fila** solo para pintar la columna de SLA —
+unas 3.600 en un listado de 1.800 mantenimientos. `precargar_acuerdos_sla` los carga una
+vez y los deja en el atributo `_acuerdos_precargados` de cada instancia; la propiedad
+los usa si están. Se resolvió así, y no cambiando la firma de la propiedad, para que la
+pantalla de detalle —un objeto suelto— siga funcionando sin saber nada de esto. Hay
+prueba de las dos cosas: cero consultas tras precargar, y el objeto suelto andando igual.
+
+También se sacó una llamada redundante dentro de `estado_sla`, que calculaba
+`limite_resolucion` y después llamaba a `sla_resolucion_incumplido`, que lo volvía a
+calcular.
+
+**El panel cambia lo que muestra.** Ordena por urgencia por defecto, que es la decisión
+que se tomó explícitamente al elegir el enfoque: si las dos superficies no muestran el
+mismo orden, el bug sigue abierto aunque el código esté unificado. El orden por fecha
+queda en un selector porque "qué entró hoy" es otra pregunta y sigue siendo legítima.
+Mesa de ayuda va a notar el cambio el primer día.
+
+**Requiere versión nueva de la app**: la MISMA que ya acumula `ocurrido_en`,
+`origen_id`, el botón de revocar el consentimiento y el catálogo unificado. Un APK viejo
+sigue funcionando —reordena una lista que ya viene ordenada, con los mismos pesos, así
+que el resultado no cambia— pero no se beneficia de un cambio futuro de la regla.
+
+**Efecto lateral: se dividió `views/mantenimiento.py`.** La prueba
+`DivisionDeVistasTests` lo detectó al pasar de 550 líneas, y su propio docstring dice
+qué hacer ("si un módulo lo pasa, la respuesta es dividirlo, no subir el límite"). Las
+vistas de cierres en conflicto se mudaron a `views/conflictos.py`: son un dominio
+distinto —triage de algo que quedó trabado— y no una acción más del ciclo de vida de un
+mantenimiento. Quedó en 441 + 126 líneas.

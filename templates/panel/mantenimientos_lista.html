@@ -13,6 +13,16 @@
         <option value="{{ valor }}" {% if valor == filtro_estado %}selected{% endif %}>{{ etiqueta }}</option>
         {% endfor %}
     </select>
+    {% comment %}
+    Urgencia por defecto y no fecha: es el MISMO orden que ve el técnico en la app, para
+    que "lo primero de la lista" signifique lo mismo de los dos lados. El orden por
+    fecha responde otra pregunta ("qué entró hoy") y por eso sigue disponible.
+    {% endcomment %}
+    <select name="orden" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);"
+            title="Urgencia = el mismo orden que ve el técnico en la app: primero lo incumplido, después lo que está por vencer.">
+        <option value="urgencia" {% if orden == 'urgencia' %}selected{% endif %}>Por urgencia (SLA)</option>
+        <option value="fecha" {% if orden == 'fecha' %}selected{% endif %}>Por fecha</option>
+    </select>
 </form>
 
 <div class="card" style="overflow:hidden;">
