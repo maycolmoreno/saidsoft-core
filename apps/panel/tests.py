@@ -4685,6 +4685,111 @@ class EstacionesRelojEnElPanelTests(TestCase):
         self.assertEqual(resp.context['pagina'].paginator.count, 1)
 
 
+class EstacionesTarjetasPulsablesTests(TestCase):
+    """Los indicadores del listado de estaciones filtran al pulsarlos, como en enlaces.
+
+    Lo que cuidan estas pruebas no es que el número se vea, sino que **el número y la
+    lista digan lo mismo**. Una tarjeta que dice 3 y al pulsarla muestra 2 filas es peor
+    que no tener tarjeta: el operador deja de confiar en toda la pantalla.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        # El grupo tiene versión objetivo: sin eso nada cuenta como desactualizado.
+        grupo = Grupo.objects.create(codigo='TRX900', version_objetivo='2.5.0')
+        self.farmacia = Farmacia.objects.create(codigo='ML900', grupo=grupo, unidad_negocio=self.sg)
+
+        E = Estacion.EstadoConexion
+        self.viva = self._estacion('ML900-A', estado_conexion=E.ONLINE, version_pos='2.5.0')
+        self.caida = self._estacion('ML900-B', estado_conexion=E.OFFLINE, version_pos='2.5.0')
+        self.vieja = self._estacion('ML900-C', estado_conexion=E.ONLINE, version_pos='2.4.1')
+        self.sorda = self._estacion(
+            'ML900-D', estado_conexion=E.ONLINE, version_pos='2.5.0', desfase_reloj_segundos=-400,
+        )
+        self.sin_instalar = self._estacion('ML900-E', estado_conexion=E.NUNCA_CONECTADA, version_pos='2.5.0')
+
+        self.usuario = User.objects.create_user(username='u_tarjetas', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _estacion(self, codigo, **extra):
+        return Estacion.objects.create(
+            codigo=codigo, farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, **extra,
+        )
+
+    def _get(self, **filtros):
+        resp = self.client.get(reverse('panel:estaciones_lista'), filtros)
+        self.assertEqual(resp.status_code, 200)
+        return resp
+
+    def test_los_contadores_cuentan_lo_que_hay(self):
+        kpi = self._get().context['kpi']
+        self.assertEqual(kpi['total'], 5)
+        self.assertEqual(kpi['online'], 3)
+        self.assertEqual(kpi['offline'], 1)
+        self.assertEqual(kpi['nunca'], 1)
+        self.assertEqual(kpi['desactualizadas'], 1)
+        self.assertEqual(kpi['incomunicadas'], 1)
+
+    def test_cada_tarjeta_muestra_exactamente_lo_que_contaba(self):
+        """El caso que justifica toda la clase: si el contador y el filtro usaran
+        criterios distintos, esto los separa."""
+        casos = [
+            ({'estado_conexion': 'online'}, 'online'),
+            ({'estado_conexion': 'offline'}, 'offline'),
+            ({'estado_conexion': 'nunca_conectada'}, 'nunca'),
+            ({'desactualizadas': '1'}, 'desactualizadas'),
+            ({'reloj': 'incomunicado'}, 'incomunicadas'),
+        ]
+        for filtros, clave in casos:
+            with self.subTest(filtros=filtros):
+                resp = self._get(**filtros)
+                self.assertEqual(
+                    resp.context['pagina'].paginator.count, resp.context['kpi'][clave],
+                    f'la tarjeta "{clave}" no muestra lo que cuenta',
+                )
+
+    def test_los_contadores_no_se_achican_al_filtrar(self):
+        """Se calculan sobre el conjunto completo: "1 fuera de línea" tiene que seguir
+        diciendo 1 aunque estés viendo solo las que están en línea."""
+        kpi = self._get(estado_conexion='online').context['kpi']
+        self.assertEqual(kpi['total'], 5)
+        self.assertEqual(kpi['offline'], 1)
+
+    def test_la_tarjeta_activa_ofrece_quitar_el_filtro(self):
+        """Pulsar dos veces la misma tarjeta vuelve a todas: si el enlace repitiera el
+        filtro, no habría forma de salir sin editar la URL a mano."""
+        contenido = self._get(estado_conexion='offline').content.decode()
+        self.assertIn('quitar filtro', contenido)
+        self.assertIn('href="?"', contenido)
+
+    def test_respeta_el_alcance_por_unidad_de_negocio(self):
+        """Los contadores salen del mismo queryset ya acotado por tenant. Si contaran
+        sobre `Estacion.objects` filtrarían bien y contarían de más."""
+        otra = UnidadNegocio.objects.exclude(pk=self.sg.pk).first()
+        grupo_ajeno = Grupo.objects.create(codigo='TRX901', version_objetivo='2.5.0')
+        ajena = Farmacia.objects.create(codigo='MI901', grupo=grupo_ajeno, unidad_negocio=otra)
+        Estacion.objects.create(
+            codigo='MI901-A', farmacia=ajena, version_pos='2.5.0',
+            estado_conexion=Estacion.EstadoConexion.OFFLINE,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        sin_alcance = User.objects.create_user(username='u_solo_sg', password='x')
+        PerfilUsuario.objects.create(usuario=sin_alcance, acceso_todas_unidades=False)
+        sin_alcance.perfil.unidades_negocio.add(self.sg)
+        sin_alcance.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
+        self.client.force_login(sin_alcance)
+        kpi = self._get().context['kpi']
+        self.assertEqual(kpi['total'], 5)
+        self.assertEqual(kpi['offline'], 1)
+
+
 class TendenciaFlotaConsultasTests(TestCase):
     """Las series de `tendencia_flota` salen de 3 consultas fijas, no de 4 por semana.
 

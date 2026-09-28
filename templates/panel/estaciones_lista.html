@@ -13,6 +13,61 @@ seleccionadas" termina enviando una lista vacía.
      hx-trigger="load, every 15s [!document.querySelector('.chk-pendiente:checked')]"
      hx-swap="innerHTML"></div>
 
+{% comment %}
+Tarjetas pulsables, mismo patrón que /monitoreo/enlaces/: el número solo servía para
+enterarse, no para llegar a las filas — había que ir a los selectores de abajo a repetir
+a mano lo que la tarjeta ya sabía.
+
+El href limpia los demás filtros a propósito: la tarjeta cuenta sobre el total, así que
+al pulsarla tiene que mostrar ese mismo conjunto y no la intersección con un grupo
+elegido antes. La tarjeta activa queda resaltada y su enlace vuelve a "todas".
+{% endcomment %}
+<div class="grid gap-3 mb-5" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));">
+    <a href="?" class="card p-4 block hover:opacity-80 transition-opacity" {% if sin_filtro_de_tarjeta %}style="outline:2px solid var(--border-strong,var(--border));"{% endif %}>
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Total estaciones</div>
+        <div class="text-2xl font-semibold num">{{ kpi.total }}</div>
+        <div class="text-xs text-[var(--text-faint)]">ver todas</div>
+    </a>
+    <a href="{% if filtro_estado == 'online' %}?{% else %}?estado_conexion=online{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtro_estado == 'online' %}style="outline:2px solid var(--good);"{% endif %}>
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-[var(--text-faint)] text-xs uppercase tracking-wide">En línea</span>
+            {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+        </div>
+        <div class="text-2xl font-semibold num" style="color:var(--good);">{{ kpi.online }}</div>
+        <div class="text-xs text-[var(--text-faint)]">{% widthratio kpi.online kpi.total 100 %}% del total</div>
+    </a>
+    <a href="{% if filtro_estado == 'offline' %}?{% else %}?estado_conexion=offline{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtro_estado == 'offline' %}style="outline:2px solid var(--critical);"{% elif kpi.offline %}style="border-left:3px solid var(--critical);"{% endif %}>
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-[var(--text-faint)] text-xs uppercase tracking-wide">Fuera de línea</span>
+            {% if kpi.offline %}{% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}{% endif %}
+        </div>
+        <div class="text-2xl font-semibold num" {% if kpi.offline %}style="color:var(--critical);"{% endif %}>{{ kpi.offline }}</div>
+        <div class="text-xs text-[var(--text-faint)]">{% if filtro_estado == 'offline' %}quitar filtro{% else %}ver cuáles{% endif %}</div>
+    </a>
+    <a href="{% if filtro_reloj == 'incomunicado' %}?{% else %}?reloj=incomunicado{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtro_reloj == 'incomunicado' %}style="outline:2px solid var(--critical);"{% elif kpi.incomunicadas %}style="border-left:3px solid var(--critical);"{% endif %}
+       title="Con el reloj corrido más de 2 minutos, la estación descarta en silencio cada comando firmado que se le manda: se ve viva y no obedece nada.">
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-[var(--text-faint)] text-xs uppercase tracking-wide">Sordas al comando</span>
+            {% if kpi.incomunicadas %}{% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}{% endif %}
+        </div>
+        <div class="text-2xl font-semibold num" {% if kpi.incomunicadas %}style="color:var(--critical);"{% endif %}>{{ kpi.incomunicadas }}</div>
+        <div class="text-xs text-[var(--text-faint)]">reloj corrido &gt;2 min</div>
+    </a>
+    <a href="{% if filtro_desactualizadas %}?{% else %}?desactualizadas=1{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtro_desactualizadas %}style="outline:2px solid var(--warning);"{% elif kpi.desactualizadas %}style="border-left:3px solid var(--warning);"{% endif %}>
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-[var(--text-faint)] text-xs uppercase tracking-wide">Desactualizadas</span>
+            {% if kpi.desactualizadas %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% endif %}
+        </div>
+        <div class="text-2xl font-semibold num" {% if kpi.desactualizadas %}style="color:var(--warning);"{% endif %}>{{ kpi.desactualizadas }}</div>
+        <div class="text-xs text-[var(--text-faint)]">no corren la versión objetivo</div>
+    </a>
+    <a href="{% if filtro_estado == 'nunca_conectada' %}?{% else %}?estado_conexion=nunca_conectada{% endif %}" class="card p-4 block hover:opacity-80 transition-opacity" {% if filtro_estado == 'nunca_conectada' %}style="outline:2px solid var(--border-strong,var(--border));"{% endif %}>
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Nunca conectadas</div>
+        <div class="text-2xl font-semibold num">{{ kpi.nunca }}</div>
+        <div class="text-xs text-[var(--text-faint)]">no son caídas: falta instalar</div>
+    </a>
+</div>
+
 <form method="get" class="flex items-center gap-3 mb-4">
     <select name="grupo" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Todos los grupos</option>

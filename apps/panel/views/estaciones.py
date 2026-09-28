@@ -40,10 +40,68 @@ def _render_info_modal(request, estacion, **extra):
     return render(request, 'panel/estacion_info_modal.html', contexto)
 
 
+def _solo_desactualizadas(estaciones):
+    """Las que no corren la versión objetivo de su grupo.
+
+    Existe como función y no inline porque la usan DOS lugares —el contador de la
+    tarjeta y el filtro de la lista— y tienen que decir lo mismo. Si divergen, la
+    tarjeta dice "12 desactualizadas", se la pulsa y salen 9: el número deja de ser
+    confiable y con él toda la pantalla.
+
+    En base y no evaluando la property `Estacion.desactualizada` en Python: a ~1.800
+    estaciones eso trae la tabla entera a memoria en cada carga y hace inútil la
+    paginación (un `Paginator` sobre una lista ya materializada no ahorra nada). Mismo
+    criterio que la property: solo cuenta si el grupo tiene versión objetivo definida, y
+    una estación que nunca reportó `version_pos` ('') se considera desactualizada.
+    """
+    return estaciones.exclude(farmacia__grupo__version_objetivo='').exclude(
+        version_pos=F('farmacia__grupo__version_objetivo'),
+    )
+
+
+def _filtrar_por_reloj(estaciones, reloj):
+    """Estaciones con problema de hora. Devuelve el queryset sin tocar si `reloj` no es
+    uno de los tres modos conocidos.
+
+    Mismo motivo que `_solo_desactualizadas` para vivir acá: la comparten el contador y
+    el filtro.
+    """
+    umbral = {
+        'desincronizado': Estacion.UMBRAL_RELOJ_AVISO_SEGUNDOS,
+        'incomunicado': Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS,
+    }.get(reloj)
+    if umbral is not None:
+        return estaciones.filter(
+            Q(desfase_reloj_segundos__gt=umbral) | Q(desfase_reloj_segundos__lt=-umbral),
+        )
+    if reloj == 'zona':
+        # Las dos condiciones, por lo mismo que `Estacion.zona_horaria_incorrecta`:
+        # el offset atrapa a la estación puesta en otro huso, y el nombre a la puesta
+        # en otro país con el mismo huso (ML016-B estaba en "Eastern Standard Time
+        # (Mexico)", también UTC-5, e iba a pasar desapercibida).
+        offset_malo = Q(offset_utc_minutos__isnull=False) & ~Q(
+            offset_utc_minutos=Estacion.OFFSET_UTC_ESPERADO_MINUTOS,
+        )
+        zona_mala = ~Q(zona_horaria='') & ~Q(zona_horaria=Estacion.ZONA_HORARIA_ESPERADA)
+        return estaciones.filter(offset_malo | zona_mala)
+    return estaciones
+
+
 @login_required
 @permission_required('catalogo.view_estacion', raise_exception=True)
 def estaciones_lista(request):
-    estaciones = scope_por_unidad_negocio_activa(
+    """Listado de estaciones con indicadores pulsables, igual que /monitoreo/enlaces/.
+
+    **Los contadores se calculan sobre el conjunto COMPLETO, no sobre la página ni
+    sobre lo ya filtrado**: "31 fuera de línea" tiene que seguir diciendo 31 aunque
+    estés mirando la página 2. Por eso las tarjetas cuentan sobre `base` y los filtros
+    se aplican después, sobre una variable distinta.
+
+    Y por eso también **cada tarjeta limpia los demás filtros**: cuenta sobre el total,
+    así que al pulsarla tiene que mostrar ese mismo conjunto y no la intersección con un
+    grupo elegido antes. Si no, la tarjeta diría 31 y la tabla mostraría 4.
+    """
+    base = scope_por_unidad_negocio_activa(
         Estacion.objects.select_related('farmacia', 'farmacia__grupo').order_by('codigo'),
         request, 'farmacia__unidad_negocio',
     )
@@ -54,6 +112,23 @@ def estaciones_lista(request):
     reloj = request.GET.get('reloj')
     tipo_sitio = request.GET.get('tipo')
 
+    # Contadores sobre el conjunto completo. Son seis consultas de agregación, no seis
+    # recorridos de la tabla: a 1.800 filas es lo mismo que ya costaba el `count()` de
+    # la paginación.
+    total = base.count()
+    kpi = {
+        'total': total,
+        'online': base.filter(estado_conexion=Estacion.EstadoConexion.ONLINE).count(),
+        'offline': base.filter(estado_conexion=Estacion.EstadoConexion.OFFLINE).count(),
+        'nunca': base.filter(estado_conexion=Estacion.EstadoConexion.NUNCA_CONECTADA).count(),
+        'desactualizadas': _solo_desactualizadas(base).count(),
+        # El más accionable de todos: una estación con el reloj corrido más de dos
+        # minutos DESCARTA en silencio cada comando firmado que se le manda. Se ve viva
+        # en la tabla y no obedece nada.
+        'incomunicadas': _filtrar_por_reloj(base, 'incomunicado').count(),
+    }
+
+    estaciones = base
     if grupo:
         estaciones = estaciones.filter(farmacia__grupo__codigo=grupo)
     if tipo_sitio:
@@ -64,38 +139,9 @@ def estaciones_lista(request):
     if estado_conexion:
         estaciones = estaciones.filter(estado_conexion=estado_conexion)
     if solo_desactualizadas:
-        # Antes: `[e for e in estaciones if e.desactualizada]`, que evaluaba la property
-        # en Python y convertía el queryset en una lista. A 8 estaciones no se notaba; a
-        # ~1.800 trae la tabla entera a memoria en cada carga y además haría inútil la
-        # paginación de abajo (Paginator sobre una lista ya materializada no ahorra nada).
-        # Mismo criterio que `Estacion.desactualizada`: solo cuenta si el grupo tiene una
-        # versión objetivo definida, y una estación que nunca reportó `version_pos` ('')
-        # se considera desactualizada.
-        estaciones = estaciones.exclude(farmacia__grupo__version_objetivo='').exclude(
-            version_pos=F('farmacia__grupo__version_objetivo'),
-        )
+        estaciones = _solo_desactualizadas(estaciones)
     if reloj:
-        # En base y no evaluando las properties de Estacion en Python, por el mismo
-        # motivo que `desactualizadas` de arriba: a ~1.800 estaciones traer la tabla
-        # entera a memoria haría inútil la paginación.
-        umbral = {
-            'desincronizado': Estacion.UMBRAL_RELOJ_AVISO_SEGUNDOS,
-            'incomunicado': Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS,
-        }.get(reloj)
-        if umbral is not None:
-            estaciones = estaciones.filter(
-                Q(desfase_reloj_segundos__gt=umbral) | Q(desfase_reloj_segundos__lt=-umbral),
-            )
-        elif reloj == 'zona':
-            # Las dos condiciones, por lo mismo que `Estacion.zona_horaria_incorrecta`:
-            # el offset atrapa a la estación puesta en otro huso, y el nombre a la puesta
-            # en otro país con el mismo huso (ML016-B estaba en "Eastern Standard Time
-            # (Mexico)", también UTC-5, e iba a pasar desapercibida).
-            offset_malo = Q(offset_utc_minutos__isnull=False) & ~Q(
-                offset_utc_minutos=Estacion.OFFSET_UTC_ESPERADO_MINUTOS,
-            )
-            zona_mala = ~Q(zona_horaria='') & ~Q(zona_horaria=Estacion.ZONA_HORARIA_ESPERADA)
-            estaciones = estaciones.filter(offset_malo | zona_mala)
+        estaciones = _filtrar_por_reloj(estaciones, reloj)
 
     pagina, query_filtros = paginar(estaciones, request)
 
@@ -112,6 +158,9 @@ def estaciones_lista(request):
         'filtro_estado': estado_conexion or '',
         'filtro_desactualizadas': solo_desactualizadas or '',
         'filtro_reloj': reloj or '',
+        'kpi': kpi,
+        # Para saber si alguna tarjeta está activa y resaltar "Total" cuando no lo está.
+        'sin_filtro_de_tarjeta': not (estado_conexion or solo_desactualizadas or reloj),
     })
 
 
