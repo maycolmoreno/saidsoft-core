@@ -50,6 +50,17 @@ def _peticion(metodo, url_base, api_key, api_secret, ruta, cuerpo=None):
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status
     except urllib.error.HTTPError as e:
+        # El cuerpo de la respuesta de error se logueaba en ningun lado y por eso el 400
+        # `unknown_fields` del PUT de rotacion vivio semanas sin que nadie lo viera: el
+        # llamador solo recibia "400" y el mensaje de EMQX, que nombra el campo sobrante,
+        # se descartaba acá. bootstrap-emqx.sh sí imprime el cuerpo; este módulo no.
+        detalle = ''
+        try:
+            detalle = e.read().decode('utf-8', 'replace')[:500]
+        except Exception:
+            pass
+        if detalle:
+            logger.warning('EMQX: HTTP %s en %s %s: %s', e.code, metodo, ruta, detalle)
         return e.code
 
 
@@ -64,12 +75,22 @@ def _crear_o_rotar_usuario(url_base, api_key, api_secret, username, password):
     if status == 409:
         # Ya existe (re-enrolamiento): el POST de creación no actualiza nada, hay que
         # rotar con PUT — mismo patrón que crear_usuario() en bootstrap-emqx.sh.
+        #
+        # El cuerpo del PUT es DISTINTO al del POST: EMQX 5.8.3 rechaza "user_id" acá
+        # (400 unknown_fields — el id ya va en la URL) y exige "is_superuser" explícito.
+        # deploy/bootstrap-emqx.sh arregló esto el 20-ago-2026 y este módulo se quedó con
+        # el body viejo, así que TODA rotación fallaba: `aprovisionar_credencial_estacion`
+        # devolvía None para cualquier estación ya existente — es decir, justo en el
+        # re-enrolamiento, que es el único caso en que este PUT corre.
         status = _peticion(
             'PUT', url_base, api_key, api_secret,
             f'/authentication/password_based:built_in_database/users/{username}',
-            {'user_id': username, 'password': password},
+            {'password': password, 'is_superuser': False},
         )
-        return status in (200, 201, 204)
+        if status not in (200, 201, 204):
+            logger.warning('EMQX: HTTP %s rotando la contraseña de %s', status, username)
+            return False
+        return True
     logger.warning('EMQX: HTTP %s creando usuario MQTT %s', status, username)
     return False
 

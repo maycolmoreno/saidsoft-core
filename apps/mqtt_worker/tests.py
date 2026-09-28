@@ -1,5 +1,6 @@
 import json
 import threading
+import urllib.error
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -1221,10 +1222,48 @@ class AprovisionarCredencialEstacionTests(TestCase):
 
     @override_settings(EMQX_ADMIN_CONFIG={'URL': 'http://emqx:18083/api/v5', 'API_KEY': 'k', 'API_SECRET': 's'})
     def test_usuario_ya_existente_rota_password_con_put(self):
-        respuestas = iter([409, 200, 204])  # POST->409, PUT rotar password, PUT ACL
+        """El PUT de rotación NO puede mandar `user_id`: el id ya va en la URL y EMQX
+        5.8.3 responde 400 `unknown_fields`, con lo cual la rotación falla entera y
+        `aprovisionar_credencial_estacion` devuelve None para cualquier estación que ya
+        exista — o sea, en el re-enrolamiento, el único caso en que este PUT corre.
+        `deploy/bootstrap-emqx.sh` ya lo arreglaba desde el 20-ago-2026; este módulo se
+        quedó con el cuerpo viejo hasta el 28-sep-2026.
+
+        La versión anterior de esta prueba mockeaba `_peticion` entera y solo encadenaba
+        códigos de estado, así que pasaba en verde con el cuerpo equivocado. Por eso ésta
+        baja hasta `urlopen` y mira lo que de verdad sale por la red.
+        """
+        peticiones = []
+
+        def fake_urlopen(req, timeout=None):
+            cuerpo = json.loads(req.data.decode('utf-8')) if req.data else None
+            peticiones.append((req.get_method(), req.full_url, cuerpo))
+            if req.get_method() == 'POST':
+                raise urllib.error.HTTPError(req.full_url, 409, 'Conflict', {}, None)
+            resp = MagicMock()
+            resp.__enter__.return_value.status = 204
+            return resp
+
+        with patch('apps.mqtt_worker.emqx_admin.urllib.request.urlopen', side_effect=fake_urlopen):
+            resultado = aprovisionar_credencial_estacion(self.estacion)
+
+        self.assertIsNotNone(resultado)
+        _, url, cuerpo = next(
+            p for p in peticiones if p[0] == 'PUT' and '/authentication/' in p[1]
+        )
+        self.assertTrue(url.endswith('/users/ML001-A'), url)
+        self.assertNotIn('user_id', cuerpo)
+        self.assertEqual(cuerpo['is_superuser'], False)
+        self.assertTrue(cuerpo['password'])
+
+    @override_settings(EMQX_ADMIN_CONFIG={'URL': 'http://emqx:18083/api/v5', 'API_KEY': 'k', 'API_SECRET': 's'})
+    def test_rotacion_rechazada_por_emqx_devuelve_none(self):
+        """Si el PUT de rotación falla, no se devuelve una credencial: entregarle al
+        agente una contraseña que el broker nunca guardó lo deja sin poder conectarse."""
+        respuestas = iter([409, 400])  # POST->409 (ya existe), PUT rotar -> rechazado
         with patch('apps.mqtt_worker.emqx_admin._peticion', side_effect=lambda *a, **k: next(respuestas)):
             resultado = aprovisionar_credencial_estacion(self.estacion)
-        self.assertIsNotNone(resultado)
+        self.assertIsNone(resultado)
 
     @override_settings(EMQX_ADMIN_CONFIG={'URL': 'http://emqx:18083/api/v5', 'API_KEY': 'k', 'API_SECRET': 's'})
     def test_falla_http_de_emqx_devuelve_none_sin_lanzar(self):

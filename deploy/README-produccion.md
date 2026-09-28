@@ -130,7 +130,7 @@ Otras diferencias de v1 encontradas en este despliegue: `docker-compose logs` ex
 opciones **antes** del nombre del servicio (`logs --tail=50 web`, no
 `logs web --tail=50`).
 
-### 🔴 NUNCA usar `docker compose` (v2, con espacio) en este servidor
+### v1 y v2 son dos stacks distintos — no mezclarlos (historico: el incidente del 11-ago-2026)
 
 A pesar de lo que decía antes esta sección, el plugin `docker compose` v2 **sí está
 instalado** en el NUC de producción (junto al binario legado `docker-compose` v1, el
@@ -152,12 +152,15 @@ que nadie usa, y el contenedor real (`deploy_web_1`) siguió sirviendo código v
 Visto desde afuera parecía "el rebuild no hace nada" (un supuesto bug de caché de
 Docker); la causa real era simplemente estar mirando el stack equivocado.
 
-**Regla fija: todos los comandos de este proyecto usan `docker-compose`, sin espacio,
-con guion.** Si algún día se decide migrar a v2 de una vez (v2 no tiene el bug de
-"recrear" de más arriba), hay que primero `docker-compose down` el stack v1 completo y
-recién ahí levantar con v2 — nunca mezclar los dos comandos contra el mismo despliegue.
-Para confirmar cuál está sirviendo tráfico ahora: `docker ps` — si los nombres tienen
-guion bajo (`deploy_web_1`), es v1.
+**Esa migración YA SE HIZO: desde el 4-sep-2026 el stack corre con `docker compose`
+(v2), y los contenedores en vivo son `deploy-web-1` y compañía, con guion.** Esta sección
+queda como historia de por qué no se mezclan, no como instrucción — hasta el 28-sep-2026
+el título decía "NUNCA usar v2", que es hoy exactamente al revés y llevaría a repetir el
+incidente en el otro sentido: tocar el stack v1 muerto y no entender por qué el cambio no
+aparece.
+
+**Para confirmar cuál está sirviendo tráfico ahora**: `docker ps` — nombres con guion
+(`deploy-web-1`) es v2, con guion bajo (`deploy_web_1`) es v1. Hoy debe ser v2.
 
 ## Sin proxy TLS todavía (piloto en LAN)
 
@@ -414,15 +417,32 @@ confirmar el flujo completo (grabar → listar en "Recordings" → reproducir).
 
 Desde el 4-sep-2026 el stack corre con `docker compose` (v2), no `docker-compose` (v1).
 
+**Lo normal es no correr esto a mano, sino el script**, que hace los mismos pasos y
+ademas verifica que el despliegue haya servido (migraciones sin pendientes, los diez
+servicios corriendo y sanos, y la web respondiendo 200):
+
+```sh
+sh ~/Documentos/Said/saidsoft-core/deploy/desplegar.sh
+```
+
+Los pasos que hace, por si hay que intervenir en el medio:
+
 ```sh
 cd ~/Documentos/Said/saidsoft-core
 git pull --ff-only
 cd deploy
-docker compose --env-file .env build web     # solo si cambio codigo Python
+docker compose --env-file .env build         # SIN nombre de servicio: ver abajo
 docker compose --env-file .env up -d
 ```
 
-Dos cosas que NO son obvias y ya costaron caidas:
+Tres cosas que NO son obvias y ya costaron caidas:
+
+- **`build web` NO alcanza.** Los cinco servicios comparten el mismo `Dockerfile` por el
+  ancla `x-app`, pero Compose genera **una imagen por servicio** (`deploy-web`,
+  `deploy-worker`, `deploy-celery_beat`, `deploy-celery_worker`,
+  `deploy-meshcentral_worker`). Con `build web` solo se recrea `web`: el worker MQTT y los
+  de Celery se quedan con el codigo viejo. Paso en el despliegue del 11-sep-2026 — beat
+  seguia sin la tarea nueva. `build` sin argumento las construye todas.
 
 - **Un cambio en `nginx.conf` exige RECREAR el contenedor, no recargarlo.** El archivo
   entra por un bind mount de archivo suelto, que ata el inode: `git pull` escribe un
@@ -433,6 +453,50 @@ Dos cosas que NO son obvias y ya costaron caidas:
   deriva de la IP del contenedor y EMQX arranca con la base de usuarios/ACLs vacia en
   cada recreacion. Cambiar su valor tiene el mismo efecto: exportar antes
   (`emqx ctl data export`) e importar despues (`emqx ctl data import`).
+
+## Comprobar que la rotacion de credenciales MQTT funciona (28-sep-2026)
+
+`aprovisionar_credencial_estacion` rota la contrasena de una estacion que ya existe en
+EMQX con un `PUT`. Ese PUT estuvo mandando un cuerpo que EMQX 5.8.3 rechaza
+(`400 unknown_fields`) desde que se escribio el modulo, asi que **toda rotacion fallaba en
+silencio** — el enrolamiento seguia andando con la credencial compartida y no habia
+sintoma visible (§10-AV del plan). Corregido en codigo; esto es lo que lo cierra contra el
+broker real.
+
+La prueba unitaria no alcanza: lo que fallaba era el contrato con EMQX, y eso solo lo
+contesta EMQX. Despues de desplegar:
+
+```sh
+# 1. Elegir una estacion que YA tenga credencial propia (el caso que fallaba).
+#    Si devuelve el usuario, existe -> el POST dara 409 y se ejercita el PUT.
+docker exec deploy-web-1 python -c "
+from django.conf import settings
+import base64, urllib.request
+c = settings.EMQX_ADMIN_CONFIG
+cred = base64.b64encode(f\"{c['API_KEY']}:{c['API_SECRET']}\".encode()).decode()
+u = c['URL'].rstrip('/') + '/authentication/password_based:built_in_database/users/ML006-A'
+r = urllib.request.Request(u, headers={'Authorization': f'Basic {cred}'})
+print(urllib.request.urlopen(r, timeout=10).read().decode())
+"
+
+# 2. Forzar la rotacion sobre esa estacion y ver que devuelve credencial (no None).
+docker exec deploy-web-1 python manage.py shell -c "
+from apps.catalogo.models import Estacion
+from apps.mqtt_worker.emqx_admin import aprovisionar_credencial_estacion
+e = Estacion.objects.get(codigo='ML006-A')
+print('RESULTADO:', 'OK' if aprovisionar_credencial_estacion(e) else 'None -> SIGUE ROTO')
+"
+```
+
+**Ojo con el paso 2: rota la contrasena de verdad.** La estacion queda sin poder
+conectarse hasta que se re-enrole, porque la contrasena nueva se devuelve una sola vez y
+ahi se descarta. Correrlo sobre una estacion de prueba, o inmediatamente despues correrle
+el script "Migrar a credencial MQTT propia" (`seed_scripts_migracion_mqtt`), que borra
+`identidad.json` y fuerza el re-enrolamiento. Si el paso 2 imprime `None`, el detalle
+ahora sale en el log: `docker logs deploy-web-1 | grep EMQX`.
+
+Recien con esto en verde tiene sentido rotar `MQTT_PASSWORD_AGENTE` /
+`COMANDO_HMAC_SECRET` o correr `deploy/emqx-narrow-acl-agente.sh`.
 
 ## Rotar el certificado TLS (y por qué no es solo redesplegar)
 

@@ -3978,3 +3978,38 @@ VPN.
 global: `reglas_aplicables_a` toma las globales para todas las unidades
 (`services.py:70-72`), así que una global abriría ~100 alertas cada noche por las oficinas
 apagadas. Queda anotado en `docs/modulos.md`.
+
+## §10-AV — La rotación de credenciales MQTT estaba rota desde que se escribió (28-sep-2026)
+
+`aprovisionar_credencial_estacion` devolvía `None` para **cualquier estación que ya
+existiera en EMQX**. El POST de creación responde `409` y el camino de rotación hace un
+`PUT`, y ese PUT mandaba `user_id` en el cuerpo: EMQX 5.8.3 lo rechaza con
+`400 unknown_fields` —el id ya va en la URL— y además exige `is_superuser` explícito.
+
+Lo que lo vuelve interesante no es el bug, es **por qué sobrevivió**:
+
+- **El arreglo ya existía, en el otro lado.** `deploy/bootstrap-emqx.sh` se topó con esto
+  mismo el 20-ago-2026, lo corrigió y dejó escrito el porqué en un comentario de seis
+  líneas. `emqx_admin.py` es la versión Python del mismo flujo y nadie la miró: la
+  corrección viajó al script de bash y se quedó ahí. **Un arreglo que vive en una sola de
+  las dos implementaciones del mismo protocolo no está arreglado.**
+- **La prueba pasaba en verde con el cuerpo equivocado.**
+  `test_usuario_ya_existente_rota_password_con_put` mockeaba `_peticion` entera y solo
+  encadenaba códigos de estado (`409, 200, 204`), así que verificaba que el código
+  *reacciona* a un 409 — nunca qué manda. Una prueba que mockea la capa donde vive el bug
+  no puede verlo. Ahora baja hasta `urlopen` e inspecciona método, URL y cuerpo reales.
+- **El 400 se descartaba.** `_peticion` devolvía solo el código de estado y tiraba el
+  cuerpo de la respuesta, que es justamente donde EMQX nombra el campo sobrante. El
+  llamador veía "400" a secas; y como `aprovisionar_credencial_estacion` nunca lanza por
+  diseño (el enrolamiento sigue con la credencial compartida), el síntoma visible era
+  ninguno. Ahora el cuerpo del error se loguea.
+
+Se agregó también `test_rotacion_rechazada_por_emqx_devuelve_none`: si el PUT falla no se
+devuelve credencial. Entregarle al agente una contraseña que el broker nunca guardó lo
+deja sin poder conectarse — peor que no rotar.
+
+**Verificado con pruebas, no todavía contra el broker real.** El unit test falla con el
+cuerpo viejo y pasa con el nuevo, pero la comprobación que cierra esto es un
+re-enrolamiento real contra EMQX 5.8.3 (runbook en `deploy/README-produccion.md`). Hasta
+entonces, rotar `MQTT_PASSWORD_AGENTE`/`COMANDO_HMAC_SECRET` y correr
+`deploy/emqx-narrow-acl-agente.sh` siguen bloqueados por precaución, no por el bug.

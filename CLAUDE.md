@@ -7,7 +7,7 @@ panel HTMX, app móvil Flutter, multi-cliente por `UnidadNegocio`). Tres unidade
 negocio: SG (393 farmacias), MIA (305), 7DIAS (2).
 
 **El estado real en una línea: la plataforma está construida; el despliegue no.**
-16 apps Django, ~832 pruebas, 700 farmacias modeladas — y **8 equipos con agente
+15 apps Django, ~832 pruebas, 700 farmacias modeladas — y **8 equipos con agente
 instalado de ~1.800 estimados**. El cuello de botella dejó de ser el código.
 
 ### Producción
@@ -73,11 +73,14 @@ corre sobre `timescale/timescaledb`.
   ellas. `ML016-A` **ya migró** (decía lo contrario acá hasta hoy: está conectada como
   `usuario=ML016-A`). Cuando enciendan, correrles el script "Migrar a credencial MQTT
   propia".
-  **Ojo antes de eso**: la ROTACIÓN de credencial está rota. El `PUT` de
-  `apps.mqtt_worker.emqx_admin` manda `user_id` en el cuerpo y EMQX 5.8.3 responde
-  HTTP 400 `unknown_fields`, así que `aprovisionar_credencial_estacion` devuelve None
-  para cualquier estación que ya exista. Crear una nueva sí funciona (POST 201). Hay que
-  arreglarlo antes de rotar `MQTT_PASSWORD_AGENTE` / `COMANDO_HMAC_SECRET` y de correr
+  **La ROTACIÓN de credencial estaba rota; corregida en código el 28-sep-2026** (§10-AV):
+  el `PUT` de `apps.mqtt_worker.emqx_admin` mandaba `user_id` en el cuerpo y EMQX 5.8.3
+  responde HTTP 400 `unknown_fields`, así que `aprovisionar_credencial_estacion` devolvía
+  None para cualquier estación que ya existiera. Crear una nueva siempre funcionó
+  (POST 201). **Falta comprobarlo contra el broker real**: el arreglo tiene prueba que
+  falla con el cuerpo viejo, pero lo que lo cierra es un re-enrolamiento contra EMQX
+  5.8.3 (runbook en `deploy/README-produccion.md`). Hacer esa comprobación antes de rotar
+  `MQTT_PASSWORD_AGENTE` / `COMANDO_HMAC_SECRET` y de correr
   `deploy/emqx-narrow-acl-agente.sh`.
 - ~~**El CI nunca se vio en verde** tras pasarlo a TimescaleDB.~~ **RESUELTO el
   21-sep-2026.** El diagnóstico de acá era erróneo: no tenía que ver con TimescaleDB y el
