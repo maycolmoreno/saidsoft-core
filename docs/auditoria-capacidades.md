@@ -12,13 +12,17 @@
 
 ## El límite de esta auditoría, por delante
 
-**No se pudo contar una sola fila real.** El servidor de producción (`10.111.6.20`) no
-respondía ni por SSH ni por HTTPS durante toda la auditoría.
+**Cuando se escribió este documento no se pudo contar una sola fila real**: el servidor
+(`10.111.6.20`) no respondía ni por SSH ni por HTTPS.
 
-Eso tiene una consecuencia concreta que atraviesa todo el documento: cuando acá dice que
-una capacidad **existe**, significa que el código que la implementa está escrito y
-cubierto por pruebas. **No significa que esté en uso, ni que las tablas tengan datos.**
-Esa segunda mitad quedó pendiente.
+Eso tiene una consecuencia que atraviesa todo el documento: cuando acá dice que una
+capacidad **existe**, significa que el código que la implementa está escrito y cubierto
+por pruebas. **No significa que esté en uso, ni que las tablas tengan datos.**
+
+> **Actualización del 28-sep-2026: esa segunda mitad ya se midió.** Ver
+> [Uso real](#uso-real--medido-el-28-sep-2026) al final. El resumen en una línea: 701
+> farmacias modeladas, **42 estaciones y 29 agentes vivos**, 21 activos, 3 mantenimientos.
+> **Lo construido sigue muy por delante de lo usado.**
 
 ---
 
@@ -479,11 +483,12 @@ reportes de MTTR, disponibilidad y SLA · API pública documentada.
 
 | Riesgo | Gravedad | Detalle |
 |---|---|---|
-| Límite de conexiones de EMQX | **Bloqueante** | Techo observado de 1024 contra ~1.800 estaciones |
+| Límite de conexiones de EMQX | **Bloqueante** | Techo de 1024 contra ~1.800 estaciones. **Re-verificado el 28-sep:** son dos techos, `max_conns` del listener y `ulimit -n` del contenedor, ambos en 1024 |
 | Worker MQTT monohilo | Alto | Único consumidor de la flota; si se atasca, **falla en silencio** |
 | EMQX autoriza por lista blanca y niega mudo | Alto | El PUBACK confirma recepción, no autorización. Ya produjo cinco incidentes del mismo tipo |
-| `EMAIL_HOST_USER` vacío | Alto | Los destinatarios de alerta por correo no reciben nada |
-| Restauración de respaldo sin probar | Alto | Nunca verificada contra hypertables; `BACKUP_OFFSITE_DESTINO` sin definir |
+| `EMAIL_HOST_USER` vacío | Alto | Los destinatarios de alerta por correo no reciben nada. **Confirmado el 28-sep** |
+| `ANTHROPIC_API_KEY` vacía | Medio | **Confirmado el 28-sep:** el diagnóstico con IA nunca se ejecutó en producción |
+| Restauración de respaldo sin probar | Alto | **Peor de lo estimado.** El respaldo corre a diario y funciona, pero `pg_dump` avisa en cada corrida de `circular foreign-key constraints` en `hypertable`, `chunk` y `continuous_agg`: *"might not be able to restore without --disable-triggers"*. `BACKUP_OFFSITE_DESTINO` sigue sin definir, así que la copia es única y está en la máquina que protege |
 | Dependencias sin fijar | Medio | `requirements.txt` sin versiones ancladas |
 | Escritura por latido en facturación | Medio | `get_or_create` en cada latido para una fila mensual |
 | Desfase de reloj | Mitigado | La autocorrección de la 0.31/0.32 lo ataca |
@@ -512,7 +517,28 @@ reportes de MTTR, disponibilidad y SLA · API pública documentada.
 
 ---
 
-## Lo que falta para cerrar esta auditoría
+## Uso real — medido el 28-sep-2026
 
-**Conectarse a producción y contar filas.** Sin eso no se sabe cuánto de lo verificado
-está realmente en uso. La foto del código está completa; la del uso, no se pudo tomar.
+Con acceso al servidor, esto es lo que hay cargado. **La foto del código estaba completa;
+esta es la del uso.**
+
+| | Medido | Contexto |
+|---|---|---|
+| Farmacias activas | **701** | El modelo está poblado |
+| Estaciones | **42** (40 aprobadas) | de ~1.800 objetivo |
+| **Agentes vivos** | **29** con heartbeat < 15 min | Eran 8 al 7-sep: subió 3,6× |
+| Versiones en la flota | 0.32 → 38 · 0.29 → 3 · 0.31 → 1 | El despliegue por olas funciona |
+| Activos | **21** | El ITAM está construido y vacío |
+| Colaboradores | **10** | |
+| Mantenimientos · visitas | **3 · 1** | |
+| Alertas históricas / abiertas | **184 / 3** | El motor de alertas sí funciona |
+| `ActividadPlanificada` | **0** | Resuelve la duda de [`tres-agendas.md`](tres-agendas.md): sus tres capacidades propias son teóricas |
+| Zonas de viáticos | **0** | La alerta "fuera de zona" no puede dispararse |
+| Tamaño de la base | **136 MB** | La tabla más grande es `farmacia` con 1 MB |
+
+### La conclusión que faltaba
+
+**El desafío no es técnico, es de adopción.** La plataforma tiene 97 modelos, 176 vistas y
+1.806 pruebas para sostener 21 activos, 10 colaboradores y 3 mantenimientos. Las 184
+alertas y los 29 agentes vivos prueban que el núcleo RMM **funciona de verdad** — es el
+resto lo que está esperando que alguien lo use.

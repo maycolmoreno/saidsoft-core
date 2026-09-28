@@ -13,9 +13,12 @@ ejecutó ninguna prueba de carga.**
 
 ## Cómo leer este documento
 
-**Producción estaba inalcanzable durante toda la auditoría** (`10.111.6.20` sin responder
-por SSH ni HTTPS). No se pudo medir nada en caliente: ni tamaño de base, ni uso de CPU o
-RAM, ni conexiones reales en el broker.
+**Producción estaba inalcanzable cuando se escribió este documento** (`10.111.6.20` sin
+responder por SSH ni HTTPS), así que el análisis original salió del código.
+
+> **Actualización del 28-sep-2026:** ya hubo acceso al servidor y se midió. Los valores
+> reales están en [Medición en producción](#medición-en-producción--28-sep-2026), al
+> final, y varios `NO DETERMINADO` de abajo quedaron resueltos.
 
 Cada afirmación lleva una etiqueta literal:
 
@@ -197,7 +200,8 @@ infraestructura actual sin cambios.)*
 
 | Límite | Valor | Clasificación | Evidencia |
 |---|---|---|---|
-| Conexiones del listener TLS de EMQX | 1024 | **HECHO** observado antes; **no re-verificable hoy** — no figura en el compose ni en la documentación | consulta al broker, sesión previa |
+| Conexiones del listener TLS de EMQX | 1024 | **HECHO — re-verificado el 28-sep** contra el broker (`emqx ctl listeners`). No figura en el compose: es el default de la imagen | `max_conns: 1024`, 32 conexiones |
+| Descriptores de archivo del contenedor EMQX | 1024 | **HECHO — medido el 28-sep.** El techo es doble | `ulimit -n` |
 | Nodos del broker | 1 | HECHO | `EMQX_NODE__NAME` |
 | Hilos del worker MQTT | 1 | HECHO | `loop_forever()` |
 | Workers de gunicorn | 3 | HECHO | `docker-compose.yml:113` |
@@ -210,9 +214,11 @@ infraestructura actual sin cambios.)*
 | Límites de CPU/RAM por contenedor | ninguno | HECHO | sin `deploy.resources` ni `mem_limit` |
 | Descriptores de archivo (`ulimit`) | sin declarar | HECHO | sin `ulimits` en el compose |
 | Réplicas de cualquier servicio | 1 | HECHO | sin `deploy.replicas` |
-| CPU, RAM y disco del NUC | — | **NO DETERMINADO** — el modelo `NUC11TNKv5` aparece en la documentación, su configuración no | `PLAN_MODERNIZACION.md:1218` |
-| Tamaño actual de la base | — | **NO DETERMINADO** — producción inalcanzable | — |
-| Ancho de banda del enlace del NUC | — | **NO DETERMINADO** — solo se sabe que sale por WiFi | `CLAUDE.md:61` |
+| CPU del NUC | 8 hilos | **HECHO — medido el 28-sep.** Intel i5-1145G7 | `nproc`, `/proc/cpuinfo` |
+| RAM del NUC | 15 GiB | **HECHO — medido el 28-sep.** 10 GiB disponibles | `free -h` |
+| Disco del NUC | 457 GB | **HECHO — medido el 28-sep.** 171 GB libres (61% usado) | `df -h /` |
+| Tamaño actual de la base | 136 MB | **HECHO — medido el 28-sep.** Con 42 estaciones | `pg_database_size` |
+| Ancho de banda del enlace del NUC | — | **NO DETERMINADO** — se confirmó que sale por `wlo1` (WiFi), no su capacidad | `ip route` |
 
 ---
 
@@ -285,6 +291,50 @@ Señaladas, no corregidas:
 > timer de systemd es la corrección de eso.
 
 ---
+
+---
+
+## Medición en producción — 28-sep-2026
+
+**Este bloque reemplaza estimaciones por datos leídos del servidor.** Se corrió una
+revisión de solo lectura sobre `10.111.6.20`. Lo que no aparece acá sigue siendo lo que
+dice el resto del documento.
+
+| Qué | Valor medido |
+|---|---|
+| Hardware | Intel i5-1145G7, **8 hilos**; **15 GiB RAM** (10 disponibles); disco 457 GB con **171 GB libres** (61% usado) |
+| Interfaz de salida | `wlo1` — **WiFi confirmado** |
+| Contenedores | Los 11, `healthy` |
+| Tamaño de la base | **136 MB.** La tabla más grande es `farmacia` con 1 MB: casi todo el peso es el catálogo de TimescaleDB, no datos |
+| Farmacias activas | **701** |
+| Estaciones | **42** (40 aprobadas, 3 nunca reportaron) |
+| Agentes vivos | **29 con heartbeat < 15 min**, 30 en 24 h |
+| Versiones de agente | 0.32 → 38 · 0.29 → 3 · 0.31 → 1 |
+| Activos · colaboradores | 21 · 10 |
+| Mantenimientos · visitas | 3 · 1 |
+| Alertas (históricas / abiertas) | 184 / 3 |
+| **EMQX `max_conns`** | **1024**, con 32 conexiones actuales |
+| **EMQX `ulimit -n`** | **1024** — el techo es doble: listener *y* descriptores de archivo |
+| `EMAIL_HOST_USER` | **vacía** — confirmado |
+| `BACKUP_OFFSITE_DESTINO` | **vacía** — confirmado |
+| `ANTHROPIC_API_KEY` | **vacía** — el diagnóstico con IA nunca se ejecutó en producción |
+
+### Lo que cambió respecto de lo estimado
+
+- **La adopción subió**: de 8 agentes al 7-sep a **29 vivos** al 28-sep. Sigue siendo el
+  ~1,6% de las ~1.800 estaciones objetivo, pero la tendencia es real.
+- **El techo de EMQX quedó re-verificado** y es peor de lo documentado: no es solo
+  `max_conns` del listener, también el `ulimit -n` del contenedor, ambos en 1024.
+- **El respaldo SÍ corre.** Diario, última ejecución exitosa el 28-sep 08:42, con latido
+  registrado en el panel. Escribe en `/home/glpi/backups/saidsoft/`.
+- **Pero `pg_dump` avisa que el volcado puede no restaurarse.** En cada corrida emite
+  `circular foreign-key constraints` sobre `hypertable`, `chunk` y `continuous_agg` —el
+  catálogo de TimescaleDB— con la advertencia *"You might not be able to restore the dump
+  without using --disable-triggers"*. **Es evidencia directa de que el riesgo de
+  restauración no es teórico**, y sigue sin haber una prueba de restauración.
+- **El servidor corre código viejo**: `53f968c`, anterior a la baja de `integraciones`.
+  Sus dos tablas siguen existiendo, ambas con **0 filas** — así que la migración `0033`
+  va a poder borrarlas sin cortar el deploy.
 
 ## 10. Conclusión
 

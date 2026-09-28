@@ -22,6 +22,10 @@ operar.
 
 **Conteo:** 8 🔴 · 8 🟠 · 4 🟡 · 3 ⚪
 
+> **Actualización del 28-sep-2026.** Con acceso al servidor se midieron las dos cifras que
+> quedaban abiertas: `ActividadPlanificada` tiene **0 filas** y las zonas de viáticos son
+> **0**. Las dos clasificaciones ⚪ quedan confirmadas, no revisadas. Ver el final.
+
 ---
 
 ## El dato que ordena toda la matriz
@@ -86,9 +90,9 @@ El rollout no está esperando a que se programe nada — está esperando infraes
 
 | Módulo | Por qué |
 |---|---|
-| `viaticos` | Completo —bandeja, observación, reenvío, zonas, consolidado, CSV— y con **0 zonas cargadas**, así que la alerta "fuera de zona" no puede dispararse nunca. Además es finanzas y RRHH, no operación de TI: no comparte camino con nada del anillo crítico |
+| `viaticos` | Completo —bandeja, observación, reenvío, zonas, consolidado, CSV— y con **0 zonas cargadas** (medido el 28-sep) más 1 solo reporte, así que la alerta "fuera de zona" no puede dispararse nunca. Además es finanzas y RRHH, no operación de TI: no comparte camino con nada del anillo crítico |
 | `facturacion` | La idea es correcta —cobrar por endpoint activo en vez de contrato fijo— y es la única tabla que se conserva indefinidamente, con razón. Pero su valor depende de un modelo de cobro entre unidades de negocio que **no se pudo verificar que exista**, y hoy paga un `get_or_create` en *cada latido* para una fila que cambia una vez al mes |
-| `ActividadPlanificada` | El único caso real de redundancia en 97 modelos. Es la única de las tres agendas sin API móvil ni historial. Tiene tres capacidades propias —rango de fechas, actividad interna, trabajo sin equipo— y **no se puede decidir sin contar filas en producción**. Ver [`tres-agendas.md`](tres-agendas.md) |
+| `ActividadPlanificada` | El único caso real de redundancia en 97 modelos, y la única de las tres agendas sin API móvil ni historial. **Medido el 28-sep: 0 filas.** Sus tres capacidades propias —rango de fechas, actividad interna, trabajo sin equipo— son entonces teóricas: nadie las usó nunca. Queda como el candidato más limpio a retirarse. Ver [`tres-agendas.md`](tres-agendas.md) |
 
 > **Prematuro no significa equivocado.** Los tres están bien construidos y probados.
 > Significa que hoy no compiten por atención con nada del anillo crítico, y que
@@ -165,13 +169,24 @@ Vale separar dos cosas que se confunden:
 
 ---
 
-## Lo que esta matriz no pudo decidir
+## Lo medido el 28-sep-2026
 
-Producción estaba inalcanzable, así que las clasificaciones salen del código y de la
-documentación, no de datos en uso. **Dos filas cambiarían con números reales:**
+La matriz se armó sin acceso al servidor. Con los números reales en la mano, **ninguna
+clasificación cambió** y dos quedaron confirmadas:
 
-- `ActividadPlanificada` — si tiene filas, deja de ser redundante.
-- `facturacion` — si el cobro entre unidades de negocio existe, pasa de ⚪ a 🟠.
+| Dato | Medido | Efecto en la matriz |
+|---|---|---|
+| `ActividadPlanificada` | **0 filas** | ⚪ confirmado, y ahora sin ambigüedad |
+| Zonas de viáticos | **0** | ⚪ confirmado: la alerta no puede dispararse |
+| Agentes vivos | **29** (eran 8 al 7-sep) | El rollout avanza, pero va por el ~1,6% |
+| Activos · mantenimientos | **21 · 3** | Los 🟡 siguen esperando operación |
+| EMQX `max_conns` / `ulimit -n` | **1024 / 1024** | 🔴 confirmado, y el techo es doble |
 
-Y los conteos que sustentan "prematuro" —8 agentes, 9 activos, 0 zonas de viáticos— son
-del `CLAUDE.md` al 7-sep-2026 y **pueden estar desactualizados**.
+**Lo único que empeoró** está en 🟠 *Respaldo y restauración*: corre a diario y termina
+bien, pero `pg_dump` avisa en cada corrida de `circular foreign-key constraints` sobre el
+catálogo de TimescaleDB, con la advertencia de que el volcado **puede no restaurarse**.
+El riesgo dejó de ser teórico.
+
+**Sigue sin resolverse** la clasificación de `facturacion`: si el cobro entre unidades de
+negocio existe como práctica, pasa de ⚪ a 🟠. Eso es una pregunta de negocio, no de datos
+—hay 47 filas registradas, que solo prueban que el contador funciona—.
