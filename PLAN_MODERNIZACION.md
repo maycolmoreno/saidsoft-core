@@ -3908,3 +3908,73 @@ catálogos compilados (§10-AS).
 **los teléfonos que hoy están en la calle no tienen el aviso**, así que de esta versión
 se van a enterar como siempre —porque alguien se lo diga—. El mecanismo empieza a servir
 a partir de la siguiente.
+
+## §10-AU — El agente sale de las farmacias: sitios administrativos (27-sep-2026)
+
+Extender el RMM a las PCs del área administrativa de Cresio (varios departamentos, 15-25
+PCs cada uno). La Fase 0 fue un relevamiento previo cuyo resultado cambió el alcance de
+todo lo demás.
+
+### Lo que la Fase 0 encontró
+
+**El agente NO necesita cambios, y las PCs NO hay que renombrarlas.** El agente de
+producción es el de **Python** (`agente-prueba/`, promovido el 10-ago-2026 al perderse el
+fuente del C# — §10-K), y su código de estación es un **parámetro**:
+`instalar-servicio.ps1:90` → `[string]$Codigo = $env:COMPUTERNAME`. El hostname es solo el
+default, y el agente manda `codigo` y `hostname` como campos separados
+(`agente_prueba.py:528-530`). Lo que decía lo contrario era el instalador del agente C#
+viejo (`deploy/docs/instalar-agente.ps1`), que seguía en el repo desinformando.
+
+**`Farmacia` ya era una tabla de sitios.** Sostenía las tiendas de 7DIAS desde antes. Y lo
+propio de una farmacia se activa por DATOS, no por el hecho de serlo: el barrido de
+enlaces excluye a quien no tiene `ip_router` (`enlaces.py:215`), las alertas del POS solo
+se evalúan sobre servicios reportados. Un sitio administrativo sin esos datos no dispara
+nada de eso. Por eso no hizo falta tocar monitoreo.
+
+**Dos premisas del planteo original resultaron incorrectas**, y conviene que quede escrito:
+
+- *"CORP quedaría oculto para los usuarios actuales"*: al revés. Los 9 técnicos reales
+  tienen `acceso_todas_unidades=True` (`crear_tecnicos_soporte.py:227`), así que ven los
+  sitios CORP apenas existen. Es lo buscado, pero no es ocultamiento.
+- *"Los mantenimientos CORP sin SLA subirían por encima de las farmacias"*: no. Los
+  acuerdos son **globales por prioridad** (`AcuerdoNivelServicio.prioridad` es `unique`,
+  sin campo de unidad), así que un mantenimiento CORP recibe SLA igual. Y aunque no lo
+  recibiera, `sin_sla` pesa 3 — por debajo de `en_plazo` (2), no por encima. Sin cambios.
+
+**Lo que sigue sin respuesta: las laptops.** El broker vive en una IP privada, así que una
+laptop fuera de la red interna se ve idéntica a una caída. Queda fuera del piloto y
+documentado en `docs/modulos.md`; resolverlo exige decidir entre broker expuesto con TLS o
+VPN.
+
+### Lo que se implementó
+
+- **`Farmacia.tipo`** (`farmacia`/`tienda`/`administrativo`), default `farmacia`: cero
+  cambio de comportamiento para las ~700 existentes. La migración de datos
+  (`catalogo/0035`) marca las tiendas de 7DIAS y crea `UnidadNegocio CORP` y `Grupo ADMIN`
+  con `get_or_create`, imprimiendo lo que toca. ADMIN existe para que una oficina **nunca**
+  pueda recibir un despliegue de POS por un filtro mal puesto.
+- **`crear_sitios_administrativos`**: alta desde CSV, simula por defecto, re-ejecutable, y
+  **rechaza el archivo entero si una fila no valida** — un alta a medias deja unos
+  departamentos cargados y otros no, y después nadie sabe cuáles. El rechazo dice línea,
+  código y por qué; el error frecuente es el guion, que es el separador entre sitio y
+  equipo en el código de estación.
+- **Bandeja de enrolamientos rechazados** (`EnrolamientoRechazado`, forma de
+  `MensajeMqttFallido`) + pantalla en `/estaciones/enrolamientos-rechazados/`. Antes el
+  rechazo por "el sitio no existe" solo quedaba en el log del worker: se instalaba el
+  agente, el técnico se iba, y la estación **nunca aparecía** sin nada que dijera por qué.
+  Cuenta intentos en vez de crear una fila por vez (el agente reintenta solo), y un
+  reintento posterior a "revisado" lo devuelve a la bandeja — esa vuelta distingue "lo
+  miré" de "lo resolví".
+- **Contador del Centro separado por tipo.** Las administrativas se cuentan aparte
+  (`admin_total`/`admin_fuera`): sumadas, "sin reportar" saltaría ~100 todas las noches y
+  el número dejaría de significar "hay un problema".
+- **`Instalar.bat` acepta el código** (de `config.txt` o preguntándolo, con el hostname como
+  default), y el instalador C# viejo se movió a `deploy/docs/obsoleto/` con un aviso que
+  explica por qué no seguirlo.
+
+### Lo que NO se hizo, a propósito
+
+`sin_heartbeat` **no se activó**. Cuando se active hay que crearla **por unidad**, no
+global: `reglas_aplicables_a` toma las globales para todas las unidades
+(`services.py:70-72`), así que una global abriría ~100 alertas cada noche por las oficinas
+apagadas. Queda anotado en `docs/modulos.md`.

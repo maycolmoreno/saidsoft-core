@@ -45,6 +45,38 @@ def _farmacia_desde_codigo_estacion(codigo_estacion: str) -> Farmacia | None:
     return Farmacia.objects.filter(codigo=codigo_farmacia).first()
 
 
+def _registrar_enrolamiento_rechazado(codigo: str, payload: dict) -> None:
+    """Deja el intento fallido en la bandeja de triage del panel.
+
+    NUNCA lanza: esto corre dentro del worker MQTT, que es monohilo y es el unico oido
+    de la plataforma. Que falle registrar un rechazo no puede tumbar la ingesta de todo
+    lo demas.
+
+    Se cuenta el intento en vez de crear una fila por vez: el agente reintenta solo, asi
+    que una instalacion mal configurada generaria miles de filas y la bandeja dejaria de
+    servir para lo unico que sirve, que es mirarla.
+    """
+    from django.db.models import F
+    from django.utils import timezone
+
+    from apps.mqtt_worker.models import EnrolamientoRechazado
+
+    try:
+        hostname = (payload.get('hostname') or '')[:120]
+        fila, creada = EnrolamientoRechazado.objects.get_or_create(
+            codigo_recibido=codigo[:100], hostname=hostname,
+        )
+        if not creada:
+            EnrolamientoRechazado.objects.filter(pk=fila.pk).update(
+                intentos=F('intentos') + 1, ultimo_intento=timezone.now(),
+                # Vuelve a la bandeja: si alguien lo marco revisado y el equipo sigue
+                # insistiendo, es que no se resolvio.
+                revisado=False,
+            )
+    except Exception:
+        logger.exception('No se pudo registrar el enrolamiento rechazado de %s', codigo)
+
+
 def _cache_url_base_para(estacion) -> str | None:
     """URL LAN del caché de la farmacia de `estacion`, si hay uno online y no es ella misma."""
     fresco = timezone.now() - timedelta(minutes=CACHE_FRESCO_MINUTOS)
@@ -179,6 +211,11 @@ def manejar_enrolamiento(payload: dict) -> dict:
     farmacia = _farmacia_desde_codigo_estacion(codigo)
     if farmacia is None:
         logger.warning('Enrolamiento rechazado: farmacia no encontrada para %s', codigo)
+        # Y ademas queda en una bandeja que alguien puede mirar. Solo en el log,
+        # el sintoma era: se instala el agente, el tecnico se va, y la estacion
+        # nunca aparece en el panel sin que nadie sepa por que. Con codigos
+        # escritos a mano eso no es una posibilidad, es cuestion de tiempo.
+        _registrar_enrolamiento_rechazado(codigo, payload)
         return {'aceptado': False, 'motivo': 'farmacia no encontrada'}
 
     estacion = Estacion.objects.create(

@@ -33,6 +33,19 @@ existe — anotado como pendiente en PLAN_MODERNIZACION §10-AK.
         </div>
         {% endif %}
         {% if r.estaciones_fuera %}<div class="text-xs text-[var(--warning)] mt-1">{{ r.estaciones_fuera }} sin reportar</div>{% endif %}
+        {% comment %}
+        Las administrativas van APARTE y no sumadas arriba: se apagan de noche y el fin
+        de semana, asi que sumarlas haria saltar "sin reportar" ~100 todas las noches y
+        el numero dejaria de significar "hay un problema" -- que es el unico motivo por
+        el que alguien lo mira. Verlas igual importa: cero de veinte un martes a las 10
+        no es normal.
+        {% endcomment %}
+        {% if r.admin_total %}
+        <div class="text-xs text-[var(--text-faint)] mt-2" style="border-top:1px solid var(--border-soft); padding-top:6px;"
+             title="PCs administrativas. Se cuentan aparte porque se apagan fuera del horario de oficina.">
+            Administrativas: {{ r.admin_en_linea }}/{{ r.admin_total }}
+        </div>
+        {% endif %}
     </div>
     <div class="card p-4">
         <div class="flex items-center justify-between gap-2 mb-1">

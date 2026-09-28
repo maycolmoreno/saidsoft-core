@@ -1191,7 +1191,7 @@ def resumen_operacion(unidades=None) -> dict:
     """
     from datetime import timedelta
 
-    from apps.catalogo.models import Estacion
+    from apps.catalogo.models import Estacion, Farmacia
 
     from .models import (
         Alerta, EstadoEnlaceFarmacia, EstadoRedActivo, EstadoServicioPos,
@@ -1205,7 +1205,18 @@ def resumen_operacion(unidades=None) -> dict:
         unidades, 'farmacia__unidad_negocio',
     )
     total_estaciones = estaciones.count()
-    en_linea = estaciones.filter(
+    frescas = estaciones.filter(
+        ultimo_heartbeat__gte=ahora - timedelta(minutes=TOLERANCIA_FRESCURA_MINUTOS['estaciones']),
+    )
+    en_linea = frescas.count()
+
+    # Las PCs administrativas se apagan de noche y el fin de semana. Sumadas al mismo
+    # contador que las farmacias, harian que "estaciones fuera" saltara ~100 todas las
+    # noches y el numero dejaria de significar "hay un problema" -- que es el unico
+    # motivo por el que alguien lo mira. Se cuentan aparte, no se esconden.
+    administrativas = estaciones.filter(farmacia__tipo=Farmacia.Tipo.ADMINISTRATIVO)
+    total_admin = administrativas.count()
+    admin_en_linea = administrativas.filter(
         ultimo_heartbeat__gte=ahora - timedelta(minutes=TOLERANCIA_FRESCURA_MINUTOS['estaciones']),
     ).count()
 
@@ -1250,9 +1261,15 @@ def resumen_operacion(unidades=None) -> dict:
     cierres_en_conflicto = contar_cierres_en_conflicto(unidades)
 
     return {
-        'estaciones_total': total_estaciones,
-        'estaciones_en_linea': en_linea,
-        'estaciones_fuera': total_estaciones - en_linea,
+        # `estaciones_*` son las de OPERACION (farmacias y tiendas): es el numero que
+        # mira la mesa de ayuda para saber si hay algo roto.
+        'estaciones_total': total_estaciones - total_admin,
+        'estaciones_en_linea': en_linea - admin_en_linea,
+        'estaciones_fuera': (total_estaciones - total_admin) - (en_linea - admin_en_linea),
+        # Administrativas aparte, con su propio contexto: "8 de 20" de noche es normal.
+        'admin_total': total_admin,
+        'admin_en_linea': admin_en_linea,
+        'admin_fuera': total_admin - admin_en_linea,
         'alertas_criticas': criticas,
         'alertas_advertencias': advertencias,
         'enlaces_caidos': enlaces_caidos,

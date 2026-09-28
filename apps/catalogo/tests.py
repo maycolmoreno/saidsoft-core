@@ -13,9 +13,12 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
+from django.urls import reverse
 
 from apps.activos.models import Cargo, Colaborador, Departamento
 from apps.catalogo import crypto
+from apps.cuentas.models import PerfilUsuario
+from apps.mqtt_worker.models import EnrolamientoRechazado
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
 from apps.catalogo.services import (
     calcular_matriz_cumplimiento, enviar_actualizacion_agente, enviar_comando, enviar_script, firmar_payload,
@@ -23,6 +26,17 @@ from apps.catalogo.services import (
     url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
     validar_destino_unidad_negocio,
 )
+
+def otorgar_catalogo(usuario, *etiquetas):
+    """Permisos por codename completo ('app.codename') para un usuario de prueba."""
+    from django.contrib.auth.models import Permission
+
+    for etiqueta in etiquetas:
+        app_label, codename = etiqueta.split('.')
+        usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label=app_label, codename=codename),
+        )
+
 
 MESHCENTRAL_CONFIG_TEST = {
     'SERVER_URL': 'https://mesh.test.local',
@@ -3020,3 +3034,286 @@ class ElAgenteChequeaSuRelojSinQueNadieSeLoPidaTests(TestCase):
             for n in ast.walk(metodo)
         )
         self.assertTrue(consulta_pausa, 'bucle_reloj tiene que respetar la pausa')
+
+
+class SitiosAdministrativosTests(TestCase):
+    """Extender el agente al área administrativa (27-sep-2026).
+
+    La tesis de todo esto: `Farmacia` es una tabla de SITIOS, y lo propio de una farmacia
+    se activa por datos, no por el hecho de serlo. Estas pruebas fijan esa tesis.
+    """
+
+    def setUp(self):
+        self.corp = UnidadNegocio.objects.get(codigo='CORP')
+        self.admin = Grupo.objects.get(codigo='ADMIN')
+        self.sitio = Farmacia.objects.create(
+            codigo='ADMPRU', nombre='Departamento de prueba',
+            tipo=Farmacia.Tipo.ADMINISTRATIVO, unidad_negocio=self.corp, grupo=self.admin,
+        )
+
+    def test_la_migracion_dejo_corp_y_admin(self):
+        """Los crea catalogo/0035. El comando de alta los busca, no los crea."""
+        self.assertTrue(UnidadNegocio.objects.filter(codigo='CORP').exists())
+        self.assertTrue(Grupo.objects.filter(codigo='ADMIN').exists())
+
+    def test_lo_existente_quedo_como_farmacia(self):
+        """Default `farmacia`: cero cambio de comportamiento para las 700 que ya estaban."""
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        vieja = Farmacia.objects.create(
+            codigo='ML999', grupo=Grupo.objects.create(codigo='TRX999'), unidad_negocio=sg,
+        )
+        self.assertEqual(vieja.tipo, Farmacia.Tipo.FARMACIA)
+
+    # --- Lo que NO se dispara en un sitio administrativo -------------------------
+
+    def test_un_sitio_sin_ip_router_no_entra_al_sondeo_de_enlace(self):
+        """La razón por la que esto no genera caídas de enlace inventadas: el barrido
+        excluye a quien no tiene router (apps/monitoreo/enlaces.py:215). Una oficina no
+        tiene un Mikrotik propio."""
+        from apps.catalogo.models import Farmacia as F
+
+        self.assertIsNone(self.sitio.ip_router)
+        candidatas = F.objects.filter(activa=True).exclude(ip_router__isnull=True)
+        self.assertNotIn(self.sitio, candidatas)
+
+    def test_si_alguien_le_carga_un_router_si_entra(self):
+        """El contrapunto: no es el tipo lo que lo excluye, es el dato. Si mañana una
+        oficina tiene su propio enlace, se sondea como cualquier otro sitio."""
+        from apps.catalogo.models import Farmacia as F
+
+        self.sitio.ip_router = '10.111.9.1'
+        self.sitio.save(update_fields=['ip_router'])
+        candidatas = F.objects.filter(activa=True).exclude(ip_router__isnull=True)
+        self.assertIn(self.sitio, candidatas)
+
+    # --- Visibilidad -------------------------------------------------------------
+
+    def test_un_usuario_acotado_a_otra_unidad_no_ve_el_sitio(self):
+        from apps.cuentas.services import scope_por_unidad_negocio
+
+        usuario = User.objects.create_user(username='solo_sg', password='x')
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        PerfilUsuario.objects.create(usuario=usuario).unidades_negocio.add(sg)
+
+        visibles = scope_por_unidad_negocio(Farmacia.objects.all(), usuario, 'unidad_negocio')
+        self.assertNotIn(self.sitio, visibles)
+
+    def test_quien_tiene_acceso_total_si_lo_ve(self):
+        """Los 9 técnicos reales tienen acceso_todas_unidades=True, así que los sitios
+        CORP les aparecen apenas existen. Es lo buscado, no un descuido."""
+        from apps.cuentas.services import scope_por_unidad_negocio
+
+        usuario = User.objects.create_user(username='total', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+
+        visibles = scope_por_unidad_negocio(Farmacia.objects.all(), usuario, 'unidad_negocio')
+        self.assertIn(self.sitio, visibles)
+
+    # --- El contador del Centro --------------------------------------------------
+
+    def test_las_administrativas_no_suman_a_estaciones_fuera(self):
+        """Se apagan de noche y el fin de semana. Sumadas al mismo contador, "sin
+        reportar" saltaría ~100 todas las noches y el número dejaría de significar
+        "hay un problema"."""
+        from apps.monitoreo.services import resumen_operacion
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        farmacia = Farmacia.objects.create(
+            codigo='ML998', grupo=Grupo.objects.create(codigo='TRX998'), unidad_negocio=sg,
+        )
+        # Las dos apagadas: sin heartbeat reciente.
+        Estacion.objects.create(
+            codigo='ML998-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        Estacion.objects.create(
+            codigo='ADMPRU-PC01', farmacia=self.sitio,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+        r = resumen_operacion()
+        self.assertEqual(r['estaciones_total'], 1, 'la administrativa no va en el total de operación')
+        self.assertEqual(r['estaciones_fuera'], 1, 'solo la farmacia cuenta como "sin reportar"')
+        self.assertEqual(r['admin_total'], 1)
+        self.assertEqual(r['admin_fuera'], 1, 'pero sí se ve aparte: cero de veinte un martes no es normal')
+
+
+class EnrolamientoRechazadoTests(TestCase):
+    """Que un código mal escrito deje de ser invisible.
+
+    Antes solo quedaba en el log del worker: se instalaba el agente, el técnico se iba,
+    y la estación nunca aparecía sin que nadie supiera por qué.
+    """
+
+    def _rechazar(self, codigo, hostname=''):
+        from apps.mqtt_worker.services import manejar_enrolamiento
+
+        return manejar_enrolamiento({
+            'codigo': codigo, 'hardware_id': 'hw-1', 'hostname': hostname,
+        })
+
+    def test_un_codigo_sin_sitio_queda_en_la_bandeja(self):
+        self._rechazar('NOEXISTE-PC01', hostname='PC-CONTA-07')
+
+        fila = EnrolamientoRechazado.objects.get()
+        self.assertEqual(fila.codigo_recibido, 'NOEXISTE-PC01')
+        self.assertEqual(fila.hostname, 'PC-CONTA-07')
+        self.assertEqual(fila.sitio_sugerido, 'NOEXISTE')
+        self.assertFalse(fila.revisado)
+        self.assertEqual(fila.intentos, 1)
+
+    def test_el_reintento_cuenta_en_vez_de_duplicar(self):
+        """El agente reintenta solo: sin esto la bandeja se llenaría de miles de filas
+        del mismo equipo y dejaría de servir para mirarla."""
+        for _ in range(3):
+            self._rechazar('NOEXISTE-PC01', hostname='PC-CONTA-07')
+
+        self.assertEqual(EnrolamientoRechazado.objects.count(), 1)
+        self.assertEqual(EnrolamientoRechazado.objects.get().intentos, 3)
+
+    def test_reintentar_despues_de_revisado_lo_devuelve_a_la_bandeja(self):
+        """Marcar revisado dice "lo miré". Si el equipo sigue insistiendo, no se
+        resolvió."""
+        self._rechazar('NOEXISTE-PC01', hostname='PC-CONTA-07')
+        EnrolamientoRechazado.objects.update(revisado=True)
+
+        self._rechazar('NOEXISTE-PC01', hostname='PC-CONTA-07')
+        self.assertFalse(EnrolamientoRechazado.objects.get().revisado)
+
+    def test_dos_equipos_distintos_son_dos_filas(self):
+        self._rechazar('NOEXISTE-PC01', hostname='PC-A')
+        self._rechazar('NOEXISTE-PC02', hostname='PC-B')
+        self.assertEqual(EnrolamientoRechazado.objects.count(), 2)
+
+    def test_un_codigo_con_sitio_valido_no_entra_a_la_bandeja(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        Farmacia.objects.create(
+            codigo='ML997', grupo=Grupo.objects.create(codigo='TRX997'), unidad_negocio=sg,
+        )
+        self._rechazar('ML997-A', hostname='CAJA1')
+        self.assertEqual(EnrolamientoRechazado.objects.count(), 0)
+
+    def test_la_pantalla_del_panel_lo_muestra(self):
+        self._rechazar('NOEXISTE-PC01', hostname='PC-CONTA-07')
+        usuario = User.objects.create_user(username='mesa_enr', password='x')
+        otorgar_catalogo(usuario, 'catalogo.view_estacion')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+
+        resp = self.client.get(reverse('panel:enrolamientos_rechazados_lista'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'NOEXISTE-PC01')
+        self.assertContains(resp, 'PC-CONTA-07')
+
+    def test_marcar_revisado_exige_permiso_de_intervencion(self):
+        """view_estacion ve la bandeja; resolverla termina en crear un sitio o
+        reinstalar, que es intervención."""
+        self._rechazar('NOEXISTE-PC01')
+        fila = EnrolamientoRechazado.objects.get()
+
+        mirona = User.objects.create_user(username='solo_ve', password='x')
+        otorgar_catalogo(mirona, 'catalogo.view_estacion')
+        PerfilUsuario.objects.create(usuario=mirona, acceso_todas_unidades=True)
+        self.client.force_login(mirona)
+        self.assertEqual(
+            self.client.post(
+                reverse('panel:enrolamiento_rechazado_revisar', args=[fila.pk]),
+            ).status_code,
+            403,
+        )
+
+        resuelve = User.objects.create_user(username='soporte_enr', password='x')
+        otorgar_catalogo(resuelve, 'catalogo.view_estacion', 'catalogo.aprobar_estacion')
+        PerfilUsuario.objects.create(usuario=resuelve, acceso_todas_unidades=True)
+        self.client.force_login(resuelve)
+        self.assertEqual(
+            self.client.post(
+                reverse('panel:enrolamiento_rechazado_revisar', args=[fila.pk]),
+            ).status_code,
+            302,
+        )
+        fila.refresh_from_db()
+        self.assertTrue(fila.revisado)
+        self.assertEqual(fila.revisado_por, resuelve)
+
+
+class CrearSitiosAdministrativosTests(TestCase):
+    """El comando de alta en masa. Lo que se prueba es lo que se rompe a mano."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self.carpeta = Path(tempfile.mkdtemp())
+
+    def _csv(self, contenido):
+        ruta = self.carpeta / 'sitios.csv'
+        ruta.write_text(contenido, encoding='utf-8')
+        return str(ruta)
+
+    def _correr(self, contenido, *extra):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        salida = StringIO()
+        call_command('crear_sitios_administrativos', self._csv(contenido), *extra, stdout=salida)
+        return salida.getvalue()
+
+    VALIDO = 'codigo,nombre,departamento,ubicacion\nADMCONT,Contabilidad,Contabilidad,Piso 2\n'
+
+    def test_simula_por_defecto(self):
+        salida = self._correr(self.VALIDO)
+        self.assertIn('SIMULACRO', salida)
+        self.assertFalse(Farmacia.objects.filter(codigo='ADMCONT').exists())
+
+    def test_con_aplicar_crea_el_sitio_bien_configurado(self):
+        self._correr(self.VALIDO, '--aplicar')
+        sitio = Farmacia.objects.get(codigo='ADMCONT')
+        self.assertEqual(sitio.tipo, Farmacia.Tipo.ADMINISTRATIVO)
+        self.assertEqual(sitio.unidad_negocio.codigo, 'CORP')
+        self.assertEqual(sitio.grupo.codigo, 'ADMIN')
+        # Sin router: queda fuera del sondeo de enlace, que es el punto.
+        self.assertIsNone(sitio.ip_router)
+
+    def test_re_ejecutar_no_duplica_ni_pisa(self):
+        self._correr(self.VALIDO, '--aplicar')
+        Farmacia.objects.filter(codigo='ADMCONT').update(nombre='Editado desde el panel')
+
+        salida = self._correr(self.VALIDO, '--aplicar')
+
+        self.assertEqual(Farmacia.objects.filter(codigo='ADMCONT').count(), 1)
+        self.assertEqual(Farmacia.objects.get(codigo='ADMCONT').nombre, 'Editado desde el panel')
+        self.assertIn('sin tocar', salida)
+
+    def test_rechaza_un_codigo_con_guion_y_dice_por_que(self):
+        """El error fácil: el guion es el separador entre sitio y equipo, así que un
+        sitio con guion rompe la resolución del sitio."""
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            self._correr('codigo,nombre\nADM-CONT,Contabilidad\n', '--aplicar')
+        self.assertEqual(Farmacia.objects.filter(tipo=Farmacia.Tipo.ADMINISTRATIVO).count(), 0)
+
+    def test_una_fila_mala_no_escribe_ninguna(self):
+        """Un alta a medias deja unos departamentos cargados y otros no, y después nadie
+        sabe cuáles."""
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            self._correr(
+                'codigo,nombre\nADMCONT,Contabilidad\nadmtes,Tesoreria\n', '--aplicar',
+            )
+        self.assertFalse(Farmacia.objects.filter(codigo='ADMCONT').exists())
+
+    def test_rechaza_repetidos_dentro_del_archivo(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            self._correr('codigo,nombre\nADMCONT,Uno\nADMCONT,Dos\n', '--aplicar')
+
+    def test_un_csv_sin_columna_codigo_falla_claro(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            self._correr('nombre,departamento\nContabilidad,Contabilidad\n')

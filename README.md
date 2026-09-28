@@ -10,9 +10,19 @@ extensión multi-tenant/RMM) — esta es la copia viva del plan, se actualiza aq
 Este es un proyecto independiente: no comparte carpeta con el sistema viejo.
 
 > **¿Buscás orientarte rápido en el código?** [`docs/modulos.md`](docs/modulos.md) explica
-> qué hace cada uno de los 16 apps, cómo se relacionan y **qué mirar primero cuando algo
+> qué hace cada una de las 15 apps, cómo se relacionan y **qué mirar primero cuando algo
 > falla**. Está escrito para mesa de ayuda y equipo interno: contexto técnico, sin tener
 > que leer el código.
+
+> **¿Buscás la foto de la plataforma?** Tres auditorías del 27-sep-2026, hechas solo por
+> lectura de código con producción inalcanzable:
+> - [`docs/auditoria-capacidades.md`](docs/auditoria-capacidades.md) — qué tiene, qué datos
+>   maneja y **qué preguntas puede responder hoy**. Incluye el estado real de Odoo, Zabbix,
+>   AD y ESET.
+> - [`docs/capacidad-2030.md`](docs/capacidad-2030.md) — **¿aguanta 1.300 farmacias?**
+>   Escenarios de carga, límites técnicos y puntos únicos de falla.
+> - [`docs/prioridad-2030.md`](docs/prioridad-2030.md) — **qué atender primero**: cada
+>   módulo en camino crítico, necesario para escalar, aguas abajo o prematuro.
 
 Nació como el reemplazo del panel de una sola operación (despliegues de POS +
 inventario de activos IT para CRESIO), y se extendió a una plataforma multi-cliente
@@ -1988,6 +1998,56 @@ Decisiones que valen más que el código (`movil-campo/lib/rasgos/sesion/`):
 Del lado Android, `MainActivity` extiende `FlutterFragmentActivity` — el prompt de
 `androidx.biometric` lo necesita para montarse, y con `FlutterActivity` falla en
 ejecución, no al compilar.
+
+## Sitios administrativos (el agente fuera de las farmacias)
+
+`Farmacia` es la tabla de **sitios**, no solo de farmacias — ya sostenía las tiendas de
+7DIAS antes de que existiera el campo `tipo`. Desde el 27-sep-2026 el tipo es explícito:
+`farmacia` (el default, las ~700 existentes), `tienda` y `administrativo`.
+
+Lo propio de una farmacia **no depende del tipo, depende de los datos**: el sondeo de
+enlace solo alcanza a sitios con `ip_router`, las alertas del POS solo a estaciones que
+reportan servicios POS. Un sitio administrativo sin esos datos no dispara ninguno — por
+eso extender el agente a las oficinas no obligó a tocar monitoreo.
+
+### Dar de alta los sitios
+
+```sh
+python manage.py crear_sitios_administrativos sitios.csv            # simula
+python manage.py crear_sitios_administrativos sitios.csv --aplicar
+```
+
+```csv
+codigo,nombre,departamento,ubicacion
+ADMCONT,Contabilidad,Contabilidad,Matriz piso 2
+```
+
+El código **no admite guiones** (`^[A-Z0-9]+$`): el guion es el separador entre sitio y
+equipo en el código de estación (`ADMCONT-PC07`), así que un sitio con guion rompe la
+resolución del sitio. Si una fila no valida **no se escribe ninguna**, y el error dice
+línea, código y motivo. Es re-ejecutable: no duplica ni pisa lo editado después.
+
+### Instalar el agente en una PC administrativa
+
+No hay que renombrar Windows. El código de estación es un parámetro del instalador; el
+hostname es solo el default. En `config.txt`:
+
+```
+Codigo=ADMCONT-PC07
+```
+
+o dejarlo vacío y el `Instalar.bat` lo pregunta.
+
+> **El prefijo tiene que ser un sitio que YA exista.** Si no, el servidor rechaza el
+> enrolamiento y la estación no aparece nunca. Eso ahora se ve en
+> **`/estaciones/enrolamientos-rechazados/`**, con el hostname para poder ir a buscar la
+> máquina — antes solo quedaba en el log del worker.
+
+### Lo que todavía no está resuelto
+
+**Laptops.** El broker MQTT vive en una IP privada, así que una laptop fuera de la red
+interna se ve **exactamente igual que una caída**. Resolverlo exige decidir entre exponer
+el broker con TLS o montar una VPN. Hasta entonces, solo PCs de escritorio.
 
 ## Publicar una versión de la app de campo
 

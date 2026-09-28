@@ -18,15 +18,61 @@ desarrolladores externos.
 
 ---
 
+> **Documentos relacionados.** Este archivo es la referencia del día a día: qué hace cada
+> app y qué mirar cuando algo falla. Para la foto de la plataforma completa:
+> [`auditoria-capacidades.md`](auditoria-capacidades.md) (qué puede responder hoy),
+> [`capacidad-2030.md`](capacidad-2030.md) (si aguanta 1.300 farmacias) y
+> [`prioridad-2030.md`](prioridad-2030.md) (qué atender primero).
+
 ## El mapa en 30 segundos
 
 Tres ejes sostienen todo lo demás:
 
 ```
-UNIDAD DE NEGOCIO  (SG · MIA · 7DIAS)   ← el tenant: casi todo se filtra por acá
-    └── FARMACIA   (701 modeladas)      ← el eje real del sistema
-            └── ESTACION                ← el equipo con agente (40 aprobadas)
+UNIDAD DE NEGOCIO  (SG · MIA · 7DIAS · CORP)  ← el tenant: casi todo se filtra por acá
+    └── FARMACIA   (701 modeladas)            ← en realidad: SITIO. Ver abajo.
+            └── ESTACION                      ← el equipo con agente (40 aprobadas)
 ```
+
+> ### `Farmacia` es la tabla de SITIOS, no solo de farmacias
+>
+> El nombre quedó de cuando solo había farmacias, pero la tabla nunca fue exclusiva de
+> ellas: ya sostenía las tiendas de 7DIAS ("TIENDAS 7DM001") antes de que existiera el
+> campo `tipo`. Desde el 27-sep-2026 eso es explícito:
+>
+> | `tipo` | Qué es | Qué implica |
+> |---|---|---|
+> | `farmacia` | una farmacia (el default: las ~700 existentes) | todo el comportamiento de siempre |
+> | `tienda` | las tiendas de 7DIAS | igual que farmacia; el tipo solo lo hace legible |
+> | `administrativo` | una oficina de Cresio (unidad `CORP`, grupo `ADMIN`) | ver abajo |
+>
+> **Lo propio de una farmacia NO depende de `tipo`: depende de los datos.** El sondeo de
+> enlace solo alcanza a sitios con `ip_router` (`apps/monitoreo/enlaces.py:215`), las
+> alertas del POS solo a estaciones que reportan servicios POS, y el SNMP solo donde hay
+> equipo de borde. Un sitio administrativo sin esos datos simplemente no los dispara —
+> por eso no hizo falta tocar nada de eso.
+>
+> **NO se renombró el modelo a `Sitio`.** El JSON de la API usa `farmacia` y lo lee la app
+> móvil, y el agente también: renombrar obligaría a publicar un APK y tocar las
+> estaciones, por una mejora de vocabulario.
+>
+> **Contadores separados.** Las PCs administrativas se apagan de noche y el fin de semana.
+> Si sumaran al mismo contador, "estaciones sin reportar" saltaría ~100 todas las noches y
+> el número dejaría de significar "hay un problema" — que es el único motivo por el que
+> alguien lo mira. El Centro de Monitoreo las cuenta aparte (`admin_total`/`admin_fuera`).
+>
+> **`sin_heartbeat` sigue DESACTIVADA**, y cuando se active hay que crearla **por unidad y
+> no global**: `reglas_aplicables_a` toma las globales para TODAS las unidades
+> (`apps/monitoreo/services.py:70-72`), así que una regla global de heartbeat abriría
+> ~100 alertas cada noche por las oficinas apagadas.
+>
+> **Laptops: hoy no están contempladas.** El broker MQTT vive en una IP privada
+> (`10.111.6.20`, publicado como `8081:8883` en `deploy/docker-compose.yml`), así que una
+> laptop fuera de la red interna **se ve exactamente igual que una caída**: sin heartbeat,
+> `estado_conexion=OFFLINE`, y nada distingue "está en la casa de alguien" de "se rompió".
+> Resolverlo exige decidir entre **exponer el broker con TLS hacia afuera** o **montar una
+> VPN** — ninguna de las dos está hecha, y hasta entonces el piloto es solo de PCs de
+> escritorio.
 
 Y dos "motores" que funcionan sin que nadie los mire:
 
@@ -558,6 +604,7 @@ teléfono **sin que nada lo avise**: no hay versionado de API ni contrato compar
 | Una tarea periódica no corre | `docker compose logs celery_beat`. Ojo: un `schedule` numérico es relativo al arranque de beat, `crontab()` es absoluto |
 | El panel anda pero no entra nada nuevo | El contenedor `worker` (MQTT). Es monohilo y es el único oído |
 | Una estación "desapareció" | ¿Apagada, o el hilo del agente murió? Los eventos de Windows (`7031`) delatan al agente cayéndose |
+| Se instaló el agente y la estación **nunca apareció** | `/estaciones/enrolamientos-rechazados/`. Casi siempre es el código: el prefijo antes del guion tiene que ser un sitio que exista |
 
 ## Probar los flujos a mano
 

@@ -1,0 +1,87 @@
+{% extends "panel/base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold">Enrolamientos rechazados</h1>
+    <a href="?{% if ver_todos %}{% else %}todos=1{% endif %}" class="btn secondary">
+        {% if ver_todos %}Solo sin revisar{% else %}Ver también los revisados{% endif %}
+    </a>
+</div>
+
+<p class="text-sm text-[var(--text-faint)] mb-4" style="max-width:74ch;">
+    Equipos que intentaron enrolarse con un código cuyo <strong>sitio no existe</strong>.
+    El agente quedó instalado y funcionando, pero la estación nunca va a aparecer en el
+    panel hasta que el código y el sitio coincidan. Antes esto solo quedaba en el log del
+    worker: se instalaba, el técnico se iba, y nadie sabía por qué el equipo no figuraba.
+</p>
+
+<div class="card overflow-x-auto">
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr>
+                <th class="text-left px-4 py-3">Código recibido</th>
+                <th class="text-left px-4 py-3">Equipo (hostname)</th>
+                <th class="text-left px-4 py-3">Sitio que buscó</th>
+                <th class="text-left px-4 py-3">Intentos</th>
+                <th class="text-left px-4 py-3">Último intento</th>
+                <th class="text-left px-4 py-3">Estado</th>
+                <th class="text-left px-4 py-3">Acciones</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in rechazados %}
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-4 py-3 mono">{{ r.codigo_recibido }}</td>
+                <td class="px-4 py-3">{{ r.hostname|default:"—" }}</td>
+                <td class="px-4 py-3">
+                    <span class="pill {% if r.sitio_existe %}warning{% else %}critical{% endif %}"
+                          title="{% if r.sitio_existe %}El sitio existe: lo que no cuadra es el resto del código, o el sitio está inactivo.{% else %}No hay ningún sitio con ese código. O se escribió mal, o falta darlo de alta.{% endif %}">
+                        {{ r.sitio_sugerido|default:"—" }}
+                        {% if r.sitio_existe %}(existe){% else %}(no existe){% endif %}
+                    </span>
+                </td>
+                <td class="px-4 py-3 mono num">{{ r.intentos }}</td>
+                <td class="px-4 py-3 mono num">{{ r.ultimo_intento|date:"d/m/Y H:i" }}</td>
+                <td class="px-4 py-3">
+                    {% if r.revisado %}
+                        <span class="pill good">Revisado por {{ r.revisado_por|default:"—" }}</span>
+                    {% else %}
+                        <span class="pill warning">Sin revisar</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {% if r.revisado %}
+                        <span class="text-xs text-[var(--text-faint)]">{{ r.revisado_en|date:"d/m/Y H:i" }}</span>
+                    {% elif perms.catalogo.aprobar_estacion %}
+                    <form method="post" action="{% url 'panel:enrolamiento_rechazado_revisar' r.pk %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn secondary"
+                                title="Si el equipo sigue insistiendo con el mismo código, vuelve a aparecer acá.">
+                            Marcar revisado
+                        </button>
+                    </form>
+                    {% else %}
+                        <span class="text-xs text-[var(--text-faint)]"
+                              title="Resolverlo termina en crear un sitio o reinstalar el agente: eso es intervención, no diagnóstico.">
+                            Sin permiso
+                        </span>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="7">
+                {% include "panel/_estado_vacio.html" with titulo="Ningún enrolamiento rechazado" pista="Cuando un agente intente entrar con un código cuyo sitio no existe, va a aparecer acá con su hostname para poder ir a buscar la máquina." %}
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card p-4 mt-4" style="border-left:3px solid var(--info);">
+    <div class="text-sm font-medium mb-2">Cómo se resuelve</div>
+    <ol class="text-sm text-[var(--text-faint)]" style="max-width:74ch; list-style:decimal; margin-left:1.2rem;">
+        <li><strong>El sitio no existe</strong> — o el código se escribió mal en esa PC, o falta dar de alta el sitio (<code>crear_sitios_administrativos</code> para los administrativos).</li>
+        <li><strong>El sitio existe</strong> — el prefijo está bien pero el código completo no cuadra. Revisá que tenga la forma <code>SITIO-EQUIPO</code>, en mayúsculas y sin espacios.</li>
+        <li>Corregido el código en la PC (o creado el sitio), el agente reintenta solo: no hace falta reinstalar.</li>
+    </ol>
+</div>
+{% endblock %}

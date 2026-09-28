@@ -20,6 +20,13 @@ seleccionadas" termina enviando una lista vacía.
         <option value="{{ g.codigo }}" {% if g.codigo == filtro_grupo %}selected{% endif %}>{{ g.codigo }}</option>
         {% endfor %}
     </select>
+    <select name="tipo" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);"
+            title="Una caja de farmacia y una PC de oficina no se miran igual ni se atienden igual.">
+        <option value="">Cualquier tipo de sitio</option>
+        {% for valor, etiqueta in tipos_sitio %}
+        <option value="{{ valor }}" {% if valor == filtro_tipo %}selected{% endif %}>{{ etiqueta }}</option>
+        {% endfor %}
+    </select>
     <select name="estado_conexion" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Cualquier estado</option>
         <option value="online" {% if filtro_estado == 'online' %}selected{% endif %}>En línea</option>
@@ -43,7 +50,7 @@ seleccionadas" termina enviando una lista vacía.
         <thead style="background:var(--panel);">
             <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Código</th>
-                <th class="text-left px-4 py-3">Farmacia / Grupo</th>
+                <th class="text-left px-4 py-3" title="El sitio donde está el equipo: farmacia, tienda o sitio administrativo.">Sitio / Grupo</th>
                 <th class="text-left px-4 py-3">Equipo</th>
                 <th class="text-left px-4 py-3">Versión POS</th>
                 <th class="text-left px-4 py-3">SO</th>

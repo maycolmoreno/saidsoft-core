@@ -6,7 +6,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from apps.auditoria.models import registrar_evento
-from apps.catalogo.models import Estacion, Grupo, VersionAgente
+from apps.catalogo.models import Estacion, Farmacia, Grupo, VersionAgente
 from apps.catalogo.services import (
     enviar_actualizacion_agente, enviar_comando, enviar_configurar_nodo_pos, enviar_pausa,
     obtener_clave_bitlocker_descifrada, obtener_password_nodo,
@@ -52,9 +52,15 @@ def estaciones_lista(request):
     estado_conexion = request.GET.get('estado_conexion')
     solo_desactualizadas = request.GET.get('desactualizadas')
     reloj = request.GET.get('reloj')
+    tipo_sitio = request.GET.get('tipo')
 
     if grupo:
         estaciones = estaciones.filter(farmacia__grupo__codigo=grupo)
+    if tipo_sitio:
+        # Desde que hay sitios administrativos, "estaciones" mezcla dos operaciones
+        # distintas: una caja de farmacia y una PC de oficina no se miran igual ni se
+        # atienden igual.
+        estaciones = estaciones.filter(farmacia__tipo=tipo_sitio)
     if estado_conexion:
         estaciones = estaciones.filter(estado_conexion=estado_conexion)
     if solo_desactualizadas:
@@ -94,6 +100,8 @@ def estaciones_lista(request):
     pagina, query_filtros = paginar(estaciones, request)
 
     return render(request, 'panel/estaciones_lista.html', {
+        'tipos_sitio': Farmacia.Tipo.choices,
+        'filtro_tipo': tipo_sitio or '',
         # `estaciones` sigue siendo el nombre que usa la plantilla: ahora es la página
         # actual en vez del queryset completo, pero el bucle de la tabla no cambia.
         'estaciones': pagina.object_list,

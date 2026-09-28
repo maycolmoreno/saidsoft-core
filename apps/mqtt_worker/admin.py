@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import MensajeMqttFallido, WorkerHeartbeat
+from .models import EnrolamientoRechazado, MensajeMqttFallido, WorkerHeartbeat
 
 
 @admin.register(WorkerHeartbeat)
@@ -24,3 +24,15 @@ class MensajeMqttFallidoAdmin(admin.ModelAdmin):
     @admin.action(description='Marcar como revisado')
     def marcar_revisado(self, request, queryset):
         queryset.update(revisado=True)
+
+
+@admin.register(EnrolamientoRechazado)
+class EnrolamientoRechazadoAdmin(admin.ModelAdmin):
+    """Mismo criterio que MensajeMqttFallido: bandeja de triage, no registro inmutable.
+
+    La pantalla de verdad es la del panel (/estaciones/enrolamientos-rechazados/); esto
+    es el acceso de administración, para borrar en masa lo ya resuelto.
+    """
+    list_display = ('codigo_recibido', 'hostname', 'intentos', 'ultimo_intento', 'revisado')
+    list_filter = ('revisado',)
+    search_fields = ('codigo_recibido', 'hostname')

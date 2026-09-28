@@ -41,8 +41,19 @@ class UnidadesNegocioVisiblesTests(TestCase):
         self.mia = UnidadNegocio.objects.get(codigo='MIA')
 
     def test_acceso_total_ve_todas(self):
+        """TODAS, no una lista fija.
+
+        Antes comparaba contra {SG, MIA} escritas a mano y se rompio al aparecer CORP
+        (27-sep-2026, sitios administrativos). Lo que el test quiere afirmar es que
+        acceso total no filtra nada, y eso se dice comparando contra el universo: asi
+        sigue valiendo cuando se agregue la quinta unidad.
+        """
         admin = User.objects.create_user(username='admin', password='x', is_superuser=True)
-        self.assertEqual(set(unidades_negocio_visibles(admin)), {self.sg, self.mia})
+        self.assertEqual(
+            set(unidades_negocio_visibles(admin)), set(UnidadNegocio.objects.all()),
+        )
+        # Y que el universo no sea vacio, que haria pasar el test sin probar nada.
+        self.assertIn(self.sg, unidades_negocio_visibles(admin))
 
     def test_usuario_restringido_ve_solo_las_suyas(self):
         usuario = User.objects.create_user(username='u', password='x')

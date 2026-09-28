@@ -55,6 +55,7 @@ from .archivos import mantenimiento_imagen, mantenimiento_informe
 from .conflictos import (
     cierre_en_conflicto_aplicar, cierre_en_conflicto_descartar, cierres_en_conflicto_lista,
 )
+from .enrolamientos import enrolamiento_rechazado_revisar, enrolamientos_rechazados_lista
 from .mantenimiento import (
     equipos_por_cliente_partial, mantenimiento_cancelar, mantenimiento_cerrar, mantenimiento_checklist_actualizar,
     mantenimiento_crear, mantenimiento_detalle, mantenimiento_firmar, mantenimiento_generar_informe_pdf,

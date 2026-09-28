@@ -88,6 +88,11 @@ urlpatterns = [
 
     path('auditoria/', views.auditoria_lista, name='auditoria_lista'),
 
+    # Bandeja de triage: equipos que no logran enrolarse (ver views/enrolamientos.py).
+    path('estaciones/enrolamientos-rechazados/', views.enrolamientos_rechazados_lista,
+         name='enrolamientos_rechazados_lista'),
+    path('estaciones/enrolamientos-rechazados/<int:pk>/revisar/', views.enrolamiento_rechazado_revisar,
+         name='enrolamiento_rechazado_revisar'),
     # Centro de Monitoreo: la vista consolidada de triage que la mesa de ayuda deja
     # abierta. Va ANTES de 'monitoreo/' en la lista por legibilidad, no por resolucion:
     # son rutas distintas y Django no las confunde.

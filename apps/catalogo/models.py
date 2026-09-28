@@ -104,8 +104,31 @@ class Grupo(models.Model):
 
 
 class Farmacia(models.Model):
+    """Un SITIO donde hay equipos con agente. El nombre quedó de cuando solo había
+    farmacias, pero la tabla nunca fue exclusiva de ellas: desde antes de este campo ya
+    sostenía las tiendas de 7DIAS ("TIENDAS 7DM001").
+
+    `tipo` hace explícito lo que antes se deducía del nombre, y sobre todo permite que
+    el panel no le diga "farmacia" a una oficina. NO se renombró el modelo a `Sitio`: el
+    JSON de la API usa `farmacia` y lo lee la app móvil, y el agente también — renombrar
+    obligaría a publicar un APK y tocar las estaciones, por una mejora de vocabulario.
+    """
+
+    class Tipo(models.TextChoices):
+        FARMACIA = 'farmacia', 'Farmacia'
+        TIENDA = 'tienda', 'Tienda'
+        ADMINISTRATIVO = 'administrativo', 'Sitio administrativo'
+
     codigo = models.CharField(max_length=15, unique=True, validators=[codigo_farmacia_validator])
     nombre = models.CharField(max_length=150, blank=True)
+    tipo = models.CharField(
+        max_length=20, choices=Tipo.choices, default=Tipo.FARMACIA,
+        help_text='Qué es este sitio. Default `farmacia` para no cambiarle el '
+                  'comportamiento a nada de lo que ya existe. Lo propio de una farmacia '
+                  '(sondeo de enlace, alertas del POS, SNMP) NO depende de este campo: '
+                  'se activa por datos (ip_router, servicios reportados), así que un '
+                  'sitio administrativo sin esos datos simplemente no los dispara.',
+    )
     grupo = models.ForeignKey(Grupo, on_delete=models.PROTECT, related_name='farmacias')
     unidad_negocio = models.ForeignKey(
         UnidadNegocio, on_delete=models.PROTECT, related_name='farmacias',

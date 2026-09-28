@@ -1,3 +1,10 @@
+# Codigo de estacion. Vacio = se usa el hostname de Windows (la convencion historica
+# en farmacias, donde el equipo ya viene nombrado SITIO-EQUIPO). Para una PC
+# administrativa conviene escribirlo: renombrar Windows en 20 maquinas es mucho mas caro.
+# El prefijo antes del guion tiene que ser un sitio que YA EXISTA en el panel; si no,
+# el enrolamiento se rechaza y la estacion no aparece nunca.
+# Ej. ADMCONT-PC07
+Codigo=
 CentralHost=10.111.6.20
 MqttPuerto=8081
 MqttPassword=

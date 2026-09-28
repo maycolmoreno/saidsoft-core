@@ -1,4 +1,23 @@
-﻿<#
+<#
+###############################################################################
+#  OBSOLETO -- NO USAR. Se conserva solo como referencia historica.
+#
+#  Este es el instalador del agente C# (`Saidsoft.Agente.exe`), que dejo de ser el
+#  agente de produccion el 10-ago-2026: no se pudo ubicar la maquina de build con su
+#  codigo fuente y se promovio el agente de Python a produccion (ver
+#  agente-prueba/README.md y PLAN_MODERNIZACION.md 10-K).
+#
+#  El instalador vigente es `agente-prueba/Instalar.bat`.
+#
+#  Por que importa no seguir este: aca abajo dice que "el codigo de estacion sale del
+#  hostname de Windows". Para el agente de Python eso es apenas el DEFAULT -- el codigo
+#  es un parametro (`-Codigo`), y de eso depende poder instalarlo en una PC
+#  administrativa sin renombrar Windows. Seguir este texto lleva a renombrar 20 maquinas
+#  por nada.
+###############################################################################
+#>
+
+<#
 .SYNOPSIS
     Instala el agente SAIDSOFT como servicio de Windows en esta estación.
 

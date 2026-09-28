@@ -58,6 +58,7 @@ for /f "usebackq tokens=1,* delims==" %%A in ("config.txt") do (
     if /i "%%A"=="ComandoHmacSecret" set "HMAC_SECRET=%%B"
     if /i "%%A"=="ServidorHora" set "SERVIDOR_HORA=%%B"
     if /i "%%A"=="TokenApertura" set "TOKEN_APERTURA=%%B"
+    if /i "%%A"=="Codigo" set "CODIGO=%%B"
 )
 if "%CENTRAL_HOST%"=="" (
     echo config.txt no tiene una linea "CentralHost=...". Revisa el formato contra config.ejemplo.txt.
@@ -71,13 +72,26 @@ rem Idem ServidorHora: instalar-servicio.ps1 ya tiene un default, config.txt lo 
 rem Poner "ServidorHora=" (vacio) en config.txt desactiva la sincronizacion de hora.
 if "%SERVIDOR_HORA%"=="" set "SERVIDOR_HORA=farmaciasmia.int"
 
-echo Instalando el agente SAIDSOFT en esta estacion (%COMPUTERNAME%)...
+rem Codigo de estacion. Hasta hoy salia SIEMPRE del hostname, que servia mientras
+rem todas las estaciones eran cajas de farmacia con el nombre ya puesto a la
+rem convencion SITIO-EQUIPO. Para una PC administrativa ese nombre no existe, y
+rem renombrar Windows en 20 maquinas es mucho mas caro que escribir el codigo aca.
+rem
+rem OJO: el prefijo antes del guion tiene que ser un sitio que YA EXISTA en el
+rem panel. Si no existe, el servidor rechaza el enrolamiento y la estacion no
+rem aparece nunca (queda en /estaciones/enrolamientos-rechazados/).
+if "%CODIGO%"=="" (
+    set /p "CODIGO=Codigo de estacion [%COMPUTERNAME%]: "
+)
+if "%CODIGO%"=="" set "CODIGO=%COMPUTERNAME%"
+
+echo Instalando el agente SAIDSOFT en esta estacion (%CODIGO%)...
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\instalar-servicio.ps1" ^
     -PublishFolder "." -CentralHost "%CENTRAL_HOST%" -MqttPuerto %MQTT_PUERTO% ^
     -MqttPassword "%MQTT_PASSWORD%" -CaCertPath ".\cert.pem" ^
     -ComandoHmacSecret "%HMAC_SECRET%" -ServidorHora "%SERVIDOR_HORA%" ^
-    -TokenApertura "%TOKEN_APERTURA%"
+    -TokenApertura "%TOKEN_APERTURA%" -Codigo "%CODIGO%"
 
 echo.
 rem Los parentesis de "/estaciones/" van escapados con ^ en el echo de abajo.
@@ -88,10 +102,10 @@ rem Por el mismo motivo este comentario va afuera del bloque: un rem con un
 rem parentesis adentro de uno lo cierra igual.
 if not "%TOKEN_APERTURA%"=="" (
     echo Listo. Revisa arriba si dijo "Running" el servicio. Con token de apertura,
-    echo %COMPUTERNAME% debe aparecer en el panel ya APROBADA, dentro de la apertura
+    echo %CODIGO% debe aparecer en el panel ya APROBADA, dentro de la apertura
     echo de su farmacia, con sus pasos en marcha.
 ) else (
     echo Listo. Revisa arriba si dijo "Running" el servicio, y confirma en el panel
-    echo ^(/estaciones/^) que %COMPUTERNAME% aparece como pendiente de aprobacion.
+    echo ^(/estaciones/^) que %CODIGO% aparece como pendiente de aprobacion.
 )
 pause
