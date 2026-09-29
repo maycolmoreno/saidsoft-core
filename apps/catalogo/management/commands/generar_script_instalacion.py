@@ -41,7 +41,8 @@ PLANTILLA = r'''# Instalador de estación SAIDSOFT — generado por `manage.py g
 # CONTIENE UN SECRETO (MqttPassword). No lo subas al repo, a /media/ ni a un chat
 # abierto: se entrega a cada técnico por un canal privado y se borra al terminar.
 #
-# Uso, en PowerShell COMO ADMINISTRADOR, en la estación:
+# Uso, en PowerShell en la estación (NO hace falta abrirlo como Administrador: si no
+# lo está, se reabre solo y Windows pide la clave):
 #     .\Instalar-Saidsoft.ps1
 #     .\Instalar-Saidsoft.ps1 -Codigo ML123-A     # si el hostname no sigue FARMACIA-SUFIJO
 #
@@ -56,9 +57,41 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# --- 0. Autoelevacion -----------------------------------------------------------
+# Antes esto cortaba con "Hay que correr esto como Administrador" y el tecnico tenia
+# que cerrar, buscar PowerShell, abrirlo elevado y volver a navegar hasta la carpeta.
+# En una farmacia, con la caja ocupada, ese rebote es donde se abandona la instalacion.
+# Mismo patron que Instalar.bat, que se autoeleva desde el 6-ago-2026.
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
         ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{
-    throw "Hay que correr esto como Administrador."
+    Write-Host 'Se necesitan permisos de administrador, reabriendo...' -ForegroundColor Yellow
+
+    # $PSCommandPath y no $MyInvocation: con -File el segundo puede venir vacio.
+    $argumentos = @(
+        '-NoProfile',
+        # La politica por defecto (RemoteSigned) bloquea un .ps1 que vino por descarga o
+        # por OneDrive, que es exactamente como le llega al tecnico. Sin esto la ventana
+        # elevada se abre y muere con "no esta firmado digitalmente".
+        '-ExecutionPolicy', 'Bypass',
+        # -NoExit deja la ventana abierta al terminar. Es lo unico que permite leer si
+        # el servicio quedo corriendo: sin esto la consola se cierra sola y el tecnico
+        # no ve ni el OK ni el error.
+        '-NoExit',
+        '-File', ('"{{0}}"' -f $PSCommandPath)
+    )
+    # Las comillas van SIEMPRE, no solo si hay espacios: la ruta real del tecnico suele
+    # ser "...\OneDrive - EMPRESA\Escritorio\Nueva carpeta (4)", con espacios Y
+    # parentesis, y sin comillas PowerShell parte el argumento en pedazos.
+    if ($Codigo -ne $env:COMPUTERNAME) {{ $argumentos += @('-Codigo', ('"{{0}}"' -f $Codigo)) }}
+    if ($SinMeshCentral) {{ $argumentos += '-SinMeshCentral' }}
+
+    try {{
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentos -Verb RunAs
+    }} catch {{
+        # Cancelar el aviso de Windows tira una excepcion cruda que no dice nada util.
+        throw "Se cancelo el permiso de administrador. Volve a correrlo y acepta el aviso de Windows."
+    }}
+    exit
 }}
 
 if ($Codigo -notmatch '^[A-Z0-9]+-[A-Z0-9]+$') {{

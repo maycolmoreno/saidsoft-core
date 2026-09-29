@@ -12,7 +12,7 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from apps.activos.models import Cargo, Colaborador, Departamento
@@ -3317,3 +3317,62 @@ class CrearSitiosAdministrativosTests(TestCase):
 
         with self.assertRaises(CommandError):
             self._correr('nombre,departamento\nContabilidad,Contabilidad\n')
+
+
+class InstaladorSeAutoelevaTests(SimpleTestCase):
+    """El instalador generado se reabre elevado en vez de cortar.
+
+    Antes tiraba "Hay que correr esto como Administrador" y el técnico tenía que cerrar,
+    buscar PowerShell, abrirlo elevado y volver a navegar hasta la carpeta. En una
+    farmacia, con la caja ocupada, ese rebote es donde se abandona la instalación.
+
+    `SimpleTestCase` y no `TestCase` a propósito: esto solo renderiza una plantilla de
+    texto y no toca la base. Con `TestCase` la clase entera se cae cuando el Postgres
+    local no está levantado, por una prueba que nunca necesitó una fila.
+
+    Estas pruebas miran el TEXTO generado, no ejecutan PowerShell: no hay Windows en CI.
+    Cuidan las tres cosas que, faltando, hacen que la ventana elevada se abra y muera
+    sin que nadie entienda por qué.
+    """
+
+    def _plantilla(self):
+        from apps.catalogo.management.commands.generar_script_instalacion import PLANTILLA
+
+        return PLANTILLA.format(
+            url_paquete='http://x/p.zip', central_host='10.0.0.1', mqtt_puerto=8081,
+            mqtt_password='clave', url_mesh='https://x/m', url_panel='http://x/estaciones/',
+        )
+
+    def test_se_reabre_elevado_en_vez_de_cortar(self):
+        guion = self._plantilla()
+        self.assertIn("-Verb RunAs", guion)
+        self.assertNotIn('throw "Hay que correr esto como Administrador."', guion)
+
+    def test_pasa_bypass_de_politica(self):
+        """Un .ps1 que llegó por descarga o por OneDrive está bloqueado por la política
+        por defecto (RemoteSigned). Sin esto la ventana elevada muere con "no está
+        firmado digitalmente" — y así le llega al técnico, siempre."""
+        self.assertIn("'-ExecutionPolicy', 'Bypass'", self._plantilla())
+
+    def test_deja_la_ventana_abierta(self):
+        """Sin -NoExit la consola elevada se cierra sola al terminar y el técnico no ve
+        ni el OK ni el error: queda sin saber si instaló."""
+        self.assertIn("'-NoExit'", self._plantilla())
+
+    def test_entrecomilla_la_ruta_del_propio_script(self):
+        """La ruta real del técnico trae espacios Y paréntesis (OneDrive - EMPRESA\...\
+        Nueva carpeta (4)). Sin comillas, PowerShell parte el argumento y la ventana
+        elevada abre un archivo que no existe."""
+        guion = self._plantilla()
+        self.assertIn("""'-File', ('"{0}"' -f $PSCommandPath)""", guion)
+
+    def test_propaga_los_parametros_al_reabrirse(self):
+        """Si no se propagaran, elevar perdería el -Codigo y la estación se enrolaría
+        con el hostname: exactamente el caso que -Codigo vino a resolver."""
+        guion = self._plantilla()
+        self.assertIn("$argumentos += @('-Codigo'", guion)
+        self.assertIn("$argumentos += '-SinMeshCentral'", guion)
+
+    def test_explica_si_se_cancela_el_aviso_de_windows(self):
+        """Cancelar el UAC tira una excepción cruda de .NET que no dice nada útil."""
+        self.assertIn('Se cancelo el permiso de administrador', self._plantilla())
