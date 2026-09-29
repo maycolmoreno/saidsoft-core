@@ -932,6 +932,66 @@ class PasswordNodoTests(TestCase):
             self.assertEqual(obtener_password_nodo(self.grupo), '')
 
 
+@override_settings(BITLOCKER_ENCRYPTION_KEY=BITLOCKER_KEY_TEST)
+class AltaNodoAdminTests(TestCase):
+    """Crear un nodo desde el admin escribiendo su contraseña. El admin llama
+    `form.save(commit=False)` y recién después guarda: en un alta el Grupo todavía no
+    tiene pk, así que cifrar la contraseña con un `save(update_fields=...)` propio
+    reventaba con ValueError (500) antes de que existiera la fila."""
+
+    def setUp(self):
+        self.client.force_login(
+            User.objects.create_superuser(username='admin_nodo', email='a@a.com', password='x' * 16)
+        )
+
+    def _post(self, **extra):
+        datos = {
+            'codigo': 'TRX009', 'nombre': 'Nodo nuevo', 'version_objetivo': '',
+            'pos_servidor': '192.168.200.9', 'pos_puerto': '5433', 'pos_bdd': '',
+            'activo': 'on',
+        }
+        datos.update(extra)
+        return self.client.post(reverse('admin:catalogo_grupo_add'), datos)
+
+    def test_alta_con_password_crea_el_nodo_y_la_guarda_cifrada(self):
+        from apps.catalogo.services import obtener_password_nodo
+        resp = self._post(pos_password='clave-del-nodo')
+        self.assertRedirects(resp, reverse('admin:catalogo_grupo_changelist'))
+        grupo = Grupo.objects.get(codigo='TRX009')
+        self.assertNotIn('clave-del-nodo', grupo.pos_password_cifrada)
+        self.assertEqual(obtener_password_nodo(grupo), 'clave-del-nodo')
+
+    def test_edicion_deja_vacio_conserva_la_actual(self):
+        from apps.catalogo.services import establecer_password_nodo, obtener_password_nodo
+        grupo = Grupo.objects.create(codigo='TRX010')
+        establecer_password_nodo(grupo, 'la-de-antes')
+        resp = self.client.post(reverse('admin:catalogo_grupo_change', args=[grupo.pk]), {
+            'codigo': 'TRX010', 'nombre': 'Renombrado', 'version_objetivo': '',
+            'pos_servidor': '', 'pos_puerto': '', 'pos_bdd': '', 'activo': 'on', 'pos_password': '',
+        })
+        self.assertRedirects(resp, reverse('admin:catalogo_grupo_changelist'))
+        grupo.refresh_from_db()
+        self.assertEqual(grupo.nombre, 'Renombrado')
+        self.assertEqual(obtener_password_nodo(grupo), 'la-de-antes')
+
+    def test_edicion_con_password_nueva_la_reemplaza(self):
+        from apps.catalogo.services import establecer_password_nodo, obtener_password_nodo
+        grupo = Grupo.objects.create(codigo='TRX011')
+        establecer_password_nodo(grupo, 'la-de-antes')
+        resp = self.client.post(reverse('admin:catalogo_grupo_change', args=[grupo.pk]), {
+            'codigo': 'TRX011', 'nombre': '', 'version_objetivo': '',
+            'pos_servidor': '', 'pos_puerto': '', 'pos_bdd': '', 'activo': 'on',
+            'pos_password': 'la-nueva',
+        })
+        self.assertRedirects(resp, reverse('admin:catalogo_grupo_changelist'))
+        self.assertEqual(obtener_password_nodo(Grupo.objects.get(pk=grupo.pk)), 'la-nueva')
+
+    def test_alta_sin_password_queda_sin_contrasena(self):
+        resp = self._post(pos_password='')
+        self.assertRedirects(resp, reverse('admin:catalogo_grupo_changelist'))
+        self.assertEqual(Grupo.objects.get(codigo='TRX009').pos_password_cifrada, '')
+
+
 class BddPosTests(TestCase):
     """`codigo` solo admite MAYÚSCULAS, pero el .Config del POS trae la base en
     minúscula y es sensible a mayúsculas: escribir "TRX004" deja al POS sin conectar."""

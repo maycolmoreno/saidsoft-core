@@ -11,7 +11,7 @@ from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_por_unidad_negocio
 
 from .models import Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
-from .services import establecer_password_nodo, importar_farmacias_desde_csv
+from .services import asignar_password_nodo, establecer_password_nodo, importar_farmacias_desde_csv
 
 
 @admin.register(UnidadNegocio)
@@ -45,8 +45,15 @@ class GrupoAdminForm(forms.ModelForm):
         grupo = super().save(commit=commit)
         nueva = self.cleaned_data.get('pos_password')
         if nueva:
-            # establecer_password_nodo ya hace su propio save(update_fields=...).
-            establecer_password_nodo(grupo, nueva)
+            if commit:
+                # establecer_password_nodo ya hace su propio save(update_fields=...).
+                establecer_password_nodo(grupo, nueva)
+            else:
+                # El admin llama save(commit=False) y recién guarda en save_model(). En
+                # un alta el grupo todavía no tiene pk, así que escribir acá tira
+                # ValueError: solo dejamos el token cifrado en la instancia y ese save()
+                # posterior lo persiste.
+                asignar_password_nodo(grupo, nueva)
         return grupo
 
 

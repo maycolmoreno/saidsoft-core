@@ -165,9 +165,16 @@ def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script
     })
 
 
+def asignar_password_nodo(grupo, password_plano: str) -> None:
+    """Deja la contraseña cifrada EN LA INSTANCIA, sin tocar la BD. Para quien va a
+    guardar el grupo por su cuenta — un alta desde el admin, donde el grupo todavía no
+    tiene pk y un save(update_fields=...) acá reventaría."""
+    grupo.pos_password_cifrada = crypto.cifrar(password_plano) if password_plano else ''
+
+
 def establecer_password_nodo(grupo, password_plano: str) -> None:
     """Guarda cifrada la contraseña de BD de un nodo. Cadena vacía la borra."""
-    grupo.pos_password_cifrada = crypto.cifrar(password_plano) if password_plano else ''
+    asignar_password_nodo(grupo, password_plano)
     grupo.save(update_fields=['pos_password_cifrada'])
 
 
