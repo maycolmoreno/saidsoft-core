@@ -5476,9 +5476,24 @@ class AlertaDesfaseRelojTests(TestCase):
         with patch('apps.monitoreo.services._enviar_telegram', return_value=True) as enviar:
             alerta = abrir_o_mantener_alerta(regla_disco, self.estacion, 99)
 
-        botones = [b for fila in enviar.call_args.kwargs['teclado'] for b in fila]
-        datos = [b['callback_data'] for b in botones]
-        self.assertEqual(datos, [f'pedirack:{alerta.pk}'])
+        teclado = enviar.call_args.kwargs['teclado']
+        datos = [b['callback_data'] for fila in teclado for b in fila]
+        # Se afirma sobre las ACCIONES y no sobre la lista completa: la fila de solo
+        # lectura (la ficha de la estación) puede crecer sin que eso signifique que una
+        # alerta de disco ganó un botón que acciona, que es lo único que esta prueba
+        # cuida. Afirmar la lista entera hacía fallar la prueba por agregar un botón de
+        # consulta — ruido que esconde la regla en vez de protegerla.
+        acciones = [d for d in datos if d.startswith(('pedirack:', 'pedirsync:', 'ack:', 'sync:'))]
+        self.assertEqual(acciones, [f'pedirack:{alerta.pk}'])
+        self.assertNotIn(f'pedirsync:{self.estacion.codigo}', datos)
+        # Y la ficha de la estación sí va en toda alerta: es solo lectura y es lo primero
+        # que se quiere mirar cuando llega el aviso.
+        self.assertIn(f'est:{self.estacion.codigo}', datos)
+        # En fila aparte de las acciones, para que un toque buscando el detalle no caiga
+        # sobre algo que acciona.
+        self.assertNotIn(
+            f'est:{self.estacion.codigo}', [b['callback_data'] for b in teclado[0]],
+        )
 
 
 class SincronizarHoraPorTelegramTests(TestCase):
@@ -5661,6 +5676,139 @@ class SincronizarHoraPorTelegramTests(TestCase):
 
         self.assertIn('ML901-A', salida)
         self.assertNotIn('ML902-A', salida)
+
+    def test_hora_tambien_lista_la_region_mal_asignada_aunque_este_en_hora(self):
+        """El caso de MAM06-A (2-oct-2026), invisible hasta este cambio.
+
+        Reloj UTC perfecto —"en hora" por desfase— y la región en otro país. Son dos
+        problemas distintos y `/hora` solo miraba el primero, así que la estación con la
+        zona en UTC+8 no aparecía en ninguna consulta del bot.
+        """
+        from apps.monitoreo.telegram_bot import _comando_hora
+
+        grupo = Grupo.objects.create(codigo='TRX903')
+        farmacia = Farmacia.objects.create(codigo='MAM06', grupo=grupo, unidad_negocio=self.sg)
+        Estacion.objects.create(
+            codigo='MAM06-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            # En hora por desfase: no entra por la sección de relojes corridos.
+            desfase_reloj_segundos=2,
+            zona_horaria='Singapore Standard Time', offset_utc_minutos=480,
+        )
+
+        salida = _comando_hora()
+
+        self.assertIn('MAM06-A', salida)
+        self.assertIn('Singapore Standard Time', salida)
+        self.assertIn('Region mal asignada', salida)
+        # Y avisa de la causa que no se arregla desde el bot, que es la que tuvimos.
+        self.assertIn('directiva de dominio', salida)
+
+    def test_hora_sin_nada_roto_lo_dice_de_las_dos_cosas(self):
+        from apps.monitoreo.telegram_bot import _comando_hora
+
+        self.estacion.desfase_reloj_segundos = 1
+        self.estacion.zona_horaria = Estacion.ZONA_HORARIA_ESPERADA
+        self.estacion.offset_utc_minutos = Estacion.OFFSET_UTC_ESPERADO_MINUTOS
+        self.estacion.save(update_fields=['desfase_reloj_segundos', 'zona_horaria', 'offset_utc_minutos'])
+
+        salida = _comando_hora()
+
+        self.assertIn('Ninguna estacion', salida)
+        self.assertIn('region mal asignada', salida)
+
+
+class EstacionPorTelegramTests(TestCase):
+    """`/estacion CODIGO`: la ficha de una estación puntual.
+
+    Faltaba, y era el único objeto central del sistema que el bot no podía mostrar: se
+    veía una farmacia entera pero no la caja sobre la que `/sincronizar` acciona. Para
+    decidir si vale disparar el script hace falta justo lo que muestra —desfase, zona,
+    versión del agente, último latido— y antes había que abrir el panel.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX930', version_objetivo='3.0.3.0')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML930', grupo=self.grupo, unidad_negocio=self.sg,
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ML930-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            estado_conexion=Estacion.EstadoConexion.ONLINE,
+            version_agente='agente-prueba-0.32', version_pos='3.0.2.29',
+            so_nombre='Windows 10', so_build='19045',
+            desfase_reloj_segundos=2,
+            zona_horaria=Estacion.ZONA_HORARIA_ESPERADA,
+            offset_utc_minutos=Estacion.OFFSET_UTC_ESPERADO_MINUTOS,
+        )
+
+    def test_muestra_lo_que_hace_falta_para_decidir(self):
+        from apps.monitoreo.telegram_bot import _comando_estacion
+
+        salida = _comando_estacion('ML930-A')
+
+        self.assertIn('ML930-A', salida)
+        self.assertIn('ML930', salida)
+        self.assertIn('agente-prueba-0.32', salida)
+        self.assertIn('3.0.2.29', salida)
+        self.assertIn('en hora', salida)
+        self.assertIn(Estacion.ZONA_HORARIA_ESPERADA, salida)
+        # El POS no coincide con version_objetivo del grupo: hay que decirlo.
+        self.assertIn('desactualizada', salida)
+
+    def test_acepta_minusculas(self):
+        from apps.monitoreo.telegram_bot import _comando_estacion
+
+        self.assertIn('ML930-A', _comando_estacion('ml930-a'))
+
+    def test_sin_codigo_pide_el_codigo(self):
+        from apps.monitoreo.telegram_bot import _comando_estacion
+
+        self.assertIn('Falta el codigo', _comando_estacion(''))
+
+    def test_codigo_inexistente_sugiere_por_prefijo(self):
+        """Mismo criterio que /farmacia: evita el viaje al panel a buscar el exacto."""
+        from apps.monitoreo.telegram_bot import _comando_estacion
+
+        salida = _comando_estacion('ML930-Z')
+
+        self.assertIn('No encuentro', salida)
+        self.assertIn('ML930-A', salida)
+
+    def test_una_estacion_pausada_lo_dice_arriba(self):
+        """Una pausada ignora TODO comando: hay que saberlo ANTES de intentar accionar."""
+        from apps.monitoreo.telegram_bot import _comando_estacion
+
+        self.estacion.pausado = True
+        self.estacion.save(update_fields=['pausado'])
+
+        salida = _comando_estacion('ML930-A')
+
+        self.assertIn('PAUSADA', salida)
+
+    def test_marca_la_zona_mal_asignada_y_ofrece_corregirla(self):
+        from apps.monitoreo.telegram_bot import _comando_estacion
+
+        self.estacion.zona_horaria = 'Singapore Standard Time'
+        self.estacion.offset_utc_minutos = 480
+        self.estacion.save(update_fields=['zona_horaria', 'offset_utc_minutos'])
+
+        salida = _comando_estacion('ML930-A')
+
+        self.assertIn('MAL ASIGNADA', salida)
+        self.assertIn('/sincronizar ML930-A', salida)
+
+    def test_el_comando_escrito_y_el_boton_dan_lo_mismo(self):
+        """Regla del estándar: toda consulta se alcanza por las dos vías."""
+        from apps.monitoreo.telegram_bot import responder_a, responder_a_callback
+
+        por_texto = responder_a('/estacion ML930-A')
+        por_boton, teclado = responder_a_callback('est:ML930-A')
+
+        self.assertEqual(por_texto, por_boton)
+        self.assertTrue(teclado)
 
 class ComposeServiciosClasificadosTests(ComposeMeshCentralTests):
     """Guarda estructural: un servicio nuevo en el compose no puede quedar sin clasificar.

@@ -814,7 +814,14 @@ def notificar_alerta(alerta, *, escalamiento=False):
             'text': f'🕐 Sincronizar {alerta.estacion.codigo}',
             'callback_data': f'pedirsync:{alerta.estacion.codigo}',
         })
-    teclado_alerta = [botones]
+    # Segunda fila, de solo lectura: la ficha de la estación de la que habla la alerta.
+    # Va aparte de la primera para que un toque buscando el detalle no caiga por error
+    # sobre una acción, que es el mismo criterio por el que los botones de accionar piden
+    # confirmación en vez de ejecutar.
+    teclado_alerta = [
+        botones,
+        [{'text': f'🖥 {alerta.estacion.codigo}', 'callback_data': f'est:{alerta.estacion.codigo}'}],
+    ]
     for canal in canales_telegram_para(unidad):
         _enviar_telegram(canal.destino, texto_telegram, teclado=teclado_alerta)
 

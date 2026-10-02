@@ -411,7 +411,8 @@ _AYUDA = '\n'.join([
     '/mantenimiento — ventanas activas (alertas silenciadas)',
     '/toperrores — errores del POS más repetidos en la flota',
     '/farmacia ML016 — detalle de una farmacia',
-    '/hora — estaciones con el reloj corrido',
+    '/estacion ML016-A — detalle de una estación',
+    '/hora — relojes corridos y regiones mal asignadas',
     '/id — tu chat_id, para que te den de alta o te vinculen al panel',
     '',
     'Acciones:',
@@ -576,36 +577,150 @@ def _comando_id(chat_id=None) -> str:
 
 
 def _comando_hora() -> str:
-    """Estaciones con el reloj corrido, la peor primero. Solo lectura."""
+    """Estaciones con el reloj corrido O la region mal asignada. Solo lectura.
+
+    Las DOS cosas, y en secciones separadas, porque son problemas distintos con
+    consecuencias distintas: el desfase deja a la estacion sorda a los comandos; la
+    region equivocada le muestra al cajero la hora de otro pais con el reloj UTC
+    perfecto. Antes solo se listaba el desfase, y eso hacia invisible exactamente el
+    caso de MAM06-A (2-oct-2026): zona `Singapore Standard Time`, UTC+8, y aun asi
+    "en hora" en los dos lados —panel y bot— porque su desfase era de segundos.
+    """
     from apps.catalogo.models import Estacion
 
-    estaciones = [
-        e for e in Estacion.objects.filter(estado_aprobacion='aprobada').select_related('farmacia')
-        if e.desfase_reloj_segundos is not None and e.reloj_desincronizado
+    aprobadas = list(
+        Estacion.objects.filter(estado_aprobacion='aprobada').select_related('farmacia')
+    )
+    corridas = [
+        e for e in aprobadas if e.desfase_reloj_segundos is not None and e.reloj_desincronizado
     ]
-    estaciones.sort(key=lambda e: abs(e.desfase_reloj_segundos), reverse=True)
+    corridas.sort(key=lambda e: abs(e.desfase_reloj_segundos), reverse=True)
+    zona_mal = sorted(
+        (e for e in aprobadas if e.zona_horaria_incorrecta), key=lambda e: e.codigo,
+    )
 
-    if not estaciones:
+    if not corridas and not zona_mal:
         return (
-            'Ninguna estacion con el reloj corrido.\n'
-            f'(Se lista a partir de {Estacion.UMBRAL_RELOJ_AVISO_SEGUNDOS} s de desfase.)'
+            'Ninguna estacion con el reloj corrido ni con la region mal asignada.\n'
+            f'(El desfase se lista a partir de {Estacion.UMBRAL_RELOJ_AVISO_SEGUNDOS} s; '
+            f'la zona esperada es "{Estacion.ZONA_HORARIA_ESPERADA}".)'
         )
 
-    lineas = ['Relojes corridos:', '']
-    for e in estaciones[:_MAX_FILAS]:
-        seg = e.desfase_reloj_segundos
-        direccion = 'adelantada' if seg > 0 else 'atrasada'
-        if e.reloj_incomunicado:
-            estado = 'INCOMUNICADA: descarta comandos, hay que ir al local'
-        else:
-            margen = Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS - abs(seg)
-            estado = f'quedan {margen} s de margen, se arregla en remoto'
-        lineas.append(f'{e.codigo} ({e.farmacia.codigo}) {abs(seg)} s {direccion}')
-        lineas.append(f'   {estado}')
-    if len(estaciones) > _MAX_FILAS:
-        lineas.append(f'... y {len(estaciones) - _MAX_FILAS} mas.')
+    lineas = []
+    if corridas:
+        lineas += ['Relojes corridos:', '']
+        for e in corridas[:_MAX_FILAS]:
+            seg = e.desfase_reloj_segundos
+            direccion = 'adelantada' if seg > 0 else 'atrasada'
+            if e.reloj_incomunicado:
+                estado = 'INCOMUNICADA: descarta comandos, hay que ir al local'
+            else:
+                margen = Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS - abs(seg)
+                estado = f'quedan {margen} s de margen, se arregla en remoto'
+            lineas.append(f'{e.codigo} ({e.farmacia.codigo}) {abs(seg)} s {direccion}')
+            lineas.append(f'   {estado}')
+        if len(corridas) > _MAX_FILAS:
+            lineas.append(f'... y {len(corridas) - _MAX_FILAS} mas.')
+
+    if zona_mal:
+        if lineas:
+            lineas.append('')
+        lineas += [f'Region mal asignada ({len(zona_mal)}):', '']
+        for e in zona_mal[:_MAX_FILAS]:
+            zona = e.zona_horaria or '(sin reportar)'
+            lineas.append(f'{e.codigo} ({e.farmacia.codigo}) {zona}')
+            lineas.append(f'   offset {e.offset_utc_minutos} min, se espera {Estacion.OFFSET_UTC_ESPERADO_MINUTOS}')
+        if len(zona_mal) > _MAX_FILAS:
+            lineas.append(f'... y {len(zona_mal) - _MAX_FILAS} mas.')
+        # Que el script pueda no alcanzar es parte de la informacion: si una directiva de
+        # dominio fija la zona, se corrige y vuelve al refresco siguiente, y entonces el
+        # problema no esta en la estacion (pasó con MAM06-A).
+        lineas.append('')
+        lineas.append(
+            'La region la corrige el mismo /sincronizar. Si vuelve sola, sospechá de una '
+            'directiva de dominio: eso no se arregla desde acá.'
+        )
+
     lineas.append('')
-    lineas.append('Para corregir una: /sincronizar CODIGO')
+    lineas.append('Para corregir una: /sincronizar CODIGO — detalle: /estacion CODIGO')
+    return '\n'.join(lineas)
+
+
+def _comando_estacion(codigo: str) -> str:
+    """Ficha de UNA estacion. Solo lectura.
+
+    Faltaba, y era el unico objeto central del sistema que el bot no podia mostrar: se
+    podia ver una farmacia entera pero no la caja concreta sobre la que `/sincronizar`
+    acciona. Para decidir si vale disparar el script hace falta justo lo que esta aca
+    —desfase, zona, version del agente, ultimo latido— y antes habia que abrir el panel.
+    """
+    from apps.catalogo.models import Estacion
+
+    codigo = (codigo or '').strip().upper()
+    if not codigo:
+        return 'Falta el codigo. Ejemplo: /estacion ML016-A'
+
+    estacion = Estacion.objects.filter(codigo__iexact=codigo).select_related(
+        'farmacia__grupo', 'farmacia__unidad_negocio',
+    ).first()
+    if estacion is None:
+        # Mismo criterio que /farmacia: sugerir por prefijo ahorra el viaje al panel a
+        # buscar el codigo exacto.
+        parecidas = list(
+            Estacion.objects.filter(codigo__startswith=codigo[:5])
+            .values_list('codigo', flat=True)[:8]
+        )
+        sugerencia = f'\n\n¿Quisiste decir? {", ".join(parecidas)}' if parecidas else ''
+        return f'No encuentro la estacion "{codigo}".{sugerencia}'
+
+    f = estacion.farmacia
+    lineas = [
+        f'{estacion.codigo} — {f.codigo} ({f.grupo.codigo}) · {f.unidad_negocio.codigo}',
+        '',
+        f'Conexion     {estacion.get_estado_conexion_display()}',
+    ]
+    if estacion.ultimo_heartbeat:
+        lineas.append(f'Ultimo latido {_texto_duracion(estacion.ultimo_heartbeat)}')
+    lineas.append(f'Aprobacion   {estacion.get_estado_aprobacion_display()}')
+    if estacion.pausado:
+        # Primero y con mayusculas: una estacion pausada ignora TODO comando, asi que
+        # cualquier accion que se intente desde aca no va a pasar nada y hay que saberlo
+        # antes de intentarla, no despues.
+        lineas.insert(2, 'PAUSADA: ignora comandos hasta que se reanude')
+    lineas.append(f'Agente       {estacion.version_agente or "-"}')
+    lineas.append(f'POS          {estacion.version_pos or "-"}'
+                  + (' (desactualizada)' if estacion.desactualizada else ''))
+    if estacion.so_nombre:
+        lineas.append(f'SO           {estacion.so_nombre} {estacion.so_build}'.rstrip())
+
+    # Reloj y zona: las dos, separadas, por el mismo motivo que en /hora.
+    lineas.append('')
+    seg = estacion.desfase_reloj_segundos
+    if seg is None:
+        lineas.append('Reloj        todavia no reporto')
+    else:
+        direccion = 'adelantada' if seg > 0 else 'atrasada'
+        detalle = f'{abs(seg)} s {direccion}'
+        if estacion.reloj_incomunicado:
+            detalle += ' — INCOMUNICADA, descarta comandos'
+        elif estacion.reloj_desincronizado:
+            margen = estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS - abs(seg)
+            detalle += f' — quedan {margen} s de margen'
+        else:
+            detalle += ' — en hora'
+        lineas.append(f'Reloj        {detalle}')
+    zona = estacion.zona_horaria or '(sin reportar)'
+    marca = ' — MAL ASIGNADA' if estacion.zona_horaria_incorrecta else ''
+    lineas.append(f'Zona         {zona}{marca}')
+
+    if estacion.nodo_discrepante:
+        lineas.append('')
+        lineas.append(f'OJO: el POS apunta a "{estacion.pos_bdd}" y su grupo es "{f.grupo.bdd_pos}".')
+
+    lineas.append('')
+    lineas.append(f'Farmacia completa: /farmacia {f.codigo}')
+    if estacion.reloj_desincronizado or estacion.zona_horaria_incorrecta:
+        lineas.append(f'Corregir hora/zona: /sincronizar {estacion.codigo}')
     return '\n'.join(lineas)
 
 
@@ -736,7 +851,11 @@ _TECLADO_MAS = [
     [{'text': '🔴 Críticas', 'callback_data': 'cmd:criticas'},
      {'text': '🔧 Mantenimiento', 'callback_data': 'cmd:mantenimiento'}],
     [{'text': '🐞 Top errores POS', 'callback_data': 'cmd:toperrores'},
-     {'text': '🕐 Relojes', 'callback_data': 'cmd:hora'}],
+     {'text': '🕐 Relojes y zonas', 'callback_data': 'cmd:hora'}],
+    # `/id` era la unica consulta sin boton, y la omision no estaba justificada en
+    # ningun lado. Va en el submenu y no en el principal porque se usa una vez —para
+    # que te den de alta— y no a diario.
+    [{'text': '🆔 Mi chat_id', 'callback_data': 'cmd:id'}],
     [{'text': '◀ Volver', 'callback_data': 'menu:principal'}],
 ]
 
@@ -745,7 +864,7 @@ _TECLADO_MAS = [
 _MAX_BOTONES_FARMACIA = 8
 
 # Cuáles viven detrás de "Más", para devolver al operador al submenú correcto.
-_COMANDOS_DEL_SUBMENU = frozenset({'criticas', 'mantenimiento', 'toperrores', 'hora'})
+_COMANDOS_DEL_SUBMENU = frozenset({'criticas', 'mantenimiento', 'toperrores', 'hora', 'id'})
 
 # Qué comandos puede disparar un botón. Se declara aparte de los que acepta `responder_a`
 # porque no son lo mismo: `/farmacia` necesita un argumento y por eso tiene su submenú.
@@ -754,7 +873,7 @@ _COMANDOS_DEL_SUBMENU = frozenset({'criticas', 'mantenimiento', 'toperrores', 'h
 # Su botón no sale de esta lista genérica sino de `pedirsync:`/`sync:`, que llevan el
 # código de la estación adentro y pasan por una confirmación explícita.
 _COMANDOS_CON_BOTON = frozenset({'enlaces', 'estado', 'alertas', 'criticas',
-                                 'mantenimiento', 'toperrores', 'hora'})
+                                 'mantenimiento', 'toperrores', 'hora', 'id'})
 
 
 def _teclado_farmacias():
@@ -794,6 +913,35 @@ def _teclado_farmacias():
     return filas
 
 
+def teclado_para_farmacias(codigos) -> list:
+    """Teclado con el detalle de las farmacias de las que habla una notificación.
+
+    Lo usa `notificar_cambios_enlaces`, que es la notificación MÁS frecuente y hasta
+    ahora la única que llegaba sin un solo botón: avisaba que un sitio se cayó y
+    obligaba a volver al menú y escribir `/farmacia CODIGO` para ver qué pasaba.
+
+    Vive acá y no en `enlaces.py` para que el formato de `callback_data` tenga un solo
+    dueño — `responder_a_callback` es quien lo interpreta, y dos lugares armándolo es
+    cómo se termina con un botón que el bot no sabe atender.
+    """
+    unicos = sorted({(c or '').strip().upper() for c in codigos if (c or '').strip()})
+    if not unicos:
+        return []
+    filas = [
+        [{'text': c, 'callback_data': f'farm:{c}'} for c in unicos[i:i + 2]]
+        for i in range(0, min(len(unicos), _MAX_BOTONES_FARMACIA), 2)
+    ]
+    filas.append([{'text': '📋 Menú', 'callback_data': 'menu:principal'}])
+    return filas
+
+
+def teclado_menu() -> list:
+    """El teclado principal, para las notificaciones que no hablan de un objeto puntual
+    (el resumen diario). Sin esto el aviso llega y deja al operador sin punto de entrada:
+    tiene que escribir un comando a mano para hacer cualquier cosa con lo que acaba de leer."""
+    return _TECLADO_PRINCIPAL
+
+
 def responder_a_callback(data: str, chat_id=None):
     """Traduce el botón tocado a (texto, teclado). None = no se hace nada.
 
@@ -821,6 +969,8 @@ def responder_a_callback(data: str, chat_id=None):
         return 'Elegí una farmacia (o escribí /farmacia CODIGO):', _teclado_farmacias()
     if data.startswith('farm:'):
         return _comando_farmacia(data.split(':', 1)[1]), _teclado_farmacias()
+    if data.startswith('est:'):
+        return _comando_estacion(data.split(':', 1)[1]), _TECLADO_PRINCIPAL
     if data.startswith('cmd:'):
         # Lista explícita y no "lo que sea que venga después de cmd:": un callback_data
         # solo puede venir de un botón que armó este mismo bot, así que cualquier otra
@@ -831,7 +981,10 @@ def responder_a_callback(data: str, chat_id=None):
             # Se vuelve al mismo submenú desde el que se llegó: mandar al principal
             # obligaría a entrar a "Más" de nuevo para la consulta siguiente.
             teclado = _TECLADO_MAS if comando in _COMANDOS_DEL_SUBMENU else _TECLADO_PRINCIPAL
-            return responder_a('/' + comando), teclado
+            # `chat_id` se propaga: `/id` lo necesita para poder contestar algo util, y
+            # sin esto su boton devolvia "No puedo ver tu chat_id desde aca" mientras el
+            # comando escrito funcionaba. Los demas comandos de esta lista lo ignoran.
+            return responder_a('/' + comando, chat_id), teclado
     return None
 
 
@@ -876,6 +1029,8 @@ def responder_a(texto: str, chat_id=None):
         return _comando_toperrores()
     if comando == '/farmacia':
         return _comando_farmacia(argumento)
+    if comando == '/estacion':
+        return _comando_estacion(argumento)
     if comando == '/reconocer':
         if not argumento.strip():
             return 'Decime cuál: /reconocer 42 (el número sale de /alertas).'

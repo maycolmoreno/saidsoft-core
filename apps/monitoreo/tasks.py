@@ -221,9 +221,18 @@ def diagnosticar_alerta_task(alerta_id):
         f'{alerta.regla.nombre} — {alerta.estacion.codigo}'
     )
     unidad = alerta.estacion.farmacia.unidad_negocio
+    # Mismo teclado que el aviso original de la alerta: este mensaje habla de ESA alerta,
+    # así que las acciones aplicables son las suyas. Sin él, el seguimiento llegaba sin
+    # botones y el operador que leía el diagnóstico tenía que volver al menú para
+    # reconocer la alerta que acababa de entender. `pedirack:` y no `ack:` — pide
+    # confirmación, no ejecuta (ver notificar_alerta).
+    teclado = [[
+        {'text': '✔ Reconocer', 'callback_data': f'pedirack:{alerta.pk}'},
+        {'text': f'🖥 {alerta.estacion.codigo}', 'callback_data': f'est:{alerta.estacion.codigo}'},
+    ]]
     enviados = sum(
         1 for canal in canales_telegram_para(unidad)
-        if _enviar_telegram(canal.destino, f'{encabezado}\n\n{texto}')
+        if _enviar_telegram(canal.destino, f'{encabezado}\n\n{texto}', teclado=teclado)
     )
     return f'Diagnóstico generado para la alerta #{alerta.pk}; {enviados} envío(s) por Telegram.'
 
@@ -296,5 +305,10 @@ def resumen_diario_telegram_task():
         return 'Sin canales de Telegram globales configurados.'
 
     texto = 'Buen día. Resumen de las últimas 24 h:\n\n' + _comando_estado()
-    enviados = sum(1 for canal in canales if _enviar_telegram(canal.destino, texto))
+    # Con el teclado principal: el resumen no habla de un objeto puntual, pero llega
+    # todos los días y es el primer mensaje que muchos abren. Sin botones dejaba al
+    # operador teniendo que escribir un comando a mano para hacer algo con lo que acababa
+    # de leer.
+    from apps.monitoreo.telegram_bot import teclado_menu
+    enviados = sum(1 for canal in canales if _enviar_telegram(canal.destino, texto, teclado=teclado_menu()))
     return f'Resumen diario enviado a {enviados} de {canales.count()} canal(es).'

@@ -470,9 +470,19 @@ def notificar_cambios_enlaces() -> dict:
         # Import diferido: enlaces.py lo importan el comando de sondeo y la API de
         # ingesta, y services arrastra el motor de alertas entero.
         from .services import _enviar_telegram
+        from .telegram_bot import teclado_para_farmacias
         # Mismo texto que el correo, con el asunto arriba: es un resumen operativo, no
         # una alerta de una estación, así que no lleva emoji de severidad.
-        _enviar_telegram(chat_telegram, f'{asunto}\n\n{cuerpo}')
+        #
+        # Con teclado desde el 2-oct-2026: es la notificación más frecuente del sistema y
+        # era la única que llegaba sin un solo botón. Avisaba que un sitio se cayó y para
+        # ver qué le pasaba había que volver al menú y escribir `/farmacia CODIGO` —
+        # justo lo que nadie hace a las 3 de la mañana. Se ofrecen las CAÍDAS y no las
+        # recuperadas: una que volvió ya no necesita que nadie la mire.
+        _enviar_telegram(
+            chat_telegram, f'{asunto}\n\n{cuerpo}',
+            teclado=teclado_para_farmacias([e.farmacia.codigo for e in caidos]) or None,
+        )
 
     # Se marcan DESPUÉS del envío, y con fail_silently arriba eso significa que un SMTP
     # caído marca igual el evento como avisado: el correo se pierde. Es deliberado --
