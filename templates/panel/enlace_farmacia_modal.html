@@ -122,6 +122,17 @@ pedir una lectura.
                     ↑ {{ ultima.red_enviado_kbps|floatformat:0 }} subida ·
                     {{ ultima.timestamp|date:"d/m H:i" }}
                 </div>
+                {% comment %}
+                La lectura se sigue mostrando con su hora —sirve para diagnosticar un
+                corte: lo último que pasó antes de caerse— pero hay que decir que ya no
+                es actual. Sin este aviso, un enlace caído mostraba su último tráfico y
+                la pantalla se leía como "está caído pero pasa tráfico".
+                {% endcomment %}
+                {% if lectura_vieja %}
+                <div class="text-xs mt-1" style="color:var(--warning);">
+                    Esta lectura ya no es actual: es la última que llegó, no el consumo de ahora.
+                </div>
+                {% endif %}
 
                 {% if ultima.porcentaje_del_contratado is not None %}
                 {% comment %}

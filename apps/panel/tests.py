@@ -7251,3 +7251,131 @@ class AbrirMantenimientoDesdeLaAlertaTests(TestCase):
     def test_no_acepta_GET(self):
         self.client.force_login(self.operador)
         self.assertEqual(self.client.get(self._url()).status_code, 405)
+
+
+class TraficoDeEnlaceSoloSiEsFrescoTests(TestCase):
+    """Una lectura vieja no se muestra como el consumo de ahora.
+
+    El 2-oct-2026 ocho farmacias caídas desde las 16:46 mostraban ancho de banda de
+    hasta 6 h antes, y la pantalla se leía como "está caída pero pasa tráfico". El
+    `Subquery` del listado tomaba la última muestra de la HISTORIA, sin ningún límite de
+    tiempo, así que el último dato antes del corte se pintaba igual que uno de recién.
+
+    El corte es por FRESCURA y no por estado del enlace, a propósito: un enlace caído
+    deja de tener muestras recientes solo porque dejó de reportar, así que el efecto
+    pedido sale igual — y además cubre el caso que nadie habría notado, un enlace
+    marcado ACTIVO cuyo sondeo se detuvo hace horas.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, MuestraRedFarmacia
+        from apps.monitoreo.services import TOLERANCIA_FRESCURA_MINUTOS
+
+        self.tolerancia = TOLERANCIA_FRESCURA_MINUTOS['red_farmacias']
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXFR1')
+
+        self.fresca = Farmacia.objects.create(
+            codigo='FR001', grupo=grupo, unidad_negocio=self.sg, ip_router='10.40.0.1',
+            ancho_contratado_mbps=10,
+        )
+        self.caida = Farmacia.objects.create(
+            codigo='FR002', grupo=grupo, unidad_negocio=self.sg, ip_router='10.40.0.2',
+            ancho_contratado_mbps=10,
+        )
+
+        registrar_sondeo(self.fresca, True, 12.0)
+        # Caída REAL: respondió antes y después dejó de responder. Sin el primer sondeo
+        # exitoso sería "nunca respondió", que el panel cuenta aparte.
+        registrar_sondeo(self.caida, True, 14.0)
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(self.caida, False, None)
+
+        # La fresca reporta recién. La caída reportó su última lectura ANTES del corte.
+        MuestraRedFarmacia.objects.create(
+            farmacia=self.fresca, bytes_recibidos=1, bytes_enviados=1,
+            red_recibido_kbps=400.0, red_enviado_kbps=100.0,
+        )
+        vieja = MuestraRedFarmacia.objects.create(
+            farmacia=self.caida, bytes_recibidos=1, bytes_enviados=1,
+            red_recibido_kbps=800.0, red_enviado_kbps=200.0,
+        )
+        # `timestamp` es auto_now_add: se corre con un UPDATE, que no lo vuelve a tocar.
+        MuestraRedFarmacia.objects.filter(pk=vieja.pk).update(
+            timestamp=timezone.now() - timedelta(minutes=self.tolerancia + 5),
+        )
+
+        self.usuario = User.objects.create_user(username='u_frescura', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='monitoreo', codename='view_estadoenlacefarmacia',
+            ),
+        )
+        self.client.force_login(self.usuario)
+        self.url = reverse('panel:enlaces_farmacias_lista')
+
+    def _fila(self, codigo):
+        resp = self.client.get(self.url)
+        for fila in resp.context['filas']:
+            if fila['farmacia'].codigo == codigo:
+                return fila
+        self.fail(f'{codigo} no aparece en el listado')
+
+    def test_una_lectura_vieja_no_se_muestra_como_trafico(self):
+        """El caso que motivó el cambio: caída, con tráfico pintado de antes del corte."""
+        self.assertIsNone(self._fila('FR002')['total_kbps'])
+
+    def test_una_lectura_reciente_si_se_muestra(self):
+        """El corte no puede llevarse puesto el dato bueno."""
+        self.assertEqual(self._fila('FR001')['total_kbps'], 500.0)
+
+    def test_el_kpi_de_con_trafico_no_cuenta_las_viejas(self):
+        """Si contara la histórica, el número diría que hay lecturas donde no las hay."""
+        self.assertEqual(self.client.get(self.url).context['con_ancho_banda'], 1)
+
+    def test_el_filtro_por_trafico_tambien_usa_la_frescura(self):
+        """Filtrar "sin lectura SNMP" tiene que traer la caída: hoy no tiene lectura."""
+        con = self.client.get(self.url, {'trafico': 'con'}).context['pagina']
+        sin = self.client.get(self.url, {'trafico': 'sin'}).context['pagina']
+        self.assertEqual([f.codigo for f in con.object_list], ['FR001'])
+        self.assertIn('FR002', [f.codigo for f in sin.object_list])
+
+    def test_justo_dentro_de_la_tolerancia_sigue_contando(self):
+        """El límite es la tolerancia declarada, no un número inventado en la vista."""
+        from apps.monitoreo.models import MuestraRedFarmacia
+
+        MuestraRedFarmacia.objects.filter(farmacia=self.caida).update(
+            timestamp=timezone.now() - timedelta(minutes=self.tolerancia - 1),
+        )
+        self.assertEqual(self._fila('FR002')['total_kbps'], 1000.0)
+
+    # --- el modal de detalle, mismo criterio ---
+
+    def test_el_modal_marca_la_lectura_vieja_y_no_la_colorea(self):
+        """La lectura se sigue mostrando —sirve para diagnosticar el corte— pero dicha
+        como lo que es. Un verde de hace seis horas es peor que un "sin dato"."""
+        resp = self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.caida.pk]))
+
+        self.assertTrue(resp.context['lectura_vieja'])
+        self.assertEqual(resp.context['estado_bw'], 'sin_dato')
+        self.assertIsNone(resp.context['consumo'].valor)
+        # Y se dice en pantalla, no solo en el contexto.
+        self.assertContains(resp, 'ya no es actual')
+
+    def test_el_modal_conserva_la_serie_historica(self):
+        """El gráfico está para ver la FORMA: las horas previas a un corte son justo lo
+        que se mira al diagnosticarlo. Se corta el VALOR, no la historia."""
+        resp = self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.caida.pk]))
+
+        self.assertEqual(resp.context['total_muestras'], 1)
+        self.assertIsNotNone(resp.context['ultima'])
+        self.assertEqual(resp.context['pico_kbps'], 1000.0)
+
+    def test_el_modal_de_una_lectura_fresca_no_la_marca(self):
+        resp = self.client.get(reverse('panel:enlace_farmacia_modal', args=[self.fresca.pk]))
+
+        self.assertFalse(resp.context['lectura_vieja'])
+        self.assertEqual(resp.context['consumo'].valor, 500.0)
+        self.assertNotContains(resp, 'ya no es actual')

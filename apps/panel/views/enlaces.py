@@ -3,13 +3,17 @@
 Tercer dominio que vivia dentro de monitoreo.py. No habla de estaciones sino del
 enlace del sitio: ancho de banda, caidas del proveedor y reinicios del Mikrotik.
 """
+from datetime import timedelta
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.views.decorators.http import require_POST
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Farmacia
 from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
+from apps.monitoreo.services import TOLERANCIA_FRESCURA_MINUTOS, fuente_desactualizada
 from ..indicadores import Metrica, indicador
 from ..paginacion import paginar
 from ..umbrales import (
@@ -61,7 +65,25 @@ def enlaces_farmacias_lista(request):
 
     # Última muestra de ancho de banda por farmacia, en la misma consulta (ver el
     # comentario de la versión anterior: el bucle con `.first()` eran 700 consultas).
-    ultima_muestra = MuestraRedFarmacia.objects.filter(farmacia=OuterRef('pk')).order_by('-timestamp')
+    #
+    # Acotada a las muestras FRESCAS, y esa es la diferencia que importa: sin el límite
+    # de tiempo se tomaba la última de la historia, así que un sitio caído seguía
+    # mostrando el tráfico que alcanzó a reportar ANTES del corte — una lectura vieja
+    # pintada como si fuera de ahora. Visto el 2-oct-2026: ocho farmacias caídas desde
+    # las 16:46 mostraban ancho de banda de hasta 6 h antes, y la pantalla se leía como
+    # "está caída pero pasa tráfico", que es justo lo contrario de lo que pasaba.
+    #
+    # El límite NO mira si el enlace responde: mira si el dato es reciente. Un enlace
+    # caído deja de tener muestras frescas solo porque dejó de reportar, así que el
+    # efecto pedido (que una caída no muestre tráfico) sale igual — y además cubre el
+    # caso que nadie habría notado: un enlace marcado ACTIVO cuyo sondeo se detuvo hace
+    # horas mostraba el mismo dato falso, sin nada que lo delatara.
+    limite_frescura = timezone.now() - timedelta(minutes=TOLERANCIA_FRESCURA_MINUTOS['red_farmacias'])
+    ultima_muestra = (
+        MuestraRedFarmacia.objects
+        .filter(farmacia=OuterRef('pk'), timestamp__gte=limite_frescura)
+        .order_by('-timestamp')
+    )
 
     base = scope_por_unidad_negocio_activa(
         Farmacia.objects.exclude(ip_router__isnull=True),
@@ -221,7 +243,16 @@ def _render_enlace_modal(request, farmacia):
     from apps.monitoreo.models import EventoEnlaceFarmacia, MuestraRedFarmacia, ReinicioEquipoBorde
 
     muestras = list(MuestraRedFarmacia.objects.filter(farmacia=farmacia)[:40])[::-1]
+    # La SERIE conserva su historia completa: el gráfico está para ver la forma, y las
+    # horas previas a un corte son justo lo que se quiere mirar al diagnosticarlo.
+    #
+    # El VALOR de "Consumo actual" es otra cosa, y solo vale si es reciente. Sin esto,
+    # una farmacia caída mostraba como consumo de ahora la última lectura antes del
+    # corte — el mismo dato falso que el listado (ver el comentario de `ultima_muestra`).
     ultima = muestras[-1] if muestras else None
+    ultima_vigente = ultima if ultima and not fuente_desactualizada(
+        ultima.timestamp, 'red_farmacias',
+    ) else None
 
     # Una estación aprobada y en línea de esta farmacia es lo que hace posible pedir la
     # lectura: el SNMP al Mikrotik lo hace el agente desde la LAN del sitio, no este
@@ -250,7 +281,7 @@ def _render_enlace_modal(request, farmacia):
     consumo = indicador(
         Metrica('red_total_kbps', 'Consumo actual', ' kbps', escala_fija=escala_kbps),
         [m.red_total_kbps for m in muestras],
-        valor=ultima.red_total_kbps if ultima else None,
+        valor=ultima_vigente.red_total_kbps if ultima_vigente else None,
         limites_fijos=limites_kbps,
         # Sin ancho contratado el eje es el pico de la ventana —una escala distinta en
         # cada farmacia—, así que la línea de umbral no se dibuja: significaría algo
@@ -262,7 +293,7 @@ def _render_enlace_modal(request, farmacia):
         nota=(
             'Sin ancho contratado cargado: el color sale del umbral general en kbps, no '
             'de qué parte de ESTE enlace se está usando.'
-            if ultima and not escala_kbps else ''
+            if ultima_vigente and not escala_kbps else ''
         ),
     )
 
@@ -279,7 +310,14 @@ def _render_enlace_modal(request, farmacia):
         # Mismo objeto Grafico que usa la tarjeta: el modal lo sigue exponiendo con este
         # nombre porque la escala del eje es parte del contrato de esta pantalla.
         'g_red': consumo.grafico,
-        'estado_bw': clasificar(ultima.red_total_kbps if ultima else None, *limites_kbps),
+        # Con `ultima` a secas, una lectura de hace horas se pintaba verde como si
+        # fuera de ahora. Sin dato es honesto; verde viejo no.
+        'estado_bw': clasificar(
+            ultima_vigente.red_total_kbps if ultima_vigente else None, *limites_kbps,
+        ),
+        # La lectura se sigue mostrando con su hora (es util para diagnosticar un
+        # corte), pero la plantilla tiene que poder decir que ya no es actual.
+        'lectura_vieja': bool(ultima and ultima_vigente is None),
         'bw_umbral_warning_pct': BW_CONTRATADO_UMBRAL_WARNING_PCT,
         'bw_umbral_critical_pct': BW_CONTRATADO_UMBRAL_CRITICAL_PCT,
         'estacion_sondeadora': estacion_sondeadora,
