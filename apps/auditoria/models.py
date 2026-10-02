@@ -48,6 +48,15 @@ class EventoAuditoria(models.Model):
         raise NotImplementedError('EventoAuditoria es inmutable: no se puede eliminar.')
 
 
+# Las rutas que `_resolver_unidad_negocio` prueba, en orden. Es un CONTRATO IMPLÍCITO:
+# un modelo que no exponga ninguno de estos atributos se audita con unidad_negocio=None,
+# es decir visible para todas las unidades, y nada avisa. La constante está acá arriba y
+# no incrustada en la función para que la prueba que vigila ese contrato
+# (apps.auditoria.tests.ContratoTenantDeAuditoriaTests) mire la misma lista y no una
+# copia que se desincronice.
+ATRIBUTOS_RUTA_TENANT = ('unidad_negocio', 'farmacia', 'estacion', 'equipo')
+
+
 def _resolver_unidad_negocio(objeto):
     """Deriva la unidad de negocio (tenant) de `objeto` probando las rutas conocidas del
     modelo de datos, en orden: FK/propiedad directa, farmacia, estación, equipo (Activo).
@@ -55,6 +64,11 @@ def _resolver_unidad_negocio(objeto):
     Devuelve None para recursos compartidos (ej. OrdenCompra, Bodega) o dirigidos a varias
     unidades a la vez (ej. ActividadCumplimiento, M2M) — mismo criterio de "sin tenant único
     = visible para todos" que ya usa apps.cuentas.services para esos modelos.
+
+    OJO con el nombre del atributo: la ruta se busca por nombre, no por tipo. Un FK a
+    Farmacia que se llame distinto (ej. `ReporteViatico.farmacia_visitada`) NO se
+    encuentra, y ese objeto queda auditado como compartido aunque tenga un tenant único.
+    Ver la lista `SIN_TENANT_POR_NOMBRE_DEL_CAMPO` de la prueba del contrato.
     """
     if objeto is None:
         return None

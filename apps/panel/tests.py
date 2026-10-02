@@ -3470,6 +3470,77 @@ class ArchivosMantenimientoProtegidosTests(TestCase):
         resp = self.client.get(reverse('panel:mantenimiento_informe', args=[self.mantenimiento.pk]))
         self.assertEqual(resp.status_code, 404)
 
+    # --- El informe PDF, por la vista protegida ---
+    #
+    # La vista existía y comprobaba el tenant, pero solo estaba cubierta por el caso
+    # "todavía no se generó" (404). Faltaba el que de verdad importa: que el informe
+    # de un cliente no se pueda bajar forzando el id desde la sesión de otro.
+
+    def _con_informe(self):
+        self.mantenimiento.informe_pdf.save(
+            f'mantenimiento_{self.mantenimiento.pk}.pdf',
+            SimpleUploadedFile('informe.pdf', b'%PDF-1.4 fake', content_type='application/pdf'),
+            save=True,
+        )
+        return reverse('panel:mantenimiento_informe', args=[self.mantenimiento.pk])
+
+    def test_informe_sin_sesion_no_se_entrega(self):
+        resp = self.client.get(self._con_informe())
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_informe_de_otro_cliente_da_403(self):
+        """El informe lleva firmas y fotos de dentro de la farmacia de UN cliente."""
+        url = self._con_informe()
+        self.client.force_login(self._usuario('u_mia_informe', unidad=self.mia))
+        self.assertEqual(self.client.get(url).status_code, 403)
+
+    @override_settings(SERVIR_MEDIA_CON_NGINX=False)
+    def test_informe_con_acceso_al_cliente_se_entrega(self):
+        url = self._con_informe()
+        self.client.force_login(self._usuario('u_sg_informe', unidad=self.sg))
+        resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(b''.join(resp.streaming_content), b'%PDF-1.4 fake')
+
+    # --- La ruta cruda de /media/, cerrada en el propio URLconf ---
+    #
+    # nginx ya declara `location /media/mantenimiento/ internal`, pero esa mitad de la
+    # defensa vive en otra capa y Django no se entera de si sigue ahí: con settings de
+    # producción sin proxy delante, o tras perder ese bloque en un cambio de
+    # configuración, el catch-all de /media/ volvía a entregar informes y fotos a
+    # cualquiera. El pk es secuencial y la carpeta es año/mes, así que la ruta se
+    # adivina sin esfuerzo.
+
+    def test_la_ruta_cruda_del_informe_no_se_sirve_ni_con_sesion(self):
+        self._con_informe()
+        self.client.force_login(self._usuario('u_media_crudo'))
+        resp = self.client.get(f'/media/{self.mantenimiento.informe_pdf.name}')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_la_ruta_cruda_de_la_imagen_no_se_sirve(self):
+        resp = self.client.get(f'/media/{self.imagen.imagen.name}')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_el_resto_de_media_sigue_siendo_publico(self):
+        """Los agentes bajan de /media/ los paquetes de despliegue SIN credenciales.
+
+        Cerrar /media/mantenimiento/ no puede cerrar el resto: un 404 acá dejaría a
+        las ~1.800 estaciones sin poder descargar su propio ejecutable ni los .zip.
+        Se comprueba con un archivo real en MEDIA_ROOT porque un 404 de "no existe" y
+        uno de "ruta protegida" se ven iguales desde fuera.
+        """
+        publico = settings.MEDIA_ROOT / 'despliegues'
+        publico.mkdir(parents=True, exist_ok=True)
+        archivo = publico / 'paquete-prueba-acceso-publico.zip'
+        archivo.write_bytes(b'PK\x03\x04 paquete')
+        try:
+            resp = self.client.get('/media/despliegues/paquete-prueba-acceso-publico.zip')
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(b''.join(resp.streaming_content), b'PK\x03\x04 paquete')
+        finally:
+            archivo.unlink()
+
     def test_la_ficha_ya_no_expone_la_ruta_cruda_de_media(self):
         self.client.force_login(self._usuario('u_ficha_img'))
         cuerpo = self.client.get(

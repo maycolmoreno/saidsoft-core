@@ -25,6 +25,24 @@ def notificar_mantenimientos_vencimiento_task():
 
 @shared_task(name='apps.mantenimiento.tasks.generar_informe_pdf_task')
 def generar_informe_pdf_task(mantenimiento_id):
+    """Renderiza el informe del mantenimiento y lo deja en `informe_pdf`.
+
+    **No comprueba permisos ni unidad de negocio, a propósito.** Corre en contexto de
+    sistema: no hay `request`, ni usuario, ni sesión, así que no hay con qué comparar —
+    recibe un id y nada más. Agregarle un `usuario` serviría de poco: el que encola y
+    el que después descarga no tienen por qué ser el mismo, y el archivo queda
+    guardado en el modelo, no en la respuesta de nadie.
+
+    El control está donde se ENTREGA el archivo, que es donde se decide quién lo ve:
+    `apps.panel.views.archivos.mantenimiento_informe` exige sesión, el permiso
+    `mantenimiento.view_mantenimiento` y `verificar_acceso` contra
+    `Mantenimiento.unidad_negocio`. Y la ruta cruda de `/media/mantenimiento/` está
+    cerrada por los dos lados: `internal` en nginx (deploy/nginx/nginx.conf) y
+    `PREFIJOS_MEDIA_PROTEGIDOS` en config/urls.py.
+
+    Generar el PDF de un mantenimiento que el solicitante no podría ver no filtra nada
+    por sí mismo: el archivo no sale de ahí sin pasar por esa vista.
+    """
     mantenimiento = Mantenimiento.objects.get(pk=mantenimiento_id)
     generar_informe_pdf(mantenimiento=mantenimiento)
     return f'Informe PDF generado para mantenimiento #{mantenimiento_id}.'
