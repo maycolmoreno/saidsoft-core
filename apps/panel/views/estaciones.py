@@ -1,6 +1,5 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
-from django.db.models import F, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
@@ -40,51 +39,28 @@ def _render_info_modal(request, estacion, **extra):
     return render(request, 'panel/estacion_info_modal.html', contexto)
 
 
-def _solo_desactualizadas(estaciones):
-    """Las que no corren la versión objetivo de su grupo.
-
-    Existe como función y no inline porque la usan DOS lugares —el contador de la
-    tarjeta y el filtro de la lista— y tienen que decir lo mismo. Si divergen, la
-    tarjeta dice "12 desactualizadas", se la pulsa y salen 9: el número deja de ser
-    confiable y con él toda la pantalla.
-
-    En base y no evaluando la property `Estacion.desactualizada` en Python: a ~1.800
-    estaciones eso trae la tabla entera a memoria en cada carga y hace inútil la
-    paginación (un `Paginator` sobre una lista ya materializada no ahorra nada). Mismo
-    criterio que la property: solo cuenta si el grupo tiene versión objetivo definida, y
-    una estación que nunca reportó `version_pos` ('') se considera desactualizada.
-    """
-    return estaciones.exclude(farmacia__grupo__version_objetivo='').exclude(
-        version_pos=F('farmacia__grupo__version_objetivo'),
-    )
-
+# Los criterios ya no se arman acá: viven en `EstacionQuerySet` (apps.catalogo.models),
+# que es el mismo lugar del que salen las properties de una instancia. Estaban escritos
+# dos veces —SQL acá, Python allá— y dos copias del mismo criterio se desincronizan sin
+# que nada falle: la tarjeta dice "12 desactualizadas", se la pulsa y salen 9.
+#
+# Siguen siendo filtros en BASE y no la property evaluada en Python: a ~1.800 estaciones
+# eso traería la tabla entera a memoria en cada carga y haría inútil la paginación (un
+# `Paginator` sobre una lista ya materializada no ahorra nada).
 
 def _filtrar_por_reloj(estaciones, reloj):
     """Estaciones con problema de hora. Devuelve el queryset sin tocar si `reloj` no es
     uno de los tres modos conocidos.
 
-    Mismo motivo que `_solo_desactualizadas` para vivir acá: la comparten el contador y
-    el filtro.
+    Solo traduce el valor del filtro de la URL al método del queryset; el criterio en sí
+    no está acá.
     """
-    umbral = {
-        'desincronizado': Estacion.UMBRAL_RELOJ_AVISO_SEGUNDOS,
-        'incomunicado': Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS,
+    por_modo = {
+        'desincronizado': estaciones.con_reloj_desincronizado,
+        'incomunicado': estaciones.incomunicadas_por_reloj,
+        'zona': estaciones.con_zona_incorrecta,
     }.get(reloj)
-    if umbral is not None:
-        return estaciones.filter(
-            Q(desfase_reloj_segundos__gt=umbral) | Q(desfase_reloj_segundos__lt=-umbral),
-        )
-    if reloj == 'zona':
-        # Las dos condiciones, por lo mismo que `Estacion.zona_horaria_incorrecta`:
-        # el offset atrapa a la estación puesta en otro huso, y el nombre a la puesta
-        # en otro país con el mismo huso (ML016-B estaba en "Eastern Standard Time
-        # (Mexico)", también UTC-5, e iba a pasar desapercibida).
-        offset_malo = Q(offset_utc_minutos__isnull=False) & ~Q(
-            offset_utc_minutos=Estacion.OFFSET_UTC_ESPERADO_MINUTOS,
-        )
-        zona_mala = ~Q(zona_horaria='') & ~Q(zona_horaria=Estacion.ZONA_HORARIA_ESPERADA)
-        return estaciones.filter(offset_malo | zona_mala)
-    return estaciones
+    return por_modo() if por_modo is not None else estaciones
 
 
 @login_required
@@ -121,7 +97,7 @@ def estaciones_lista(request):
         'online': base.filter(estado_conexion=Estacion.EstadoConexion.ONLINE).count(),
         'offline': base.filter(estado_conexion=Estacion.EstadoConexion.OFFLINE).count(),
         'nunca': base.filter(estado_conexion=Estacion.EstadoConexion.NUNCA_CONECTADA).count(),
-        'desactualizadas': _solo_desactualizadas(base).count(),
+        'desactualizadas': base.desactualizadas().count(),
         # El más accionable de todos: una estación con el reloj corrido más de dos
         # minutos DESCARTA en silencio cada comando firmado que se le manda. Se ve viva
         # en la tabla y no obedece nada.
@@ -139,7 +115,7 @@ def estaciones_lista(request):
     if estado_conexion:
         estaciones = estaciones.filter(estado_conexion=estado_conexion)
     if solo_desactualizadas:
-        estaciones = _solo_desactualizadas(estaciones)
+        estaciones = estaciones.desactualizadas()
     if reloj:
         estaciones = _filtrar_por_reloj(estaciones, reloj)
 

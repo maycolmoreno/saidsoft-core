@@ -3436,3 +3436,141 @@ class InstaladorSeAutoelevaTests(SimpleTestCase):
     def test_explica_si_se_cancela_el_aviso_de_windows(self):
         """Cancelar el UAC tira una excepción cruda de .NET que no dice nada útil."""
         self.assertIn('Se cancelo el permiso de administrador', self._plantilla())
+
+
+class EquivalenciaPredicadosEstacionTests(TestCase):
+    """Los predicados de `EstacionQuerySet` y las properties de `Estacion` tienen que
+    decir lo MISMO sobre los mismos datos.
+
+    Son dos implementaciones de la misma regla, y tienen que serlo: el filtro va en SQL
+    porque a ~1.800 estaciones evaluar la property en Python traería la tabla entera y
+    haría inútil la paginación; la property va en Python porque una plantilla no puede
+    pagar una query por fila. No se pueden unificar sin perder una de las dos cosas.
+
+    Lo que las mantiene juntas es esta prueba. Sin ella el desvío es silencioso: la
+    tarjeta de la lista dice "12 desactualizadas", se la pulsa y salen 9 — nada falla, y
+    el número deja de ser confiable. Al cambiar un criterio hay que tocar los dos lados,
+    y esto es lo que lo recuerda.
+
+    Cada caso del escenario cae en un borde distinto: el umbral exacto, el valor
+    negativo, el vacío, el nulo, y la región con el huso correcto pero el país equivocado.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        # Un grupo CON versión objetivo y otro SIN, porque "desactualizada" solo aplica
+        # cuando el grupo la define.
+        con_objetivo = Grupo.objects.create(codigo='TRXEQ1', version_objetivo='3.0.3.0')
+        sin_objetivo = Grupo.objects.create(codigo='TRXEQ2', version_objetivo='')
+        f_con = Farmacia.objects.create(codigo='EQ001', grupo=con_objetivo, unidad_negocio=sg)
+        f_sin = Farmacia.objects.create(codigo='EQ002', grupo=sin_objetivo, unidad_negocio=sg)
+
+        def est(sufijo, farmacia, **campos):
+            return Estacion.objects.create(
+                codigo=f'{farmacia.codigo}-{sufijo}', farmacia=farmacia,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, **campos,
+            )
+
+        # --- version del POS ---
+        est('A', f_con, version_pos='3.0.3.0')      # al dia
+        est('B', f_con, version_pos='3.0.2.29')     # atrasada
+        est('C', f_con, version_pos='')             # nunca reporto -> desactualizada
+        est('D', f_sin, version_pos='')             # grupo sin objetivo -> no cuenta
+        est('E', f_sin, version_pos='1.0.0.0')      # grupo sin objetivo -> no cuenta
+
+        # --- reloj: los bordes de los dos umbrales, en las dos direcciones ---
+        aviso = Estacion.UMBRAL_RELOJ_AVISO_SEGUNDOS
+        corte = Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS
+        for sufijo, seg in [
+            ('F', None),          # nunca reporto
+            ('G', 0),
+            ('H', aviso),         # EN el umbral: no pasa (es estricto)
+            ('I', aviso + 1),     # desincronizada
+            ('J', -(aviso + 1)),  # atrasada: cuenta igual
+            ('K', corte),         # en el umbral de corte
+            ('L', corte + 1),     # incomunicada
+            ('M', -(corte + 1)),
+        ]:
+            est(sufijo, f_sin, desfase_reloj_segundos=seg)
+
+        # --- zona horaria ---
+        esperada = Estacion.ZONA_HORARIA_ESPERADA
+        ok_offset = Estacion.OFFSET_UTC_ESPERADO_MINUTOS
+        for sufijo, zona, offset in [
+            ('N', esperada, ok_offset),             # bien
+            ('O', '', None),                        # nunca reporto: no se acusa
+            ('P', 'Singapore Standard Time', 480),  # MAM06-A: otro huso
+            # El caso que motivó comparar el NOMBRE y no solo el offset: mismo UTC-5,
+            # otro país. Mirando el offset solo, pasaba desapercibida.
+            ('Q', 'Eastern Standard Time (Mexico)', ok_offset),
+            ('R', esperada, 480),                   # nombre bien, offset mal
+        ]:
+            est(sufijo, f_sin, zona_horaria=zona, offset_utc_minutos=offset)
+
+    def _comparar(self, metodo_queryset, nombre_property):
+        """Corre los dos lados sobre TODAS las estaciones y compara los conjuntos."""
+        por_sql = set(metodo_queryset().values_list('codigo', flat=True))
+        por_python = {
+            e.codigo for e in Estacion.objects.select_related('farmacia__grupo')
+            if getattr(e, nombre_property)
+        }
+        self.assertEqual(
+            por_sql, por_python,
+            '`%s` y su predicado SQL difieren.\n  solo en SQL   : %s\n  solo en Python: %s'
+            % (nombre_property, sorted(por_sql - por_python), sorted(por_python - por_sql)),
+        )
+        # Que los dos devuelvan vacío no prueba nada: el escenario tiene que haber
+        # disparado el criterio al menos una vez.
+        self.assertTrue(por_sql, 'El escenario no activa `%s` en ningun caso.' % nombre_property)
+
+    def test_desactualizadas_coincide_con_la_property(self):
+        self._comparar(Estacion.objects.desactualizadas, 'desactualizada')
+
+    def test_reloj_desincronizado_coincide_con_la_property(self):
+        self._comparar(Estacion.objects.con_reloj_desincronizado, 'reloj_desincronizado')
+
+    def test_reloj_incomunicado_coincide_con_la_property(self):
+        self._comparar(Estacion.objects.incomunicadas_por_reloj, 'reloj_incomunicado')
+
+    def test_zona_incorrecta_coincide_con_la_property(self):
+        self._comparar(Estacion.objects.con_zona_incorrecta, 'zona_horaria_incorrecta')
+
+    def test_los_umbrales_son_estrictos_en_los_dos_lados(self):
+        """Estar EN el umbral no cuenta, ni en SQL ni en Python.
+
+        Importa que sea el mismo criterio porque el de corte decide si una estación puede
+        recibir comandos: una diferencia de un segundo entre las dos implementaciones
+        cambiaría a quién el panel dice que hay que ir a visitar.
+        """
+        en_aviso = Estacion.objects.get(
+            desfase_reloj_segundos=Estacion.UMBRAL_RELOJ_AVISO_SEGUNDOS,
+        )
+        en_corte = Estacion.objects.get(
+            desfase_reloj_segundos=Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS,
+        )
+        self.assertFalse(en_aviso.reloj_desincronizado)
+        self.assertNotIn(
+            en_aviso.codigo,
+            list(Estacion.objects.con_reloj_desincronizado().values_list('codigo', flat=True)),
+        )
+        self.assertFalse(en_corte.reloj_incomunicado)
+        self.assertNotIn(
+            en_corte.codigo,
+            list(Estacion.objects.incomunicadas_por_reloj().values_list('codigo', flat=True)),
+        )
+
+    def test_la_vista_usa_el_queryset_y_no_rearma_el_criterio(self):
+        """Guarda contra la regresión: el criterio volvió a vivir en un solo lugar y la
+        vista no puede volver a armarlo a mano sin que esto falle."""
+        from django.conf import settings
+
+        fuente = (
+            Path(settings.BASE_DIR) / 'apps' / 'panel' / 'views' / 'estaciones.py'
+        ).read_text(encoding='utf-8')
+        self.assertIn('.desactualizadas()', fuente)
+        self.assertIn('con_zona_incorrecta', fuente)
+        # Los campos crudos del criterio no tienen por qué aparecer en la vista.
+        self.assertNotIn('version_objetivo', fuente)
+        self.assertNotIn('offset_utc_minutos', fuente)
+        self.assertNotIn('desfase_reloj_segundos', fuente)

@@ -225,8 +225,74 @@ class Farmacia(models.Model):
         return f'{self.codigo} ({self.grupo.codigo})'
 
 
+class EstacionQuerySet(models.QuerySet):
+    """Los criterios de "esta estación está mal" en SQL, en un solo lugar.
+
+    Existen porque cada uno de estos predicados estaba escrito DOS veces: como property
+    de `Estacion` (para una instancia, en una plantilla) y como filtro armado a mano en
+    `apps.panel.views.estaciones` (para un queryset, porque el contador de la tarjeta y
+    el filtro de la lista tienen que decir lo mismo y a ~1.800 estaciones no se puede
+    evaluar la property en Python sin traer la tabla entera y volver inútil la
+    paginación).
+
+    Dos copias del mismo criterio se desincronizan, y el síntoma es silencioso: la
+    tarjeta dice "12 desactualizadas", se la pulsa y salen 9. Nada falla; el número
+    simplemente deja de ser confiable, y con él la pantalla.
+
+    **No reemplazan a las properties y no pueden.** Un predicado SQL y uno en Python son
+    implementaciones distintas de la misma regla: hacer que la property consulte la base
+    costaría una query por fila. Lo que los mantiene juntos es
+    `EquivalenciaPredicadosEstacionTests`, que corre los dos sobre los mismos datos y
+    falla si difieren. Al cambiar un criterio hay que tocar los dos lados, y la prueba es
+    la que lo recuerda.
+    """
+
+    def desactualizadas(self):
+        """No corren la versión objetivo de su grupo. Espejo de `Estacion.desactualizada`.
+
+        Solo cuenta si el grupo tiene versión objetivo definida, y una estación que nunca
+        reportó `version_pos` ('') se considera desactualizada.
+        """
+        return self.exclude(farmacia__grupo__version_objetivo='').exclude(
+            version_pos=models.F('farmacia__grupo__version_objetivo'),
+        )
+
+    def con_reloj_desincronizado(self):
+        """Espejo de `Estacion.reloj_desincronizado`: se mira el valor ABSOLUTO, porque un
+        reloj atrasado rompe la firma igual que uno adelantado."""
+        return self._por_desfase(Estacion.UMBRAL_RELOJ_AVISO_SEGUNDOS)
+
+    def incomunicadas_por_reloj(self):
+        """Espejo de `Estacion.reloj_incomunicado`: pasado este desfase el agente descarta
+        todo mensaje firmado, incluido el que le arreglaría el reloj."""
+        return self._por_desfase(Estacion.UMBRAL_RELOJ_INCOMUNICADO_SEGUNDOS)
+
+    def _por_desfase(self, umbral):
+        return self.filter(
+            models.Q(desfase_reloj_segundos__gt=umbral)
+            | models.Q(desfase_reloj_segundos__lt=-umbral),
+        )
+
+    def con_zona_incorrecta(self):
+        """Espejo de `Estacion.zona_horaria_incorrecta`: las DOS condiciones.
+
+        El offset atrapa a la estación puesta en otro huso; el nombre, a la puesta en otro
+        país con el MISMO huso — ML016-B estaba en "Eastern Standard Time (Mexico)",
+        también UTC-5, e iba a pasar desapercibida mirando solo el offset.
+        """
+        offset_malo = models.Q(offset_utc_minutos__isnull=False) & ~models.Q(
+            offset_utc_minutos=Estacion.OFFSET_UTC_ESPERADO_MINUTOS,
+        )
+        zona_mala = ~models.Q(zona_horaria='') & ~models.Q(
+            zona_horaria=Estacion.ZONA_HORARIA_ESPERADA,
+        )
+        return self.filter(offset_malo | zona_mala)
+
+
 class Estacion(models.Model):
     """Equipo físico dentro de una farmacia (código FARMACIA-SUFIJO, ej. ML001-ADM)."""
+
+    objects = EstacionQuerySet.as_manager()
 
     class EstadoConexion(models.TextChoices):
         NUNCA_CONECTADA = 'nunca_conectada', 'Nunca conectada'
