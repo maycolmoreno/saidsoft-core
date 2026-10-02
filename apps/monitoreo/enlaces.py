@@ -197,14 +197,29 @@ def registrar_sondeo(farmacia, alcanzable: bool, latencia_ms: float | None):
 def sondear_enlaces_farmacias(farmacias=None) -> dict:
     """Sondea el enlace de cada farmacia con `ip_router` cargada. Devuelve un resumen.
 
-    **No se programa en Celery Beat**: desde el servidor central no hay ruta a esas IP
-    (ver el docstring del módulo). Se corre con `python manage.py sondear_enlaces` desde
-    un host que sí la tenga.
+    **Corre en Celery Beat cada 2 minutos** (`sondear-enlaces-farmacias`), y también a
+    mano con `python manage.py sondear_enlaces`.
 
-    Si el barrido falla casi entero, **no registra nada** y devuelve el resumen con
-    `abortado=True`. Esa es la diferencia entre una herramienta útil y uno que llena la
-    base de 704 caídas falsas la primera vez que alguien lo corre desde el lugar
-    equivocado.
+    Hasta el 2-oct-2026 este docstring decía lo contrario —"no se programa en Beat,
+    desde el servidor central no hay ruta a esas IP"—, que era cierto cuando se escribió
+    (24-ago-2026) y dejó de serlo el 11-sep, cuando se verificó sobre el NUC real que
+    host y contenedor sí alcanzan las IP de las farmacias y la tarea se agregó al
+    schedule. El docstring se quedó con la frase vieja, y eso hace diagnosticar al revés:
+    frente a estados de enlace congelados se concluye "nadie lo está corriendo" cuando en
+    realidad corre cada 2 minutos y está ABORTANDO.
+
+    Si el barrido falla casi entero (`UMBRAL_BARRIDO_SOSPECHOSO_PCT`), **no registra
+    nada** y devuelve el resumen con `abortado=True`. Esa es la diferencia entre una
+    herramienta útil y una que llena la base de 704 caídas falsas la primera vez que
+    alguien la corre desde el lugar equivocado.
+
+    **Cómo se ve un barrido que aborta, desde afuera:** los estados dejan de
+    actualizarse y `EstadoEnlaceFarmacia.ultima_verificacion` envejece parejo en TODA la
+    flota. No hay error en el panel ni alerta — solo el `logger.error` de más abajo. Si
+    ves todos los enlaces con la misma antigüedad de horas, buscá el abortado en el log
+    del worker antes de sospechar de las farmacias: lo más probable es que el que perdió
+    la ruta sea este host. Ver también `clasificar_caidas_simultaneas`, que distingue
+    'ceguera' (varios ISP a la vez = somos nosotros) de 'proveedor'.
     """
     from apps.catalogo.models import Farmacia
 

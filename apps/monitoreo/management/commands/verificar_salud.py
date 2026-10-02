@@ -85,6 +85,7 @@ class Command(BaseCommand):
         self._revisar_base(revisar)
         self._revisar_latidos(revisar)
         self._revisar_beat(revisar)
+        self._revisar_sondeo_enlaces(revisar)
         self._revisar_disco(revisar)
 
         if solo and solo not in revisados:
@@ -163,6 +164,43 @@ class Command(BaseCommand):
         revisar(
             'celery beat', minutos <= BEAT_UMBRAL_MINUTOS,
             'última muestra hace %.0f min (umbral %d min)' % (minutos, BEAT_UMBRAL_MINUTOS),
+        )
+
+    def _revisar_sondeo_enlaces(self, revisar):
+        """El barrido de enlaces corre cada 2 min, pero ABORTA si falla el 80% o más.
+
+        Ese abortado es la protección funcionando —asume que el que perdió la ruta es
+        este host, no que se cayeron 704 farmacias a la vez— y no registra nada. El
+        problema es que hasta el 2-oct-2026 era INVISIBLE: solo dejaba un `logger.error`
+        que nadie mira, mientras el panel seguía mostrando los últimos estados buenos
+        como si fueran de ahora. El síntoma que llegó fue "hay enlaces marcados caídos
+        que ya tienen conexión", y la causa real era que hacía 4,7 h que no se registraba
+        un solo sondeo.
+
+        Se mide por la frescura del estado y no leyendo el log: si `ultima_verificacion`
+        envejece parejo en toda la flota, el barrido no está escribiendo, sin importar
+        por qué. Misma idea que `_revisar_beat`, que infiere Beat de que sus tareas
+        escriban.
+        """
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+        from apps.monitoreo.services import TOLERANCIA_FRESCURA_MINUTOS
+
+        umbral = TOLERANCIA_FRESCURA_MINUTOS['enlaces']
+        ultima = (
+            EstadoEnlaceFarmacia.objects.order_by('-ultima_verificacion')
+            .values_list('ultima_verificacion', flat=True).first()
+        )
+        if ultima is None:
+            # Sin ninguna farmacia con `ip_router` cargada no hay nada que sondear, y eso
+            # es una instalación sin configurar, no un problema de salud.
+            revisar('sondeo de enlaces', True, 'ninguna farmacia sondeada todavía')
+            return
+        minutos = (timezone.now() - ultima).total_seconds() / 60
+        revisar(
+            'sondeo de enlaces', minutos <= umbral,
+            'último sondeo hace %.0f min (umbral %d min). Si está vencido, lo más probable '
+            'es que el barrido esté abortando por falta de ruta: buscar "Barrido de enlaces '
+            'abortado" en el log del worker.' % (minutos, umbral),
         )
 
     def _revisar_disco(self, revisar):

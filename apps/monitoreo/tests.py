@@ -6921,3 +6921,100 @@ class IdPorTelegramTests(TestCase):
         from apps.monitoreo.telegram_bot import _AYUDA
 
         self.assertIn('/id', _AYUDA)
+
+
+class SaludDelSondeoDeEnlacesTests(TestCase):
+    """El barrido de enlaces aborta en silencio y eso tiene que doler en algún lado.
+
+    `sondear_enlaces_farmacias` corre cada 2 min y, si falla el 80% o más, no registra
+    nada: asume que el que perdió la ruta es este host, no que se cayeron 704 farmacias
+    a la vez. Esa protección es correcta y hasta el 2-oct-2026 era INVISIBLE — solo un
+    `logger.error` que nadie mira.
+
+    El costo real, medido ese día: el NUC llevaba horas con `100% de 700 farmacias no
+    respondió` cada 2 minutos, y el panel mostraba los últimos estados buenos como si
+    fueran de ahora. El síntoma que llegó fue "hay enlaces marcados caídos que ya tienen
+    conexión". Nada fallaba; el tablero simplemente había dejado de mirar.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.services import TOLERANCIA_FRESCURA_MINUTOS
+
+        self.umbral = TOLERANCIA_FRESCURA_MINUTOS['enlaces']
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXSAL')
+        self.farmacia = Farmacia.objects.create(
+            codigo='SAL001', grupo=grupo, unidad_negocio=self.sg, ip_router='10.60.0.1',
+        )
+
+    def _correr(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        salida = StringIO()
+        try:
+            call_command('verificar_salud', stdout=salida, stderr=salida)
+            return salida.getvalue(), 0
+        except SystemExit as exc:
+            return salida.getvalue(), exc.code
+
+    def _sondear_hace(self, minutos):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        registrar_sondeo(self.farmacia, True, 10.0)
+        EstadoEnlaceFarmacia.objects.filter(farmacia=self.farmacia).update(
+            ultima_verificacion=timezone.now() - timedelta(minutes=minutos),
+        )
+
+    def test_un_sondeo_reciente_esta_sano(self):
+        self._sondear_hace(1)
+        texto, _ = self._correr()
+        self.assertIn('sondeo de enlaces', texto)
+        self.assertNotIn('PROBLEMA sondeo de enlaces', texto)
+
+    def test_un_sondeo_vencido_es_un_problema_y_sale_con_codigo_1(self):
+        """Es el caso real: el barrido aborta cada 2 min y los estados se congelan."""
+        self._sondear_hace(self.umbral + 60)
+        texto, codigo = self._correr()
+        self.assertIn('PROBLEMA', texto)
+        self.assertIn('sondeo de enlaces', texto)
+        self.assertEqual(codigo, 1)
+
+    def test_el_mensaje_dice_donde_buscar_la_causa(self):
+        """Un chequeo que dice "mal" sin decir qué mirar obliga a adivinar. La causa casi
+        siempre es el abortado por falta de ruta, y el log del worker lo dice textual."""
+        self._sondear_hace(self.umbral + 60)
+        texto, _ = self._correr()
+        self.assertIn('Barrido de enlaces abortado', texto)
+
+    def test_sin_ninguna_farmacia_sondeada_no_es_un_problema(self):
+        """Una instalación sin `ip_router` cargada no tiene nada que sondear: eso es
+        configuración pendiente, no un sistema enfermo. Marcarlo rojo llenaría de ruido
+        el primer día de cualquier despliegue.
+
+        Se corre con `--solo` para que el código de salida hable de ESTE chequeo: en una
+        base de prueba los workers no tienen latido y harían salir con 1 por su cuenta,
+        que es correcto pero no es lo que esta prueba mira.
+        """
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        salida = StringIO()
+        call_command('verificar_salud', '--solo', 'sondeo de enlaces', stdout=salida, stderr=salida)
+        self.assertIn('ninguna farmacia sondeada', salida.getvalue())
+        self.assertNotIn('PROBLEMA', salida.getvalue())
+
+    def test_se_puede_acotar_solo_a_este_componente(self):
+        """El healthcheck de un contenedor tiene que medirse a sí mismo (ver --solo)."""
+        self._sondear_hace(self.umbral + 60)
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        salida = StringIO()
+        with self.assertRaises(SystemExit):
+            call_command('verificar_salud', '--solo', 'sondeo de enlaces', stdout=salida, stderr=salida)
+        self.assertIn('sondeo de enlaces', salida.getvalue())
