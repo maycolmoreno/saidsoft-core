@@ -2651,18 +2651,45 @@ class VerificarSaludTests(TestCase):
 
         from django.conf import settings
 
+        from importlib import import_module
+
         from apps.monitoreo.management.commands import verificar_salud as cmd
-        from apps.panel.views.dashboard import RESPALDO_UMBRAL_HORAS, WORKER_MQTT_UMBRAL_SEGUNDOS
+        from apps.monitoreo.umbrales import RESPALDO_UMBRAL_HORAS, WORKER_MQTT_UMBRAL_SEGUNDOS
+
+        # `import_module` y no `from apps.panel.views import dashboard`: ese paquete hace
+        # `from .dashboard import dashboard` en su __init__, asi que el nombre resuelve a
+        # la VISTA y tapa al modulo. El atajo obvio daba
+        # "'function' object has no attribute WORKER_MQTT_UMBRAL_SEGUNDOS".
+        dashboard = import_module('apps.panel.views.dashboard')
 
         self.assertEqual(cmd.WORKER_MQTT_UMBRAL_SEGUNDOS, WORKER_MQTT_UMBRAL_SEGUNDOS)
         self.assertEqual(cmd.RESPALDO_UMBRAL_HORAS, RESPALDO_UMBRAL_HORAS)
+        self.assertEqual(dashboard.WORKER_MQTT_UMBRAL_SEGUNDOS, WORKER_MQTT_UMBRAL_SEGUNDOS)
+        self.assertEqual(dashboard.RESPALDO_UMBRAL_HORAS, RESPALDO_UMBRAL_HORAS)
 
         # Que coincidan hoy no alcanza: tienen que venir del MISMO lugar, o el dia que
-        # alguien ajuste el umbral del panel la consola se queda con el viejo y las dos
-        # afirman cosas distintas sin que nada falle.
-        fuente = (Path(settings.BASE_DIR) / 'apps' / 'monitoreo' / 'management' / 'commands'
-                  / 'verificar_salud.py').read_text(encoding='utf-8')
-        self.assertIn('from apps.panel.views.dashboard import', fuente)
+        # alguien ajuste uno la otra se queda con el viejo y las dos afirman cosas
+        # distintas sin que nada falle.
+        #
+        # Y ese lugar no puede ser una VISTA: hasta el 2-oct-2026 la fuente estaba en
+        # apps.panel.views.dashboard y este comando la importaba de ahi, con lo que el
+        # dominio dependia de la presentacion y se cerraba un ciclo panel <-> monitoreo.
+        # Se comprueba la direccion del import, no solo que los valores coincidan.
+        raiz = Path(settings.BASE_DIR)
+        fuente_cmd = (raiz / 'apps' / 'monitoreo' / 'management' / 'commands'
+                      / 'verificar_salud.py').read_text(encoding='utf-8')
+        self.assertIn('from apps.monitoreo.umbrales import', fuente_cmd)
+        # Se busca el IMPORT, no la cadena suelta: el docstring del comando nombra
+        # `apps.panel.views.dashboard` a proposito, para contar de donde salian los
+        # umbrales antes. Un assertNotIn('apps.panel') tropezaba con esa prosa.
+        for linea in fuente_cmd.splitlines():
+            self.assertFalse(
+                linea.startswith(('from apps.panel', 'import apps.panel')),
+                'El comando volvio a importar de apps.panel: %r' % linea,
+            )
+
+        fuente_panel = (raiz / 'apps' / 'panel' / 'views' / 'dashboard.py').read_text(encoding='utf-8')
+        self.assertIn('from apps.monitoreo.umbrales import', fuente_panel)
 
     def test_reporta_el_espacio_en_disco(self):
         """Por debajo del minimo, una purga o un respaldo pueden fallar a mitad de camino
@@ -2837,8 +2864,8 @@ class SeedReglasAlertaTests(TestCase):
     def test_las_reglas_de_servicios_del_POS_son_las_que_el_motor_usa(self):
         """Que existan no alcanza: si la severidad no coincidiera con la que
         evaluar_regla_servicio_pos busca, la regla quedaria decorativa."""
-        from apps.catalogo.models import Estacion, Farmacia, Grupo
-        from apps.monitoreo.models import Alerta, EstadoServicioPos, ReglaAlerta, UnidadNegocio
+        from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
+        from apps.monitoreo.models import Alerta, EstadoServicioPos, ReglaAlerta
         from apps.monitoreo.services import evaluar_regla_servicio_pos
 
         self._correr('--aplicar')

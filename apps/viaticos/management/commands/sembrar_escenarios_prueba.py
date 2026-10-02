@@ -29,8 +29,8 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.activos.models import Activo, CategoriaEquipo, Colaborador, Marca, UnidadNegocio
-from apps.catalogo.models import Estacion, Farmacia, Grupo
+from apps.activos.models import Activo, CategoriaEquipo, Colaborador, Marca
+from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
 from apps.mantenimiento.models import (
     EventoMantenimiento, Mantenimiento, MantenimientoProgramado, TipoMantenimiento,

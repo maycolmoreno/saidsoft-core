@@ -10,20 +10,16 @@ from apps.catalogo.services import calcular_matriz_cumplimiento
 from apps.cuentas.services import unidades_negocio_en_foco
 from apps.despliegues.models import Despliegue
 from apps.monitoreo.models import Alerta
+# Los dos umbrales de salud de la plataforma vivian ACA y el comando verificar_salud
+# los importaba, con lo que el dominio terminaba dependiendo de una vista. Ahora la
+# fuente de verdad esta en monitoreo y el panel la consume, que es la direccion
+# correcta (ver apps.monitoreo.umbrales).
+from apps.monitoreo.umbrales import RESPALDO_UMBRAL_HORAS, WORKER_MQTT_UMBRAL_SEGUNDOS
 from apps.mqtt_worker.models import WorkerHeartbeat
 from apps.mqtt_worker.management.commands.registrar_latido import NOMBRE_RESPALDO
 from apps.mqtt_worker.services import NOMBRE_WORKER_MQTT
 
 ONLINE_UMBRAL_MINUTOS = 5
-
-# 3x el intervalo de latido del worker (30s) con margen para jitter/latencia de red,
-# antes de considerar que dejó de reportarse.
-WORKER_MQTT_UMBRAL_SEGUNDOS = 90
-
-# El respaldo corre a las 02:00 (deploy/saidsoft-respaldo.timer). 26h = un día más dos
-# horas de gracia: alcanza para que un arranque tardío tras un corte de energía corra su
-# ejecución atrasada sin que el panel grite, y no tanto como para tapar un día perdido.
-RESPALDO_UMBRAL_HORAS = 26
 
 
 @login_required

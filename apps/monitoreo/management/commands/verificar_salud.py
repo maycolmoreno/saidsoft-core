@@ -16,18 +16,20 @@ un monitor externo puede avisar sin interpretar el texto.
     python manage.py verificar_salud
     python manage.py verificar_salud --silencioso    # solo los problemas
 
-Los umbrales salen de `apps.panel.views.dashboard` a propósito: son los mismos que ya
-usa el panel para pintar de rojo. Duplicarlos acá haría que la consola y la pantalla
-discreparan sobre qué es "sano".
+Los umbrales salen de `apps.monitoreo.umbrales`, que es el mismo lugar del que los lee
+el panel para pintar de rojo. Duplicarlos acá haría que la consola y la pantalla
+discreparan sobre qué es "sano", y hasta el 2-oct-2026 se evitaba al revés —
+importándolos de `apps.panel.views.dashboard`, o sea haciendo que este comando dependiera
+de una vista.
 """
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
 from django.utils import timezone
 
+from apps.monitoreo.umbrales import RESPALDO_UMBRAL_HORAS, WORKER_MQTT_UMBRAL_SEGUNDOS
 from apps.mqtt_worker.management.commands.registrar_latido import NOMBRE_RESPALDO
 from apps.mqtt_worker.models import WorkerHeartbeat
 from apps.mqtt_worker.services import NOMBRE_WORKER_MQTT
-from apps.panel.views.dashboard import RESPALDO_UMBRAL_HORAS, WORKER_MQTT_UMBRAL_SEGUNDOS
 
 NOMBRE_WORKER_MESHCENTRAL = 'meshcentral_worker'
 

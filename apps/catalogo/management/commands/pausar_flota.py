@@ -30,8 +30,7 @@ from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.activos.models import UnidadNegocio
-from apps.catalogo.models import Estacion
+from apps.catalogo.models import Estacion, UnidadNegocio
 from apps.catalogo.services import enviar_pausa
 
 
