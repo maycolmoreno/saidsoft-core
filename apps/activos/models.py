@@ -119,10 +119,16 @@ class Bodega(models.Model):
 class Colaborador(models.Model):
     """Receptor de activos y custodio de equipos (fusiona el Custodio de InvTICS).
 
-    Integración con RRHH prevista a futuro: `origen_sync`/`sincronizado_en` y
-    `cargo_directorio`/`departamento_directorio` (texto libre del sistema
-    externo) ya existen para cuando se conecte un sync real, pero hoy nada
-    los llena todavía.
+    `origen_sync`/`sincronizado_en` y `cargo_directorio`/`departamento_directorio`
+    (texto libre del sistema externo) los llena hoy
+    `apps.activos.management.commands.crear_tecnicos_soporte`, que es un alta puntual con
+    datos hardcodeados — NO una sincronización. Se quedan porque ese comando los usa y
+    porque distinguen a quien vino de una planilla de RRHH de quien se cargó a mano.
+
+    Lo que SÍ se eliminó (2-oct-2026) es el esquema de auditoría de corridas de
+    sincronización (`SyncEjecucion`/`SyncCambio`): existía vacío, esperando un conector
+    de RRHH que se decidió no hacer. Si algún día se conecta uno, el historial de sus
+    corridas se diseña entonces y con el origen real a la vista, no antes.
     """
     nombre = models.CharField(max_length=150)
     cedula = models.CharField(max_length=20, unique=True)
@@ -615,67 +621,3 @@ class EventoActivo(models.Model):
 
     def delete(self, *args, **kwargs):
         raise NotImplementedError('EventoActivo es inmutable: no se puede eliminar.')
-
-
-class SyncEjecucion(models.Model):
-    """Cabecera de una corrida de sincronización de colaboradores con RRHH externo.
-
-    Solo el esquema de auditoría: no hay conector real todavía (no hay un
-    sistema de RRHH definido), así que hoy nada crea filas aquí. Cuando
-    exista un origen real, el management command que lo ejecute debe crear
-    una fila de este modelo por corrida y una SyncCambio por cada
-    diferencia detectada.
-    """
-
-    class Origen(models.TextChoices):
-        MANUAL = 'manual', 'Manual'
-        URL = 'url', 'URL (API externa)'
-        ARCHIVO = 'archivo', 'Archivo (CSV/Excel)'
-
-    origen = models.CharField(max_length=10, choices=Origen.choices)
-    ejecutado_por = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='syncs_ejecutados',
-    )
-    creados = models.PositiveIntegerField(default=0)
-    actualizados = models.PositiveIntegerField(default=0)
-    inactivados = models.PositiveIntegerField(default=0)
-    reactivados = models.PositiveIntegerField(default=0)
-    sin_cambios = models.PositiveIntegerField(default=0)
-    advertencias = models.PositiveIntegerField(default=0)
-    ejecutado_en = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = 'sync_ejecucion'
-        ordering = ['-ejecutado_en']
-        verbose_name = 'Ejecución de sync RRHH'
-        verbose_name_plural = 'Ejecuciones de sync RRHH'
-
-    def __str__(self):
-        return f'Sync {self.get_origen_display()} @ {self.ejecutado_en:%Y-%m-%d %H:%M}'
-
-
-class SyncCambio(models.Model):
-    """Detalle de un cambio detectado (o una advertencia) dentro de una SyncEjecucion."""
-
-    class Tipo(models.TextChoices):
-        CREADO = 'creado', 'Creado'
-        ACTUALIZADO = 'actualizado', 'Actualizado'
-        INACTIVADO = 'inactivado', 'Inactivado'
-        REACTIVADO = 'reactivado', 'Reactivado'
-        ADVERTENCIA = 'advertencia', 'Advertencia'
-        ALERTA_ACTIVOS = 'alerta_activos', 'Alerta: tiene activos asignados'
-
-    ejecucion = models.ForeignKey(SyncEjecucion, on_delete=models.CASCADE, related_name='cambios')
-    tipo = models.CharField(max_length=20, choices=Tipo.choices)
-    cedula = models.CharField(max_length=20)
-    colaborador = models.ForeignKey(
-        Colaborador, on_delete=models.SET_NULL, null=True, blank=True, related_name='cambios_sync',
-    )
-    detalle = models.TextField(blank=True)
-
-    class Meta:
-        db_table = 'sync_cambio'
-        ordering = ['ejecucion', 'cedula']
-
-    def __str__(self):
-        return f'{self.get_tipo_display()} - {self.cedula}'

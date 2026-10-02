@@ -6,7 +6,7 @@ from apps.cuentas.services import scope_opcional_por_unidad_negocio
 from .models import (
     Activo, Bodega, Cargo, CategoriaEquipo, Colaborador, Departamento, EventoActivo,
     Marca, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, RecepcionLote, StockBodega,
-    SyncCambio, SyncEjecucion, TipoConsumible, Ubicacion,
+    TipoConsumible, Ubicacion,
 )
 
 
@@ -214,28 +214,3 @@ class ActivoAdmin(admin.ModelAdmin):
         return campos
 
 
-class SyncCambioInline(admin.TabularInline):
-    model = SyncCambio
-    extra = 0
-    readonly_fields = ('tipo', 'cedula', 'colaborador', 'detalle')
-    can_delete = False
-
-    def has_add_permission(self, request, obj=None):
-        return False
-
-
-@admin.register(SyncEjecucion)
-class SyncEjecucionAdmin(admin.ModelAdmin):
-    list_display = (
-        'origen', 'ejecutado_por', 'creados', 'actualizados', 'inactivados', 'reactivados',
-        'advertencias', 'ejecutado_en',
-    )
-    list_filter = ('origen',)
-    readonly_fields = (
-        'origen', 'ejecutado_por', 'creados', 'actualizados', 'inactivados', 'reactivados',
-        'sin_cambios', 'advertencias', 'ejecutado_en',
-    )
-    inlines = [SyncCambioInline]
-
-    def has_add_permission(self, request):
-        return False
