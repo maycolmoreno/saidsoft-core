@@ -8,7 +8,7 @@ import websocket
 from django.contrib.auth.models import Permission, User
 from django.core import mail
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -1258,6 +1258,54 @@ class SondeoEnlacesTests(TestCase):
         self.assertFalse(EstadoEnlaceFarmacia.objects.exists())
         self.assertFalse(EventoEnlaceFarmacia.objects.exists())
 
+    def test_un_oserror_local_no_se_cuenta_como_farmacia_caida(self):
+        """El 3-oct-2026 el monitoreo de enlaces estuvo horas ciego por esto.
+
+        `sondear_enlace` atrapaba OSError junto con el timeout y devolvía "no responde", así
+        que un host sin descriptores reportaba 700 farmacias caídas. Un OSError de
+        `subprocess.run` habla de ARRANCAR el proceso, no de la red: siempre es local.
+        """
+        import subprocess
+
+        from apps.monitoreo.enlaces import RecursosDelHostAgotados, sondear_enlace
+
+        # 24 = EMFILE, el que se vio en produccion.
+        with patch('subprocess.run', side_effect=OSError(24, 'Too many open files')):
+            with self.assertRaises(RecursosDelHostAgotados):
+                sondear_enlace('192.168.102.1')
+
+        # El timeout sigue siendo "no responde": eso sí es del enlace.
+        with patch('subprocess.run', side_effect=subprocess.TimeoutExpired('ping', 5)):
+            self.assertEqual(sondear_enlace('192.168.102.1'), (False, None))
+
+    def test_un_fallo_local_aborta_el_barrido_sin_escribir_nada(self):
+        """Ni una caída anotada, ni las de las farmacias que sí se alcanzó a sondear antes
+        del fallo: la base de la medición ya no se sostiene."""
+        from apps.catalogo.models import Farmacia, Grupo
+        from apps.monitoreo.enlaces import RecursosDelHostAgotados, sondear_enlaces_farmacias
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        grupo = Grupo.objects.get(codigo='TRX001')
+        for i in range(2, 6):
+            Farmacia.objects.create(
+                codigo=f'ML00{i}', grupo=grupo, unidad_negocio=self.farmacia.unidad_negocio,
+                ip_router=f'192.168.102.{i}',
+            )
+
+        with patch(
+            'apps.monitoreo.enlaces.sondear_enlace',
+            side_effect=RecursosDelHostAgotados('sin descriptores'),
+        ):
+            with self.assertLogs('apps.monitoreo.enlaces', level='ERROR') as registro:
+                resumen = sondear_enlaces_farmacias()
+
+        self.assertTrue(resumen['abortado'])
+        self.assertFalse(EstadoEnlaceFarmacia.objects.exists())
+        self.assertFalse(EventoEnlaceFarmacia.objects.exists())
+        # El motivo real tiene que quedar en el log, o el operador vuelve a salir a buscar
+        # el problema a las farmacias.
+        self.assertIn('sin descriptores', '\n'.join(registro.output))
+
     def test_el_barrido_registra_cuando_la_ruta_funciona(self):
         from apps.catalogo.models import Farmacia, Grupo
         from apps.monitoreo.enlaces import sondear_enlaces_farmacias
@@ -1859,6 +1907,70 @@ class DescubrimientoPorArpTests(TestCase):
         texto = salida.getvalue()
         self.assertIn('Farmacias leídas: 1', texto)
         self.assertIn('SIN inventariar', texto)
+
+
+class MotorSnmpTests(SimpleTestCase):
+    """`_motor_snmp`: el engine de pysnmp se cierra SIEMPRE.
+
+    Hasta el 3-oct-2026 las cuatro funciones SNMP de mikrotik.py creaban su engine y no lo
+    cerraban por ningún camino —no había `finally` en ninguna—, y cada consulta se llevaba
+    un socket UDP. A 700 farmacias cada 5 minutos eso son ~8.400 descriptores por hora, y
+    el proceso de Celery terminaba sin poder abrir ni la conexión a Postgres: el síntoma
+    fue `OSError(24, 'Too many open files')` levantado por el barrido de enlaces, que era
+    la víctima y no el culpable.
+
+    Se prueba el contrato —cerrar siempre— y no el conteo de descriptores: eso depende del
+    sistema operativo y no se puede afirmar igual en Windows y en el contenedor. La medición
+    real que confirmó la fuga (20 consultas sin cerrar = +20 descriptores, cerrando = +0)
+    está en el docstring de `_motor_snmp`.
+    """
+
+    def test_cierra_el_engine_al_salir(self):
+        from apps.monitoreo.mikrotik import _motor_snmp
+
+        with patch('apps.monitoreo.mikrotik.SnmpEngine') as FabricaEngine:
+            with _motor_snmp() as engine:
+                self.assertIs(engine, FabricaEngine.return_value)
+                engine.close_dispatcher.assert_not_called()
+
+        FabricaEngine.return_value.close_dispatcher.assert_called_once()
+
+    def test_cierra_el_engine_aunque_el_cuerpo_reviente(self):
+        """El camino que faltaba: una excepción a mitad de la consulta —un router que no
+        contesta, un timeout— no puede dejar el socket colgado."""
+        from apps.monitoreo.mikrotik import _motor_snmp
+
+        with patch('apps.monitoreo.mikrotik.SnmpEngine') as FabricaEngine:
+            with self.assertRaises(ValueError):
+                with _motor_snmp():
+                    raise ValueError('el router no contesta')
+
+        FabricaEngine.return_value.close_dispatcher.assert_called_once()
+
+    def test_ninguna_funcion_snmp_crea_un_engine_suelto(self):
+        """Guarda: el engine se pide SOLO por `_motor_snmp`.
+
+        Un `SnmpEngine()` nuevo fuera del contexto vuelve a filtrar, y la fuga no se ve en
+        los tests ni en el panel: se ve horas después, cuando el proceso no puede abrir
+        nada. Se buscan las LLAMADAS (`SnmpEngine()`), no el nombre suelto, porque el
+        import y los docstrings lo nombran a propósito.
+        """
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (Path(settings.BASE_DIR) / 'apps' / 'monitoreo' / 'mikrotik.py').read_text(
+            encoding='utf-8',
+        )
+        creaciones = [
+            linea for linea in fuente.splitlines()
+            if 'SnmpEngine()' in linea and not linea.strip().startswith('#')
+        ]
+        self.assertEqual(
+            len(creaciones), 1,
+            'El engine se crea fuera de `_motor_snmp` y eso filtra un socket por consulta: %r'
+            % creaciones,
+        )
 
 
 class AdminMikrotikTests(TestCase):

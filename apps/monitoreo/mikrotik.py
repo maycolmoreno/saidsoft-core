@@ -24,6 +24,7 @@ uniforme que no lo era:
 """
 import asyncio
 import logging
+from contextlib import contextmanager
 from datetime import timedelta
 
 from django.conf import settings
@@ -35,6 +36,34 @@ from pysnmp.hlapi.v3arch.asyncio import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _motor_snmp():
+    """Un `SnmpEngine` que se cierra SIEMPRE, por cualquier camino de salida.
+
+    Cada consulta SNMP abre un socket UDP, y pysnmp no lo libera cuando el engine queda
+    sin referencias: su dispatcher lo mantiene registrado. Hay que cerrarlo a mano.
+
+    Hasta el 3-oct-2026 las cuatro funciones de este módulo creaban su engine y no lo
+    cerraban en ningún camino —ni en el de éxito ni en el de excepción, no había `finally`
+    en ninguna—, así que se filtraba UN DESCRIPTOR POR CONSULTA. Medido con pysnmp 7.1.28:
+    20 `get_cmd` sin cerrar = +20 descriptores; cerrando = +0.
+
+    A escala de la flota eso son ~11.000 descriptores por hora (700 farmacias cada 5 min
+    en `sincronizar_ancho_banda_farmacias` más 700 cada 15 min en el sondeo de identidad),
+    y el proceso de Celery terminaba sin poder abrir NADA: el 3-oct-2026 el síntoma fue
+    `OSError(24, 'Too many open files')` levantado por el barrido de enlaces al intentar
+    la primera consulta a Postgres, diez milisegundos después de arrancar. El barrido no
+    era el culpable: era la primera víctima que no conseguía un descriptor.
+
+    Que el SNMP falle no evita la fuga: el socket se abre antes del timeout.
+    """
+    engine = SnmpEngine()
+    try:
+        yield engine
+    finally:
+        engine.close_dispatcher()
 
 # IP-MIB: ipRouteIfIndex de la ruta 0.0.0.0 (destino por defecto) — da directo el
 # ifIndex de la interfaz que el router está usando AHORA MISMO para salir a Internet,
@@ -197,64 +226,67 @@ async def _resolver_indice_interfaz_wan(ip, comunidad, puerto):
     """
     if ip in _cache_indice_interfaz:
         return _cache_indice_interfaz[ip]
-    engine = SnmpEngine()
-    try:
-        target = await UdpTransportTarget.create((ip, puerto), timeout=3, retries=0)
-        errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
-            engine, CommunityData(comunidad), target, ContextData(),
-            ObjectType(ObjectIdentity(_OID_IP_ROUTE_IF_INDEX_DEFAULT)),
-        )
-    except Exception:
-        logger.warning('Mikrotik %s: excepción resolviendo la interfaz WAN.', ip, exc_info=True)
-        return None
-    indice = None
-    if not (errorIndication or errorStatus):
+    # El `with` envuelve TODO el cuerpo y no solo el primer GET: el engine se vuelve a
+    # usar más abajo en `_resolver_wan_por_nexthop`, así que cerrarlo antes dejaría al
+    # camino alternativo sin motor.
+    with _motor_snmp() as engine:
         try:
-            indice = int(varBinds[0][1])
-        except (IndexError, ValueError, TypeError):
-            indice = None
-
-    # indice 0 es tan inutil como no tener respuesta: RouterOS lo devuelve cuando conoce
-    # la ruta pero no informa por que interfaz sale.
-    if not indice:
-        try:
-            indice = await _resolver_wan_por_nexthop(engine, ip, comunidad, target)
+            target = await UdpTransportTarget.create((ip, puerto), timeout=3, retries=0)
+            errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
+                engine, CommunityData(comunidad), target, ContextData(),
+                ObjectType(ObjectIdentity(_OID_IP_ROUTE_IF_INDEX_DEFAULT)),
+            )
         except Exception:
-            logger.warning('Mikrotik %s: excepción en el camino alternativo de la WAN.', ip, exc_info=True)
-            indice = None
+            logger.warning('Mikrotik %s: excepción resolviendo la interfaz WAN.', ip, exc_info=True)
+            return None
+        indice = None
+        if not (errorIndication or errorStatus):
+            try:
+                indice = int(varBinds[0][1])
+            except (IndexError, ValueError, TypeError):
+                indice = None
 
-    if not indice:
-        logger.warning(
-            'Mikrotik %s: no se pudo resolver la interfaz WAN, ni por ipRouteTable (%s) ni por el '
-            'nexthop de la ruta por defecto. El sitio va a aparecer "sin SNMP" aunque responda.',
-            ip, errorIndication or errorStatus or 'sin ifIndex',
-        )
-        return None
-    _cache_indice_interfaz[ip] = indice
-    return indice
+        # indice 0 es tan inutil como no tener respuesta: RouterOS lo devuelve cuando conoce
+        # la ruta pero no informa por que interfaz sale.
+        if not indice:
+            try:
+                indice = await _resolver_wan_por_nexthop(engine, ip, comunidad, target)
+            except Exception:
+                logger.warning('Mikrotik %s: excepción en el camino alternativo de la WAN.', ip, exc_info=True)
+                indice = None
+
+        if not indice:
+            logger.warning(
+                'Mikrotik %s: no se pudo resolver la interfaz WAN, ni por ipRouteTable (%s) ni por el '
+                'nexthop de la ruta por defecto. El sitio va a aparecer "sin SNMP" aunque responda.',
+                ip, errorIndication or errorStatus or 'sin ifIndex',
+            )
+            return None
+        _cache_indice_interfaz[ip] = indice
+        return indice
 
 
 async def _leer_contadores(ip, comunidad, puerto, indice):
     """GET de ifHCInOctets/ifHCOutOctets — nunca lanza, timeout corto (3s)."""
-    engine = SnmpEngine()
-    try:
-        target = await UdpTransportTarget.create((ip, puerto), timeout=3, retries=0)
-        errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
-            engine, CommunityData(comunidad), target, ContextData(),
-            ObjectType(ObjectIdentity(f'{_OID_IF_HC_IN_OCTETS}.{indice}')),
-            ObjectType(ObjectIdentity(f'{_OID_IF_HC_OUT_OCTETS}.{indice}')),
-        )
-    except Exception:
-        logger.warning('Mikrotik %s: excepción leyendo contadores.', ip, exc_info=True)
-        return None
-    if errorIndication or errorStatus:
-        logger.warning('Mikrotik %s: error leyendo contadores (%s).', ip, errorIndication or errorStatus)
-        return None
-    try:
-        return int(varBinds[0][1]), int(varBinds[1][1])
-    except (IndexError, ValueError, TypeError):
-        logger.warning('Mikrotik %s: respuesta SNMP con forma inesperada.', ip)
-        return None
+    with _motor_snmp() as engine:
+        try:
+            target = await UdpTransportTarget.create((ip, puerto), timeout=3, retries=0)
+            errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
+                engine, CommunityData(comunidad), target, ContextData(),
+                ObjectType(ObjectIdentity(f'{_OID_IF_HC_IN_OCTETS}.{indice}')),
+                ObjectType(ObjectIdentity(f'{_OID_IF_HC_OUT_OCTETS}.{indice}')),
+            )
+        except Exception:
+            logger.warning('Mikrotik %s: excepción leyendo contadores.', ip, exc_info=True)
+            return None
+        if errorIndication or errorStatus:
+            logger.warning('Mikrotik %s: error leyendo contadores (%s).', ip, errorIndication or errorStatus)
+            return None
+        try:
+            return int(varBinds[0][1]), int(varBinds[1][1])
+        except (IndexError, ValueError, TypeError):
+            logger.warning('Mikrotik %s: respuesta SNMP con forma inesperada.', ip)
+            return None
 
 
 async def _sondear_farmacia(farmacia, puerto):
@@ -420,37 +452,37 @@ async def _leer_identidad(ip, comunidad, puerto):
     no los conoce devuelve "No Such Object" para esos y contesta igual los otros, así que
     un equipo que no sea Mikrotik igual entrega modelo, nombre y uptime.
     """
-    engine = SnmpEngine()
-    try:
-        target = await UdpTransportTarget.create((ip, puerto), timeout=3, retries=0)
-        errorIndication, errorStatus, _errorIndex, varBinds = await get_cmd(
-            engine, CommunityData(comunidad), target, ContextData(),
-            ObjectType(ObjectIdentity(_OID_SYS_DESCR)),
-            ObjectType(ObjectIdentity(_OID_SYS_UPTIME)),
-            ObjectType(ObjectIdentity(_OID_SYS_NAME)),
-            ObjectType(ObjectIdentity(_OID_MTXR_VERSION)),
-            ObjectType(ObjectIdentity(_OID_MTXR_SERIE)),
-        )
-    except Exception:
-        logger.warning('Mikrotik %s: excepción leyendo la identidad.', ip, exc_info=True)
-        return None
-    if errorIndication or errorStatus:
-        logger.warning('Mikrotik %s: error leyendo la identidad (%s).', ip, errorIndication or errorStatus)
-        return None
+    with _motor_snmp() as engine:
+        try:
+            target = await UdpTransportTarget.create((ip, puerto), timeout=3, retries=0)
+            errorIndication, errorStatus, _errorIndex, varBinds = await get_cmd(
+                engine, CommunityData(comunidad), target, ContextData(),
+                ObjectType(ObjectIdentity(_OID_SYS_DESCR)),
+                ObjectType(ObjectIdentity(_OID_SYS_UPTIME)),
+                ObjectType(ObjectIdentity(_OID_SYS_NAME)),
+                ObjectType(ObjectIdentity(_OID_MTXR_VERSION)),
+                ObjectType(ObjectIdentity(_OID_MTXR_SERIE)),
+            )
+        except Exception:
+            logger.warning('Mikrotik %s: excepción leyendo la identidad.', ip, exc_info=True)
+            return None
+        if errorIndication or errorStatus:
+            logger.warning('Mikrotik %s: error leyendo la identidad (%s).', ip, errorIndication or errorStatus)
+            return None
 
-    valores = [_texto_snmp(v) for _n, v in varBinds]
-    if len(valores) != 5:
-        logger.warning('Mikrotik %s: respuesta de identidad con forma inesperada.', ip)
-        return None
+        valores = [_texto_snmp(v) for _n, v in varBinds]
+        if len(valores) != 5:
+            logger.warning('Mikrotik %s: respuesta de identidad con forma inesperada.', ip)
+            return None
 
-    descr, uptime, nombre, version, serie = valores
-    return {
-        'modelo': descr,
-        'uptime_segundos': int(uptime) // _CENTESIMAS_POR_SEGUNDO if uptime.isdigit() else None,
-        'nombre_sistema': nombre,
-        'version_routeros': version,
-        'numero_serie': serie,
-    }
+        descr, uptime, nombre, version, serie = valores
+        return {
+            'modelo': descr,
+            'uptime_segundos': int(uptime) // _CENTESIMAS_POR_SEGUNDO if uptime.isdigit() else None,
+            'nombre_sistema': nombre,
+            'version_routeros': version,
+            'numero_serie': serie,
+        }
 
 
 def _texto_snmp(valor) -> str:
@@ -604,33 +636,33 @@ def _ip_e_indice_desde_oid(oid: str):
 
 async def _leer_tabla_arp(ip, comunidad, puerto):
     """`[(mac, ip, ifIndex), …]` o None si no se pudo consultar. Nunca lanza."""
-    engine = SnmpEngine()
     filas = []
-    try:
-        target = await UdpTransportTarget.create((ip, puerto), timeout=4, retries=0)
-        async for errorIndication, errorStatus, _errorIndex, varBinds in bulk_walk_cmd(
-            engine, CommunityData(comunidad), target, ContextData(),
-            0, 20, ObjectType(ObjectIdentity(_OID_ARP)), lexicographicMode=False,
-        ):
-            if errorIndication or errorStatus:
-                logger.warning(
-                    'Mikrotik %s: error recorriendo la tabla ARP (%s).',
-                    ip, errorIndication or errorStatus,
-                )
-                return None
-            for nombre, valor in varBinds:
-                mac = _normalizar_mac(valor)
-                indice, ip_vista = _ip_e_indice_desde_oid(nombre)
-                if mac and ip_vista:
-                    filas.append((mac, ip_vista, indice))
-            if len(filas) >= _MAX_ENTRADAS_ARP:
-                logger.warning(
-                    'Mikrotik %s: la tabla ARP superó %d entradas, se corta.', ip, _MAX_ENTRADAS_ARP,
-                )
-                break
-    except Exception:
-        logger.warning('Mikrotik %s: excepción recorriendo la tabla ARP.', ip, exc_info=True)
-        return None
+    with _motor_snmp() as engine:
+        try:
+            target = await UdpTransportTarget.create((ip, puerto), timeout=4, retries=0)
+            async for errorIndication, errorStatus, _errorIndex, varBinds in bulk_walk_cmd(
+                engine, CommunityData(comunidad), target, ContextData(),
+                0, 20, ObjectType(ObjectIdentity(_OID_ARP)), lexicographicMode=False,
+            ):
+                if errorIndication or errorStatus:
+                    logger.warning(
+                        'Mikrotik %s: error recorriendo la tabla ARP (%s).',
+                        ip, errorIndication or errorStatus,
+                    )
+                    return None
+                for nombre, valor in varBinds:
+                    mac = _normalizar_mac(valor)
+                    indice, ip_vista = _ip_e_indice_desde_oid(nombre)
+                    if mac and ip_vista:
+                        filas.append((mac, ip_vista, indice))
+                if len(filas) >= _MAX_ENTRADAS_ARP:
+                    logger.warning(
+                        'Mikrotik %s: la tabla ARP superó %d entradas, se corta.', ip, _MAX_ENTRADAS_ARP,
+                    )
+                    break
+        except Exception:
+            logger.warning('Mikrotik %s: excepción recorriendo la tabla ARP.', ip, exc_info=True)
+            return None
     return filas
 
 

@@ -493,11 +493,21 @@ CELERY_BEAT_SCHEDULE = {
     'sincronizar-ancho-banda-farmacias': {
         'task': 'apps.monitoreo.tasks.sincronizar_ancho_banda_farmacias_task',
         # Cada 5 min: mismo orden de magnitud que las demás tareas de apps.monitoreo.
-        # Sondeo DIRECTO desde este servidor -- confirmado 24-ago-2026 que no tiene
-        # ninguna ruta de red hacia las IPs privadas de las farmacias, así que hoy
-        # nunca logra sondear nada (solo loguea warnings). Se deja programada por si
-        # algún día existe una ruta VPN real; mientras tanto el dato real viene de
-        # 'sondear-red-farmacias-via-agente', abajo.
+        # Sondeo SNMP DIRECTO desde este servidor. El comentario anterior afirmaba que
+        # "no tiene ninguna ruta de red hacia las IPs privadas de las farmacias, así que
+        # hoy nunca logra sondear nada" (24-ago-2026). Eso dejó de ser cierto: el
+        # 3-oct-2026 se verificó desde el contenedor que las IP de las farmacias
+        # responden (20/20 en 8-27 ms), igual que ya se había corregido en el docstring
+        # de apps.monitoreo.enlaces por la misma frase vieja.
+        #
+        # Importa más de lo que parece: mientras se creyó que esta tarea "no lograba
+        # nada", se la descartó como sospechosa — y era la que filtraba ~8.400
+        # descriptores por hora, porque la fuga ocurre al abrir el socket, ANTES de que
+        # el sondeo tenga éxito o falle (ver _motor_snmp en apps.monitoreo.mikrotik).
+        # Una tarea que "no hace nada" igual consume recursos.
+        #
+        # El dato de ancho de banda que el panel muestra viene de
+        # 'sondear-red-farmacias-via-agente', abajo, que lo pide por MQTT al agente.
         'schedule': 60.0 * 5,
     },
     'sondear-red-farmacias-via-agente': {

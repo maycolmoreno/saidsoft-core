@@ -71,13 +71,39 @@ UMBRAL_BARRIDO_SOSPECHOSO_PCT = 80
 _RE_LATENCIA = re.compile(r'(?:time|tiempo)[=<]\s*([\d.,]+)\s*m', re.IGNORECASE)
 
 
-class PingNoDisponible(RuntimeError):
+class FalloLocalDeSondeo(RuntimeError):
+    """Base de los fallos que son de ESTE host y no del enlace de la farmacia.
+
+    Existe porque los dos se ven idénticos desde afuera —"no respondió"— y confundirlos
+    hace diagnosticar al revés: se sale a buscar el problema a 700 farmacias cuando está
+    en el servidor que pregunta. Todo lo que herede de acá tiene que ABORTAR el barrido
+    con el motivo real, nunca contarse como una caída.
+    """
+
+
+class PingNoDisponible(FalloLocalDeSondeo):
     """No hay binario `ping` en este host.
 
     Tiene excepción propia porque el síntoma es engañoso: `subprocess.run` de un binario
     inexistente levanta FileNotFoundError, que el sondeo trataría como "no respondió", y
     el barrido entero se vería idéntico a una flota caída o a una ruta rota. Pasó de
     verdad — la imagen de producción no traía `iputils-ping` (ver deploy/Dockerfile).
+    """
+
+
+class RecursosDelHostAgotados(FalloLocalDeSondeo):
+    """Este host no pudo ni LANZAR el ping: se quedó sin descriptores, memoria o procesos.
+
+    El 3-oct-2026 esto tumbó el monitoreo de enlaces durante horas y nadie lo supo, porque
+    `sondear_enlace` atrapaba el `OSError` junto con el timeout y devolvía "no responde".
+    El panel mostraba 700 farmacias caídas; lo que pasaba era que el proceso de Celery
+    había agotado sus descriptores por una fuga de sockets SNMP (ver `_motor_snmp` en
+    apps/monitoreo/mikrotik.py) y no conseguía ni abrir un pipe para `ping`.
+
+    Un `OSError` de `subprocess.run` SIEMPRE es local: habla de arrancar el proceso, no de
+    la red. Cuando el ping sale y el destino no contesta, eso llega por `returncode`, no
+    por excepción. Por eso se puede separar sin ambigüedad del timeout, que sí es del
+    enlace.
     """
 
 
@@ -115,8 +141,18 @@ def sondear_enlace(ip: str, timeout=TIMEOUT_SEGUNDOS) -> tuple[bool, float | Non
             # "Tiempo de espera agotado" revienta el decode y pierde el sondeo entero.
             errors='replace',
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired:
+        # Esto sí es del enlace: el ping salió y nadie contestó a tiempo.
         return False, None
+    except OSError as error:
+        # Esto NO es del enlace: no se pudo arrancar el proceso. Se propaga para que el
+        # barrido aborte diciendo el motivo real, en vez de anotar una caída falsa por
+        # farmacia. Ver RecursosDelHostAgotados.
+        raise RecursosDelHostAgotados(
+            f'Este host no pudo lanzar `ping` hacia {ip}: {error}. No es una caída del '
+            'enlace — revisá los recursos del proceso (descriptores, memoria) antes de '
+            'sospechar de la farmacia.',
+        ) from error
 
     if proceso.returncode != 0:
         return False, None
@@ -296,16 +332,28 @@ def sondear_enlaces_farmacias(farmacias=None) -> dict:
     # operador leería "se cayó la ruta" cuando en realidad falta un paquete del sistema.
     verificar_ping_disponible()
 
-    with ThreadPoolExecutor(max_workers=MAX_SONDEOS_CONCURRENTES) as pool:
-        resultados = list(pool.map(lambda f: (f, *sondear_enlace(str(f.ip_router))), farmacias))
+    try:
+        with ThreadPoolExecutor(max_workers=MAX_SONDEOS_CONCURRENTES) as pool:
+            resultados = list(pool.map(lambda f: (f, *sondear_enlace(str(f.ip_router))), farmacias))
+    except FalloLocalDeSondeo as error:
+        # El problema es de este host, así que no hay NINGÚN resultado que valga: anotar
+        # las farmacias que alcanzamos a sondear antes del fallo mezclaría medidas buenas
+        # con una base que ya no se sostiene. Se aborta entero y se dice por qué.
+        logger.error('Barrido de enlaces abortado sin registrar nada: %s', error)
+        resumen.update(abortado=True)
+        return resumen
 
     fallidos = sum(1 for _, alcanzable, _lat in resultados if not alcanzable)
     pct_fallido = 100 * fallidos / len(resultados)
     if pct_fallido >= UMBRAL_BARRIDO_SOSPECHOSO_PCT:
         logger.error(
             'Barrido de enlaces abortado: %.0f%% de %d farmacias no respondió. Eso no son caídas '
-            'simultáneas, es que este host no tiene ruta hacia las IP de las farmacias. No se '
-            'registró nada.', pct_fallido, len(resultados),
+            'simultáneas: el problema está en este host o en su ruta hacia las farmacias. No se '
+            'registró nada. Buscá antes en este mismo log un fallo local (ver '
+            'FalloLocalDeSondeo) y recién después sospechá de la ruta — el 3-oct-2026 este '
+            'mensaje decía "no hay ruta" como un hecho y la causa era una fuga de descriptores '
+            'en el propio proceso, con la red intacta.',
+            pct_fallido, len(resultados),
         )
         resumen.update(abortado=True, sondeadas=len(resultados), caidas=fallidos)
         return resumen
