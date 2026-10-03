@@ -290,6 +290,18 @@ def registrar_software_instalado(*, estacion, programas: list) -> int:
     los tolera en un `bulk_create`. Esa regla depende del `unique_together` de ESTA
     tabla, y hasta el 2-oct-2026 vivia en el worker — que para escribir aca tenia que
     conocer una restriccion de un modelo ajeno.
+
+    NO marca `Estacion.software_instalado_ultima_verificacion`: ese sello queda a cargo
+    de quien llama (hoy `apps.mqtt_worker.services.manejar_software_instalado`). Es a
+    proposito y es la unica diferencia con su hermano `catalogo.registrar_perifericos`,
+    que si sella su fecha adentro: `Estacion` es de `catalogo`, asi que alla el sello es
+    una escritura propia, y aca seria `software` escribiendo un modelo ajeno — justo el
+    acoplamiento que esta extraccion vino a quitar. Encapsular una fecha no vale
+    estrenar una dependencia de `software` hacia `catalogo`.
+
+    La contra, que conviene saber: un segundo llamador que se olvide del sello deja la
+    fecha vieja sin que nada falle. Si algun dia aparece, el lugar correcto para el sello
+    es un servicio de `catalogo` que lo haga explicito, no un import desde aca.
     """
     from .models import SoftwareInstaladoDetectado
 

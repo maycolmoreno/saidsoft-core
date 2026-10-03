@@ -3645,14 +3645,42 @@ class GuardarClaveBitlockerTests(TestCase):
 
         Acá se comprueba solo lo de BitLocker, que es lo que esta extracción resolvió.
         El resto de los imports ajenos sigue, y cada uno se va con su propio commit.
+
+        Se mira el IMPORT y el USO, no la cadena suelta en el archivo. Un
+        `assertNotIn('crypto', fuente)` es una subcadena de seis letras que cualquier
+        comentario futuro —«acá no se cifra», «ver apps.catalogo.crypto»— rompería sin que
+        hubiera nada mal, y el worker TIENE que poder nombrar en prosa a quién le delega.
+        Ese atajo ya dio dos fallos falsos en este trabajo: uno con `apps.panel`
+        tropezando con el docstring que cuenta de dónde salían los umbrales (ver
+        `monitoreo.tests.VerificarSaludTests.test_los_umbrales_son_los_mismos_que_usa_el_panel`) y
+        otro con los nombres de modelo en las pruebas de ingesta.
         """
         from django.conf import settings
 
         fuente = (
             Path(settings.BASE_DIR) / 'apps' / 'mqtt_worker' / 'services.py'
         ).read_text(encoding='utf-8')
-        self.assertNotIn('ClaveRecuperacionBitLocker', fuente)
-        self.assertNotIn('crypto', fuente)
+
+        for linea in fuente.splitlines():
+            desnuda = linea.strip()
+            if desnuda.startswith(('import ', 'from ')):
+                self.assertNotIn(
+                    'crypto', desnuda,
+                    'El worker volvió a importar el cifrado de catalogo: %r' % linea,
+                )
+                self.assertNotIn(
+                    'ClaveRecuperacionBitLocker', desnuda,
+                    'El worker volvió a importar el modelo del secreto: %r' % linea,
+                )
+            self.assertNotIn(
+                'ClaveRecuperacionBitLocker.objects', desnuda,
+                'El worker volvió a escribir la tabla del secreto: %r' % linea,
+            )
+            self.assertNotIn(
+                'crypto.cifrar', desnuda,
+                'El worker volvió a cifrar un secreto ajeno: %r' % linea,
+            )
+
         self.assertIn('guardar_clave_bitlocker', fuente)
 
 
