@@ -23,6 +23,8 @@ Este es un proyecto independiente: no comparte carpeta con el sistema viejo.
 >   Escenarios de carga, límites técnicos y puntos únicos de falla.
 > - [`docs/prioridad-2030.md`](docs/prioridad-2030.md) — **qué atender primero**: cada
 >   módulo en camino crítico, necesario para escalar, aguas abajo o prematuro.
+> - [`docs/auditoria-arquitectura.md`](docs/auditoria-arquitectura.md) — auditoría técnica
+>   del panel y addendum trazable de modularidad y ciclo de vida de una estación.
 
 Nació como el reemplazo del panel de una sola operación (despliegues de POS +
 inventario de activos IT para CRESIO), y se extendió a una plataforma multi-cliente
@@ -1018,6 +1020,66 @@ alertas de estación, serían ~2.000 envíos diarios — Gmail los corta y nadie
 - Si el SMTP falla, el evento **se marca igual** como avisado y ese correo se pierde. Es
   deliberado: reintentar acumularía el backlog y lo mandaría de golpe al volver el SMTP, que
   es justo el correo ilegible que este diseño evita.
+- **Una farmacia dada de baja (`activa=False`) no genera un solo aviso más** — ni de
+  caída ni de recuperación. Ver la sección siguiente: hasta el 2-oct-2026 sí los
+  generaba, y era el reporte más fácil de hacer y el más difícil de explicar.
+
+### Dar de baja una farmacia la calla de verdad (`activa=False`)
+
+Reportado el 2-oct-2026: *"deshabilité GP063 en el admin para no recibir más la alerta
+de caída de enlace y me sigue saliendo"*. Y tenía razón. `activa=False` frenaba el
+**sondeo** (`sondear_enlaces_farmacias` filtraba por ese flag) y **nada más**, así que
+todo lo que el último sondeo ya había escrito se quedaba vivo:
+
+- el `EventoEnlaceFarmacia` seguía con `fin=None`, y
+- el `EstadoEnlaceFarmacia` seguía en `alcanzable=False`.
+
+Y acá está el nudo: **como ya nadie la sondeaba, nada podía recuperarla nunca.** Solo
+`registrar_sondeo()` cierra una caída, y a esa farmacia no se la volvía a sondear. La
+caída quedaba congelada y abierta para siempre, y la leían el Centro de Monitoreo, el KPI
+"enlaces caídos", la tabla de `/monitoreo/enlaces/` y el `/enlaces` del bot. Peor: el
+aviso por correo y Telegram **no filtraba por `activa`**, así que una caída abierta justo
+antes de la baja salía igual en la corrida siguiente. Destildar la casilla no solo no
+alcanzaba: dejaba el sitio clavado en rojo sin manera de bajarlo.
+
+Qué se cambió, en cuatro lugares porque el síntoma salía por cuatro puertas:
+
+- **`registrar_sondeo()` ignora a las farmacias de baja y devuelve `None`.** La guarda
+  va en el punto único por donde pasa todo sondeo y no solo en el barrido: la API de
+  ingesta (`/api/v1/monitoreo/enlaces/sondeo/`) y el `--farmacia CODIGO` del comando
+  entraban por otra puerta y seguían abriendo caídas en un sitio dado de baja.
+- **`dar_de_baja_enlace(farmacia)`** (en `apps/monitoreo/enlaces.py`) **cierra** la caída
+  en curso con `fin=ahora` y devuelve el estado a `alcanzable=None` ("sin sondear", que
+  es la verdad de un sitio que ya no se sondea — dejarlo en `True` mentiría al revés).
+  La caída se cierra y **no se borra**: el histórico de lo que pasó mientras el sitio
+  estaba en operación es lo que sostiene un reclamo de SLA hacia atrás. También la marca
+  como recuperación ya avisada, para que no salga después un *"GP063 volvió"* por algo
+  que no volvió: se dio de baja. Es idempotente.
+- **`FarmaciaAdmin.save_model`** lo llama al destildar la casilla, y avisa en pantalla
+  que se cerró la caída en curso. Va en el admin y **no en una señal** a propósito: el
+  admin es el único lugar que escribe `activa` (los importadores crean, no dan de baja) y
+  este proyecto no usa señales en ninguna app — esconder un efecto así detrás de un
+  `post_save` haría mucho más difícil encontrar por qué se cerró una caída.
+- **El aviso y las cuatro pantallas filtran por `activa=True`**: `notificar_cambios_enlaces`
+  (caídas y recuperaciones), `resumen_operacion` (el KPI), la tabla de enlaces del panel,
+  los eventos abiertos del Centro de Monitoreo y el `/enlaces` del bot.
+
+**Para las bajas que ya estaban hechas antes de este arreglo** hay un comando: el flag ya
+está en `False` y el evento colgado sigue ahí, y nadie va a volver a guardar esa farmacia
+en el admin solo para disparar la limpieza.
+
+    python manage.py limpiar_enlaces_de_baja                    # informa qué haría
+    python manage.py limpiar_enlaces_de_baja --aplicar          # escribe
+    python manage.py limpiar_enlaces_de_baja --farmacia GP063   # una sola
+
+Simula por defecto y exige `--aplicar`, como el resto de los comandos que escriben en
+masa. Lista solo las farmacias de baja que **tienen algo colgado** (las demás ya están
+limpias y son cientos), e idempotente: correrlo dos veces no cambia nada la segunda.
+
+Lo que la baja **no** toca: `Farmacia.activa` sigue siendo el flag de catálogo y no un
+silenciador de alertas de estación. Para callar alertas de estaciones por una ventana de
+tiempo está `VentanaMantenimiento`, que es otra cosa y entra por
+`abrir_o_mantener_alerta`.
 
 **Si el host con ruta no alcanza la base de datos**, hay una segunda vía: una sonda liviana
 mide y reporta por HTTP, y el servidor persiste con el mismo `registrar_sondeo()`.

@@ -91,6 +91,34 @@ class FarmaciaAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         return scope_por_unidad_negocio(super().get_queryset(request), request.user, 'unidad_negocio')
 
+    def save_model(self, request, obj, form, change):
+        """Al destildar `activa`, limpia también el rastro del monitoreo de enlace.
+
+        Sin esto, `activa=False` frena el sondeo pero deja viva la última caída: el
+        evento sigue con `fin=None` y el estado con `alcanzable=False`, y como ya nadie
+        sondea el sitio, nada lo recupera nunca. El operador destilda la casilla y la
+        farmacia le sigue apareciendo caída para siempre — pasó con GP063 el
+        2-oct-2026, que es por lo que esto existe.
+
+        Va en el admin y no en una señal porque el admin es el único lugar que escribe
+        `activa` (los importadores crean, no dan de baja) y este proyecto no usa señales
+        en ninguna app: esconder un efecto así detrás de un `post_save` sería el primer
+        caso, y hace mucho más difícil de encontrar por qué se cerró una caída. Si algún
+        día otra vía da de baja farmacias, el punto a llamar es
+        `apps.monitoreo.enlaces.dar_de_baja_enlace`, que es idempotente.
+        """
+        from apps.monitoreo.enlaces import dar_de_baja_enlace
+
+        super().save_model(request, obj, form, change)
+        if not obj.activa:
+            resultado = dar_de_baja_enlace(obj)
+            if resultado['caidas_cerradas']:
+                messages.info(
+                    request,
+                    f'{obj.codigo} quedó dada de baja: se cerró su caída de enlace en curso y '
+                    'dejará de contar como caída y de generar avisos.',
+                )
+
     @admin.display(description='Estaciones')
     def total_estaciones(self, obj):
         return obj.estaciones.count()

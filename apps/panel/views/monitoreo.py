@@ -304,7 +304,8 @@ def centro_monitoreo_partial(request):
     # reimplementar el corte del circuito, que ya tiene su propia sutileza documentada.
     eventos = list(
         EventoEnlaceFarmacia.objects
-        .filter(fin__isnull=True, farmacia__unidad_negocio__in=unidades)
+        .filter(fin__isnull=True, farmacia__unidad_negocio__in=unidades,
+                farmacia__activa=True)
         .exclude(farmacia__estado_enlace__respondio_alguna_vez=False)
         .select_related('farmacia')
         .order_by('inicio')[:_MAX_FILAS_CENTRO]

@@ -1,9 +1,12 @@
 """Sondea por ICMP el enlace de cada farmacia y registra sus caídas.
 
-**Correr desde un host que tenga ruta hacia las IP de las farmacias.** El servidor
-central no la tiene (confirmado el 24-ago-2026: 100% de pérdida de ping, sin entrada en
-la tabla de rutas), por eso esto NO está programado en Celery Beat — ver el docstring de
-`apps.monitoreo.enlaces` y `docs/evaluacion-cresio-enlaces.md`.
+**Correr desde un host que tenga ruta hacia las IP de las farmacias.** Hasta el
+2-oct-2026 acá decía que el servidor central no la tiene y que por eso esto NO está
+programado en Celery Beat: las dos mitades son falsas desde el 11-sep-2026, cuando se
+verificó sobre el NUC real que host y contenedor sí alcanzan esas IP y la tarea se
+agregó al schedule (`sondear-enlaces-farmacias`, cada 2 min). Este comando es la vía
+MANUAL del mismo sondeo, para correrlo desde otro host o probar una farmacia suelta —
+ver el docstring de `apps.monitoreo.enlaces` y `docs/evaluacion-cresio-enlaces.md`.
 
     python manage.py sondear_enlaces                    # un barrido y sale
     python manage.py sondear_enlaces --intervalo 60     # queda sondeando (como un servicio)
@@ -50,6 +53,16 @@ class Command(BaseCommand):
                 raise CommandError(
                     f'{farmacias[0].codigo} no tiene `ip_router` cargada. Se carga con '
                     'importar_red_farmacias_xlsx.',
+                )
+            # Se avisa en vez de sondear y no escribir: `registrar_sondeo` ignora a las
+            # farmacias dadas de baja (y hace bien — es lo que hace que destildar `activa`
+            # calle de verdad el enlace), pero desde acá eso se vería como un barrido que
+            # anduvo y no dejó rastro, que es justo el síntoma más difícil de diagnosticar.
+            if not farmacias[0].activa:
+                raise CommandError(
+                    f'{farmacias[0].codigo} está dada de baja (`activa=False`): no se la sondea '
+                    'ni se registra su estado. Si querés volver a monitorearla, tildá `activa` '
+                    'en el admin.',
                 )
         else:
             farmacias = list(Farmacia.objects.filter(activa=True).exclude(ip_router__isnull=True))

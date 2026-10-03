@@ -85,8 +85,14 @@ def enlaces_farmacias_lista(request):
         .order_by('-timestamp')
     )
 
+    # `activa=True`, el mismo filtro que usa el barrido (`sondear_enlaces_farmacias`).
+    # Sin él la pantalla listaba sitios que nadie sondea, con el último estado que
+    # alcanzaron a dejar congelado — o sea, una farmacia dada de baja mientras estaba
+    # caída seguía contando en el KPI "caídas" para siempre y nada podía recuperarla
+    # (reportado con GP063 el 2-oct-2026). Que el panel muestre más que lo que el
+    # monitoreo mira es cómo se llega a un número que no se puede hacer bajar.
     base = scope_por_unidad_negocio_activa(
-        Farmacia.objects.exclude(ip_router__isnull=True),
+        Farmacia.objects.filter(activa=True).exclude(ip_router__isnull=True),
         request, 'unidad_negocio',
     ).select_related('estado_enlace', 'grupo').annotate(
         bw_rx=Subquery(ultima_muestra.values('red_recibido_kbps')[:1]),

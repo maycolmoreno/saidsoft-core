@@ -94,13 +94,22 @@ class SondeoEnlaceIngestaView(APIView):
                 Farmacia.objects.filter(codigo__in=codigos), request.user, 'unidad_negocio',
             )
         }
-        desconocidas = sorted(set(codigos) - set(visibles))
+        # Las dadas de baja se separan ANTES de contar, y no se dejan caer dentro de
+        # `desconocidas`: existen y están en el alcance de la sonda, simplemente ya no se
+        # monitorean. `registrar_sondeo` igual las ignoraría (es la guarda de fondo), pero
+        # entonces la respuesta diría "registrados: 5" habiendo escrito 4, y el operador
+        # de la sonda no tendría forma de saber cuál no entró. Un conteo que no cuadra con
+        # lo que se escribió es peor que un error.
+        de_baja = sorted(c for c, f in visibles.items() if not f.activa)
+        visibles = {c: f for c, f in visibles.items() if f.activa}
+        desconocidas = sorted(set(codigos) - set(visibles) - set(de_baja))
 
         conocidos = [r for r in resultados if r['farmacia'] in visibles]
         if not conocidos:
             return Response(
-                {'detail': 'Ninguna de las farmacias reportadas existe o está en tu alcance.',
-                 'desconocidas': desconocidas},
+                {'detail': 'Ninguna de las farmacias reportadas existe, está en tu alcance o '
+                           'sigue activa.',
+                 'desconocidas': desconocidas, 'de_baja': de_baja},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -138,4 +147,5 @@ class SondeoEnlaceIngestaView(APIView):
             'activas': activas,
             'caidas': caidas,
             'desconocidas': desconocidas,
+            'de_baja': de_baja,
         })

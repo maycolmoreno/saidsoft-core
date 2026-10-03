@@ -4013,3 +4013,79 @@ cuerpo viejo y pasa con el nuevo, pero la comprobación que cierra esto es un
 re-enrolamiento real contra EMQX 5.8.3 (runbook en `deploy/README-produccion.md`). Hasta
 entonces, rotar `MQTT_PASSWORD_AGENTE`/`COMANDO_HMAC_SECRET` y correr
 `deploy/emqx-narrow-acl-agente.sh` siguen bloqueados por precaución, no por el bug.
+
+
+## §10-AW — Dar de baja una farmacia no la callaba: la caída congelada (2-oct-2026)
+
+Reportado por el usuario: *"tengo una farmacia GP063 que ya la deshabilité desde admin
+para ya no recibir alertas de caída de enlace, pero me sigue saliendo"*. Era un bug real
+y de los incómodos: **la única palanca que el operador tenía para dar de baja un sitio
+funcionaba a medias, y la mitad que no funcionaba no tenía forma de arreglarse desde la
+interfaz.**
+
+`activa=False` frenaba el **sondeo** y nada más — `sondear_enlaces_farmacias` filtra por
+ese flag, y ahí terminaba todo el respeto por la baja. Lo que el último sondeo ya había
+escrito seguía vivo: el `EventoEnlaceFarmacia` con `fin=None` y el `EstadoEnlaceFarmacia`
+en `alcanzable=False`.
+
+**El nudo está en esa combinación, no en ninguna de las dos piezas.** El único código que
+cierra una caída es `registrar_sondeo()`, y a una farmacia de baja no se la vuelve a
+sondear. O sea: la condición que hace que deje de sondearse es la misma que impide que su
+caída se cierre jamás. Queda congelada y abierta **para siempre**, y la leen cuatro
+lugares distintos (Centro de Monitoreo, KPI `enlaces_caidos`, tabla de
+`/monitoreo/enlaces/`, `/enlaces` del bot). Y el aviso por correo/Telegram no filtraba por
+`activa`, así que una caída abierta justo antes de la baja salía igual en la corrida
+siguiente.
+
+Es la clase de bug que no aparece en ninguna prueba porque **cada pieza por separado era
+correcta**: el barrido respetaba el flag, `registrar_sondeo` cerraba las caídas que veía,
+el aviso mandaba lo que estaba abierto. Lo que faltaba era que alguien se preguntara qué
+pasa con un estado que ya nadie va a volver a tocar. Generalizable: **cuando un flag deja
+de generar datos nuevos, hay que preguntarse qué pasa con los viejos** — en un modelo de
+estado-actual + eventos-abiertos, apagar el productor congela al consumidor.
+
+Se arregló en cuatro lugares, porque el síntoma salía por cuatro puertas:
+
+| Qué | Dónde | Por qué ahí |
+|---|---|---|
+| Guarda de baja en el sondeo | `enlaces.registrar_sondeo` → `None` si `not farmacia.activa` | Punto único por donde pasa **todo** sondeo. Ponerla solo en el barrido dejaba abiertas la API de ingesta y el `--farmacia CODIGO` del comando, que seguían abriendo caídas en un sitio de baja |
+| Limpieza de la baja | `enlaces.dar_de_baja_enlace(farmacia)` | Cierra la caída con `fin=ahora` y devuelve el estado a `alcanzable=None`. Idempotente |
+| Disparo automático | `catalogo.admin.FarmaciaAdmin.save_model` | El admin es el único lugar que escribe `activa` |
+| Filtro en aviso y pantallas | `notificar_cambios_enlaces`, `resumen_operacion`, panel de enlaces, Centro de Monitoreo, `/enlaces` del bot | Defensa en profundidad: el filtro tapa el aviso, la limpieza cierra el evento |
+
+Tres decisiones que vale la pena dejar escritas:
+
+- **La caída se CIERRA, no se borra.** El histórico de lo que de verdad pasó mientras el
+  sitio estaba en operación es lo que sostiene cualquier reclamo de SLA hacia atrás, y es
+  el dato que no se puede reconstruir después. Borrarlo sería barato hoy y caro en la
+  próxima negociación con el proveedor.
+- **El estado vuelve a `alcanzable=None`, no a `True`.** `None` significa "nunca se
+  sondeó", que es exactamente la verdad de una farmacia que ya no se sondea, y es el único
+  valor que ninguna pantalla cuenta como caída. Dejarlo en `True` mentiría al revés:
+  diría que responde.
+- **La caída se marca como recuperación ya avisada.** Si no, el aviso siguiente mandaría
+  un *"GP063 volvió"* por algo que no volvió: se dio de baja. Mismo criterio que la regla
+  de recuperaciones huérfanas que ya existía.
+
+**En el admin y no en una señal.** Este proyecto no usa señales en ninguna de sus 15 apps,
+y `activa` solo se escribe desde el admin (los importadores crean farmacias, no las dan de
+baja). Un `post_save` habría sido el primer caso del repo y haría mucho más difícil
+encontrar por qué se cerró una caída. Si algún día otra vía da de baja farmacias, el punto
+a llamar es `dar_de_baja_enlace`, que para eso es idempotente.
+
+**Las bajas ya hechas necesitan un empujón.** El arreglo del admin no es retroactivo: las
+farmacias dadas de baja antes de hoy tienen el flag en `False` y el evento colgado, y nadie
+va a volver a guardarlas en el admin solo para disparar la limpieza. Para eso está
+`python manage.py limpiar_enlaces_de_baja` (simula por defecto, exige `--aplicar`, acepta
+`--farmacia CODIGO`). **Es el paso que hay que correr en producción para GP063.**
+
+De paso se corrigió el docstring de `sondear_enlaces.py`, que seguía afirmando que el
+servidor central no tiene ruta a las farmacias y que por eso la tarea no está en Beat —
+las dos mitades son falsas desde el 11-sep-2026 y `enlaces.py` ya lo había corregido en su
+propio docstring. Y el comando ahora **falla con un mensaje claro** si se le pasa
+`--farmacia` de un sitio de baja, en vez de sondear y no escribir nada: un barrido que
+anduvo y no dejó rastro es el síntoma más difícil de diagnosticar que existe.
+
+12 pruebas nuevas en `FarmaciaDeBajaNoAvisaTests`, una por cada puerta: el sondeo directo,
+el barrido, el aviso de caída, el de recuperación huérfana, la limpieza, su idempotencia,
+el `save_model` del admin por HTTP real, el KPI, el panel, el bot y las dos del comando.

@@ -94,7 +94,10 @@ def _comando_enlaces() -> str:
     """
     from .models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
 
-    estados = EstadoEnlaceFarmacia.objects.select_related('farmacia')
+    # Solo farmacias activas: una dada de baja no se sondea mas, asi que su estado queda
+    # congelado en lo ultimo que alcanzo a reportar y ninguna recuperacion lo va a bajar
+    # (reportado con GP063 el 2-oct-2026). Mismo filtro que el barrido y que el panel.
+    estados = EstadoEnlaceFarmacia.objects.filter(farmacia__activa=True).select_related('farmacia')
     caidas = [e for e in estados.filter(alcanzable=False) if not e.nunca_respondio]
     nunca = estados.filter(alcanzable=False, respondio_alguna_vez=False).count()
     activos = estados.filter(alcanzable=True).count()
@@ -888,7 +891,9 @@ def _teclado_farmacias():
     from .models import EstadoEnlaceFarmacia, EstadoServicioPos
 
     codigos = []
-    for estado in EstadoEnlaceFarmacia.objects.filter(alcanzable=False).select_related('farmacia'):
+    for estado in (EstadoEnlaceFarmacia.objects
+                   .filter(alcanzable=False, farmacia__activa=True)
+                   .select_related('farmacia')):
         if not estado.nunca_respondio:
             codigos.append(estado.farmacia.codigo)
     con_pos_caido = (
@@ -900,7 +905,7 @@ def _teclado_farmacias():
     # Sin nada roto, se ofrecen las que tienen agente: son las únicas con detalle rico.
     if not codigos:
         codigos = list(
-            Farmacia.objects.filter(estaciones__estado_aprobacion='aprobada')
+            Farmacia.objects.filter(activa=True, estaciones__estado_aprobacion='aprobada')
             .values_list('codigo', flat=True).distinct()
         )
 

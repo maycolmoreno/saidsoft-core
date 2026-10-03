@@ -7018,3 +7018,203 @@ class SaludDelSondeoDeEnlacesTests(TestCase):
         with self.assertRaises(SystemExit):
             call_command('verificar_salud', '--solo', 'sondeo de enlaces', stdout=salida, stderr=salida)
         self.assertIn('sondeo de enlaces', salida.getvalue())
+
+
+@override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'])
+class FarmaciaDeBajaNoAvisaTests(TestCase):
+    """Dar de baja una farmacia (`activa=False`) tiene que CALLAR su enlace, de verdad.
+
+    Reportado el 2-oct-2026 con GP063: "la deshabilité en el admin para no recibir más la
+    alerta de caída de enlace y me sigue saliendo". El flag frenaba el sondeo y nada más,
+    así que la última caída quedaba abierta para siempre — nadie volvía a sondear el
+    sitio, o sea que nada podía recuperarla — y seguía contando en el Centro de
+    Monitoreo, en el KPI, en `/enlaces` del bot y en la tabla de enlaces.
+    """
+
+    def setUp(self):
+        self.unidad = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX903')
+        self.farmacia = Farmacia.objects.create(
+            codigo='TSTB01', grupo=self.grupo, unidad_negocio=self.unidad, ip_router='10.0.0.63',
+        )
+        _fijar_umbral_aviso(0)
+
+    def _caer(self, farmacia=None):
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        farmacia = farmacia or self.farmacia
+        registrar_sondeo(farmacia, True, 12.0)  # para que no sea "nunca respondió"
+        for _ in range(EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS):
+            registrar_sondeo(farmacia, False, None)
+
+    def _dar_de_baja(self):
+        """Pone el flag en False sin pasar por el admin: así quedaron las farmacias dadas
+        de baja ANTES de este arreglo, y es el estado que hay que soportar."""
+        self.farmacia.activa = False
+        self.farmacia.save(update_fields=['activa'])
+
+    def test_un_sondeo_de_una_farmacia_de_baja_no_se_registra(self):
+        """La guarda está en `registrar_sondeo` y no solo en el barrido, porque la API de
+        ingesta y el `--farmacia CODIGO` del comando entran por otra puerta."""
+        from apps.monitoreo.enlaces import registrar_sondeo
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        self._dar_de_baja()
+        for _ in range(5):
+            self.assertIsNone(registrar_sondeo(self.farmacia, False, None))
+
+        self.assertFalse(EventoEnlaceFarmacia.objects.filter(farmacia=self.farmacia).exists())
+
+    def test_el_barrido_no_la_sondea(self):
+        from apps.monitoreo.enlaces import sondear_enlaces_farmacias
+
+        self._dar_de_baja()
+        self.assertEqual(sondear_enlaces_farmacias()['sondeadas'], 0)
+
+    def test_una_caida_abierta_no_se_avisa_despues_de_la_baja(self):
+        """El caso exacto del reporte: la caída se abrió mientras estaba activa, y el
+        aviso salía en la corrida siguiente aunque ya se la hubiera dado de baja."""
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        self._caer()
+        self._dar_de_baja()
+
+        mail.outbox = []
+        resumen = notificar_cambios_enlaces()
+
+        self.assertEqual(resumen['caidos'], 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_dar_de_baja_enlace_cierra_la_caida_y_limpia_el_estado(self):
+        from apps.monitoreo.enlaces import dar_de_baja_enlace
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        self._caer()
+        resultado = dar_de_baja_enlace(self.farmacia)
+
+        self.assertEqual(resultado['caidas_cerradas'], 1)
+        evento = EventoEnlaceFarmacia.objects.get(farmacia=self.farmacia)
+        self.assertIsNotNone(evento.fin, 'la caída se cierra, no se borra: el histórico queda')
+        self.assertIsNotNone(evento.recuperacion_notificada_en,
+                             'marcada como avisada: no se recuperó, se dio de baja')
+        estado = EstadoEnlaceFarmacia.objects.get(farmacia=self.farmacia)
+        self.assertIsNone(estado.alcanzable, 'ya no se la sondea: eso es "sin sondear", no "activa"')
+        self.assertEqual(estado.fallas_consecutivas, 0)
+
+    def test_dar_de_baja_enlace_es_idempotente(self):
+        from apps.monitoreo.enlaces import dar_de_baja_enlace
+
+        self._caer()
+        dar_de_baja_enlace(self.farmacia)
+        self.assertEqual(dar_de_baja_enlace(self.farmacia)['caidas_cerradas'], 0)
+
+    def test_tras_la_baja_no_sale_un_aviso_de_recuperacion_huerfano(self):
+        """Avisar "TSTB01 volvió" sería mentir: no volvió, se dio de baja."""
+        from apps.monitoreo.enlaces import dar_de_baja_enlace, notificar_cambios_enlaces
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        self._caer()
+        notificar_cambios_enlaces()  # avisa la caída, con la farmacia todavía activa
+        self.assertTrue(EventoEnlaceFarmacia.objects.filter(
+            farmacia=self.farmacia, notificado_en__isnull=False).exists())
+
+        self._dar_de_baja()
+        dar_de_baja_enlace(self.farmacia)
+
+        mail.outbox = []
+        resumen = notificar_cambios_enlaces()
+        self.assertEqual(resumen['recuperados'], 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_el_admin_limpia_al_destildar_activa(self):
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        self._caer()
+        usuario = User.objects.create_user(username='admin_baja', password='x',
+                                           is_superuser=True, is_staff=True)
+        self.client.force_login(usuario)
+
+        url = reverse('admin:catalogo_farmacia_change', args=[self.farmacia.pk])
+        datos = {
+            'codigo': self.farmacia.codigo, 'nombre': '', 'tipo': 'farmacia',
+            'grupo': self.grupo.pk, 'unidad_negocio': self.unidad.pk,
+            'ubicacion': '', 'telefono': '', 'email': '', 'observacion': '',
+            'segmento_red': '', 'tipo_enlace': '', 'circuito_proveedor': '',
+            'ip_router': '10.0.0.63',
+            'administrador': '', 'coordinador_zonal': '', 'coordinador_regional': '',
+            'ciudad': '', 'provincia': '', 'parroquia': '', 'direccion': '', 'horario': '',
+            'tipo_sucursal': '', 'formato_farmacia': '',
+            # `activa` ausente = casilla destildada, que es lo que hace el operador.
+        }
+        self.client.post(url, datos)
+
+        self.farmacia.refresh_from_db()
+        self.assertFalse(self.farmacia.activa, 'el POST tiene que haber guardado la baja')
+        evento = EventoEnlaceFarmacia.objects.get(farmacia=self.farmacia)
+        self.assertIsNotNone(evento.fin, 'destildar la casilla tiene que cerrar la caída en curso')
+
+    def test_no_cuenta_en_el_kpi_del_centro_de_monitoreo(self):
+        from apps.monitoreo.services import resumen_operacion
+
+        self._caer()
+        self.assertEqual(resumen_operacion([self.unidad])['enlaces_caidos'], 1)
+
+        self._dar_de_baja()
+        self.assertEqual(resumen_operacion([self.unidad])['enlaces_caidos'], 0,
+                         'una farmacia de baja no es un enlace caído que alguien pueda resolver')
+
+    def test_no_sale_en_la_tabla_de_enlaces_del_panel(self):
+        self._caer()
+        self._dar_de_baja()
+
+        usuario = User.objects.create_user(username='panel_baja', password='x',
+                                           is_superuser=True, is_staff=True)
+        self.client.force_login(usuario)
+        respuesta = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta.context['caidas'], 0)
+        self.assertNotContains(respuesta, 'TSTB01')
+
+    def test_no_sale_en_enlaces_del_bot(self):
+        from apps.monitoreo.telegram_bot import _comando_enlaces
+
+        self._caer()
+        self.assertIn('TSTB01', _comando_enlaces())
+
+        self._dar_de_baja()
+        self.assertNotIn('TSTB01', _comando_enlaces())
+
+    def test_el_comando_de_limpieza_simula_por_defecto(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        self._caer()
+        self._dar_de_baja()
+
+        salida = StringIO()
+        call_command('limpiar_enlaces_de_baja', stdout=salida)
+        self.assertIn('TSTB01', salida.getvalue())
+        self.assertIsNone(EventoEnlaceFarmacia.objects.get(farmacia=self.farmacia).fin,
+                          'sin --aplicar no escribe nada')
+
+        call_command('limpiar_enlaces_de_baja', '--aplicar', stdout=StringIO())
+        self.assertIsNotNone(EventoEnlaceFarmacia.objects.get(farmacia=self.farmacia).fin)
+
+    def test_el_comando_de_limpieza_no_toca_una_farmacia_activa(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        self._caer()
+        with self.assertRaises(CommandError):
+            call_command('limpiar_enlaces_de_baja', '--farmacia', 'TSTB01', '--aplicar',
+                         stdout=StringIO())
+        self.assertIsNone(EventoEnlaceFarmacia.objects.get(farmacia=self.farmacia).fin)

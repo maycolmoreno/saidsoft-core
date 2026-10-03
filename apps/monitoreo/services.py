@@ -1237,8 +1237,13 @@ def resumen_operacion(unidades=None) -> dict:
     # Se excluye lo que NUNCA respondió: no es una caída sino configuración pendiente, y
     # contarlo como incidente infla el tablero con algo que nadie va a resolver hoy.
     # Mismo criterio que ya aplican notificar_cambios_enlaces y evaluar_regla_servicio_pos.
+    # Y se excluyen las farmacias dadas de baja: ya nadie las sondea, asi que su ultimo
+    # estado queda congelado y nada lo puede recuperar. Una dada de baja mientras estaba
+    # caida sumaba a este contador para siempre (reportado con GP063 el 2-oct-2026).
     enlaces_caidos = _por_unidad(
-        EstadoEnlaceFarmacia.objects.filter(alcanzable=False, respondio_alguna_vez=True),
+        EstadoEnlaceFarmacia.objects.filter(
+            alcanzable=False, respondio_alguna_vez=True, farmacia__activa=True,
+        ),
         unidades, 'farmacia__unidad_negocio',
     ).count()
 

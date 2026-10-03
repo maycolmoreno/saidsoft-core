@@ -140,8 +140,20 @@ def registrar_sondeo(farmacia, alcanzable: bool, latencia_ms: float | None):
     La caída no se declara al primer fallo: un paquete ICMP se pierde por mil motivos.
     Se cuentan `UMBRAL_FALLAS_CONSECUTIVAS` sondeos fallidos seguidos, igual que hacía
     `Cresio_enlaces`. La recuperación sí es inmediata — si respondió, está viva.
+
+    **Una farmacia con `activa=False` no se registra y devuelve None.** La guarda vive
+    acá y no solo en el barrido porque `activa=False` es la única palanca que tiene el
+    operador para dar de baja un sitio, y hasta el 2-oct-2026 solo la respetaba
+    `sondear_enlaces_farmacias`: la API de ingesta (`apps.monitoreo.api_views`) y el
+    `--farmacia CODIGO` del comando seguían escribiendo, así que un sitio dado de baja
+    volvía a abrir caídas por la puerta de al lado. Siendo este el punto único por donde
+    pasa todo sondeo, la baja se respeta venga el dato de donde venga.
     """
     from .models import ConfiguracionMonitoreo, EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+    if not farmacia.activa:
+        logger.debug('Sondeo de %s ignorado: la farmacia está dada de baja (activa=False).', farmacia.codigo)
+        return None
 
     ahora = timezone.now()
     umbral_fallas = ConfiguracionMonitoreo.obtener().fallas_consecutivas_enlace
@@ -192,6 +204,51 @@ def registrar_sondeo(farmacia, alcanzable: bool, latencia_ms: float | None):
             abierta.save(update_fields=['fin'])
             logger.info('Enlace RECUPERADO en %s tras %s min', farmacia.codigo, abierta.duracion_minutos)
     return estado
+
+
+def dar_de_baja_enlace(farmacia) -> dict:
+    """Limpia el rastro de monitoreo de enlace de una farmacia dada de baja.
+
+    Por qué hace falta y no alcanza con `activa=False`: el flag frena el SONDEO, pero no
+    toca lo que el último sondeo ya dejó escrito. Si la farmacia estaba caída cuando se
+    la dio de baja, quedan dos cosas vivas:
+
+    - un `EventoEnlaceFarmacia` con `fin=None`, que todas las pantallas de caídas en
+      curso leen (Centro de Monitoreo, `/enlaces` del bot, el detalle de la farmacia), y
+    - un `EstadoEnlaceFarmacia` con `alcanzable=False`, que es lo que cuenta el KPI
+      "enlaces caídos" de `resumen_operacion`.
+
+    Como ya nadie la sondea, nada la va a recuperar nunca: la caída se congela y el sitio
+    aparece caído para siempre. Es el síntoma que se reportó con GP063 el 2-oct-2026 —
+    "la deshabilité en el admin y me sigue saliendo la alerta".
+
+    La caída se CIERRA (no se borra) con `fin=ahora`: el historial de lo que de verdad
+    pasó mientras el sitio estaba en operación no se toca, que es lo que sostiene
+    cualquier reclamo de SLA hacia atrás. Y se marca como notificada para que
+    `notificar_cambios_enlaces` no mande después un "GP063 se recuperó" por algo que no
+    se recuperó: se dio de baja.
+
+    Idempotente: correrlo dos veces no cambia nada la segunda.
+    """
+    from .models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+    ahora = timezone.now()
+    cerrados = EventoEnlaceFarmacia.objects.filter(farmacia=farmacia, fin__isnull=True).update(
+        fin=ahora, recuperacion_notificada_en=ahora,
+    )
+    # El estado vuelve a `alcanzable=None` ("nunca se sondeó"), que es exactamente la
+    # verdad de una farmacia que ya no se sondea — y el único valor que ninguna pantalla
+    # cuenta como caída. Dejarlo en True mentiría al revés: diría que responde.
+    estados = EstadoEnlaceFarmacia.objects.filter(farmacia=farmacia).update(
+        alcanzable=None, latencia_ms=None, fallas_consecutivas=0, primer_fallo=None,
+        ultimo_cambio_estado=ahora,
+    )
+    if cerrados or estados:
+        logger.info(
+            'Enlace de %s dado de baja: %d caída(s) cerrada(s), %d estado(s) limpiado(s).',
+            farmacia.codigo, cerrados, estados,
+        )
+    return {'caidas_cerradas': cerrados, 'estados_limpiados': estados}
 
 
 def sondear_enlaces_farmacias(farmacias=None) -> dict:
@@ -412,9 +469,16 @@ def notificar_cambios_enlaces() -> dict:
     ahora = timezone.now()
     minimos = ConfiguracionMonitoreo.obtener().minutos_minimos_aviso_enlace
     corte = ahora - timedelta(minutes=minimos)
+    # `farmacia__activa=True` en las dos consultas: una farmacia dada de baja no debe
+    # generar un solo aviso más, ni de caída ni de recuperación. El sondeo ya la
+    # respetaba, pero el aviso no, así que una caída abierta justo antes de la baja
+    # seguía saliendo por correo y Telegram (reportado con GP063 el 2-oct-2026). El
+    # filtro no reemplaza a `dar_de_baja_enlace` sino que lo complementa: el filtro tapa
+    # el aviso, la limpieza cierra el evento para que tampoco quede colgado en el panel.
     caidos = list(
         EventoEnlaceFarmacia.objects
-        .filter(fin__isnull=True, notificado_en__isnull=True, inicio__lte=corte)
+        .filter(fin__isnull=True, notificado_en__isnull=True, inicio__lte=corte,
+                farmacia__activa=True)
         .exclude(farmacia__estado_enlace__respondio_alguna_vez=False)
         .select_related('farmacia').order_by('inicio')
     )
@@ -426,7 +490,7 @@ def notificar_cambios_enlaces() -> dict:
     recuperados = list(
         EventoEnlaceFarmacia.objects
         .filter(fin__isnull=False, recuperacion_notificada_en__isnull=True,
-                notificado_en__isnull=False)
+                notificado_en__isnull=False, farmacia__activa=True)
         .select_related('farmacia').order_by('fin')
     )
     resumen = {'caidos': len(caidos), 'recuperados': len(recuperados), 'enviado': False}
