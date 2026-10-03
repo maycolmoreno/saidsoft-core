@@ -1242,7 +1242,55 @@ La tabla de `/monitoreo/enlaces/` tiene dos columnas parecidas y conviene no con
   monitoreadas: TELCONET 579, PUNTO NET 109, FIBROMARK 5, ETAPA 4, y tres sueltas.
 - **Circuito** (`Farmacia.circuito_proveedor`) — el identificador del enlace, con la
   forma `cliente-sitio-ciudad` (`sangregorio-7deagosto-buenafe`). Es **lo que el
-  proveedor te pide al abrir el ticket**. Falta en 145 farmacias.
+  proveedor te pide al abrir el ticket**.
+
+#### Carga masiva del circuito: estaba en el Excel que ya se importaba
+
+Faltaba en ~149 farmacias, y el dato estuvo todo el tiempo en el mismo archivo que el
+proyecto ya procesa. `importar_red_farmacias_xlsx` lee de `DATOS DE FARMACIAS.xlsx`
+(hojas FARMAMIA y SAN GREGORIO) ciudad, provincia, nodo, segmento de red, tipo de
+enlace, backup e IP desde agosto de 2026 — y **la columna del circuito nunca se mapeó**.
+
+Se llama `Login`, y ahí está el porqué de que se pasara por alto: el nombre no se parece
+ni al del campo ni al de los CSV de enlaces, donde la misma cosa se llama
+`caracteristica`. Mientras tanto el correo de caída salía con `circuito: -` y había que
+buscarlo en un Excel aparte justo cuando la farmacia está sin vender.
+
+Medido sobre el archivo real (3-oct-2026): **702 circuitos para 702 filas** — FARMAMIA
+309 de 311, SAN GREGORIO 393 de 393 — y ni un solo código con dos circuitos distintos.
+De esos, 696 tienen la forma limpia `cliente-sitio-ciudad`; los 6 restantes se cargan
+igual pero el comando los lista uno por uno para que se los mire:
+
+- **5 traen un número de ticket** en vez de un circuito (`PID: 20843536`,
+  `ID cliente: I0244711`, `ID: I0252489`). Es el identificador que ese proveedor pide de
+  todas formas, así que dejar la farmacia vacía sería peor.
+- **1 trae dos circuitos separados por barra** (`GLC07`:
+  `sangregorio-callequito-concord / farmamia-glc07`). No se parte en dos: elegir cuál es
+  el vigente sería adivinar.
+
+`importar_circuitos_proveedor` ahora acepta ese `.xlsx` además de los dos CSV de antes
+(mismo comando, porque es el único dueño de ese campo y ya simulaba por defecto):
+
+    python manage.py importar_circuitos_proveedor "docs/DATOS DE FARMACIAS(3).xlsx" --solo-faltantes
+    python manage.py importar_circuitos_proveedor "docs/DATOS DE FARMACIAS(3).xlsx" --solo-faltantes --aplicar
+
+**`--solo-faltantes` es el modo para una base en uso**: rellena únicamente las farmacias
+sin circuito y jamás pisa una que ya lo tenga. Sin él, la planilla manda — y una planilla
+puede estar más vieja que una corrección hecha a mano en el admin, así que una carga de
+700 filas revertiría ese trabajo sin que nadie se entere. La simulación dice cuántas
+están vacías y cuántas cambiarían un valor ya cargado, por separado.
+
+Dos detalles que salieron de correrlo contra el archivo real:
+
+- **Las columnas se buscan por nombre, no por posición.** `Login` es la 7ª en FARMAMIA y
+  la 6ª en SAN GREGORIO, y una columna que operaciones inserte corre los índices sin
+  avisar — el circuito se cargaría con el contenido de la columna de al lado. (El
+  importador de red sí usa índices fijos; es una fragilidad que sigue ahí.)
+- **Las filas que no son farmacias se ignoran** (`SALA CRM` es una real del archivo) en
+  vez de reportarse como "no existen en SAIDSOFT", que invitaba a darlas de alta. Y si
+  **ningún** código calza, el comando lo dice fuerte: eso no es una planilla con
+  sucursales de baja, es que se está apuntando a la base equivocada — la local de
+  desarrollo tiene 3 farmacias de prueba.
 
 **Corrección del 20-sep-2026**: `_agrupar_por_proveedor` cortaba el circuito en el primer
 guion creyendo que ahí estaba el proveedor. No estaba: el primer segmento es la CADENA,

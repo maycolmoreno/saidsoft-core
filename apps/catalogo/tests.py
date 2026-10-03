@@ -3747,3 +3747,188 @@ class IngestaDePerifericosTests(TestCase):
         self.assertNotIn('PerifericoDetectado.objects', fuente)
         self.assertNotIn('from apps.catalogo.models import PerifericoDetectado', fuente)
         self.assertIn('registrar_perifericos', fuente)
+
+
+class ImportarCircuitosDesdeXlsxTests(TestCase):
+    """El circuito estaba en el Excel que YA se importaba, en una columna sin mapear.
+
+    `importar_red_farmacias_xlsx` lee de "DATOS DE FARMACIAS.xlsx" ciudad, provincia,
+    nodo, segmento, tipo de enlace, backup e IP desde agosto de 2026 — y nunca leyó el
+    circuito, que vive en la misma hoja en una columna llamada `Login`. Quedaron 149
+    farmacias sin circuito y el correo de caída saliendo con "circuito: -", con el dato
+    sentado en el archivo. Se llama `Login` y no `caracteristica`, y por eso se pasó por
+    alto: el nombre no se parece ni al del campo ni al de los CSV.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX010')
+        self.gsa01 = Farmacia.objects.create(codigo='GSA01', grupo=grupo, unidad_negocio=self.sg)
+        self.ma001 = Farmacia.objects.create(codigo='MA001', grupo=grupo, unidad_negocio=self.sg)
+
+    def _xlsx(self, farmamia=(), san_gregorio=()):
+        """Arma un Excel con las dos hojas reales. Los encabezados son los del archivo
+        de operaciones, en el orden real: `Login` es la 7a columna en FARMAMIA y la 6a
+        en SAN GREGORIO, y el comando los busca por nombre justamente por eso."""
+        import openpyxl
+
+        libro = openpyxl.Workbook()
+        hoja = libro.active
+        hoja.title = 'FARMAMIA'
+        hoja.append(['mcu', 'Provincia', 'Ciudad', 'Id de Farmacia', 'Segmento de Red',
+                     'Tipo de Enlace', 'Login', 'Backup', 'IP-DNS', 'Correo', 'NODO', 'IP'])
+        for codigo, login in farmamia:
+            hoja.append(['1', 'El Oro', 'Arenillas', codigo, '10.101.18.224/27',
+                         'TELCONET', login, 'ACTIVO', '', '', 'trx001', '192.168.112.5'])
+
+        hoja2 = libro.create_sheet('SAN GREGORIO')
+        hoja2.append(['Item', 'Provincia', 'Canton', 'Direccion', 'Id de Farmacia', 'Login',
+                      'Backup', 'Proveedor', 'RED LAN', 'NODO', 'IP', 'CLAVE'])
+        for codigo, login in san_gregorio:
+            hoja2.append(['2', 'MANABI', 'SANTA ANA', 'AV ANGEL ALAVA', codigo, login,
+                          '', 'TELCONET', '192.168.102.1', 'trx001', '192.168.112.60', 'x'])
+
+        ruta = Path(tempfile.gettempdir()) / f'circuitos_{id(self)}.xlsx'
+        libro.save(ruta)
+        self.addCleanup(lambda: ruta.unlink(missing_ok=True))
+        return str(ruta)
+
+    def test_carga_el_circuito_desde_la_columna_login_de_las_dos_hojas(self):
+        ruta = self._xlsx(farmamia=[('MA001', 'cazul-arenillas')],
+                          san_gregorio=[('GSA01', 'sangregorio2-santana')])
+        call_command('importar_circuitos_proveedor', ruta, '--aplicar', stdout=StringIO())
+
+        self.gsa01.refresh_from_db()
+        self.ma001.refresh_from_db()
+        self.assertEqual(self.ma001.circuito_proveedor, 'cazul-arenillas')
+        self.assertEqual(self.gsa01.circuito_proveedor, 'sangregorio2-santana')
+
+    def test_sin_aplicar_no_escribe_nada(self):
+        ruta = self._xlsx(san_gregorio=[('GSA01', 'sangregorio2-santana')])
+        salida = StringIO()
+        call_command('importar_circuitos_proveedor', ruta, stdout=salida)
+
+        self.gsa01.refresh_from_db()
+        self.assertEqual(self.gsa01.circuito_proveedor, '')
+        self.assertIn('Simulaci', salida.getvalue())
+
+    def test_las_columnas_se_buscan_por_nombre_y_no_por_posicion(self):
+        """Operaciones agrega una columna y los índices fijos se corren en silencio: el
+        circuito se cargaría con el contenido de la columna de al lado."""
+        import openpyxl
+
+        libro = openpyxl.Workbook()
+        hoja = libro.active
+        hoja.title = 'SAN GREGORIO'
+        # Mismas columnas, orden distinto: `Login` ahora es la primera.
+        hoja.append(['Login', 'Item', 'Provincia', 'Canton', 'Id de Farmacia'])
+        hoja.append(['sangregorio2-santana', '2', 'MANABI', 'SANTA ANA', 'GSA01'])
+        ruta = Path(tempfile.gettempdir()) / f'circuitos_ord_{id(self)}.xlsx'
+        libro.save(ruta)
+        self.addCleanup(lambda: ruta.unlink(missing_ok=True))
+
+        call_command('importar_circuitos_proveedor', str(ruta), '--aplicar', stdout=StringIO())
+        self.gsa01.refresh_from_db()
+        self.assertEqual(self.gsa01.circuito_proveedor, 'sangregorio2-santana')
+
+    def test_solo_faltantes_no_pisa_una_correccion_hecha_a_mano(self):
+        """El punto entero del modo: la planilla puede estar más vieja que lo que alguien
+        arregló en el admin, y una carga de 700 filas no debe revertirlo en silencio."""
+        self.gsa01.circuito_proveedor = 'corregido-a-mano'
+        self.gsa01.save(update_fields=['circuito_proveedor'])
+        ruta = self._xlsx(san_gregorio=[('GSA01', 'sangregorio2-santana')],
+                          farmamia=[('MA001', 'cazul-arenillas')])
+
+        salida = StringIO()
+        call_command('importar_circuitos_proveedor', ruta, '--solo-faltantes', '--aplicar',
+                     stdout=salida)
+
+        self.gsa01.refresh_from_db()
+        self.ma001.refresh_from_db()
+        self.assertEqual(self.gsa01.circuito_proveedor, 'corregido-a-mano', 'no se toca')
+        self.assertEqual(self.ma001.circuito_proveedor, 'cazul-arenillas', 'la vacia si se llena')
+        self.assertIn('no se tocaron', salida.getvalue())
+
+    def test_sin_solo_faltantes_si_pisa(self):
+        """El comportamiento de siempre se conserva: sin el flag, la planilla manda."""
+        self.gsa01.circuito_proveedor = 'viejo'
+        self.gsa01.save(update_fields=['circuito_proveedor'])
+        ruta = self._xlsx(san_gregorio=[('GSA01', 'sangregorio2-santana')])
+
+        call_command('importar_circuitos_proveedor', ruta, '--aplicar', stdout=StringIO())
+        self.gsa01.refresh_from_db()
+        self.assertEqual(self.gsa01.circuito_proveedor, 'sangregorio2-santana')
+
+    def test_los_circuitos_con_forma_de_numero_de_ticket_se_cargan_pero_se_avisan(self):
+        """5 filas del archivo real traen `PID: 20843536` o `ID cliente: I0244711` en vez
+        de un circuito. Es el identificador que ese proveedor pide igual, así que dejar la
+        farmacia vacía es peor — pero tiene que verse en la salida."""
+        ruta = self._xlsx(farmamia=[('MA001', 'ID cliente: I0244711')])
+        salida = StringIO()
+        call_command('importar_circuitos_proveedor', ruta, '--aplicar', stdout=salida)
+
+        self.ma001.refresh_from_db()
+        self.assertEqual(self.ma001.circuito_proveedor, 'ID cliente: I0244711')
+        self.assertIn('Revisar a mano', salida.getvalue())
+        self.assertIn('MA001', salida.getvalue())
+
+    def test_un_circuito_doble_separado_por_barra_tambien_se_avisa(self):
+        """GLC07 en el archivo real: 'sangregorio-callequito-concord / farmamia-glc07'.
+        No se parte en dos, porque elegir cuál es el vigente seria adivinar."""
+        doble = 'sangregorio-callequito-concord / farmamia-glc07'
+        ruta = self._xlsx(san_gregorio=[('GSA01', doble)])
+        salida = StringIO()
+        call_command('importar_circuitos_proveedor', ruta, '--aplicar', stdout=salida)
+
+        self.gsa01.refresh_from_db()
+        self.assertEqual(self.gsa01.circuito_proveedor, doble)
+        self.assertIn('Revisar a mano', salida.getvalue())
+
+    def test_las_filas_que_no_son_farmacias_se_ignoran_sin_reportarlas_como_faltantes(self):
+        """El Excel real trae 'SALA CRM' entre las sucursales. Reportarla como "no existe
+        en SAIDSOFT" invita a darla de alta, y no es una farmacia que falte."""
+        ruta = self._xlsx(farmamia=[('SALA CRM', 'algo'), ('MA001', 'cazul-arenillas')])
+        salida = StringIO()
+        call_command('importar_circuitos_proveedor', ruta, '--aplicar', stdout=salida)
+
+        texto = salida.getvalue()
+        self.assertIn('no son codigos de farmacia', texto)
+        self.assertNotIn('No existen en SAIDSOFT', texto)
+
+    def test_las_filas_sin_login_no_cuentan_como_error(self):
+        """2 filas de FARMAMIA vienen sin circuito. Es dato que falta en la planilla, no
+        una falla del comando."""
+        ruta = self._xlsx(farmamia=[('MA001', ''), ('MA001', '#N/A')])
+        salida = StringIO()
+        call_command('importar_circuitos_proveedor', ruta, stdout=salida)
+
+        self.assertIn('Filas sin circuito en la planilla: 2', salida.getvalue())
+        self.ma001.refresh_from_db()
+        self.assertEqual(self.ma001.circuito_proveedor, '')
+
+    def test_avisa_fuerte_cuando_ningun_codigo_calza(self):
+        """Correrlo contra la base local de desarrollo (3 farmacias de prueba) da 700
+        desconocidas, y el mensaje tiene que decir que se mire la BASE y no la planilla."""
+        ruta = self._xlsx(san_gregorio=[('GZZ99', 'algo-algo')])
+        salida = StringIO()
+        call_command('importar_circuitos_proveedor', ruta, stdout=salida)
+        self.assertIn('NINGUN codigo de la planilla existe en esta base', salida.getvalue())
+
+    def test_la_lista_de_desconocidas_no_escupe_setecientas_lineas(self):
+        ruta = self._xlsx(san_gregorio=[(f'GZZ{i:02d}', 'x-y') for i in range(60)])
+        salida = StringIO()
+        call_command('importar_circuitos_proveedor', ruta, stdout=salida)
+        self.assertIn('y 35 mas.', salida.getvalue())
+
+    def test_el_xlsx_sin_las_hojas_esperadas_falla_claro(self):
+        import openpyxl
+
+        libro = openpyxl.Workbook()
+        libro.active.title = 'Otra cosa'
+        ruta = Path(tempfile.gettempdir()) / f'circuitos_mal_{id(self)}.xlsx'
+        libro.save(ruta)
+        self.addCleanup(lambda: ruta.unlink(missing_ok=True))
+
+        with self.assertRaises(CommandError):
+            call_command('importar_circuitos_proveedor', str(ruta), '--aplicar',
+                         stdout=StringIO())
