@@ -2,11 +2,12 @@ import importlib
 import json
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth.models import Permission, User
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.http import Http404
 from django.test import TestCase, override_settings
 from django.urls import clear_url_caches, resolve
-from django.views.static import serve
 
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
@@ -258,8 +259,24 @@ class MediaServidoEnProduccionTests(TestCase):
                 importlib.reload(config.urls)
                 clear_url_caches()
                 coincidencia = resolve('/media/despliegues/x.zip')
-                self.assertEqual(coincidencia.func, serve)
+                # Se afirma el COMPORTAMIENTO, no qué función concreta atiende. Desde el
+                # 2-oct-2026 la ruta la atiende `servir_media_publico`, que delega en
+                # `django.views.static.serve` para todo /media/ salvo los subárboles
+                # protegidos (ver PREFIJOS_MEDIA_PROTEGIDOS en config/urls.py). Afirmar
+                # `func is serve` hacía fallar esta prueba por envolver la vista, aunque
+                # lo que cuida —que los agentes no reciban 404— seguía intacto.
+                self.assertEqual(coincidencia.func, config.urls.servir_media_publico)
                 self.assertEqual(coincidencia.kwargs['path'], 'despliegues/x.zip')
+                self.assertEqual(coincidencia.kwargs['document_root'], settings.MEDIA_ROOT)
+
+                # Y el subárbol protegido NO se sirve por esta vía ni con DEBUG=False:
+                # los informes y fotos de mantenimiento salen solo por la vista con
+                # control de acceso. Acá viven las dos mitades de la misma ruta, así que
+                # conviene comprobarlas juntas.
+                protegida = resolve('/media/mantenimiento/informes/2026/10/x.pdf')
+                self.assertEqual(protegida.func, config.urls.servir_media_publico)
+                with self.assertRaises(Http404):
+                    protegida.func(None, **protegida.kwargs)
         finally:
             # Restaurar el URLconf con el DEBUG real para no afectar al resto de la suite.
             importlib.reload(config.urls)
