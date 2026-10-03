@@ -334,3 +334,95 @@ class FanOutSoftwarePorEstacionTests(_BaseSoftwareTests):
             payload['firma'],
             firmar_payload(comando='instalar_software', **campos, timestamp=payload['timestamp']),
         )
+
+
+class IngestaDeSoftwareTests(TestCase):
+    """`registrar_software_instalado` y `registrar_estado_de_estacion`: puntos 3 y 4 del
+    plan de ingesta, extraídos de `apps.mqtt_worker`.
+    """
+
+    def setUp(self):
+        from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXSW1')
+        farmacia = Farmacia.objects.create(codigo='SW001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='SW001-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    # --- inventario de software ---
+
+    def test_es_un_snapshot_reemplaza_lo_anterior(self):
+        """Lo que importa es qué está instalado AHORA, no la historia."""
+        from apps.software.models import SoftwareInstaladoDetectado
+        from apps.software.services import registrar_software_instalado
+
+        registrar_software_instalado(estacion=self.estacion, programas=[
+            {'nombre': 'Chrome', 'version': '1.0'}, {'nombre': 'Acrobat', 'version': '2.0'},
+        ])
+        registrar_software_instalado(estacion=self.estacion, programas=[
+            {'nombre': 'Chrome', 'version': '2.0'},
+        ])
+
+        filas = SoftwareInstaladoDetectado.objects.filter(estacion=self.estacion)
+        self.assertEqual([f.nombre for f in filas], ['Chrome'])
+        self.assertEqual(filas[0].version, '2.0')
+
+    def test_descarta_el_duplicado_del_mismo_lote(self):
+        """El registro de Windows trae la misma entrada dos veces (32/64 bits), y
+        `unique_together` no lo tolera en un bulk_create: reventaría el lote entero."""
+        from apps.software.models import SoftwareInstaladoDetectado
+        from apps.software.services import registrar_software_instalado
+
+        cuantos = registrar_software_instalado(estacion=self.estacion, programas=[
+            {'nombre': 'Java', 'version': '8'}, {'nombre': 'Java', 'version': '8'},
+        ])
+
+        self.assertEqual(cuantos, 1)
+        self.assertEqual(SoftwareInstaladoDetectado.objects.count(), 1)
+
+    def test_quita_los_bytes_nul_que_postgres_rechaza(self):
+        """Un instalador mal comportado deja un 0x00 en el registro de Windows y tumbaba
+        el bulk_create COMPLETO, no solo esa fila (visto el 20-ago-2026 en producción).
+        SQLite los tolera, así que esto solo se ve probando contra Postgres."""
+        from apps.software.models import SoftwareInstaladoDetectado
+        from apps.software.services import registrar_software_instalado
+
+        registrar_software_instalado(estacion=self.estacion, programas=[
+            {'nombre': 'Raro\x00Soft', 'version': '1\x000', 'fabricante': 'ACME\x00'},
+        ])
+
+        fila = SoftwareInstaladoDetectado.objects.get()
+        self.assertEqual(fila.nombre, 'RaroSoft')
+        self.assertEqual(fila.version, '10')
+        self.assertEqual(fila.fabricante, 'ACME')
+
+    # --- progreso de una instalacion ---
+
+    def test_un_paso_desconocido_no_escribe_nada(self):
+        from apps.software.models import ResultadoInstalacion
+        from apps.software.services import registrar_estado_de_estacion
+
+        self.assertIsNone(registrar_estado_de_estacion(
+            solicitud_id=1, estacion=self.estacion, paso='paso-inventado',
+        ))
+        self.assertEqual(ResultadoInstalacion.objects.count(), 0)
+
+    def test_el_worker_ya_no_escribe_estas_tablas(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (
+            Path(settings.BASE_DIR) / 'apps' / 'mqtt_worker' / 'services.py'
+        ).read_text(encoding='utf-8')
+        # Se mira el USO (`.objects.` y la linea de import), no el nombre suelto: los
+        # docstrings del worker nombran estos modelos a proposito, para decir donde vive
+        # ahora la regla. Un assertNotIn sobre el nombre tropieza con esa prosa — ya me
+        # paso con 'apps.panel' en la prueba de umbrales.
+        self.assertNotIn('SoftwareInstaladoDetectado.objects', fuente)
+        self.assertNotIn('ResultadoInstalacion', fuente)
+        self.assertNotIn('EventoInstalacion', fuente)
+        self.assertIn('registrar_software_instalado', fuente)

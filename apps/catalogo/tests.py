@@ -3574,3 +3574,148 @@ class EquivalenciaPredicadosEstacionTests(TestCase):
         self.assertNotIn('version_objetivo', fuente)
         self.assertNotIn('offset_utc_minutos', fuente)
         self.assertNotIn('desfase_reloj_segundos', fuente)
+
+
+class GuardarClaveBitlockerTests(TestCase):
+    """`catalogo.services.guardar_clave_bitlocker`: la mitad de escritura del secreto.
+
+    Hasta el 2-oct-2026 esto lo hacía `apps.mqtt_worker.services.manejar_info_equipo`,
+    que para eso importaba `apps.catalogo.crypto` y conocía los campos de
+    `ClaveRecuperacionBitLocker`. Un worker de transporte decidiendo cómo se cifra un
+    secreto ajeno es el peor lugar para dejar esa responsabilidad: el día que cambie el
+    cifrado hay que acordarse de que una de las dos mitades vive en otra app.
+
+    Primera de las ocho extracciones del plan de ingesta (Fase 4), y la elegida para
+    empezar justamente porque es la de menor volumen: una fila por estación, bajo
+    demanda.
+    """
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXBL1')
+        farmacia = Farmacia.objects.create(codigo='BL001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='BL001-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def test_guarda_cifrada_y_se_recupera_con_la_otra_mitad(self):
+        from apps.catalogo.services import guardar_clave_bitlocker, obtener_clave_bitlocker_descifrada
+
+        clave = '111111-222222-333333-444444-555555-666666-777777-888888'
+        escribio = guardar_clave_bitlocker(
+            estacion=self.estacion, clave_plana=clave, id_protector='ABC-123',
+        )
+
+        self.assertTrue(escribio)
+        fila = ClaveRecuperacionBitLocker.objects.get(estacion=self.estacion)
+        # Nunca en texto plano en la base: es el punto de todo esto.
+        self.assertNotEqual(fila.clave_cifrada, clave)
+        self.assertNotIn(clave, fila.clave_cifrada)
+        self.assertEqual(fila.id_protector, 'ABC-123')
+        self.assertEqual(obtener_clave_bitlocker_descifrada(self.estacion), clave)
+
+    def test_sin_clave_no_escribe_y_no_es_un_error(self):
+        """La clave solo viaja cuando BitLocker está habilitado Y el agente la incluyó en
+        esa respuesta puntual. Que no venga es el caso NORMAL, no una falla."""
+        from apps.catalogo.services import guardar_clave_bitlocker
+
+        self.assertFalse(guardar_clave_bitlocker(estacion=self.estacion, clave_plana=''))
+        self.assertFalse(ClaveRecuperacionBitLocker.objects.exists())
+
+    def test_reportar_de_nuevo_actualiza_no_duplica(self):
+        from apps.catalogo.services import guardar_clave_bitlocker, obtener_clave_bitlocker_descifrada
+
+        guardar_clave_bitlocker(estacion=self.estacion, clave_plana='vieja')
+        guardar_clave_bitlocker(estacion=self.estacion, clave_plana='nueva')
+
+        self.assertEqual(ClaveRecuperacionBitLocker.objects.count(), 1)
+        self.assertEqual(obtener_clave_bitlocker_descifrada(self.estacion), 'nueva')
+
+    def test_sin_id_protector_queda_vacio_no_none(self):
+        """El campo es CharField: None reventaría el INSERT."""
+        from apps.catalogo.services import guardar_clave_bitlocker
+
+        guardar_clave_bitlocker(estacion=self.estacion, clave_plana='x', id_protector=None)
+        self.assertEqual(ClaveRecuperacionBitLocker.objects.get().id_protector, '')
+
+    def test_el_worker_ya_no_cifra_ni_conoce_el_modelo(self):
+        """Guarda del plan de ingesta: la medida de éxito de la Fase 4 es que
+        `mqtt_worker/services.py` deje de importar modelos que no son suyos.
+
+        Acá se comprueba solo lo de BitLocker, que es lo que esta extracción resolvió.
+        El resto de los imports ajenos sigue, y cada uno se va con su propio commit.
+        """
+        from django.conf import settings
+
+        fuente = (
+            Path(settings.BASE_DIR) / 'apps' / 'mqtt_worker' / 'services.py'
+        ).read_text(encoding='utf-8')
+        self.assertNotIn('ClaveRecuperacionBitLocker', fuente)
+        self.assertNotIn('crypto', fuente)
+        self.assertIn('guardar_clave_bitlocker', fuente)
+
+
+class IngestaDePerifericosTests(TestCase):
+    """`catalogo.services.registrar_perifericos`: punto 2 del plan de ingesta."""
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXPER')
+        farmacia = Farmacia.objects.create(codigo='PER001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='PER001-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def test_es_un_snapshot_y_marca_la_fecha(self):
+        """El snapshot y su fecha son el mismo hecho: separarlos permite que una quede
+        sin la otra, y entonces el panel muestra un inventario viejo como si fuera de
+        ahora."""
+        from apps.catalogo.models import PerifericoDetectado
+        from apps.catalogo.services import registrar_perifericos
+
+        registrar_perifericos(estacion=self.estacion, dispositivos=[
+            {'device_id': 'USB\\A', 'nombre': 'Lector'},
+            {'device_id': 'USB\\B', 'nombre': 'Impresora'},
+        ])
+        registrar_perifericos(estacion=self.estacion, dispositivos=[
+            {'device_id': 'USB\\A', 'nombre': 'Lector'},
+        ])
+
+        self.assertEqual(PerifericoDetectado.objects.filter(estacion=self.estacion).count(), 1)
+        self.estacion.refresh_from_db()
+        self.assertIsNotNone(self.estacion.perifericos_ultima_verificacion)
+
+    def test_descarta_duplicados_vacios_y_bytes_nul(self):
+        """Las tres reglas dependen de restricciones de ESTA tabla, no del transporte."""
+        from apps.catalogo.models import PerifericoDetectado
+        from apps.catalogo.services import registrar_perifericos
+
+        cuantos = registrar_perifericos(estacion=self.estacion, dispositivos=[
+            {'device_id': 'USB\\A', 'nombre': 'Lector'},
+            {'device_id': 'USB\\A', 'nombre': 'Lector repetido'},   # duplicado
+            {'device_id': '', 'nombre': 'Sin id'},                  # vacio
+            {'device_id': 'USB\\C', 'nombre': ''},                  # sin nombre
+            {'device_id': 'USB\\D\x00', 'nombre': 'Raro\x00'},      # bytes NUL
+        ])
+
+        self.assertEqual(cuantos, 2)
+        nombres = set(PerifericoDetectado.objects.values_list('nombre', flat=True))
+        self.assertEqual(nombres, {'Lector', 'Raro'})
+
+    def test_el_worker_ya_no_escribe_esta_tabla(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (
+            Path(settings.BASE_DIR) / 'apps' / 'mqtt_worker' / 'services.py'
+        ).read_text(encoding='utf-8')
+        # Se mira el USO (`.objects.` y la linea de import), no el nombre suelto: los
+        # docstrings del worker nombran estos modelos a proposito, para decir donde vive
+        # ahora la regla. Un assertNotIn sobre el nombre tropieza con esa prosa — ya me
+        # paso con 'apps.panel' en la prueba de umbrales.
+        self.assertNotIn('PerifericoDetectado.objects', fuente)
+        self.assertNotIn('from apps.catalogo.models import PerifericoDetectado', fuente)
+        self.assertIn('registrar_perifericos', fuente)

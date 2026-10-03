@@ -343,6 +343,120 @@ def resolver_alertas_bitlocker(estacion):
     ).update(estado=Alerta.Estado.RESUELTA, resuelta_en=timezone.now())
 
 
+def registrar_muestra_metricas(*, estacion, payload: dict):
+    """Guarda una muestra de recursos del agente y evalúa las reglas. Devuelve la muestra.
+
+    Puerta de entrada única de `MuestraMetrica`, igual que `registrar_estado_dispositivo`
+    lo es del estado por fuente. Hasta el 2-oct-2026 esta tabla la creaba
+    `apps.mqtt_worker.services.manejar_metricas` directamente — y era su ÚNICO escritor,
+    así que la serie de recursos de toda la flota dependía de que el worker supiera
+    armarla. Un worker de transporte no debería conocer los trece campos de una tabla
+    ajena ni cuándo evaluar sus reglas.
+
+    No había ninguna razón de rendimiento para la escritura directa: es UNA fila por
+    mensaje, no un lote, y ningún comentario la justificaba. El acoplamiento era
+    histórico.
+
+    `payload` llega crudo del agente, así que cada campo se valida acá: lo que no sea un
+    número queda en None en vez de reventar la ingesta. Un agente viejo que no manda una
+    métrica, o una que llega como texto, no puede tumbar el oído de la plataforma.
+    """
+    from .models import MuestraMetrica
+
+    def _num(clave):
+        valor = payload.get(clave)
+        return valor if isinstance(valor, (int, float)) else None
+
+    muestra = MuestraMetrica.objects.create(
+        estacion=estacion,
+        ram_total=_num('ram_total'),
+        ram_usada=_num('ram_usada'),
+        ram_libre=_num('ram_libre'),
+        cache=_num('cache'),
+        swap_total=_num('swap_total'),
+        swap_usada=_num('swap_usada'),
+        cpu_carga_pct=_num('cpu_carga_pct'),
+        temperatura_c=_num('temperatura_c'),
+        latencia_ms=_num('latencia_ms'),
+        disco_total_gb=_num('disco_total_gb'),
+        disco_libre_gb=_num('disco_libre_gb'),
+        red_recibido_kbps=_num('red_recibido_kbps'),
+        red_enviado_kbps=_num('red_enviado_kbps'),
+    )
+    evaluar_reglas_metricas(estacion, muestra)
+    return muestra
+
+
+def registrar_muestra_red_farmacia(*, farmacia, bytes_recibidos, bytes_enviados):
+    """Guarda una lectura de los contadores del Mikrotik de `farmacia`. Devuelve la
+    muestra, o None si el payload no traía contadores.
+
+    Sin `bytes_recibidos`/`bytes_enviados` no se crea nada: el agente no pudo sondear su
+    router (caído, community equivocada) y **una fila con contadores en cero rompería el
+    cálculo de tasa de la siguiente muestra** — se leería como una caída real de tráfico
+    y no como "no se pudo medir". Esa regla estaba en el worker y es de monitoreo.
+
+    El cálculo de tasa vive en `mikrotik._calcular_tasa`, módulo interno de esta app. Que
+    el worker lo importara era el síntoma más claro del acoplamiento: para guardar una
+    muestra tenía que conocer la estructura privada del dominio vecino.
+    """
+    from .mikrotik import _calcular_tasa
+    from .models import MuestraRedFarmacia
+
+    if bytes_recibidos is None or bytes_enviados is None:
+        return None
+    recibido_kbps, enviado_kbps = _calcular_tasa(farmacia, bytes_recibidos, bytes_enviados)
+    return MuestraRedFarmacia.objects.create(
+        farmacia=farmacia, bytes_recibidos=bytes_recibidos, bytes_enviados=bytes_enviados,
+        red_recibido_kbps=recibido_kbps, red_enviado_kbps=enviado_kbps,
+    )
+
+
+def registrar_errores_pos(*, estacion, errores: list) -> int:
+    """Acumula los errores del log del POS que reportó el agente y evalúa su regla.
+
+    Devuelve cuántos de categoría SISTEMA llegaron nuevos en esta ventana — que es lo
+    único que cuenta para la alerta.
+
+    A diferencia de `registrar_software_instalado`, esto NO es un snapshot: cada reporte
+    es un delta que se suma al contador de por vida de `PosErrorDetectado` (el agente ya
+    agrupó por mensaje dentro de la ventana que leyó).
+
+    La clasificación sistema/negocio decide qué dispara la alerta: "VENTA SIN LOTE" es
+    una validación del POS funcionando bien, no una falla, así que se guarda pero no
+    cuenta. Esa decisión es de monitoreo y hasta el 2-oct-2026 la tomaba el worker, que
+    para eso importaba `clasificar_error_pos` y conocía las categorías de la tabla.
+
+    Reclasifica en cada reporte y no solo al crear: si `PREFIJOS_ERROR_DE_NEGOCIO` gana
+    un patrón más adelante, las filas viejas se ponen al día solas la próxima vez que ese
+    mensaje se repita, sin necesitar una migración de datos.
+    """
+    from .models import PosErrorDetectado
+
+    total_nuevos = 0
+    for e in errores or []:
+        mensaje = (e.get('mensaje') or '').strip()[:500]
+        if not mensaje:
+            continue
+        cantidad = e.get('cantidad')
+        cantidad = int(cantidad) if isinstance(cantidad, (int, float)) and cantidad > 0 else 1
+        categoria = clasificar_error_pos(mensaje)
+        if categoria == PosErrorDetectado.Categoria.SISTEMA:
+            total_nuevos += cantidad
+
+        detectado, _creado = PosErrorDetectado.objects.get_or_create(
+            estacion=estacion, mensaje=mensaje,
+            defaults={'nivel': e.get('nivel') or 'ERROR', 'categoria': categoria},
+        )
+        detectado.cantidad_total += cantidad
+        detectado.nivel = e.get('nivel') or detectado.nivel
+        detectado.categoria = categoria
+        detectado.save(update_fields=['cantidad_total', 'nivel', 'categoria', 'ultima_vez'])
+
+    evaluar_regla_pos_errores(estacion, total_nuevos)
+    return total_nuevos
+
+
 def registrar_eventos_sistema(*, estacion, eventos: list) -> int:
     """Guarda los eventos de Windows que reportó el agente y evalúa la alerta.
 

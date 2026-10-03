@@ -481,3 +481,96 @@ class FanOutPorEstacionTests(_BaseDespliegueTests):
             resultado = publicar_despliegue(despliegue)
         self.assertEqual(resultado.total_estaciones, 2)
         self.assertEqual(despliegue.resultados.count(), 2)
+
+
+class IngestaDeEstadoDeDespliegueTests(_BaseDespliegueTests):
+    """`registrar_estado_de_estacion`: punto 5 del plan de ingesta.
+
+    Hasta el 2-oct-2026 el mapa paso->estado era una constante a nivel de módulo en
+    `apps.mqtt_worker.services` (`_PASO_A_ESTADO`): el ciclo de vida de
+    ResultadoDespliegue escrito en el worker de transporte.
+    """
+
+    def setUp(self):
+        # Reusa `_crear_despliegue`/`_crear_estacion` de la base: armar un Despliegue a
+        # mano duplicaba sus campos obligatorios y se desincronizaba con el primero que
+        # cambiara. Me paso al escribir esto — invente un campo `paquete` que no existe,
+        # el real es `archivo`.
+        super().setUp()
+        self.estacion = self._crear_estacion('ML001-A')
+        self.despliegue = self._crear_despliegue()
+        self.despliegue.estaciones.add(self.estacion)
+
+    def test_traduce_el_paso_al_estado_agregado_y_deja_el_evento(self):
+        from apps.despliegues.services import registrar_estado_de_estacion
+
+        r = registrar_estado_de_estacion(
+            despliegue_id=self.despliegue.pk, estacion=self.estacion,
+            paso=EventoDespliegue.Paso.DESCARGADO,
+        )
+
+        self.assertEqual(r.estado, ResultadoDespliegue.Estado.DESCARGADO)
+        self.assertEqual(r.eventos.count(), 1)
+        self.assertEqual(r.eventos.first().paso, EventoDespliegue.Paso.DESCARGADO)
+
+    def test_un_paso_desconocido_no_escribe_nada(self):
+        from apps.despliegues.services import registrar_estado_de_estacion
+
+        self.assertIsNone(registrar_estado_de_estacion(
+            despliegue_id=self.despliegue.pk, estacion=self.estacion, paso='inventado',
+        ))
+        self.assertEqual(ResultadoDespliegue.objects.count(), 0)
+
+    def test_el_error_guarda_su_detalle(self):
+        from apps.despliegues.services import registrar_estado_de_estacion
+
+        r = registrar_estado_de_estacion(
+            despliegue_id=self.despliegue.pk, estacion=self.estacion,
+            paso=EventoDespliegue.Paso.ERROR, datos={'detalle': 'hash no coincide'},
+        )
+
+        self.assertEqual(r.estado, ResultadoDespliegue.Estado.ERROR)
+        self.assertEqual(r.detalle_error, 'hash no coincide')
+
+    def test_repetir_el_paso_no_duplica_el_resultado(self):
+        from apps.despliegues.services import registrar_estado_de_estacion
+
+        for _ in range(3):
+            registrar_estado_de_estacion(
+                despliegue_id=self.despliegue.pk, estacion=self.estacion,
+                paso=EventoDespliegue.Paso.RECIBIDO,
+            )
+
+        self.assertEqual(ResultadoDespliegue.objects.count(), 1)
+        # La linea de tiempo SI acumula: es el historial de lo que fue pasando.
+        self.assertEqual(EventoDespliegue.objects.count(), 3)
+
+    def test_no_toca_la_estacion_eso_lo_coordina_el_worker(self):
+        """Línea de diseño deliberada: que un despliegue termine OK también significa
+        "esta caja está viva y corre tal versión del POS", pero esa conclusión cruza
+        catalogo, facturacion y monitoreo. Traerla acá obligaría a `despliegues` a
+        importar las otras dos — acoplamiento que hoy no existe. La sigue coordinando el
+        worker, que es orquestación legítima.
+        """
+        from apps.despliegues.services import registrar_estado_de_estacion
+
+        version_antes = self.estacion.version_pos
+        registrar_estado_de_estacion(
+            despliegue_id=self.despliegue.pk, estacion=self.estacion,
+            paso=EventoDespliegue.Paso.OK, datos={'version_nueva': '9.9.9'},
+        )
+
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.version_pos, version_antes)
+
+    def test_el_worker_ya_no_escribe_estas_tablas(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (
+            Path(settings.BASE_DIR) / 'apps' / 'mqtt_worker' / 'services.py'
+        ).read_text(encoding='utf-8')
+        self.assertNotIn('ResultadoDespliegue', fuente)
+        self.assertNotIn('EventoDespliegue', fuente)
+        self.assertNotIn('_PASO_A_ESTADO', fuente)

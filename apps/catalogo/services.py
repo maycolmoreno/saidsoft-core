@@ -513,15 +513,56 @@ def url_terminal_remoto_meshcentral(estacion) -> str | None:
 # desde el agente (ver apps.mqtt_worker.services.manejar_info_equipo) y solo se
 # descifra aquí, bajo demanda, para la vista que la muestra (permiso propio + auditada).
 
-def obtener_clave_bitlocker_descifrada(estacion) -> str | None:
-    """Clave de recuperación de `estacion` en texto plano, o None si no hay ninguna
-    registrada (nunca se reportó, o el equipo no usa BitLocker)."""
+def guardar_clave_bitlocker(*, estacion, clave_plana: str, id_protector: str = '') -> bool:
+    """Guarda CIFRADA la clave de recuperación que reportó el agente. Devuelve si escribió.
+
+    La otra mitad de `obtener_clave_bitlocker_descifrada`, y vive acá por el mismo
+    motivo: el cifrado de un secreto es responsabilidad del dominio que lo guarda, no de
+    quien se lo encuentra pasando. Hasta el 2-oct-2026 esto lo hacía
+    `apps.mqtt_worker.services.manejar_info_equipo`, que para eso tenía que importar
+    `apps.catalogo.crypto` y conocer los campos de `ClaveRecuperacionBitLocker` — un
+    worker de transporte decidiendo cómo se cifra un secreto ajeno.
+
+    `clave_plana` vacía no escribe nada y no es un error: la clave solo viaja cuando
+    BitLocker está habilitado Y el agente la incluyó en esa respuesta puntual, no en
+    cada latido. Que no venga es el caso normal.
+
+    La clave NO queda en texto plano en ningún momento: se cifra antes del INSERT.
+    """
     from apps.catalogo import crypto
     from apps.catalogo.models import ClaveRecuperacionBitLocker
 
-    try:
-        clave = estacion.clave_bitlocker
-    except ClaveRecuperacionBitLocker.DoesNotExist:
+    if not clave_plana:
+        return False
+    ClaveRecuperacionBitLocker.objects.update_or_create(
+        estacion=estacion,
+        defaults={
+            'clave_cifrada': crypto.cifrar(clave_plana),
+            'id_protector': id_protector or '',
+        },
+    )
+    return True
+
+
+def obtener_clave_bitlocker_descifrada(estacion) -> str | None:
+    """Clave de recuperación de `estacion` en texto plano, o None si no hay ninguna
+    registrada (nunca se reportó, o el equipo no usa BitLocker).
+
+    Consulta la tabla en vez de leer `estacion.clave_bitlocker`, que es una relación
+    inversa CACHEADA en la instancia: `guardar_clave_bitlocker` escribe por queryset y no
+    invalida esa caché, así que escribir y después leer sobre el mismo objeto devolvía la
+    clave ANTERIOR. No se notaba porque el único lector —la vista del panel— trae la
+    estación fresca con `get_object_or_404`, pero es justo la clase de trampa que muerde
+    al segundo llamador.
+
+    Nadie precarga esta relación con `select_related`, así que no se pierde ninguna
+    optimización: la versión cacheada también consultaba en el primer acceso.
+    """
+    from apps.catalogo import crypto
+    from apps.catalogo.models import ClaveRecuperacionBitLocker
+
+    clave = ClaveRecuperacionBitLocker.objects.filter(estacion=estacion).first()
+    if clave is None:
         return None
     return crypto.descifrar(clave.clave_cifrada)
 
@@ -809,3 +850,52 @@ def importar_farmacias_desde_csv(archivo_texto, *, dry_run=False, actualizar=Fal
             transaction.savepoint_commit(sp)
 
     return resultado
+
+
+def registrar_perifericos(*, estacion, dispositivos: list) -> int:
+    """Reemplaza el inventario de perifericos USB de `estacion`. Devuelve cuantos quedaron.
+
+    Es un SNAPSHOT, no un delta: lo que importa es que esta conectado AHORA (ver docstring
+    de PerifericoDetectado). Hermano de
+    `apps.software.services.registrar_software_instalado`, y con las mismas dos reglas que
+    hasta el 2-oct-2026 vivian en `apps.mqtt_worker.services.manejar_perifericos`:
+
+    - Se quitan los bytes NUL: Postgres los rechaza en columnas text, y un instalador mal
+      comportado que deja uno en el registro de Windows tumbaba el bulk_create COMPLETO,
+      no solo esa fila (encontrado el 20-ago-2026 sobre una estacion real; SQLite los
+      tolera, por eso no se vio antes de probar contra Postgres).
+    - Se descartan duplicados y vacios dentro del lote, porque
+      `unique_together=('estacion', 'device_id')` no los tolera en un mismo bulk_create.
+
+    Las dos dependen de restricciones de ESTA tabla, asi que el worker no tenia por que
+    conocerlas.
+
+    Tambien marca `perifericos_ultima_verificacion`: el snapshot y su fecha son el mismo
+    hecho, y separarlos permite que una quede sin la otra.
+    """
+    from django.utils import timezone
+
+    from apps.catalogo.models import PerifericoDetectado
+
+    def _limpiar(valor) -> str:
+        return (valor or '').replace('\x00', '').strip()
+
+    detectados = []
+    device_ids_vistos = set()
+    for d in dispositivos or []:
+        device_id = _limpiar(d.get('device_id'))
+        nombre = _limpiar(d.get('nombre'))
+        if not device_id or not nombre or device_id in device_ids_vistos:
+            continue
+        device_ids_vistos.add(device_id)
+        detectados.append(PerifericoDetectado(
+            estacion=estacion, nombre=nombre, device_id=device_id,
+            fabricante=_limpiar(d.get('fabricante')), clase=_limpiar(d.get('clase')),
+        ))
+
+    PerifericoDetectado.objects.filter(estacion=estacion).delete()
+    PerifericoDetectado.objects.bulk_create(detectados)
+
+    estacion.perifericos_ultima_verificacion = timezone.now()
+    estacion.save(update_fields=['perifericos_ultima_verificacion'])
+    return len(detectados)

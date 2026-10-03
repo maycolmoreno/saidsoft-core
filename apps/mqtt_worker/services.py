@@ -10,10 +10,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from apps.catalogo.db import cerrar_conexiones_viejas
-from apps.catalogo import crypto
-from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia
-from apps.despliegues.models import EventoDespliegue, ResultadoDespliegue
-from apps.despliegues.services import evaluar_freno_automatico, verificar_completado
+from apps.catalogo.models import Estacion, Farmacia
 from apps.mqtt_worker.emqx_admin import aprovisionar_credencial_estacion
 from apps.mqtt_worker.models import MensajeMqttFallido, WorkerHeartbeat
 
@@ -25,20 +22,6 @@ CACHE_FRESCO_MINUTOS = 5
 # Nombre de fila en WorkerHeartbeat para run_mqtt_worker — compartido con el
 # dashboard, que lo usa para mostrar si el worker sigue activo.
 NOMBRE_WORKER_MQTT = 'mqtt_worker'
-
-# Traduce cada paso fino de la línea de tiempo al estado agregado de ResultadoDespliegue
-_PASO_A_ESTADO = {
-    EventoDespliegue.Paso.RECIBIDO: ResultadoDespliegue.Estado.DESCARGANDO,
-    EventoDespliegue.Paso.DESCARGADO: ResultadoDespliegue.Estado.DESCARGADO,
-    EventoDespliegue.Paso.HASH_VERIFICADO: ResultadoDespliegue.Estado.VERIFICADO,
-    EventoDespliegue.Paso.POS_CERRADO: ResultadoDespliegue.Estado.APLICANDO,
-    EventoDespliegue.Paso.APLICADO: ResultadoDespliegue.Estado.APLICANDO,
-    EventoDespliegue.Paso.POS_RELANZADO: ResultadoDespliegue.Estado.APLICANDO,
-    EventoDespliegue.Paso.OK: ResultadoDespliegue.Estado.APLICADO,
-    EventoDespliegue.Paso.ERROR: ResultadoDespliegue.Estado.ERROR,
-    EventoDespliegue.Paso.ROLLBACK: ResultadoDespliegue.Estado.ROLLBACK,
-}
-
 
 def _farmacia_desde_codigo_estacion(codigo_estacion: str) -> Farmacia | None:
     codigo_farmacia = codigo_estacion.split('-')[0]
@@ -365,47 +348,33 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
         logger.warning('Reporte de despliegue de estación no aprobada: %s', codigo_estacion)
         return
 
-    despliegue_id = payload.get('despliegue_id')
+    from apps.despliegues.services import paso_valido, registrar_estado_de_estacion
+
     paso = payload.get('paso')
-    if paso not in EventoDespliegue.Paso.values:
+    if not paso_valido(paso):
         logger.warning('Paso desconocido "%s" reportado por %s', paso, codigo_estacion)
         return
 
-    resultado, _ = ResultadoDespliegue.objects.get_or_create(
-        despliegue_id=despliegue_id, estacion=estacion,
+    resultado = registrar_estado_de_estacion(
+        despliegue_id=payload.get('despliegue_id'), estacion=estacion, paso=paso, datos=payload,
     )
 
-    if paso == EventoDespliegue.Paso.POS_CERRADO:
-        resultado.version_previa = payload.get('version_previa', resultado.version_previa)
-    if paso == EventoDespliegue.Paso.OK:
-        resultado.version_nueva = payload.get('version_nueva', resultado.version_nueva)
-        # No esperamos al próximo heartbeat para reflejar la versión real: el propio
-        # reporte "ok" ya es una confirmación directa del agente de que quedó instalada.
-        if resultado.version_nueva:
-            estacion.version_pos = resultado.version_nueva
-            estacion.estado_conexion = Estacion.EstadoConexion.ONLINE
-            estacion.ultimo_heartbeat = timezone.now()
-            estacion.save(update_fields=['version_pos', 'estado_conexion', 'ultimo_heartbeat'])
+    # Que un despliegue termine OK tambien significa "esta caja esta viva y corre tal
+    # version del POS". Esa conclusion cruza tres dominios —catalogo, facturacion,
+    # monitoreo— y por eso la coordina el worker y no `despliegues`: traerla alla lo
+    # obligaria a importar las otras dos, acoplamiento que hoy no existe.
+    if paso == 'ok' and resultado is not None and resultado.version_nueva:
+        estacion.version_pos = resultado.version_nueva
+        estacion.estado_conexion = Estacion.EstadoConexion.ONLINE
+        estacion.ultimo_heartbeat = timezone.now()
+        estacion.save(update_fields=['version_pos', 'estado_conexion', 'ultimo_heartbeat'])
 
-            from apps.facturacion.services import registrar_actividad_mensual
-            registrar_actividad_mensual(estacion)
+        from apps.facturacion.services import registrar_actividad_mensual
+        registrar_actividad_mensual(estacion)
 
-            from apps.monitoreo.models import EstadoDispositivo
-            from apps.monitoreo.services import registrar_estado_dispositivo
-            registrar_estado_dispositivo(estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=True)
-
-    nuevo_estado = _PASO_A_ESTADO.get(paso)
-    if nuevo_estado:
-        resultado.estado = nuevo_estado
-    if paso == EventoDespliegue.Paso.ERROR:
-        resultado.detalle_error = payload.get('detalle', '')
-    resultado.save()
-
-    EventoDespliegue.objects.create(resultado=resultado, paso=paso, detalle=payload.get('detalle', ''))
-
-    despliegue = resultado.despliegue
-    evaluar_freno_automatico(despliegue)
-    verificar_completado(despliegue)
+        from apps.monitoreo.models import EstadoDispositivo
+        from apps.monitoreo.services import registrar_estado_dispositivo
+        registrar_estado_dispositivo(estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=True)
 
 
 def manejar_estado_instalacion(codigo_estacion: str, payload: dict) -> None:
@@ -426,47 +395,16 @@ def manejar_estado_instalacion(codigo_estacion: str, payload: dict) -> None:
         logger.warning('Reporte de instalación de estación no aprobada: %s', codigo_estacion)
         return
 
-    from apps.software.models import EventoInstalacion, ResultadoInstalacion
-    from apps.software.services import verificar_completado as verificar_instalacion_completada
+    from apps.software.services import paso_valido, registrar_estado_de_estacion
 
-    # Traduce cada paso fino al estado agregado — dict local (no a nivel de módulo, como
-    # _PASO_A_ESTADO) porque apps.software se importa diferido: viene después de
-    # mqtt_worker en INSTALLED_APPS, importar sus modelos arriba del todo del archivo
-    # rompería la carga de apps de Django (mismo motivo que scripts/monitoreo abajo).
-    paso_a_estado = {
-        EventoInstalacion.Paso.RECIBIDO: ResultadoInstalacion.Estado.DESCARGANDO,
-        EventoInstalacion.Paso.DESCARGADO: ResultadoInstalacion.Estado.DESCARGADO,
-        EventoInstalacion.Paso.HASH_VERIFICADO: ResultadoInstalacion.Estado.VERIFICADO,
-        EventoInstalacion.Paso.INSTALANDO: ResultadoInstalacion.Estado.INSTALANDO,
-        EventoInstalacion.Paso.INSTALADO: ResultadoInstalacion.Estado.INSTALADO,
-        EventoInstalacion.Paso.ERROR: ResultadoInstalacion.Estado.ERROR,
-    }
-
-    solicitud_id = payload.get('solicitud_id')
     paso = payload.get('paso')
-    if paso not in EventoInstalacion.Paso.values:
+    if not paso_valido(paso):
         logger.warning('Paso desconocido "%s" reportado por %s (instalación)', paso, codigo_estacion)
         return
 
-    resultado, _ = ResultadoInstalacion.objects.get_or_create(solicitud_id=solicitud_id, estacion=estacion)
-
-    if paso == EventoInstalacion.Paso.RECIBIDO:
-        resultado.version_previa_detectada = payload.get(
-            'version_previa_detectada', resultado.version_previa_detectada,
-        )
-    if paso == EventoInstalacion.Paso.INSTALADO:
-        resultado.version_instalada = payload.get('version_instalada', resultado.version_instalada)
-
-    nuevo_estado = paso_a_estado.get(paso)
-    if nuevo_estado:
-        resultado.estado = nuevo_estado
-    if paso == EventoInstalacion.Paso.ERROR:
-        resultado.detalle_error = payload.get('detalle', '')
-    resultado.save()
-
-    EventoInstalacion.objects.create(resultado=resultado, paso=paso, detalle=payload.get('detalle', ''))
-
-    verificar_instalacion_completada(resultado.solicitud)
+    registrar_estado_de_estacion(
+        solicitud_id=payload.get('solicitud_id'), estacion=estacion, paso=paso, datos=payload,
+    )
 
 
 def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:
@@ -510,17 +448,14 @@ def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:
             evaluar_regla_bitlocker(estacion)
 
     # La clave de recuperación solo viaja si BitLocker está habilitado y el agente la
-    # incluyó en esta respuesta puntual (no en cada heartbeat). Se cifra antes de
-    # guardarse: en ningún momento queda en texto plano en la base de datos.
-    clave_plana = payload.get('bitlocker_clave_recuperacion')
-    if clave_plana:
-        ClaveRecuperacionBitLocker.objects.update_or_create(
-            estacion=estacion,
-            defaults={
-                'clave_cifrada': crypto.cifrar(clave_plana),
-                'id_protector': payload.get('bitlocker_id_protector', ''),
-            },
-        )
+    # incluyó en esta respuesta puntual (no en cada heartbeat). El cifrado y la escritura
+    # son de catalogo, que es el dueño del secreto: acá solo se entrega lo que llegó.
+    from apps.catalogo.services import guardar_clave_bitlocker
+    guardar_clave_bitlocker(
+        estacion=estacion,
+        clave_plana=payload.get('bitlocker_clave_recuperacion') or '',
+        id_protector=payload.get('bitlocker_id_protector', ''),
+    )
 
 
 def manejar_windows_update(codigo_estacion: str, payload: dict) -> None:
@@ -577,34 +512,9 @@ def manejar_software_instalado(codigo_estacion: str, payload: dict) -> None:
     if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
         return
 
-    from apps.software.models import SoftwareInstaladoDetectado
+    from apps.software.services import registrar_software_instalado
 
-    def _limpiar(valor) -> str:
-        # Postgres rechaza bytes NUL (0x00) en columnas text — algunos instaladores
-        # mal comportados dejan uno en el registro de Windows (encontrado escaneando
-        # una estación real, 20-ago-2026: tumbaba el bulk_create COMPLETO, no solo esa
-        # fila). SQLite, donde corren los tests, los tolera — por eso no se veía antes
-        # de probar contra Postgres real.
-        return (valor or '').replace('\x00', '').strip()
-
-    programas = payload.get('programas') or []
-    detectados = []
-    nombres_vistos = set()
-    for p in programas:
-        nombre = _limpiar(p.get('nombre'))
-        if not nombre or nombre in nombres_vistos:
-            # El registro de Windows puede traer una misma entrada duplicada (32/64
-            # bits) — unique_together=('estacion', 'nombre') no tolera duplicados en el
-            # mismo bulk_create, así que se descarta silenciosamente el repetido.
-            continue
-        nombres_vistos.add(nombre)
-        detectados.append(SoftwareInstaladoDetectado(
-            estacion=estacion, nombre=nombre,
-            version=_limpiar(p.get('version')), fabricante=_limpiar(p.get('fabricante')),
-        ))
-
-    SoftwareInstaladoDetectado.objects.filter(estacion=estacion).delete()
-    SoftwareInstaladoDetectado.objects.bulk_create(detectados)
+    registrar_software_instalado(estacion=estacion, programas=payload.get('programas') or [])
 
     estacion.software_instalado_ultima_verificacion = timezone.now()
     estacion.save(update_fields=['software_instalado_ultima_verificacion'])
@@ -624,34 +534,9 @@ def manejar_perifericos(codigo_estacion: str, payload: dict) -> None:
     if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
         return
 
-    from apps.catalogo.models import PerifericoDetectado
+    from apps.catalogo.services import registrar_perifericos
 
-    def _limpiar(valor) -> str:
-        # Mismo motivo que manejar_software_instalado: Postgres rechaza bytes NUL en
-        # columnas text.
-        return (valor or '').replace('\x00', '').strip()
-
-    dispositivos = payload.get('dispositivos') or []
-    detectados = []
-    device_ids_vistos = set()
-    for d in dispositivos:
-        device_id = _limpiar(d.get('device_id'))
-        nombre = _limpiar(d.get('nombre'))
-        if not device_id or not nombre or device_id in device_ids_vistos:
-            # unique_together=('estacion', 'device_id') no tolera duplicados/vacíos en
-            # el mismo bulk_create -- se descarta silenciosamente el repetido.
-            continue
-        device_ids_vistos.add(device_id)
-        detectados.append(PerifericoDetectado(
-            estacion=estacion, nombre=nombre, device_id=device_id,
-            fabricante=_limpiar(d.get('fabricante')), clase=_limpiar(d.get('clase')),
-        ))
-
-    PerifericoDetectado.objects.filter(estacion=estacion).delete()
-    PerifericoDetectado.objects.bulk_create(detectados)
-
-    estacion.perifericos_ultima_verificacion = timezone.now()
-    estacion.save(update_fields=['perifericos_ultima_verificacion'])
+    registrar_perifericos(estacion=estacion, dispositivos=payload.get('dispositivos') or [])
 
 
 def manejar_eventos_sistema(codigo_estacion: str, payload: dict) -> None:
@@ -772,21 +657,15 @@ def manejar_red_farmacia(codigo_estacion: str, payload: dict) -> None:
     if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
         return
 
-    bytes_recibidos = payload.get('bytes_recibidos')
-    bytes_enviados = payload.get('bytes_enviados')
-    if bytes_recibidos is None or bytes_enviados is None:
-        logger.info('%s: no se pudo sondear el Mikrotik local de %s', codigo_estacion, estacion.farmacia.codigo)
-        return
+    from apps.monitoreo.services import registrar_muestra_red_farmacia
 
-    from apps.monitoreo.mikrotik import _calcular_tasa
-    from apps.monitoreo.models import MuestraRedFarmacia
-
-    farmacia = estacion.farmacia
-    red_recibido_kbps, red_enviado_kbps = _calcular_tasa(farmacia, bytes_recibidos, bytes_enviados)
-    MuestraRedFarmacia.objects.create(
-        farmacia=farmacia, bytes_recibidos=bytes_recibidos, bytes_enviados=bytes_enviados,
-        red_recibido_kbps=red_recibido_kbps, red_enviado_kbps=red_enviado_kbps,
+    muestra = registrar_muestra_red_farmacia(
+        farmacia=estacion.farmacia,
+        bytes_recibidos=payload.get('bytes_recibidos'),
+        bytes_enviados=payload.get('bytes_enviados'),
     )
+    if muestra is None:
+        logger.info('%s: no se pudo sondear el Mikrotik local de %s', codigo_estacion, estacion.farmacia.codigo)
 
 
 def manejar_pos_errores(codigo_estacion: str, payload: dict) -> None:
@@ -808,33 +687,9 @@ def manejar_pos_errores(codigo_estacion: str, payload: dict) -> None:
     if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
         return
 
-    from apps.monitoreo.models import PosErrorDetectado
-    from apps.monitoreo.services import clasificar_error_pos, evaluar_regla_pos_errores
+    from apps.monitoreo.services import registrar_errores_pos
 
-    errores = payload.get('errores') or []
-    total_nuevos = 0
-    for e in errores:
-        mensaje = (e.get('mensaje') or '').strip()[:500]
-        if not mensaje:
-            continue
-        cantidad = e.get('cantidad')
-        cantidad = int(cantidad) if isinstance(cantidad, (int, float)) and cantidad > 0 else 1
-        categoria = clasificar_error_pos(mensaje)
-        if categoria == PosErrorDetectado.Categoria.SISTEMA:
-            total_nuevos += cantidad
-
-        detectado, _creado = PosErrorDetectado.objects.get_or_create(
-            estacion=estacion, mensaje=mensaje, defaults={'nivel': e.get('nivel') or 'ERROR', 'categoria': categoria},
-        )
-        detectado.cantidad_total += cantidad
-        detectado.nivel = e.get('nivel') or detectado.nivel
-        # Reclasifica en cada reporte, no solo al crear: si PREFIJOS_ERROR_DE_NEGOCIO
-        # gana un patrón nuevo más adelante, las filas viejas se ponen al día solas la
-        # próxima vez que ese mensaje se repita, sin necesitar una migración de datos.
-        detectado.categoria = categoria
-        detectado.save(update_fields=['cantidad_total', 'nivel', 'categoria', 'ultima_vez'])
-
-    evaluar_regla_pos_errores(estacion, total_nuevos)
+    registrar_errores_pos(estacion=estacion, errores=payload.get('errores') or [])
 
 
 def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:
@@ -890,31 +745,9 @@ def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
     if estacion.estado_aprobacion != Estacion.EstadoAprobacion.APROBADA:
         return
 
-    from apps.monitoreo.models import MuestraMetrica
+    from apps.monitoreo.services import registrar_muestra_metricas
 
-    def _num(clave):
-        valor = payload.get(clave)
-        return valor if isinstance(valor, (int, float)) else None
-
-    muestra = MuestraMetrica.objects.create(
-        estacion=estacion,
-        ram_total=_num('ram_total'),
-        ram_usada=_num('ram_usada'),
-        ram_libre=_num('ram_libre'),
-        cache=_num('cache'),
-        swap_total=_num('swap_total'),
-        swap_usada=_num('swap_usada'),
-        cpu_carga_pct=_num('cpu_carga_pct'),
-        temperatura_c=_num('temperatura_c'),
-        latencia_ms=_num('latencia_ms'),
-        disco_total_gb=_num('disco_total_gb'),
-        disco_libre_gb=_num('disco_libre_gb'),
-        red_recibido_kbps=_num('red_recibido_kbps'),
-        red_enviado_kbps=_num('red_enviado_kbps'),
-    )
-
-    from apps.monitoreo.services import evaluar_reglas_metricas
-    evaluar_reglas_metricas(estacion, muestra)
+    registrar_muestra_metricas(estacion=estacion, payload=payload)
 
 
 def registrar_latido_worker(nombre: str) -> None:

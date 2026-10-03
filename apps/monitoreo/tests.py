@@ -7020,6 +7020,238 @@ class SaludDelSondeoDeEnlacesTests(TestCase):
         self.assertIn('sondeo de enlaces', salida.getvalue())
 
 
+class IngestaDeSeriesDeMonitoreoTests(TestCase):
+    """`registrar_muestra_metricas` y `registrar_muestra_red_farmacia`: las dos series de
+    alto volumen, extraídas de `mqtt_worker` (puntos 7 y 8 del plan de ingesta).
+
+    Importaban más que las otras seis porque `mqtt_worker` era su ÚNICO escritor: si el
+    worker se apagaba, la serie de recursos y la de ancho de banda de toda la flota
+    dejaban de existir — no porque se cortara el transporte, sino porque era él quien
+    escribía esas tablas.
+
+    No había ninguna razón de rendimiento para la escritura directa, y lo verifiqué antes
+    de mover nada: es UNA fila por mensaje en las dos, no un lote, y ningún comentario del
+    código la justificaba. El acoplamiento era histórico.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXING')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ING001', grupo=grupo, unidad_negocio=self.sg, ip_router='10.70.0.1',
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='ING001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    # --- metricas ---
+
+    def test_guarda_la_muestra_con_los_campos_del_payload(self):
+        from apps.monitoreo.models import MuestraMetrica
+        from apps.monitoreo.services import registrar_muestra_metricas
+
+        muestra = registrar_muestra_metricas(estacion=self.estacion, payload={
+            'ram_total': 16384, 'ram_usada': 8192, 'cpu_carga_pct': 42.5,
+            'disco_total_gb': 500, 'disco_libre_gb': 120, 'latencia_ms': 7,
+        })
+
+        self.assertEqual(MuestraMetrica.objects.count(), 1)
+        self.assertEqual(muestra.ram_total, 16384)
+        self.assertEqual(muestra.cpu_carga_pct, 42.5)
+        self.assertEqual(muestra.disco_libre_gb, 120)
+
+    def test_un_valor_que_no_es_numero_queda_en_none_y_no_tumba_la_ingesta(self):
+        """El payload llega crudo del agente. Un agente viejo que no manda una métrica, o
+        una que llega como texto, no puede tumbar el único oído de la plataforma."""
+        from apps.monitoreo.services import registrar_muestra_metricas
+
+        muestra = registrar_muestra_metricas(estacion=self.estacion, payload={
+            'ram_total': 'no-es-un-numero', 'cpu_carga_pct': None, 'ram_usada': 4096,
+        })
+
+        self.assertIsNone(muestra.ram_total)
+        self.assertIsNone(muestra.cpu_carga_pct)
+        self.assertEqual(muestra.ram_usada, 4096)
+
+    def test_evalua_las_reglas_con_la_muestra_recien_guardada(self):
+        """Guardar sin evaluar dejaría la serie creciendo sin que nada avise. La
+        evaluación es parte de la ingesta, no del transporte."""
+        from unittest.mock import patch
+
+        from apps.monitoreo.services import registrar_muestra_metricas
+
+        with patch('apps.monitoreo.services.evaluar_reglas_metricas') as evaluar:
+            muestra = registrar_muestra_metricas(
+                estacion=self.estacion, payload={'cpu_carga_pct': 99},
+            )
+
+        evaluar.assert_called_once_with(self.estacion, muestra)
+
+    # --- red de farmacia ---
+
+    def test_la_primera_muestra_no_tiene_tasa_pero_si_contadores(self):
+        """Sin una lectura anterior no hay contra qué diferenciar."""
+        from apps.monitoreo.services import registrar_muestra_red_farmacia
+
+        m = registrar_muestra_red_farmacia(
+            farmacia=self.farmacia, bytes_recibidos=1000, bytes_enviados=500,
+        )
+
+        self.assertEqual(m.bytes_recibidos, 1000)
+        self.assertIsNone(m.red_recibido_kbps)
+
+    def test_la_segunda_calcula_la_tasa_contra_la_anterior(self):
+        from apps.monitoreo.services import registrar_muestra_red_farmacia
+
+        registrar_muestra_red_farmacia(
+            farmacia=self.farmacia, bytes_recibidos=1000, bytes_enviados=500,
+        )
+        m = registrar_muestra_red_farmacia(
+            farmacia=self.farmacia, bytes_recibidos=2000, bytes_enviados=900,
+        )
+
+        self.assertIsNotNone(m.red_recibido_kbps)
+        self.assertGreater(m.red_recibido_kbps, 0)
+
+    def test_sin_contadores_no_crea_fila(self):
+        """Una fila con contadores en cero rompería la tasa de la SIGUIENTE muestra: se
+        leería como una caída real de tráfico y no como "no se pudo medir"."""
+        from apps.monitoreo.models import MuestraRedFarmacia
+        from apps.monitoreo.services import registrar_muestra_red_farmacia
+
+        self.assertIsNone(registrar_muestra_red_farmacia(
+            farmacia=self.farmacia, bytes_recibidos=None, bytes_enviados=500,
+        ))
+        self.assertIsNone(registrar_muestra_red_farmacia(
+            farmacia=self.farmacia, bytes_recibidos=1000, bytes_enviados=None,
+        ))
+        self.assertEqual(MuestraRedFarmacia.objects.count(), 0)
+
+    # --- la guarda del plan ---
+
+    def test_el_worker_ya_no_escribe_estas_dos_tablas(self):
+        """Medida de éxito de la Fase 4: `mqtt_worker/services.py` deja de conocer
+        modelos ajenos. Acá se comprueban los dos que estas extracciones resolvieron.
+
+        Se mira el `.objects.` para no tropezar con las menciones en prosa de los
+        docstrings, que explican por qué la regla vive donde vive y deben quedar.
+        """
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (
+            Path(settings.BASE_DIR) / 'apps' / 'mqtt_worker' / 'services.py'
+        ).read_text(encoding='utf-8')
+        self.assertNotIn('MuestraMetrica.objects', fuente)
+        self.assertNotIn('MuestraRedFarmacia.objects', fuente)
+        # Y deja de importar un modulo PRIVADO de monitoreo para calcular la tasa.
+        self.assertNotIn('_calcular_tasa', fuente)
+        self.assertIn('registrar_muestra_metricas', fuente)
+        self.assertIn('registrar_muestra_red_farmacia', fuente)
+
+
+class IngestaDeErroresPosTests(TestCase):
+    """`registrar_errores_pos`: punto 6 del plan de ingesta.
+
+    A diferencia del inventario de software, esto NO es un snapshot: cada reporte es un
+    delta que se suma al contador de por vida. Y la clasificación sistema/negocio decide
+    qué dispara la alerta — "VENTA SIN LOTE" es una validación del POS funcionando bien,
+    no una falla. Esa decisión es de monitoreo y vivía en el worker.
+    """
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXPOS')
+        farmacia = Farmacia.objects.create(codigo='POS001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='POS001-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def test_acumula_en_vez_de_reemplazar(self):
+        """Es un delta, no un snapshot: dos reportes del mismo mensaje suman."""
+        from apps.monitoreo.models import PosErrorDetectado
+        from apps.monitoreo.services import registrar_errores_pos
+
+        registrar_errores_pos(estacion=self.estacion, errores=[
+            {'mensaje': 'Timeout conectando a la base', 'nivel': 'ERROR', 'cantidad': 3},
+        ])
+        registrar_errores_pos(estacion=self.estacion, errores=[
+            {'mensaje': 'Timeout conectando a la base', 'nivel': 'ERROR', 'cantidad': 2},
+        ])
+
+        fila = PosErrorDetectado.objects.get(estacion=self.estacion)
+        self.assertEqual(fila.cantidad_total, 5)
+        self.assertEqual(PosErrorDetectado.objects.count(), 1)
+
+    def test_solo_los_de_sistema_cuentan_para_la_alerta(self):
+        """Un error de NEGOCIO se guarda igual pero no suma: si contara, una validación
+        del POS funcionando bien abriría alertas para siempre."""
+        from apps.monitoreo.models import PosErrorDetectado
+        from apps.monitoreo.services import registrar_errores_pos
+
+        nuevos = registrar_errores_pos(estacion=self.estacion, errores=[
+            {'mensaje': 'VENTA SIN LOTE en el item 4', 'cantidad': 10},
+        ])
+
+        self.assertEqual(nuevos, 0)
+        fila = PosErrorDetectado.objects.get(estacion=self.estacion)
+        self.assertEqual(fila.categoria, PosErrorDetectado.Categoria.NEGOCIO)
+        self.assertEqual(fila.cantidad_total, 10)   # se guarda, no se descarta
+
+    def test_un_mensaje_vacio_se_ignora(self):
+        from apps.monitoreo.models import PosErrorDetectado
+        from apps.monitoreo.services import registrar_errores_pos
+
+        registrar_errores_pos(estacion=self.estacion, errores=[{'mensaje': '   '}, {}])
+        self.assertEqual(PosErrorDetectado.objects.count(), 0)
+
+    def test_cantidad_invalida_cuenta_como_uno(self):
+        """El payload es crudo: un texto donde debería ir un número no puede tumbar la
+        ingesta ni inventar un contador."""
+        from apps.monitoreo.models import PosErrorDetectado
+        from apps.monitoreo.services import registrar_errores_pos
+
+        registrar_errores_pos(estacion=self.estacion, errores=[
+            {'mensaje': 'Error X', 'cantidad': 'muchos'},
+            {'mensaje': 'Error Y', 'cantidad': -5},
+        ])
+
+        self.assertEqual(PosErrorDetectado.objects.get(mensaje='Error X').cantidad_total, 1)
+        self.assertEqual(PosErrorDetectado.objects.get(mensaje='Error Y').cantidad_total, 1)
+
+    def test_evalua_la_regla_con_el_total_de_sistema(self):
+        from unittest.mock import patch
+
+        from apps.monitoreo.services import registrar_errores_pos
+
+        with patch('apps.monitoreo.services.evaluar_regla_pos_errores') as evaluar:
+            registrar_errores_pos(estacion=self.estacion, errores=[
+                {'mensaje': 'Timeout conectando a la base', 'cantidad': 4},
+                {'mensaje': 'VENTA SIN LOTE', 'cantidad': 9},
+            ])
+
+        evaluar.assert_called_once_with(self.estacion, 4)
+
+    def test_el_worker_ya_no_escribe_esta_tabla(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        fuente = (
+            Path(settings.BASE_DIR) / 'apps' / 'mqtt_worker' / 'services.py'
+        ).read_text(encoding='utf-8')
+        # Se mira el USO (`.objects.` y la linea de import), no el nombre suelto: los
+        # docstrings del worker nombran estos modelos a proposito, para decir donde vive
+        # ahora la regla. Un assertNotIn sobre el nombre tropieza con esa prosa — ya me
+        # paso con 'apps.panel' en la prueba de umbrales.
+        self.assertNotIn('PosErrorDetectado.objects', fuente)
+        self.assertNotIn('import clasificar_error_pos', fuente)
+        self.assertIn('registrar_errores_pos', fuente)
+
+
 @override_settings(ENLACES_NOTIFICAR_A=['redes@ejemplo.com'])
 class FarmaciaDeBajaNoAvisaTests(TestCase):
     """Dar de baja una farmacia (`activa=False`) tiene que CALLAR su enlace, de verdad.

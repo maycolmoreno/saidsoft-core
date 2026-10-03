@@ -308,3 +308,75 @@ def verificar_completado(despliegue: Despliegue) -> bool:
         despliegue.save(update_fields=['estado'])
         return True
     return False
+
+
+# --- Ingesta: lo que reporta el agente por MQTT ---
+#
+# `apps.mqtt_worker` entrega el paso y los datos crudos; la traduccion a estado, la
+# escritura de las dos tablas y el seguimiento posterior son de ACA. Hasta el
+# 2-oct-2026 todo eso vivia en `manejar_estado_despliegue`, que para hacerlo tenia una
+# constante `_PASO_A_ESTADO` a nivel de modulo: el ciclo de vida de ResultadoDespliegue
+# escrito en el worker de transporte.
+
+# Traduce cada paso fino de la linea de tiempo al estado agregado del resultado.
+_PASO_A_ESTADO = {
+    EventoDespliegue.Paso.RECIBIDO: ResultadoDespliegue.Estado.DESCARGANDO,
+    EventoDespliegue.Paso.DESCARGADO: ResultadoDespliegue.Estado.DESCARGADO,
+    EventoDespliegue.Paso.HASH_VERIFICADO: ResultadoDespliegue.Estado.VERIFICADO,
+    EventoDespliegue.Paso.POS_CERRADO: ResultadoDespliegue.Estado.APLICANDO,
+    EventoDespliegue.Paso.APLICADO: ResultadoDespliegue.Estado.APLICANDO,
+    EventoDespliegue.Paso.POS_RELANZADO: ResultadoDespliegue.Estado.APLICANDO,
+    EventoDespliegue.Paso.OK: ResultadoDespliegue.Estado.APLICADO,
+    EventoDespliegue.Paso.ERROR: ResultadoDespliegue.Estado.ERROR,
+    EventoDespliegue.Paso.ROLLBACK: ResultadoDespliegue.Estado.ROLLBACK,
+}
+
+
+def paso_valido(paso) -> bool:
+    """Si `paso` es uno de los que entiende la linea de tiempo.
+
+    Lo expone este modulo y no el worker: que pasos existen es del dominio, y el
+    transporte solo tiene que poder descartar un mensaje mal formado sin conocerlos.
+    """
+    return paso in EventoDespliegue.Paso.values
+
+
+def registrar_estado_de_estacion(*, despliegue_id, estacion, paso, datos: dict | None = None):
+    """Aplica a `ResultadoDespliegue` el paso que reporto una estacion y deja su evento.
+
+    Devuelve el resultado, o None si el paso no es valido. Dispara ademas el freno
+    automatico y la verificacion de completado, que son seguimiento de ESTE dominio.
+
+    Lo que NO hace, a proposito: tocar `Estacion`, facturacion ni el estado de
+    dispositivo. Que un despliegue termine OK tambien significa "esta caja esta viva y
+    corre tal version del POS", pero eso es una conclusion que cruza tres dominios y la
+    sigue coordinando el worker. Traerla aca haria que `despliegues` importara
+    `facturacion` y `monitoreo`, acoplamiento que hoy no existe — se gana encapsular una
+    tabla y se pierde mas de lo que se gana.
+
+    `datos` son los campos crudos del payload (version_previa, version_nueva, detalle).
+    """
+    datos = datos or {}
+    if not paso_valido(paso):
+        return None
+
+    resultado, _ = ResultadoDespliegue.objects.get_or_create(
+        despliegue_id=despliegue_id, estacion=estacion,
+    )
+    if paso == EventoDespliegue.Paso.POS_CERRADO:
+        resultado.version_previa = datos.get('version_previa', resultado.version_previa)
+    if paso == EventoDespliegue.Paso.OK:
+        resultado.version_nueva = datos.get('version_nueva', resultado.version_nueva)
+
+    nuevo_estado = _PASO_A_ESTADO.get(paso)
+    if nuevo_estado:
+        resultado.estado = nuevo_estado
+    if paso == EventoDespliegue.Paso.ERROR:
+        resultado.detalle_error = datos.get('detalle', '')
+    resultado.save()
+
+    EventoDespliegue.objects.create(resultado=resultado, paso=paso, detalle=datos.get('detalle', ''))
+
+    evaluar_freno_automatico(resultado.despliegue)
+    verificar_completado(resultado.despliegue)
+    return resultado

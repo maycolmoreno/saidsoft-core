@@ -219,3 +219,99 @@ def estaciones_desactualizadas(aplicacion):
     return SoftwareInstaladoDetectado.objects.filter(
         nombre__icontains=aplicacion.nombre,
     ).exclude(version=aplicacion.version_mas_reciente_conocida)
+
+
+# --- Ingesta: lo que reporta el agente por MQTT ---
+#
+# Hermano de `apps.despliegues.services.registrar_estado_de_estacion`, y por el mismo
+# motivo: hasta el 2-oct-2026 el mapa paso->estado se armaba dentro de
+# `apps.mqtt_worker.services.manejar_estado_instalacion`, como un dict local. El ciclo
+# de vida de ResultadoInstalacion no es del transporte.
+
+_PASO_A_ESTADO = {
+    EventoInstalacion.Paso.RECIBIDO: ResultadoInstalacion.Estado.DESCARGANDO,
+    EventoInstalacion.Paso.DESCARGADO: ResultadoInstalacion.Estado.DESCARGADO,
+    EventoInstalacion.Paso.HASH_VERIFICADO: ResultadoInstalacion.Estado.VERIFICADO,
+    EventoInstalacion.Paso.INSTALANDO: ResultadoInstalacion.Estado.INSTALANDO,
+    EventoInstalacion.Paso.INSTALADO: ResultadoInstalacion.Estado.INSTALADO,
+    EventoInstalacion.Paso.ERROR: ResultadoInstalacion.Estado.ERROR,
+}
+
+
+def paso_valido(paso) -> bool:
+    """Si `paso` es uno de los que entiende la linea de tiempo de una instalacion."""
+    return paso in EventoInstalacion.Paso.values
+
+
+def registrar_estado_de_estacion(*, solicitud_id, estacion, paso, datos: dict | None = None):
+    """Aplica a `ResultadoInstalacion` el paso que reporto una estacion y deja su evento.
+
+    Devuelve el resultado, o None si el paso no es valido.
+
+    Sin freno automatico, a diferencia de despliegues: instalar software del catalogo es
+    de menor radio que actualizar el POS de toda la cadena (ver docstring de
+    apps.software.models).
+    """
+    datos = datos or {}
+    if not paso_valido(paso):
+        return None
+
+    resultado, _ = ResultadoInstalacion.objects.get_or_create(
+        solicitud_id=solicitud_id, estacion=estacion,
+    )
+    if paso == EventoInstalacion.Paso.RECIBIDO:
+        resultado.version_previa_detectada = datos.get(
+            'version_previa_detectada', resultado.version_previa_detectada,
+        )
+    if paso == EventoInstalacion.Paso.INSTALADO:
+        resultado.version_instalada = datos.get('version_instalada', resultado.version_instalada)
+
+    nuevo_estado = _PASO_A_ESTADO.get(paso)
+    if nuevo_estado:
+        resultado.estado = nuevo_estado
+    if paso == EventoInstalacion.Paso.ERROR:
+        resultado.detalle_error = datos.get('detalle', '')
+    resultado.save()
+
+    EventoInstalacion.objects.create(resultado=resultado, paso=paso, detalle=datos.get('detalle', ''))
+
+    verificar_completado(resultado.solicitud)
+    return resultado
+
+
+def registrar_software_instalado(*, estacion, programas: list) -> int:
+    """Reemplaza el inventario de software de `estacion` por el que reporto el agente.
+
+    Es un SNAPSHOT, no un delta: se borra lo anterior y se escribe lo nuevo, porque lo
+    que importa es que esta instalado AHORA. Devuelve cuantos quedaron.
+
+    Descarta duplicados dentro del mismo lote: el registro de Windows puede traer la
+    misma entrada dos veces (32/64 bits) y `unique_together=('estacion', 'nombre')` no
+    los tolera en un `bulk_create`. Esa regla depende del `unique_together` de ESTA
+    tabla, y hasta el 2-oct-2026 vivia en el worker — que para escribir aca tenia que
+    conocer una restriccion de un modelo ajeno.
+    """
+    from .models import SoftwareInstaladoDetectado
+
+    def _limpiar(valor) -> str:
+        # Postgres rechaza bytes NUL (0x00) en columnas text — algunos instaladores mal
+        # comportados dejan uno en el registro de Windows (encontrado escaneando una
+        # estación real, 20-ago-2026: tumbaba el bulk_create COMPLETO, no solo esa fila).
+        # SQLite los tolera, por eso no se veía antes de probar contra Postgres real.
+        return (valor or '').replace('\x00', '').strip()
+
+    detectados = []
+    nombres_vistos = set()
+    for p in programas or []:
+        nombre = _limpiar(p.get('nombre'))
+        if not nombre or nombre in nombres_vistos:
+            continue
+        nombres_vistos.add(nombre)
+        detectados.append(SoftwareInstaladoDetectado(
+            estacion=estacion, nombre=nombre,
+            version=_limpiar(p.get('version')), fabricante=_limpiar(p.get('fabricante')),
+        ))
+
+    SoftwareInstaladoDetectado.objects.filter(estacion=estacion).delete()
+    SoftwareInstaladoDetectado.objects.bulk_create(detectados)
+    return len(detectados)
