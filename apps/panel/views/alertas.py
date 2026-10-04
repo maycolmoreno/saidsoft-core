@@ -12,6 +12,7 @@ from apps.cuentas.services import (
 )
 from apps.monitoreo.forms import ReglaAlertaForm
 from apps.monitoreo.models import Alerta, PosErrorDetectado, ReglaAlerta
+from apps.panel.paginacion import paginar
 
 
 @login_required
@@ -49,9 +50,32 @@ def alertas_lista(request):
             fila['severidad_display'] = ReglaAlerta.Severidad(fila['regla__severidad']).label
             fila['es_pos_errores'] = fila['regla__metrica'] == 'pos_errores'
 
+    # Paginado desde el 3-oct-2026: la vista entregaba el queryset completo a la
+    # plantilla, así que `?todas=1` renderizaba TODAS las alertas de la historia. Con el
+    # filtro por defecto (solo abiertas y reconocidas) nunca se notó, porque esas son
+    # pocas — se nota el día que alguien pide el historial, y a 1.300 farmacias ese día
+    # llega.
+    #
+    # Reusa `apps.panel.paginacion.paginar`, el mismo helper de activos, auditoría,
+    # enlaces y estaciones, con las mismas 25 filas: `query_filtros` conserva `regla`,
+    # `todas` y `vista` al cambiar de página.
+    #
+    # El queryset llega ordenado por el `ordering` del Meta de Alerta (`-abierta_en`),
+    # que es justo lo que `paginar` exige: sin orden estable, Postgres puede repetir o
+    # saltear filas entre páginas.
+    #
+    # `agrupadas` NO se paginar a propósito: es un rollup por regla, así que tiene tantas
+    # filas como reglas activas haya (una decena), y es la vista que existe para NO tener
+    # que leer una lista larga.
+    pagina, query_filtros = paginar(alertas, request)
+
     return render(request, 'panel/alertas_lista.html', {
-        'alertas': alertas, 'solo_activas': solo_activas,
+        # `alertas` sigue siendo el nombre que la plantilla recorre: un Page de Django es
+        # iterable, así que el bucle no cambia y la paginación no toca el marcado de la
+        # tabla ni la vista agrupada.
+        'alertas': pagina, 'solo_activas': solo_activas,
         'vista_agrupada': vista_agrupada, 'agrupadas': agrupadas,
+        'pagina': pagina, 'query_filtros': query_filtros,
     })
 
 

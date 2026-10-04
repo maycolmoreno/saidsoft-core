@@ -9,7 +9,8 @@ from apps.catalogo.models import Estacion
 from apps.catalogo.services import calcular_matriz_cumplimiento
 from apps.cuentas.services import unidades_negocio_en_foco
 from apps.despliegues.models import Despliegue
-from apps.monitoreo.models import Alerta
+from apps.monitoreo.enlaces import nombre_proveedor
+from apps.monitoreo.models import Alerta, EventoEnlaceFarmacia
 # Los dos umbrales de salud de la plataforma vivian ACA y el comando verificar_salud
 # los importaba, con lo que el dominio terminaba dependiendo de una vista. Ahora la
 # fuente de verdad esta en monitoreo y el panel la consume, que es la direccion
@@ -94,6 +95,41 @@ def dashboard(request):
     )
     total_sin_reportar = sin_reportar.count()
 
+    # Enlaces caídos. Hasta el 3-oct-2026 el dashboard no mostraba NINGUNO, pese a ser el
+    # fallo de mayor impacto operativo: una farmacia sin enlace no vende. El técnico abría
+    # el tablero, lo veía tranquilo, y la caída estaba a dos pantallas de distancia.
+    #
+    # Mismo criterio que las dos listas de arriba: acotada a 6 filas con el total aparte.
+    # Y mismas exclusiones que `resumen_operacion` y el Centro de Monitoreo, para que los
+    # tres números no puedan discrepar:
+    #   - `fin__isnull=True`  -> solo las caídas todavía abiertas.
+    #   - `farmacia__activa`  -> una farmacia dada de baja deja de sondearse y su estado
+    #                            queda congelado; no es una caída que alguien vaya a ir a
+    #                            arreglar (reportado con GP063 el 2-oct-2026).
+    #   - `respondio_alguna_vez=False` excluido -> nunca respondió es configuración
+    #                            pendiente, no una caída.
+    #
+    # Se usa el EVENTO y no EstadoEnlaceFarmacia porque el evento sabe CUÁNDO empezó la
+    # caída —el primer fallo, no el sondeo que la confirmó— que es la duración que el
+    # técnico necesita para priorizar. Es el mismo modelo que ya usa el Centro.
+    #
+    # Ordenado por `inicio` ascendente: la más vieja primero. A igual severidad, la que
+    # lleva más tiempo caída es la que primero hay que atender.
+    enlaces_caidos = (
+        EventoEnlaceFarmacia.objects
+        .filter(fin__isnull=True, farmacia__unidad_negocio__in=visibles, farmacia__activa=True)
+        .exclude(farmacia__estado_enlace__respondio_alguna_vez=False)
+        .select_related('farmacia')
+        .order_by('inicio')
+    )
+    total_enlaces_caidos = enlaces_caidos.count()
+    # El proveedor se resuelve acá y no en la plantilla: `nombre_proveedor` recibe un
+    # argumento y una plantilla de Django no puede llamarla. Son 6 filas ya traídas, así
+    # que no agrega consultas — `select_related('farmacia')` ya trajo lo que necesita.
+    enlaces_caidos = list(enlaces_caidos[:6])
+    for evento in enlaces_caidos:
+        evento.proveedor = nombre_proveedor(evento.farmacia)
+
     latido_respaldo = WorkerHeartbeat.objects.filter(nombre=NOMBRE_RESPALDO).first()
     horas_sin_respaldo = None
     if latido_respaldo:
@@ -107,6 +143,8 @@ def dashboard(request):
         'total_online': total_online,
         'total_alertas_abiertas': total_alertas_abiertas,
         'alertas_recientes': alertas_recientes,
+        'enlaces_caidos': enlaces_caidos,
+        'total_enlaces_caidos': total_enlaces_caidos,
         'sin_reportar': sin_reportar[:6],
         'total_sin_reportar': total_sin_reportar,
         'worker_mqtt_activo': worker_mqtt_activo,

@@ -1354,12 +1354,17 @@ def resumen_operacion(unidades=None) -> dict:
     # Y se excluyen las farmacias dadas de baja: ya nadie las sondea, asi que su ultimo
     # estado queda congelado y nada lo puede recuperar. Una dada de baja mientras estaba
     # caida sumaba a este contador para siempre (reportado con GP063 el 2-oct-2026).
-    enlaces_caidos = _por_unidad(
+    # El queryset queda en una variable y no se cuenta en la misma línea porque
+    # `farmacias_afectadas`, más abajo, lo reusa. Contar dos veces la misma condición con
+    # dos consultas escritas aparte es como se llega a dos números que se contradicen en
+    # la misma pantalla.
+    enlaces = _por_unidad(
         EstadoEnlaceFarmacia.objects.filter(
             alcanzable=False, respondio_alguna_vez=True, farmacia__activa=True,
         ),
         unidades, 'farmacia__unidad_negocio',
-    ).count()
+    )
+    enlaces_caidos = enlaces.count()
 
     servicios = _por_unidad(
         EstadoServicioPos.objects.filter(disponible=False, ultima_respuesta__isnull=False),
@@ -1367,6 +1372,38 @@ def resumen_operacion(unidades=None) -> dict:
     )
     pos_criticos = servicios.filter(critico=True).count()
     pos_no_criticos = servicios.filter(critico=False).count()
+
+    # Cuántas FARMACIAS distintas requieren atención ahora mismo — no cuántos síntomas.
+    #
+    # Es el número que faltaba para que el técnico sepa el tamaño del problema: 27
+    # advertencias pueden ser 27 sitios o uno solo con 27 síntomas, y la diferencia
+    # cambia la jornada. Cuenta farmacias, nunca estaciones.
+    #
+    # Se arma con los MISMOS querysets que ya se contaron arriba, no con consultas
+    # nuevas: así hereda sin repetir el alcance por unidad de negocio y todas las
+    # exclusiones que cada condición ya tiene (farmacias dadas de baja, las que nunca
+    # respondieron, servicios que nunca contestaron). Si mañana se ajusta una exclusión,
+    # este contador la sigue sola.
+    #
+    # Tres consultas de ids y una unión en Python, en vez de un OR con tres JOIN: cada
+    # una usa su propio índice y devuelve a lo sumo unos cientos de enteros a esta
+    # escala, mientras que el OR obliga a Postgres a unir tres caminos distintos sobre
+    # las tablas grandes. Es `COUNT(DISTINCT farmacia)` en resultado, no en forma.
+    #
+    # Qué NO entra, a propósito:
+    #   - `activos_sin_sondeo`: es un hueco en lo que NOSOTROS medimos, no una falla de
+    #     la farmacia. Sumarlo haría que el número suba cuando se cae una tarea nuestra.
+    #   - `estaciones_fuera` en crudo: una estación sin heartbeat ya abre su alerta
+    #     (regla `sin_heartbeat`), así que llega por `abiertas`. Contarla también por su
+    #     estado sumaría la misma farmacia dos veces por el mismo hecho — y contar las
+    #     apagadas de noche metería las PCs administrativas, que el resumen justamente
+    #     separa.
+    afectadas = set(
+        abiertas.values_list('estacion__farmacia_id', flat=True).distinct()
+    )
+    afectadas |= set(enlaces.values_list('farmacia_id', flat=True).distinct())
+    afectadas |= set(servicios.values_list('estacion__farmacia_id', flat=True).distinct())
+    farmacias_afectadas = len(afectadas)
 
     corte_red = ahora - timedelta(hours=EstadoRedActivo.HORAS_VERIFICACION_VIGENTE)
     sin_sondeo = _por_unidad(
@@ -1398,6 +1435,7 @@ def resumen_operacion(unidades=None) -> dict:
         'admin_fuera': total_admin - admin_en_linea,
         'alertas_criticas': criticas,
         'alertas_advertencias': advertencias,
+        'farmacias_afectadas': farmacias_afectadas,
         'enlaces_caidos': enlaces_caidos,
         'pos_criticos': pos_criticos,
         'pos_no_criticos': pos_no_criticos,

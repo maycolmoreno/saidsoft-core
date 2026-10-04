@@ -7379,3 +7379,247 @@ class TraficoDeEnlaceSoloSiEsFrescoTests(TestCase):
         self.assertFalse(resp.context['lectura_vieja'])
         self.assertEqual(resp.context['consumo'].valor, 500.0)
         self.assertNotContains(resp, 'ya no es actual')
+
+
+class DashboardEnlacesCaidosTests(TestCase):
+    """El bloque de enlaces caídos del dashboard.
+
+    Hasta el 3-oct-2026 el dashboard no mostraba NINGÚN enlace, pese a que una farmacia
+    sin enlace no vende: el técnico abría el tablero, lo veía tranquilo, y la caída estaba
+    a dos pantallas de distancia. Lo que estas pruebas fijan es el recorte, que es donde
+    está el riesgo: que no se cuele una farmacia de otro cliente, ni una dada de baja, ni
+    una que nunca respondió — las mismas tres exclusiones que ya aplican
+    `resumen_operacion` y el Centro de Monitoreo, para que los tres números no discrepen.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.grupo = Grupo.objects.create(codigo='TRXDSH')
+        self.farmacia = Farmacia.objects.create(
+            codigo='DSH001', grupo=self.grupo, unidad_negocio=self.sg, ip_router='10.90.0.1',
+            tipo_enlace='TELCONET', circuito_proveedor='sangregorio-centro-quito',
+        )
+        self.de_otro_cliente = Farmacia.objects.create(
+            codigo='DSH002', grupo=self.grupo, unidad_negocio=self.mia, ip_router='10.90.0.2',
+        )
+        usuario = User.objects.create_user(username='u_dsh', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+
+    def _caer(self, farmacia, respondio_alguna_vez=True, hace_horas=2):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        EstadoEnlaceFarmacia.objects.update_or_create(
+            farmacia=farmacia,
+            defaults={'alcanzable': False, 'respondio_alguna_vez': respondio_alguna_vez},
+        )
+        return EventoEnlaceFarmacia.objects.create(
+            farmacia=farmacia, inicio=timezone.now() - timedelta(hours=hace_horas),
+        )
+
+    def _dashboard(self):
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.status_code, 200)
+        return resp
+
+    def test_sin_caidas_no_muestra_el_bloque(self):
+        resp = self._dashboard()
+        self.assertEqual(resp.context['total_enlaces_caidos'], 0)
+        self.assertNotContains(resp, 'sin conectividad')
+
+    def test_muestra_la_farmacia_el_proveedor_y_el_circuito(self):
+        self._caer(self.farmacia)
+        resp = self._dashboard()
+
+        self.assertEqual(resp.context['total_enlaces_caidos'], 1)
+        self.assertContains(resp, 'DSH001')
+        # El proveedor sale de `nombre_proveedor`, el mismo punto único que usan el correo
+        # de caídas y la tabla de enlaces — no de cortar el circuito, que es otra cosa.
+        self.assertContains(resp, 'TELCONET')
+        self.assertContains(resp, 'sangregorio-centro-quito')
+
+    def test_usa_la_copia_del_evento_cuando_la_tiene(self):
+        """`EventoEnlaceFarmacia.circuito_proveedor` es la copia tomada al momento de la
+        caída: si la farmacia cambió de circuito después, el ticket se abre con el que
+        estaba vigente cuando se cayó, no con el nuevo."""
+        evento = self._caer(self.farmacia)
+        evento.circuito_proveedor = 'circuito-viejo-del-evento'
+        evento.save(update_fields=['circuito_proveedor'])
+        self.farmacia.circuito_proveedor = 'circuito-nuevo-de-la-farmacia'
+        self.farmacia.save(update_fields=['circuito_proveedor'])
+
+        resp = self._dashboard()
+        self.assertContains(resp, 'circuito-viejo-del-evento')
+        self.assertNotContains(resp, 'circuito-nuevo-de-la-farmacia')
+
+    def test_cae_al_circuito_de_la_farmacia_si_el_evento_no_lo_copio(self):
+        """El caso real del 3-oct-2026: se importaron 702 circuitos de golpe, así que las
+        caídas abiertas ANTES de esa carga tienen la copia vacía mientras la farmacia ya
+        tiene el dato. Sin este respaldo el técnico leería "circuito sin cargar" teniendo
+        el circuito a un clic de distancia."""
+        evento = self._caer(self.farmacia)
+        self.assertEqual(evento.circuito_proveedor, '', 'el evento se creó sin copia, como los viejos')
+
+        self.assertContains(self._dashboard(), 'sangregorio-centro-quito')
+
+    def test_sin_circuito_en_ninguno_de_los_dos_lo_dice_en_vez_de_mentir(self):
+        self.farmacia.circuito_proveedor = ''
+        self.farmacia.save(update_fields=['circuito_proveedor'])
+        self._caer(self.farmacia)
+
+        self.assertContains(self._dashboard(), 'circuito sin cargar')
+
+    def test_no_muestra_la_farmacia_de_otro_cliente_sin_acceso(self):
+        otro = User.objects.create_user(username='u_dsh_solo_sg', password='x')
+        perfil = PerfilUsuario.objects.create(usuario=otro, acceso_todas_unidades=False)
+        perfil.unidades_negocio.add(self.sg)
+        self.client.force_login(otro)
+
+        self._caer(self.de_otro_cliente)
+        resp = self._dashboard()
+
+        self.assertEqual(resp.context['total_enlaces_caidos'], 0)
+        self.assertNotContains(resp, 'DSH002')
+
+    def test_no_muestra_una_farmacia_dada_de_baja(self):
+        """Nadie la sondea más, así que su caída quedó congelada: no es algo que alguien
+        vaya a ir a arreglar (mismo criterio que GP063 el 2-oct-2026)."""
+        self._caer(self.farmacia)
+        self.assertEqual(self._dashboard().context['total_enlaces_caidos'], 1)
+
+        self.farmacia.activa = False
+        self.farmacia.save(update_fields=['activa'])
+        self.assertEqual(self._dashboard().context['total_enlaces_caidos'], 0)
+
+    def test_no_muestra_una_que_nunca_respondio(self):
+        """Nunca respondió es configuración pendiente —ruta o IP mal cargada—, no una
+        caída que alguien deba atender hoy."""
+        self._caer(self.farmacia, respondio_alguna_vez=False)
+        self.assertEqual(self._dashboard().context['total_enlaces_caidos'], 0)
+
+    def test_la_mas_vieja_va_primero(self):
+        """A igual severidad, la que lleva más tiempo caída es la que primero hay que
+        atender."""
+        reciente = Farmacia.objects.create(
+            codigo='DSH003', grupo=self.grupo, unidad_negocio=self.sg, ip_router='10.90.0.3',
+        )
+        self._caer(self.farmacia, hace_horas=9)
+        self._caer(reciente, hace_horas=1)
+
+        filas = self._dashboard().context['enlaces_caidos']
+        self.assertEqual([f.farmacia.codigo for f in filas], ['DSH001', 'DSH003'])
+
+    def test_acota_a_seis_filas_pero_informa_el_total(self):
+        """Es un tablero, no un listado: mismo recorte que las otras dos listas."""
+        for i in range(10):
+            farmacia = Farmacia.objects.create(
+                codigo='DSH1%02d' % i, grupo=self.grupo, unidad_negocio=self.sg,
+                ip_router='10.91.0.%d' % (i + 1),
+            )
+            self._caer(farmacia)
+
+        resp = self._dashboard()
+        self.assertEqual(resp.context['total_enlaces_caidos'], 10)
+        self.assertEqual(len(resp.context['enlaces_caidos']), 6)
+        self.assertContains(resp, 'ver las 10')
+
+
+class AlertasListaPaginacionTests(TestCase):
+    """`alertas_lista` paginar desde el 3-oct-2026.
+
+    Antes entregaba el queryset completo a la plantilla, así que `?todas=1` renderizaba
+    todas las alertas de la historia. Con el filtro por defecto —solo abiertas y
+    reconocidas— no se notaba, porque esas son pocas; se nota el día que alguien pide el
+    historial, y a 1.300 farmacias ese día llega.
+
+    Reusa `apps.panel.paginacion.paginar`, el helper que ya usan activos, auditoría,
+    enlaces y estaciones. Lo que estas pruebas fijan es que paginar no se haya llevado
+    puesto ningún filtro: ese es el modo típico de romper una lista al paginarla.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.models import Metrica, ReglaAlerta
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXPAG')
+        self.farmacia = Farmacia.objects.create(codigo='PAG001', grupo=grupo, unidad_negocio=self.sg)
+        usuario = User.objects.create_user(username='u_pag', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(Permission.objects.get(codename='view_alerta'))
+        self.client.force_login(usuario)
+
+        self.regla = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90, creado_por=usuario,
+        )
+        self.otra_regla = ReglaAlerta.objects.create(
+            nombre='RAM alta', metrica=Metrica.RAM_USADA_PCT, umbral=90, creado_por=usuario,
+        )
+        self._siguiente = 0
+
+    def _alertas(self, cantidad, regla=None, estado=None):
+        from apps.monitoreo.models import Alerta
+
+        for _ in range(cantidad):
+            self._siguiente += 1
+            estacion = Estacion.objects.create(
+                codigo='PAG001-%02d' % self._siguiente, farmacia=self.farmacia,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            )
+            extra = {'estado': estado} if estado else {}
+            Alerta.objects.create(
+                regla=regla or self.regla, estacion=estacion, valor_disparador=95, **extra,
+            )
+
+    def test_una_pagina_no_muestra_mas_de_por_pagina(self):
+        from apps.panel.paginacion import POR_PAGINA
+
+        self._alertas(POR_PAGINA + 5)
+        resp = self.client.get(reverse('panel:alertas_lista'))
+
+        self.assertEqual(len(resp.context['alertas']), POR_PAGINA)
+        self.assertEqual(resp.context['pagina'].paginator.count, POR_PAGINA + 5)
+        self.assertTrue(resp.context['pagina'].has_next())
+
+    def test_la_segunda_pagina_trae_el_resto(self):
+        from apps.panel.paginacion import POR_PAGINA
+
+        self._alertas(POR_PAGINA + 3)
+        resp = self.client.get(reverse('panel:alertas_lista'), {'pagina': 2})
+
+        self.assertEqual(len(resp.context['alertas']), 3)
+        self.assertEqual(resp.context['pagina'].number, 2)
+
+    def test_el_filtro_por_regla_se_conserva_al_paginar(self):
+        """Si paginar perdiera el filtro, pasar de página devolvería al listado completo
+        — por eso `paginar` devuelve `query_filtros` SIN el parámetro de página."""
+        self._alertas(3, regla=self.regla)
+        self._alertas(2, regla=self.otra_regla)
+
+        resp = self.client.get(reverse('panel:alertas_lista'), {'regla': self.regla.pk})
+        self.assertEqual(resp.context['pagina'].paginator.count, 3)
+        self.assertIn('regla=%d' % self.regla.pk, resp.context['query_filtros'])
+        self.assertNotIn('pagina', resp.context['query_filtros'])
+
+    def test_todas_sigue_incluyendo_las_resueltas(self):
+        from apps.monitoreo.models import Alerta
+
+        self._alertas(2)
+        self._alertas(1, estado=Alerta.Estado.RESUELTA)
+
+        por_defecto = self.client.get(reverse('panel:alertas_lista'))
+        self.assertEqual(por_defecto.context['pagina'].paginator.count, 2)
+
+        todas = self.client.get(reverse('panel:alertas_lista'), {'todas': '1'})
+        self.assertEqual(todas.context['pagina'].paginator.count, 3)
+        self.assertIn('todas=1', todas.context['query_filtros'])
+
+    def test_la_vista_agrupada_sigue_funcionando_y_no_se_paginar(self):
+        """Es un rollup por regla: tantas filas como reglas activas haya, y existe
+        justamente para NO tener que leer una lista larga."""
+        self._alertas(3, regla=self.regla)
+        self._alertas(2, regla=self.otra_regla)
+
+        resp = self.client.get(reverse('panel:alertas_lista'), {'vista': 'agrupada'})
+        self.assertTrue(resp.context['vista_agrupada'])
+        self.assertEqual(len(resp.context['agrupadas']), 2)

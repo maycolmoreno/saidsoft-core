@@ -7562,3 +7562,125 @@ class FarmaciaDeBajaNoAvisaTests(TestCase):
             call_command('limpiar_enlaces_de_baja', '--farmacia', 'TSTB01', '--aplicar',
                          stdout=StringIO())
         self.assertIsNone(EventoEnlaceFarmacia.objects.get(farmacia=self.farmacia).fin)
+
+
+class FarmaciasAfectadasTests(TestCase):
+    """El KPI `farmacias_afectadas` de `resumen_operacion`: cuántos SITIOS requieren
+    atención, no cuántos síntomas hay.
+
+    Es el número que faltaba para dimensionar el problema. 27 advertencias pueden ser 27
+    farmacias o una sola con 27 síntomas, y la jornada del técnico es distinta en cada
+    caso. Lo que estas pruebas fijan es justamente eso: que cuente farmacias distintas y
+    que no sume la misma dos veces por dos síntomas del mismo sitio.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.models import ReglaAlerta
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRXAFE')
+        self.farmacia = Farmacia.objects.create(
+            codigo='AFE001', grupo=grupo, unidad_negocio=self.sg, ip_router='10.80.0.1',
+        )
+        self.otra = Farmacia.objects.create(
+            codigo='AFE002', grupo=grupo, unidad_negocio=self.sg, ip_router='10.80.0.2',
+        )
+        self.de_otro_cliente = Farmacia.objects.create(
+            codigo='AFE003', grupo=grupo, unidad_negocio=self.mia, ip_router='10.80.0.3',
+        )
+        self.usuario = User.objects.create_user(username='u_afectadas', password='x')
+        self.regla = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90,
+            creado_por=self.usuario,
+        )
+
+    def _estacion(self, farmacia, sufijo='A'):
+        return Estacion.objects.create(
+            codigo=f'{farmacia.codigo}-{sufijo}', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def _afectadas(self, unidades=None):
+        from apps.monitoreo.services import resumen_operacion
+
+        return resumen_operacion(unidades if unidades is not None else [self.sg])['farmacias_afectadas']
+
+    def _caer_enlace(self, farmacia):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        EstadoEnlaceFarmacia.objects.update_or_create(
+            farmacia=farmacia,
+            defaults={'alcanzable': False, 'respondio_alguna_vez': True},
+        )
+
+    def test_sin_problemas_es_cero(self):
+        self._estacion(self.farmacia)
+        self.assertEqual(self._afectadas(), 0)
+
+    def test_cuenta_farmacias_y_no_estaciones(self):
+        """Dos estaciones de la MISMA farmacia con alerta son UNA farmacia afectada.
+
+        Es la razón de existir del contador: sin esto el técnico lee "2" y sale a buscar
+        dos sitios.
+        """
+        a = self._estacion(self.farmacia, 'A')
+        b = self._estacion(self.farmacia, 'B')
+        Alerta.objects.create(regla=self.regla, estacion=a, valor_disparador=95)
+        Alerta.objects.create(regla=self.regla, estacion=b, valor_disparador=95)
+
+        self.assertEqual(self._afectadas(), 1)
+
+    def test_no_suma_dos_veces_la_misma_farmacia_por_dos_sintomas(self):
+        """Enlace caído MÁS alerta abierta en el mismo sitio sigue siendo un sitio."""
+        estacion = self._estacion(self.farmacia)
+        Alerta.objects.create(regla=self.regla, estacion=estacion, valor_disparador=95)
+        self._caer_enlace(self.farmacia)
+
+        self.assertEqual(self._afectadas(), 1)
+
+    def test_suma_farmacias_distintas_con_sintomas_distintos(self):
+        estacion = self._estacion(self.farmacia)
+        Alerta.objects.create(regla=self.regla, estacion=estacion, valor_disparador=95)
+        self._caer_enlace(self.otra)
+
+        self.assertEqual(self._afectadas(), 2)
+
+    def test_respeta_el_alcance_por_unidad_de_negocio(self):
+        self._caer_enlace(self.farmacia)
+        self._caer_enlace(self.de_otro_cliente)
+
+        self.assertEqual(self._afectadas([self.sg]), 1, 'no puede ver la farmacia de otro cliente')
+        self.assertEqual(self._afectadas([self.sg, self.mia]), 2)
+
+    def test_hereda_las_exclusiones_de_enlaces_caidos(self):
+        """Las exclusiones no se reimplementan: el contador reusa el queryset que ya las
+        tiene, así que una farmacia dada de baja o que nunca respondió no entra.
+
+        Si esto se rompiera, el KPI diría que hay sitios para atender que nadie va a
+        atender — el mismo problema que ya se corrigió en `enlaces_caidos` con GP063.
+        """
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        # Nunca respondió: es configuración pendiente, no una caída.
+        EstadoEnlaceFarmacia.objects.update_or_create(
+            farmacia=self.farmacia,
+            defaults={'alcanzable': False, 'respondio_alguna_vez': False},
+        )
+        self.assertEqual(self._afectadas(), 0)
+
+        # Dada de baja: nadie la sondea más, su estado quedó congelado.
+        self._caer_enlace(self.otra)
+        self.assertEqual(self._afectadas(), 1)
+        self.otra.activa = False
+        self.otra.save(update_fields=['activa'])
+        self.assertEqual(self._afectadas(), 0)
+
+    def test_una_alerta_resuelta_ya_no_afecta(self):
+        estacion = self._estacion(self.farmacia)
+        alerta = Alerta.objects.create(regla=self.regla, estacion=estacion, valor_disparador=95)
+        self.assertEqual(self._afectadas(), 1)
+
+        alerta.estado = Alerta.Estado.RESUELTA
+        alerta.save(update_fields=['estado'])
+        self.assertEqual(self._afectadas(), 0)

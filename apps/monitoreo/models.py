@@ -382,6 +382,42 @@ class Alerta(models.Model):
     class Meta:
         db_table = 'alerta'
         ordering = ['-abierta_en']
+        indexes = [
+            # UN índice, y sale de las consultas que existen, no de lo que parezca
+            # razonable. El patrón real es "filtrar por estado y devolver lo más nuevo
+            # primero", y aparece en los seis lugares que más se consultan:
+            #
+            #   - panel.views.dashboard        estado__in=[ABIERTA, RECONOCIDA] + count()
+            #   - monitoreo.services           resumen_operacion: estado=ABIERTA + count()
+            #   - panel.views.monitoreo        centro: estado=ABIERTA + order_by('-abierta_en')
+            #   - panel.views.alertas          listado: estado__in + el ordering del Meta
+            #   - monitoreo.services           escalar_alertas_abiertas: estado=ABIERTA + abierta_en__lte
+            #   - monitoreo.telegram_bot       /alertas y /criticas
+            #
+            # El orden de los campos importa: `estado` primero porque es la igualdad, y
+            # `-abierta_en` después para que el índice ya entregue las filas ordenadas y
+            # no haya que ordenarlas aparte. Ese `ordering` del Meta se aplica en TODAS
+            # las consultas de este modelo, así que el segundo campo no es opcional.
+            # Postgres recorre un índice descendente hacia atrás, así que el mismo sirve
+            # para el rango ascendente de `escalar_alertas_abiertas`.
+            models.Index(fields=['estado', '-abierta_en']),
+            #
+            # Lo que se evaluó y se dejó AFUERA, para que no se agregue por costumbre:
+            #
+            # - (estacion, regla, estado) para `_alerta_activa`, que es la consulta más
+            #   caliente del modelo (corre por cada regla y cada estación en cada
+            #   evaluación). No hace falta: lidera con `estacion=`, que ya tiene índice
+            #   por ser clave ajena, y las alertas de UNA estación son un puñado — el
+            #   filtro posterior no recorre nada. Lo mismo vale para las cuatro
+            #   `resolver_alertas_*`.
+            # - Un índice parcial con `escalada_en__isnull=True` para el escalamiento
+            #   sería más angosto, pero esa consulta corre una vez cada varios minutos:
+            #   no paga el costo de mantener un índice más en cada INSERT.
+            # - `abierta_en` solo, para los informes y la pantalla de tendencia, que
+            #   filtran por fecha SIN estado. Son consultas de uso ocasional y por
+            #   rangos amplios; un índice más en la tabla que más escribe el monitoreo
+            #   no se justifica por ellas.
+        ]
 
     def __str__(self):
         return f'{self.regla.nombre} · {self.estacion.codigo} ({self.get_estado_display()})'

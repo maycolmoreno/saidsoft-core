@@ -126,6 +126,66 @@
     </table>
 </div>
 
+{% comment %}
+Enlaces caídos. Va ARRIBA de las alertas y las estaciones, y a todo el ancho, porque es
+el fallo de mayor impacto: una farmacia sin enlace no vende. Hasta el 3-oct-2026 el
+dashboard no mostraba ninguno y la caída estaba a dos pantallas de distancia.
+
+No repite el bloque del Centro de Monitoreo: allá se agrupan por proveedor, que es como
+se abre el reclamo; acá es una lista plana por antigüedad, que es como se decide a qué ir
+primero. Cada fila lleva al listado de enlaces, igual que las alertas llevan al de
+alertas — el dashboard no abre modales.
+{% endcomment %}
+{% if enlaces_caidos %}
+<div class="mb-8">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-sm font-medium uppercase tracking-wide text-[var(--text-faint)]">
+            Enlaces caídos — {{ total_enlaces_caidos }} farmacia{{ total_enlaces_caidos|pluralize:"s" }} sin conectividad
+        </h2>
+        {% if total_enlaces_caidos > 6 %}
+        <a href="{% url 'panel:enlaces_farmacias_lista' %}?estado=caidos" class="text-xs text-[var(--info)] hover:underline">ver las {{ total_enlaces_caidos }}</a>
+        {% endif %}
+    </div>
+    <div class="card" style="overflow:hidden;">
+        {% for e in enlaces_caidos %}
+        <a href="{% url 'panel:enlaces_farmacias_lista' %}?estado=caidos" class="flex items-center justify-between gap-3 px-4 py-3 hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+            <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                    <span class="pill critical">Caído</span>
+                    <span class="font-medium truncate">{{ e.farmacia.codigo }}</span>
+                    <span class="text-xs text-[var(--text-faint)] truncate">{{ e.farmacia.nombre }}</span>
+                </div>
+                {% comment %}
+                El circuito sale de la copia del EVENTO si la tiene, y si no de la
+                farmacia viva. No es indecisión: son dos datos con propósitos distintos.
+
+                `EventoEnlaceFarmacia.circuito_proveedor` es una copia tomada al momento
+                de la caída, para que el evento siga sirviendo si la farmacia cambia de
+                circuito después. Pero una caída abierta ANTES de que el circuito se
+                cargara en la farmacia tiene esa copia vacía — y eso dejó de ser
+                hipotético el 3-oct-2026, cuando se importaron 702 circuitos de golpe
+                desde el Excel de operaciones. Sin el respaldo, el técnico leería
+                "circuito sin cargar" con el dato ya disponible a un clic.
+
+                El proveedor ya se resuelve así: `nombre_proveedor(evento.farmacia)` lee
+                la farmacia viva, no el evento.
+                {% endcomment %}
+                {% firstof e.circuito_proveedor e.farmacia.circuito_proveedor as circuito %}
+                <div class="text-xs text-[var(--text-faint)] mt-1">
+                    {{ e.proveedor }}
+                    {% if circuito %}· <span class="mono">{{ circuito }}</span>{% else %}· <span class="text-[var(--text-faint)]">circuito sin cargar</span>{% endif %}
+                    · <span class="mono">{{ e.farmacia.ip_router }}</span>
+                </div>
+            </div>
+            <div class="text-xs text-[var(--text-faint)] text-right flex-none">
+                hace {{ e.inicio|timesince }}
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
 <div class="grid gap-4 lg:grid-cols-2 mb-8">
     <div>
         <div class="flex items-baseline justify-between mb-3">

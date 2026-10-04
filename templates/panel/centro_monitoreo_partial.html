@@ -61,6 +61,20 @@ existe — anotado como pendiente en PLAN_MODERNIZACION §10-AK.
         </div>
         <div class="text-2xl font-semibold {% if r.alertas_advertencias %}text-[var(--warning)]{% endif %}">{{ r.alertas_advertencias }}</div>
     </div>
+    {% comment %}
+    Farmacias afectadas va JUNTO a los contadores de síntomas y no en otra pantalla,
+    porque su único valor es leerse al lado de ellos: 27 advertencias pueden ser 27
+    sitios o uno con 27 síntomas, y recién la comparación dice cuál de las dos es. Es
+    farmacias distintas, no estaciones (ver `resumen_operacion`).
+    {% endcomment %}
+    <div class="card p-4">
+        <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-xs text-[var(--text-faint)]">Farmacias afectadas</span>
+            {% if r.farmacias_afectadas %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
+        </div>
+        <div class="text-2xl font-semibold {% if r.farmacias_afectadas %}text-[var(--warning)]{% endif %}">{{ r.farmacias_afectadas }}</div>
+        <div class="text-xs text-[var(--text-faint)] mt-1">sitios distintos, no síntomas</div>
+    </div>
     <div class="card p-4">
         <div class="flex items-center justify-between gap-2 mb-1">
             <span class="text-xs text-[var(--text-faint)]">Enlaces caídos</span>

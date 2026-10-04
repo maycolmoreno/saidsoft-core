@@ -122,5 +122,10 @@
         </tbody>
     </table>
 </div>
+{% comment %}
+Solo en la vista de filas: la agrupada es un rollup por regla —una decena de filas— y no
+se paginar. Ver el comentario en `alertas_lista`.
+{% endcomment %}
+{% include "panel/_paginador.html" %}
 {% endif %}
 {% endblock %}
