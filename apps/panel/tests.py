@@ -7623,3 +7623,139 @@ class AlertasListaPaginacionTests(TestCase):
         resp = self.client.get(reverse('panel:alertas_lista'), {'vista': 'agrupada'})
         self.assertTrue(resp.context['vista_agrupada'])
         self.assertEqual(len(resp.context['agrupadas']), 2)
+
+
+class EstacionesBusquedaTests(TestCase):
+    """El buscador del listado de estaciones, el mismo que ya tenía /monitoreo/enlaces/.
+
+    Faltaba: la pantalla solo se podía recortar con desplegables, así que llegar a UNA
+    estación por su código obligaba a filtrar por grupo y recorrer páginas. Con ~1.800
+    estaciones ese es el momento en que alguien la busca por el admin de Django en vez de
+    por el panel.
+
+    La prueba que más importa de este grupo es la de la IP: `Estacion.ip_lan` es
+    GenericIPAddressField, o sea `inet` en PostgreSQL, y un `__icontains` sobre ese tipo
+    revienta en producción aunque en SQLite —donde es texto— pase sin ruido. Corre contra
+    PostgreSQL real (ver deploy/README-local.md), así que acá sí falla si alguien quita el
+    `Cast`.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        self.grupo = Grupo.objects.create(codigo='TRXBUS')
+        self.otro_grupo = Grupo.objects.create(codigo='TRXOTR')
+        self.farmacia = Farmacia.objects.create(
+            codigo='BUS001', nombre='Sucursal Centro', grupo=self.grupo, unidad_negocio=self.sg,
+        )
+        self.farmacia_otro_grupo = Farmacia.objects.create(
+            codigo='BUS002', nombre='Sucursal Norte', grupo=self.otro_grupo, unidad_negocio=self.sg,
+        )
+        self.de_otro_cliente = Farmacia.objects.create(
+            codigo='BUS003', nombre='Ajena', grupo=self.grupo, unidad_negocio=self.mia,
+        )
+
+        self.buscada = self._estacion(
+            'BUS001-A', self.farmacia, hostname='CAJA-CENTRO-01',
+            numero_serie='SN-ABC-99', ip_lan='10.45.7.21',
+        )
+        self.otra = self._estacion('BUS001-B', self.farmacia, hostname='CAJA-CENTRO-02')
+        self.de_otro_grupo = self._estacion('BUS002-A', self.farmacia_otro_grupo)
+        self.ajena = self._estacion('BUS003-A', self.de_otro_cliente, hostname='CAJA-CENTRO-99')
+
+        self.usuario = User.objects.create_user(username='u_busqueda', password='x')
+        self.perfil = PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _estacion(self, codigo, farmacia, **extra):
+        return Estacion.objects.create(
+            codigo=codigo, farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, **extra,
+        )
+
+    def _codigos(self, **filtros):
+        resp = self.client.get(reverse('panel:estaciones_lista'), filtros)
+        self.assertEqual(resp.status_code, 200)
+        return sorted(e.codigo for e in resp.context['estaciones'])
+
+    def test_sin_termino_trae_todo(self):
+        self.assertEqual(
+            self._codigos(), ['BUS001-A', 'BUS001-B', 'BUS002-A', 'BUS003-A'],
+        )
+
+    def test_busca_por_codigo_de_estacion(self):
+        self.assertEqual(self._codigos(q='BUS001-A'), ['BUS001-A'])
+
+    def test_busca_por_codigo_de_farmacia(self):
+        """El caso más común: el técnico sabe la farmacia, no la estación."""
+        self.assertEqual(self._codigos(q='BUS001'), ['BUS001-A', 'BUS001-B'])
+
+    def test_busca_por_nombre_de_farmacia(self):
+        self.assertEqual(self._codigos(q='Sucursal Norte'), ['BUS002-A'])
+
+    def test_busca_por_hostname(self):
+        self.assertEqual(self._codigos(q='CAJA-CENTRO-01'), ['BUS001-A'])
+
+    def test_busca_por_numero_de_serie(self):
+        """Es el dato que está en la etiqueta del equipo, cuando el técnico lo tiene
+        delante y no sabe qué código le pusieron."""
+        self.assertEqual(self._codigos(q='SN-ABC-99'), ['BUS001-A'])
+
+    def test_busca_por_ip_lan_sobre_postgresql(self):
+        """`ip_lan` es `inet`: sin el Cast explícito esto revienta en producción.
+
+        No es una hipótesis — es la misma trampa que `ip_router` en enlaces, documentada
+        en esa vista, y de la misma familia que el `ip_lan='localhost'` del §10 del plan.
+        """
+        self.assertEqual(self._codigos(q='10.45.7.21'), ['BUS001-A'])
+        # Parcial, que es como alguien escribe una IP a medias.
+        self.assertEqual(self._codigos(q='10.45.7.'), ['BUS001-A'])
+
+    def test_busca_por_canal(self):
+        self.assertEqual(self._codigos(q='TRXOTR'), ['BUS002-A'])
+
+    def test_no_distingue_mayusculas(self):
+        self.assertEqual(self._codigos(q='bus001-a'), ['BUS001-A'])
+
+    def test_un_termino_que_no_calza_devuelve_vacio_sin_romper(self):
+        self.assertEqual(self._codigos(q='no-existe-nada'), [])
+
+    def test_los_contadores_siguen_contando_el_total(self):
+        """Lo que estas tarjetas prometen es el conjunto COMPLETO: "4 estaciones" tiene
+        que seguir diciendo 4 aunque estés buscando una. Si el buscador se aplicara antes
+        de contar, la tarjeta diría 1 y dejaría de servir para saber si hay un problema."""
+        resp = self.client.get(reverse('panel:estaciones_lista'), {'q': 'BUS001-A'})
+        self.assertEqual(len(resp.context['estaciones']), 1, 'la tabla sí se recorta')
+        self.assertEqual(resp.context['kpi']['total'], 4, 'los contadores NO')
+
+    def test_se_combina_con_el_filtro_de_grupo(self):
+        """Buscar y filtrar tienen que poder convivir: el formulario manda los dos."""
+        self.assertEqual(self._codigos(q='BUS', grupo='TRXOTR'), ['BUS002-A'])
+
+    def test_no_encuentra_estaciones_de_otro_cliente(self):
+        """El buscador no puede ser la puerta de atrás al alcance por tenant: busca sobre
+        el queryset YA escopeado."""
+        self.perfil.acceso_todas_unidades = False
+        self.perfil.save(update_fields=['acceso_todas_unidades'])
+        self.perfil.unidades_negocio.add(self.sg)
+
+        # 'CAJA-CENTRO' calza con la ajena por hostname y con las dos propias.
+        self.assertEqual(self._codigos(q='CAJA-CENTRO'), ['BUS001-A', 'BUS001-B'])
+
+    def test_el_termino_vuelve_al_formulario(self):
+        """Si no, al buscar el campo se vacía y no se ve qué se buscó."""
+        resp = self.client.get(reverse('panel:estaciones_lista'), {'q': 'BUS001-A'})
+        self.assertEqual(resp.context['filtro_q'], 'BUS001-A')
+        self.assertContains(resp, 'value="BUS001-A"')
+
+    def test_el_termino_se_conserva_al_cambiar_de_pagina(self):
+        self.assertIn('q=BUS001', self.client.get(
+            reverse('panel:estaciones_lista'), {'q': 'BUS001'},
+        ).context['query_filtros'])
+
+    def test_los_espacios_sobrantes_no_cuentan(self):
+        """Pegar un código desde un chat trae espacios; sin el strip no encontraría nada."""
+        self.assertEqual(self._codigos(q='  BUS001-A  '), ['BUS001-A'])

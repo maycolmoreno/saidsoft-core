@@ -1,5 +1,7 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
+from django.db.models import Q, TextField
+from django.db.models.functions import Cast
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
@@ -80,8 +82,14 @@ def estaciones_lista(request):
     base = scope_por_unidad_negocio_activa(
         Estacion.objects.select_related('farmacia', 'farmacia__grupo').order_by('codigo'),
         request, 'farmacia__unidad_negocio',
+    ).annotate(
+        # `ip_lan` es `inet` en PostgreSQL y `__icontains` no aplica sobre ese tipo:
+        # buscar por IP reventaría en producción aunque en SQLite —donde es texto—
+        # funcione. Misma trampa que `ip_router` en enlaces_farmacias_lista.
+        ip_lan_texto=Cast('ip_lan', TextField()),
     )
 
+    termino = request.GET.get('q', '').strip()
     grupo = request.GET.get('grupo')
     estado_conexion = request.GET.get('estado_conexion')
     solo_desactualizadas = request.GET.get('desactualizadas')
@@ -105,6 +113,20 @@ def estaciones_lista(request):
     }
 
     estaciones = base
+    # Buscador, igual que el de /monitoreo/enlaces/. Antes esta pantalla solo se recortaba
+    # con desplegables, así que llegar a UNA estación obligaba a filtrar y recorrer
+    # páginas. Se busca sobre `estaciones` y no sobre `base` por la misma razón que los
+    # demás filtros: las tarjetas cuentan el conjunto completo (ver el docstring).
+    if termino:
+        estaciones = estaciones.filter(
+            Q(codigo__icontains=termino)
+            | Q(hostname__icontains=termino)
+            | Q(numero_serie__icontains=termino)
+            | Q(farmacia__codigo__icontains=termino)
+            | Q(farmacia__nombre__icontains=termino)
+            | Q(farmacia__grupo__codigo__icontains=termino)
+            | Q(ip_lan_texto__icontains=termino)
+        )
     if grupo:
         estaciones = estaciones.filter(farmacia__grupo__codigo=grupo)
     if tipo_sitio:
@@ -130,6 +152,7 @@ def estaciones_lista(request):
         'pagina': pagina,
         'query_filtros': query_filtros,
         'grupos': Grupo.objects.order_by('codigo'),
+        'filtro_q': termino,
         'filtro_grupo': grupo or '',
         'filtro_estado': estado_conexion or '',
         'filtro_desactualizadas': solo_desactualizadas or '',

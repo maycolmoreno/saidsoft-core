@@ -68,7 +68,17 @@ elegido antes. La tarjeta activa queda resaltada y su enlace vuelve a "todas".
     </a>
 </div>
 
-<form method="get" class="flex items-center gap-3 mb-4">
+<form method="get" class="flex items-center gap-3 mb-4 flex-wrap">
+    {% comment %}
+    Buscador, el mismo que /monitoreo/enlaces/. Va PRIMERO porque es lo que se usa cuando
+    ya sabés a qué estación vas; los desplegables son para explorar, y hasta ahora eran lo
+    único que había. Sin `onchange` a propósito: se envía con Enter, para no recargar en
+    cada tecla.
+    {% endcomment %}
+    <input type="search" name="q" value="{{ filtro_q }}"
+           placeholder="Estación, farmacia, hostname, serie o IP…"
+           class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]"
+           style="border:1px solid var(--border); min-width:260px;">
     <select name="grupo" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Todos los grupos</option>
         {% for g in grupos %}
