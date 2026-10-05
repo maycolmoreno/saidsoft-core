@@ -8,6 +8,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from ..busqueda import buscar
 from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import (
     scope_opcional_por_unidad_negocio_activa, verificar_acceso,
@@ -36,8 +37,14 @@ def actividades_planificadas_lista(request):
     if estado:
         actividades = actividades.filter(estado=estado)
 
+    actividades, busqueda = buscar(actividades, request, (
+        'titulo', 'descripcion', 'observaciones', 'tipo_actividad', 'estado',
+        'tecnico__first_name', 'tecnico__last_name', 'tecnico__username',
+    ))
     return render(request, 'panel/actividades_planificadas_lista.html', {
         'actividades': actividades,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Titulo, descripcion, tipo o tecnico...',
         'estados': ActividadPlanificada.Estado.choices,
         'filtro_tecnico': tecnico or '', 'filtro_estado': estado or '',
     })

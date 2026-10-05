@@ -12,6 +12,7 @@ from apps.cuentas.services import (
 )
 from apps.monitoreo.forms import ReglaAlertaForm
 from apps.monitoreo.models import Alerta, PosErrorDetectado, ReglaAlerta
+from apps.panel.busqueda import buscar
 from apps.panel.paginacion import paginar
 
 
@@ -50,6 +51,15 @@ def alertas_lista(request):
             fila['severidad_display'] = ReglaAlerta.Severidad(fila['regla__severidad']).label
             fila['es_pos_errores'] = fila['regla__metrica'] == 'pos_errores'
 
+    # Buscador: es la lista principal del técnico, y paginarla sin poder buscar solo
+    # cambia "una pared de filas" por "veinte paredes de filas". Se busca por la regla y
+    # por DÓNDE pasa —estación y farmacia—, que es como llega el reporte: "me dicen que
+    # ML016 tiene algo".
+    alertas, busqueda = buscar(alertas, request, (
+        'regla__nombre', 'estacion__codigo',
+        'estacion__farmacia__codigo', 'estacion__farmacia__nombre',
+    ))
+
     # Paginado desde el 3-oct-2026: la vista entregaba el queryset completo a la
     # plantilla, así que `?todas=1` renderizaba TODAS las alertas de la historia. Con el
     # filtro por defecto (solo abiertas y reconocidas) nunca se notó, porque esas son
@@ -76,6 +86,8 @@ def alertas_lista(request):
         'alertas': pagina, 'solo_activas': solo_activas,
         'vista_agrupada': vista_agrupada, 'agrupadas': agrupadas,
         'pagina': pagina, 'query_filtros': query_filtros,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Regla, estación o farmacia…',
     })
 
 

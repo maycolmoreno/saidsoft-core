@@ -7,6 +7,7 @@
 </div>
 
 <form method="get" class="flex items-center gap-3 mb-4">
+    {% include "panel/_buscador.html" %}
     <select name="estado" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Cualquier estado</option>
         {% for valor, etiqueta in estados %}

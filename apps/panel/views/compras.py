@@ -14,6 +14,8 @@ from apps.activos.forms import AnularRecepcionForm, OrdenCompraForm, OrdenCompra
 from apps.activos.models import Bodega, MovimientoInventario, OrdenCompra, OrdenCompraDetalle, RecepcionLote
 from apps.activos.services import ConcurrencyError
 from apps.auditoria.models import registrar_evento
+from ..paginacion import paginar
+from ..busqueda import buscar
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_opcional_por_unidad_negocio_activa, verificar_acceso
 
 
@@ -23,7 +25,16 @@ def ordenes_compra_lista(request):
     ordenes = scope_opcional_por_unidad_negocio_activa(
         OrdenCompra.objects.prefetch_related('bodegas_destino'), request, 'unidad_negocio',
     ).order_by('-fecha_creacion')
-    return render(request, 'panel/ordenes_compra_lista.html', {'ordenes': ordenes})
+    # Buscador: una OC por compra, asi que la tabla crece con el tiempo y el numero de
+    # OC es justo el dato con el que llega un reclamo del proveedor.
+    ordenes, busqueda = buscar(ordenes, request, (
+        'numero_oc', 'proveedor', 'estado', 'novedad_recepcion',
+    ))
+    return render(request, 'panel/ordenes_compra_lista.html', {
+        'ordenes': ordenes,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Numero de OC, proveedor o estado...',
+    })
 
 
 @login_required
@@ -192,9 +203,23 @@ def movimientos_inventario_lista(request):
     if tipo:
         movimientos = movimientos.filter(tipo_movimiento=tipo)
 
+    # Buscador y paginacion, 4-oct-2026. Esto cortaba con `[:500]`, que es el mismo
+    # defecto que tenia el registro de auditoria con `[:200]`: no era una optimizacion sino
+    # una perdida silenciosa — pasadas 500 filas, las que existian no se podian ver desde
+    # ninguna parte de la aplicacion y nada lo avisaba. Es la otra tabla que solo crece.
+    movimientos, busqueda = buscar(movimientos, request, (
+        'motivo', 'tipo_consumible__nombre', 'bodega_origen__codigo', 'bodega_destino__codigo',
+        'orden_compra__numero_oc', 'realizado_por__username',
+    ))
+    pagina, query_filtros = paginar(movimientos, request)
+
     bodegas_visibles = scope_opcional_por_unidad_negocio(Bodega.objects.all(), request.user, 'unidad_negocio')
     return render(request, 'panel/movimientos_inventario_lista.html', {
-        'movimientos': movimientos[:500],
+        'movimientos': pagina.object_list,
+        'pagina': pagina,
+        'query_filtros': query_filtros,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Motivo, consumible, bodega, OC o usuario...',
         'bodegas': bodegas_visibles.order_by('codigo'),
         'tipos': MovimientoInventario.TipoMovimiento.choices,
         'filtro_bodega': bodega or '', 'filtro_tipo': tipo or '',

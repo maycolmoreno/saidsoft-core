@@ -6,7 +6,16 @@
 </div>
 <div class="mb-6">
     <h1 class="text-xl font-semibold">Software desactualizado</h1>
-    <p class="text-sm text-[var(--text-faint)]" style="max-width:640px;">
+    
+<form method="get" class="flex items-center gap-3 mb-4 flex-wrap">
+    {% include "panel/_buscador.html" %}
+    <button type="submit" class="btn secondary text-xs" style="padding:6px 12px;">Buscar</button>
+    {% if busqueda %}
+    <a href="?" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">limpiar</a>
+    {% endif %}
+</form>
+
+<p class="text-sm text-[var(--text-faint)]" style="max-width:640px;">
         Cruza el inventario de software detectado en cada estación (R7) contra la última versión
         conocida de las aplicaciones vigiladas del catálogo. Solo visibilidad por ahora, sin alertas
         automáticas — para vigilar una aplicación, cargale "Última versión conocida" en su ficha del catálogo.
@@ -26,7 +35,14 @@
         <div class="kpi-value num">{{ filas|length }}</div>
     </div>
     <div class="card kpi tone-critical">
-        <div class="kpi-label">Estaciones con versión desactualizada</div>
+        {% comment %}
+        Con una búsqueda puesta, estos dos números son los de lo buscado y no los de la
+        flota. Se dice en la etiqueta en vez de calcular el total aparte: un número que no
+        se puede explicar es peor que uno acotado que sí.
+        {% endcomment %}
+        <div class="kpi-label">
+            Estaciones con versión desactualizada{% if busqueda %} <span class="text-[var(--text-faint)]">(en lo buscado)</span>{% endif %}
+        </div>
         <div class="kpi-value num">{{ total_estaciones_desactualizadas }}</div>
     </div>
 </div>

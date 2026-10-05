@@ -4,6 +4,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
+from ..busqueda import buscar
 from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
@@ -20,7 +21,16 @@ def despliegues_lista(request):
         Despliegue.objects.select_related('creado_por', 'aprobado_por').order_by('-fecha_creacion'),
         request, 'unidad_negocio',
     )
-    return render(request, 'panel/despliegues_lista.html', {'despliegues': despliegues})
+    # Buscador: un despliegue por version del POS. No crece rapido, pero no se borra
+    # nunca, y "en que despliegue salio la 2.4.1" es una pregunta que se hace sola.
+    despliegues, busqueda = buscar(despliegues, request, (
+        'version', 'descripcion', 'estado', 'sha256', 'creado_por__username',
+    ))
+    return render(request, 'panel/despliegues_lista.html', {
+        'despliegues': despliegues,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Version, descripcion, estado o hash...',
+    })
 
 
 @login_required

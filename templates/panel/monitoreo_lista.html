@@ -14,6 +14,14 @@
     sin tener que abrir el detalle para saber si algo está mal.
 </p>
 
+<form method="get" class="flex items-center gap-3 mb-4 flex-wrap">
+    {% include "panel/_buscador.html" %}
+    <button type="submit" class="btn secondary text-xs" style="padding:6px 12px;">Buscar</button>
+    {% if busqueda %}
+    <a href="?" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">limpiar</a>
+    {% endif %}
+</form>
+
 <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
 {% for t in tarjetas %}
     <a href="{% url 'panel:monitoreo_detalle' t.estacion.pk %}" class="card hoverable block p-4">
@@ -63,4 +71,5 @@
     </div>
 {% endfor %}
 </div>
+{% include "panel/_paginador.html" %}
 {% endblock %}

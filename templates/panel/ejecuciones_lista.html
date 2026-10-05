@@ -3,6 +3,15 @@
 {% block content %}
 <h1 class="text-xl font-semibold mb-6">Ejecuciones de scripts</h1>
 
+
+<form method="get" class="flex items-center gap-3 mb-4 flex-wrap">
+    {% include "panel/_buscador.html" %}
+    <button type="submit" class="btn secondary text-xs" style="padding:6px 12px;">Buscar</button>
+    {% if busqueda %}
+    <a href="?" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">limpiar</a>
+    {% endif %}
+</form>
+
 <div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">
         <thead style="background:var(--panel);">
@@ -37,4 +46,5 @@
         </tbody>
     </table>
 </div>
+{% include "panel/_paginador.html" %}
 {% endblock %}

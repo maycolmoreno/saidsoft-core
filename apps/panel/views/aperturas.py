@@ -14,6 +14,7 @@ from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
+from ..busqueda import buscar
 from apps.aperturas.models import Apertura, PasoApertura, TokenApertura
 from apps.aperturas.services import (
     aprobar_apertura,
@@ -50,7 +51,16 @@ def aperturas_lista(request):
         Apertura.objects.select_related('farmacia', 'plantilla', 'creado_por', 'aprobado_por'),
         request, _TENANT,
     )
-    return render(request, 'panel/aperturas_lista.html', {'aperturas': aperturas})
+    # Buscador: una apertura por local nuevo. A 1.300 farmacias el historico de
+    # aperturas deja de caber en una pantalla.
+    aperturas, busqueda = buscar(aperturas, request, (
+        'farmacia__codigo', 'farmacia__nombre', 'estado', 'observacion', 'plantilla__nombre',
+    ))
+    return render(request, 'panel/aperturas_lista.html', {
+        'aperturas': aperturas,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Farmacia, estado o plantilla...',
+    })
 
 
 @login_required

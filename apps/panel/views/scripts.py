@@ -4,6 +4,8 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
+from ..paginacion import paginar
+from ..busqueda import buscar
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion
 from apps.catalogo.services import generar_comando_instalacion_meshcentral
@@ -133,7 +135,19 @@ def ejecuciones_lista(request):
         EjecucionScript.objects.select_related('script', 'creado_por').order_by('-fecha_creacion'),
         request, 'unidad_negocio',
     )
-    return render(request, 'panel/ejecuciones_lista.html', {'ejecuciones': ejecuciones})
+    # Buscador Y paginacion: esta tabla solo crece (una fila por ejecucion, para
+    # siempre), igual que auditoria y movimientos de inventario.
+    ejecuciones, busqueda = buscar(ejecuciones, request, (
+        'script__nombre', 'estado', 'destino_tipo', 'creado_por__username', 'sha256',
+    ))
+    pagina, query_filtros = paginar(ejecuciones, request)
+    return render(request, 'panel/ejecuciones_lista.html', {
+        'ejecuciones': pagina.object_list,
+        'pagina': pagina,
+        'query_filtros': query_filtros,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Script, estado, destino, usuario o hash...',
+    })
 
 
 @login_required

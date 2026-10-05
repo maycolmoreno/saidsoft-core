@@ -5,6 +5,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
+from ..busqueda import buscar
 from apps.auditoria.models import registrar_evento
 from apps.cumplimiento import services as cumplimiento_services
 from apps.cumplimiento.forms import ActividadCumplimientoForm
@@ -44,7 +45,14 @@ def cumplimiento_lista(request):
     ).distinct()
     for actividad in actividades:
         actividad.avance = cumplimiento_services.calcular_avance(actividad)
-    return render(request, 'panel/cumplimiento_lista.html', {'actividades': actividades})
+    actividades, busqueda = buscar(actividades, request, (
+        'nombre', 'descripcion', 'tipo_objetivo',
+    ))
+    return render(request, 'panel/cumplimiento_lista.html', {
+        'actividades': actividades,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Nombre, descripcion o tipo...',
+    })
 
 
 @login_required

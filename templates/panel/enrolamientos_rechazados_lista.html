@@ -2,7 +2,16 @@
 {% block content %}
 <div class="flex items-center justify-between mb-4">
     <h1 class="text-xl font-semibold">Enrolamientos rechazados</h1>
-    <a href="?{% if ver_todos %}{% else %}todos=1{% endif %}" class="btn secondary">
+    
+<form method="get" class="flex items-center gap-3 mb-4 flex-wrap">
+    {% include "panel/_buscador.html" %}
+    <button type="submit" class="btn secondary text-xs" style="padding:6px 12px;">Buscar</button>
+    {% if busqueda %}
+    <a href="?" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">limpiar</a>
+    {% endif %}
+</form>
+
+<a href="?{% if ver_todos %}{% else %}todos=1{% endif %}" class="btn secondary">
         {% if ver_todos %}Solo sin revisar{% else %}Ver también los revisados{% endif %}
     </a>
 </div>

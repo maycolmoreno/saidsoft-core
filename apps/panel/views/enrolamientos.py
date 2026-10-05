@@ -15,6 +15,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
+from ..busqueda import buscar
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Farmacia
 from apps.mqtt_worker.models import EnrolamientoRechazado
@@ -37,6 +38,18 @@ def enrolamientos_rechazados_lista(request):
     if not ver_todos:
         rechazados = rechazados.filter(revisado=False)
 
+    # Buscador: es la bandeja de triage de instalaciones que no entraron, y crece con
+    # cada agente mal configurado. Buscar por el codigo recibido es como se llega al caso
+    # puntual que alguien reporta por telefono.
+    #
+    # Va ANTES del `list()`, y no es un detalle de estilo: despues, `rechazados` ya es una
+    # lista de Python y `buscar` necesita un queryset — revienta con "'list' object has no
+    # attribute 'model'". Puesto aca filtra en la base y ademas deja menos filas para el
+    # calculo de `sitio_existe` de abajo.
+    rechazados, busqueda = buscar(rechazados, request, (
+        'codigo_recibido', 'hostname', 'motivo',
+    ))
+
     rechazados = list(rechazados)
     # Se resuelve acá y no en la plantilla: "¿el sitio existe?" es LA pregunta de esta
     # pantalla, y hacerla por fila desde el template serían N consultas.
@@ -49,6 +62,8 @@ def enrolamientos_rechazados_lista(request):
 
     return render(request, 'panel/enrolamientos_rechazados_lista.html', {
         'rechazados': rechazados,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Codigo recibido, hostname o motivo...',
         'ver_todos': ver_todos,
         'sin_revisar': EnrolamientoRechazado.objects.filter(revisado=False).count(),
     })

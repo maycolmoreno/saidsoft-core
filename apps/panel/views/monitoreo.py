@@ -18,6 +18,8 @@ from apps.monitoreo.models import MuestraMetrica, VentanaMantenimiento
 from ..indicadores import (
     METRICAS_RECURSOS, estado_de, indicadores_de_recursos, series_por_estacion,
 )
+from ..busqueda import buscar
+from ..paginacion import paginar
 from ..umbrales import umbrales_de_reglas
 
 
@@ -70,7 +72,20 @@ def monitoreo_lista(request):
     # Se resuelve con Max(timestamp) por estación y después un `IN` sobre esos instantes,
     # en vez de `DISTINCT ON (estacion)`: eso último es exclusivo de PostgreSQL y las
     # pruebas corren sobre SQLite.
-    servidores = list(servidores)
+    # Buscador y paginación, agregados el 4-oct-2026. Esta pantalla traía TODO: filtra por
+    # `monitorear_recursos`, que se activa en el servidor de cada farmacia, así que son
+    # ~700 tarjetas con sus gráficos en una sola carga.
+    #
+    # El orden importa y es la parte valiosa del cambio: al paginar ANTES de calcular,
+    # `ids` pasa a ser el de la página y no el de la flota. Todo lo que viene abajo
+    # —últimas muestras, servicios del POS caídos, series para los gráficos— se acota solo,
+    # de ~700 estaciones a 25. No es solo que la pantalla se lea mejor: hace menos trabajo.
+    servidores, busqueda = buscar(servidores, request, (
+        'codigo', 'hostname', 'farmacia__codigo', 'farmacia__nombre', 'farmacia__grupo__codigo',
+    ))
+    pagina, query_filtros = paginar(servidores, request)
+
+    servidores = list(pagina.object_list)
     ids = [e.pk for e in servidores]
     ultimas = MuestraMetrica.objects.filter(estacion_id__in=ids).values('estacion_id').annotate(
         ts=Max('timestamp'),
@@ -123,7 +138,13 @@ def monitoreo_lista(request):
             ),
             **estados_de_recursos(ultima, reglas),
         })
-    return render(request, 'panel/monitoreo_lista.html', {'tarjetas': tarjetas})
+    return render(request, 'panel/monitoreo_lista.html', {
+        'tarjetas': tarjetas,
+        'pagina': pagina,
+        'query_filtros': query_filtros,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Estación, hostname, farmacia o canal…',
+    })
 
 
 @login_required
@@ -198,7 +219,14 @@ def ventanas_mantenimiento_lista(request):
         VentanaMantenimiento.objects.select_related('unidad_negocio').order_by('-desde'),
         request, 'unidad_negocio',
     )
-    return render(request, 'panel/ventanas_mantenimiento_lista.html', {'ventanas': ventanas})
+    ventanas, busqueda = buscar(ventanas, request, (
+        'motivo', 'destino_tipo', 'unidad_negocio__codigo', 'creado_por__username',
+    ))
+    return render(request, 'panel/ventanas_mantenimiento_lista.html', {
+        'ventanas': ventanas,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Motivo, destino o quien la creo...',
+    })
 
 
 @login_required

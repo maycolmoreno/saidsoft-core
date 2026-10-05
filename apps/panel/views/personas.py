@@ -9,6 +9,8 @@ from django.contrib.auth.decorators import login_required, permission_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
+from ..paginacion import paginar
+from ..busqueda import buscar
 from apps.activos.forms import ColaboradorForm
 from apps.activos.models import Colaborador
 from apps.auditoria.models import registrar_evento
@@ -24,7 +26,16 @@ def colaboradores_lista(request):
     colaboradores = scope_opcional_por_unidad_negocio_activa(
         Colaborador.objects.order_by('nombre'), request, 'unidad_negocio',
     )
-    return render(request, 'panel/colaboradores_lista.html', {'colaboradores': colaboradores})
+    # Buscador, 4-oct-2026. No se paginar: el padron de colaboradores lo acota la
+    # realidad —son las personas de la empresa— y a esa escala un buscador alcanza.
+    colaboradores, busqueda = buscar(colaboradores, request, (
+        'nombre', 'cedula', 'correo', 'telefono', 'cargo__nombre', 'sucursal', 'zona',
+    ))
+    return render(request, 'panel/colaboradores_lista.html', {
+        'colaboradores': colaboradores,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Nombre, cedula, correo, cargo o zona...',
+    })
 
 
 @login_required
@@ -61,8 +72,19 @@ def visita_tecnica_lista(request):
     estado = request.GET.get('estado')
     if estado:
         visitas = visitas.filter(estado=estado)
+    # Buscador y paginacion: una visita por salida a terreno, asi que esta tabla crece
+    # con el trabajo del equipo y nunca se vacia.
+    visitas, busqueda = buscar(visitas, request, (
+        'farmacia__codigo', 'farmacia__nombre', 'motivo', 'observaciones',
+        'tecnico__first_name', 'tecnico__last_name', 'tecnico__username',
+    ))
+    pagina, query_filtros = paginar(visitas, request)
     return render(request, 'panel/visita_tecnica_lista.html', {
-        'visitas': visitas,
+        'visitas': pagina.object_list,
+        'pagina': pagina,
+        'query_filtros': query_filtros,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Farmacia, motivo o tecnico...',
         'estados': VisitaTecnica.Estado.choices,
         'filtro_estado': estado or '',
     })

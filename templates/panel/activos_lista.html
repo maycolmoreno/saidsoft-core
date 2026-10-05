@@ -9,7 +9,8 @@
     </div>
 </div>
 
-<form method="get" class="flex items-center gap-3 mb-4">
+<form method="get" class="flex items-center gap-3 mb-4 flex-wrap">
+    {% include "panel/_buscador.html" %}
     <select name="tipo" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
         <option value="">Todos los tipos</option>
         {% for valor, etiqueta in tipos %}

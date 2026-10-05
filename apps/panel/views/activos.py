@@ -10,6 +10,7 @@ from apps.activos.models import Activo, Bodega
 from apps.auditoria.models import registrar_evento
 from apps.mantenimiento import services as mantenimiento_services
 from apps.mantenimiento.models import Mantenimiento
+from ..busqueda import buscar
 from ..paginacion import paginar
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_opcional_por_unidad_negocio_activa, verificar_acceso
 
@@ -45,6 +46,17 @@ def activos_lista(request):
             Q(farmacia__codigo__icontains=farmacia) | Q(farmacia__nombre__icontains=farmacia),
         )
 
+    # Búsqueda libre sobre el EQUIPO. Convive con el filtro `farmacia` de arriba y no lo
+    # reemplaza: ese pregunta "dónde está" y este "cuál es", y se combinan. Hasta el
+    # 4-oct-2026 solo existía el primero, así que con miles de activos no había forma de
+    # llegar a uno por su serie o su código SAP desde el panel.
+    #
+    # `ip` es `inet`: el helper lo detecta y lo convierte solo (ver apps.panel.busqueda).
+    activos, busqueda = buscar(activos, request, (
+        'codigo', 'numero_serie', 'codigo_sap', 'modelo', 'marca__nombre',
+        'mac', 'ip', 'estacion__codigo',
+    ))
+
     # Se pagina con 18 filas en producción y no cuando haya 1.800: el parque son ~1.800
     # estaciones más sus periféricos, y paginar una lista corta es barato — hacerlo sobre
     # una tabla ya grande, no (mismo criterio con el que se paginó estaciones_lista).
@@ -66,6 +78,8 @@ def activos_lista(request):
         'bodegas': scope_opcional_por_unidad_negocio(Bodega.objects.all(), request.user, 'unidad_negocio').order_by('codigo'),
         'filtro_tipo': tipo or '', 'filtro_estado': estado or '', 'filtro_bodega': bodega or '',
         'filtro_ubicacion': ubicacion or '', 'filtro_farmacia': farmacia,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Código, serie, SAP, modelo, marca o IP…',
     })
 
 

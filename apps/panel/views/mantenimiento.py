@@ -6,6 +6,8 @@ from django.urls import reverse
 from django.views.decorators.http import require_POST
 from apps.activos.models import Activo, Colaborador
 from apps.auditoria.models import registrar_evento
+from ..paginacion import paginar
+from ..busqueda import buscar
 from apps.cuentas.services import (
     scope_opcional_por_unidad_negocio, scope_opcional_por_unidad_negocio_activa, verificar_acceso,
 )
@@ -55,6 +57,15 @@ def mantenimientos_lista(request):
     if estado:
         mantenimientos = mantenimientos.filter(estado_interno=estado)
 
+    # El buscador va ANTES de ordenar, y acá eso no es un detalle: con el orden por
+    # urgencia, `ordenar_por_urgencia` trae todo y lo ordena en PYTHON (es un `sorted()`
+    # sobre `orden_de_urgencia`). Filtrar antes reduce lo que hay que ordenar; filtrar
+    # después no habría reducido nada.
+    mantenimientos, busqueda = buscar(mantenimientos, request, (
+        'descripcion', 'cliente__nombre', 'cliente__cedula',
+        'tecnico__first_name', 'tecnico__last_name', 'tecnico__username',
+    ))
+
     orden = 'fecha' if request.GET.get('orden') == 'fecha' else 'urgencia'
     if orden == 'fecha':
         # Se precargan los acuerdos igual: la columna de SLA se pinta en las dos
@@ -65,8 +76,27 @@ def mantenimientos_lista(request):
     else:
         mantenimientos = mantenimiento_services.ordenar_por_urgencia(mantenimientos)
 
+    # Se paginan los dos órdenes, pero lo que se gana NO es lo mismo en cada uno, y
+    # conviene no confundirlo:
+    #
+    #   - Por fecha es un queryset, así que la página se trae con LIMIT: ahorro real.
+    #   - Por urgencia es una LISTA ya ordenada en Python, así que paginar acota lo que se
+    #     RENDERIZA —que es lo que hacía la pantalla difícil de leer— pero no lo que se
+    #     consulta.
+    #
+    # Llevar el orden por urgencia a SQL sí ahorraría, pero obligaría a reimplementar
+    # `orden_de_urgencia` en el ORM, y esa regla vive en un solo lugar a propósito: en
+    # `services`, justo para que el panel y la API muestren el mismo trabajo en el mismo
+    # orden (ver el docstring de arriba). Duplicarla para ganar una consulta es cambiar un
+    # costo medible por un riesgo peor: que las dos superficies se desincronicen.
+    pagina, query_filtros = paginar(mantenimientos, request)
+
     return render(request, 'panel/mantenimientos_lista.html', {
-        'mantenimientos': mantenimientos,
+        'mantenimientos': pagina.object_list,
+        'pagina': pagina,
+        'query_filtros': query_filtros,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Descripción, cliente, cédula o técnico…',
         'estados': Mantenimiento.EstadoInterno.choices,
         'filtro_estado': estado or '',
         'orden': orden,
@@ -280,7 +310,14 @@ def mantenimientos_programados_lista(request):
     programados = scope_opcional_por_unidad_negocio_activa(
         MantenimientoProgramado.objects.select_related('equipo', 'tecnico'), request, 'equipo__unidad_negocio',
     ).order_by('fecha_proximo')
-    return render(request, 'panel/mantenimientos_programados_lista.html', {'programados': programados})
+    programados, busqueda = buscar(programados, request, (
+        'equipo__codigo', 'equipo__numero_serie', 'observaciones', 'tecnico__first_name', 'tecnico__last_name', 'tecnico__username',
+    ))
+    return render(request, 'panel/mantenimientos_programados_lista.html', {
+        'programados': programados,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Equipo, serie o tecnico...',
+    })
 
 
 @login_required
@@ -429,8 +466,21 @@ def mantenimiento_generar_informe_pdf(request, pk):
 
 @login_required
 def notificaciones_lista(request):
-    notificaciones = Notificacion.objects.filter(usuario=request.user).order_by('-creado_en')[:100]
-    return render(request, 'panel/notificaciones_lista.html', {'notificaciones': notificaciones})
+    # Cortaba con `[:100]`: el TERCER corte silencioso de esta familia, despues del
+    # `[:200]` de auditoria y el `[:500]` de movimientos de inventario. Siempre el mismo
+    # sintoma — pasadas N filas hay datos que existen y no se pueden ver desde ninguna
+    # parte, sin aviso. Se reemplaza por paginacion, que acota lo que se trae SIN esconder
+    # que hay mas.
+    notificaciones = Notificacion.objects.filter(usuario=request.user).order_by('-creado_en')
+    notificaciones, busqueda = buscar(notificaciones, request, ('mensaje',))
+    pagina, query_filtros = paginar(notificaciones, request)
+    return render(request, 'panel/notificaciones_lista.html', {
+        'notificaciones': pagina.object_list,
+        'pagina': pagina,
+        'query_filtros': query_filtros,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Texto de la notificacion...',
+    })
 
 
 @login_required

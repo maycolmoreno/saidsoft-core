@@ -12,6 +12,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
+from ..busqueda import buscar
 from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Farmacia
 from apps.cuentas.services import (
@@ -355,7 +356,14 @@ def zonas_lista(request):
         ColaboradorZona.objects.select_related('colaborador').prefetch_related('farmacias_asignadas'),
         request.user, 'colaborador__unidad_negocio',
     )
-    return render(request, 'panel/viaticos_zonas_lista.html', {'zonas': zonas})
+    zonas, busqueda = buscar(zonas, request, (
+        'zona_cobertura', 'colaborador__nombre', 'colaborador__cedula',
+    ))
+    return render(request, 'panel/viaticos_zonas_lista.html', {
+        'zonas': zonas,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Zona, colaborador o cedula...',
+    })
 
 
 @login_required

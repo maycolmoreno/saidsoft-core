@@ -3,7 +3,16 @@
 {% block content %}
 <div class="flex items-center justify-between mb-2">
     <h1 class="text-xl font-semibold">Aperturas de farmacia</h1>
-    {% if perms.aperturas.add_apertura %}
+    
+<form method="get" class="flex items-center gap-3 mb-4 flex-wrap">
+    {% include "panel/_buscador.html" %}
+    <button type="submit" class="btn secondary text-xs" style="padding:6px 12px;">Buscar</button>
+    {% if busqueda %}
+    <a href="?" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">limpiar</a>
+    {% endif %}
+</form>
+
+{% if perms.aperturas.add_apertura %}
     <a href="{% url 'panel:apertura_crear' %}" class="btn primary">+ Nueva apertura</a>
     {% endif %}
 </div>

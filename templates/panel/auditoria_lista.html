@@ -2,7 +2,20 @@
 {% block title %}Auditoría · SAIDSOFT{% endblock %}
 {% block content %}
 <h1 class="text-xl font-semibold mb-6">Auditoría</h1>
-<p class="text-sm text-[var(--text-faint)] mb-4">Últimos 200 eventos. Registro inmutable de acciones sobre el panel.</p>
+{% comment %}
+Decía "Últimos 200 eventos", y dejó de ser cierto cuando la vista pasó a paginar en vez de
+cortar con `[:200]`. La frase vieja afirmaba justo lo contrario de lo que ese cambio vino a
+arreglar: que la tabla escondía filas sin avisar.
+{% endcomment %}
+<p class="text-sm text-[var(--text-faint)] mb-4">Registro inmutable de acciones sobre el panel.</p>
+
+<form method="get" class="flex items-center gap-3 mb-4 flex-wrap">
+    {% include "panel/_buscador.html" %}
+    <button type="submit" class="btn secondary text-xs" style="padding:6px 12px;">Buscar</button>
+    {% if busqueda %}
+    <a href="?" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">limpiar</a>
+    {% endif %}
+</form>
 
 <div class="card" style="overflow:hidden;">
     <table class="w-full text-sm">

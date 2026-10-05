@@ -7957,3 +7957,605 @@ class BusquedaCompartidaTests(TestCase):
         )
         self.assertEqual(termino, 'CAJA-DOS')
         self.assertEqual([e.codigo for e in qs], ['HLP001-B'])
+
+
+class BuscadorEnActivosTests(TestCase):
+    """Busqueda libre en el listado de activos (tanda 1).
+
+    La pantalla ya tenia un campo de texto, pero solo para FARMACIA: con miles de activos
+    no habia forma de llegar a uno por su serie o su codigo SAP desde el panel. Los dos
+    filtros conviven — uno pregunta "donde esta" y el otro "cual es".
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXACT')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ACT001', nombre='Sucursal Machala', grupo=grupo, unidad_negocio=self.sg,
+        )
+        self.otra = Farmacia.objects.create(
+            codigo='ACT002', nombre='Sucursal Quito', grupo=grupo, unidad_negocio=self.sg,
+        )
+        from apps.activos.models import Marca
+
+        self.marca = Marca.objects.create(nombre='Hewlett Packard')
+        self.buscado = self._activo(
+            numero_serie='SN-BUSCADO-1', codigo_sap='SAP-9001', modelo='ProDesk 400',
+            ip='10.70.4.15', farmacia=self.farmacia,
+        )
+        self.otro = self._activo(
+            numero_serie='SN-OTRO-2', codigo_sap='SAP-9002', modelo='EliteDesk 800',
+            farmacia=self.otra,
+        )
+
+        self.usuario = User.objects.create_user(username='u_busca_act', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='view_activo'),
+        )
+        self.client.force_login(self.usuario)
+        self.url = reverse('panel:activos_lista')
+
+    _siguiente = 0
+
+    def _activo(self, **extra):
+        # Codigo explicito, como el resto de las pruebas de panel: generar_codigo_activo
+        # consulta la secuencia y aca no se esta probando eso.
+        type(self)._siguiente += 1
+        return Activo.objects.create(
+            codigo='CR-DSK-%04d' % type(self)._siguiente, tipo=Activo.Tipo.DESKTOP,
+            marca=self.marca, unidad_negocio=self.sg, estado=Activo.Estado.ASIGNADO, **extra,
+        )
+
+    def _codigos(self, **filtros):
+        resp = self.client.get(self.url, filtros)
+        self.assertEqual(resp.status_code, 200)
+        return sorted(a.codigo for a in resp.context['activos'])
+
+    def test_busca_por_numero_de_serie(self):
+        self.assertEqual(self._codigos(q='SN-BUSCADO-1'), [self.buscado.codigo])
+
+    def test_busca_por_codigo_sap(self):
+        self.assertEqual(self._codigos(q='SAP-9001'), [self.buscado.codigo])
+
+    def test_busca_por_modelo_y_por_marca(self):
+        self.assertEqual(self._codigos(q='ProDesk'), [self.buscado.codigo])
+        # La marca es una FK: se busca por su nombre, no por su id.
+        self.assertEqual(
+            self._codigos(q='Hewlett'),
+            sorted([self.buscado.codigo, self.otro.codigo]),
+        )
+
+    def test_busca_por_ip_sobre_postgresql(self):
+        """`Activo.ip` es `inet`: sin la conversion del helper esto revienta en produccion
+        y pasa en SQLite."""
+        self.assertEqual(self._codigos(q='10.70.4.15'), [self.buscado.codigo])
+        self.assertEqual(self._codigos(q='10.70.4.'), [self.buscado.codigo])
+
+    def test_el_filtro_de_farmacia_sigue_funcionando(self):
+        """Lo que ya existia no se reemplaza: `farmacia` es un filtro propio y documentado,
+        con su propio motivo (700 farmacias no caben en un desplegable)."""
+        self.assertEqual(self._codigos(farmacia='Machala'), [self.buscado.codigo])
+
+    def test_los_dos_se_combinan(self):
+        """Buscar el equipo Y acotar la farmacia tiene que dar la interseccion."""
+        self.assertEqual(self._codigos(q='Hewlett', farmacia='Quito'), [self.otro.codigo])
+        self.assertEqual(self._codigos(q='SN-BUSCADO-1', farmacia='Quito'), [])
+
+    def test_el_termino_vuelve_al_formulario(self):
+        resp = self.client.get(self.url, {'q': 'SAP-9001'})
+        self.assertEqual(resp.context['busqueda'], 'SAP-9001')
+        self.assertContains(resp, 'value="SAP-9001"')
+
+    def test_el_termino_se_conserva_al_paginar(self):
+        self.assertIn('q=SAP-9001', self.client.get(self.url, {'q': 'SAP-9001'}).context['query_filtros'])
+
+
+class BuscadorEnAuditoriaTests(TestCase):
+    """Busqueda libre en el registro de auditoria (tanda 1).
+
+    Es la unica tabla que SOLO crece, asi que paginarla no alcanzaba: responder "quien dio
+    de baja esta farmacia" obligaba a recorrer paginas hasta encontrarlo.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.actor = User.objects.create_user(username='tecnico.perez', password='x')
+        self.otro_actor = User.objects.create_user(username='admin.lopez', password='x')
+
+        EventoAuditoria.objects.create(
+            usuario=self.actor, unidad_negocio=self.sg, accion='farmacia.editar',
+            modelo='Farmacia', objeto_id='77', objeto_repr='GP063', ip_address='10.111.6.20',
+        )
+        EventoAuditoria.objects.create(
+            usuario=self.otro_actor, unidad_negocio=self.sg, accion='despliegue.aprobar',
+            modelo='Despliegue', objeto_id='12', objeto_repr='POS 2.5.0', ip_address='10.111.6.99',
+        )
+
+        self.usuario = User.objects.create_user(username='u_busca_aud', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='auditoria', codename='view_eventoauditoria',
+            ),
+        )
+        self.client.force_login(self.usuario)
+        self.url = reverse('panel:auditoria_lista')
+
+    def _acciones(self, **filtros):
+        resp = self.client.get(self.url, filtros)
+        self.assertEqual(resp.status_code, 200)
+        return sorted(e.accion for e in resp.context['eventos'])
+
+    def test_sin_termino_trae_todo(self):
+        self.assertEqual(self._acciones(), ['despliegue.aprobar', 'farmacia.editar'])
+
+    def test_busca_por_accion(self):
+        self.assertEqual(self._acciones(q='despliegue'), ['despliegue.aprobar'])
+
+    def test_busca_por_objeto(self):
+        """El caso real: "quien toco GP063"."""
+        self.assertEqual(self._acciones(q='GP063'), ['farmacia.editar'])
+
+    def test_busca_por_usuario(self):
+        self.assertEqual(self._acciones(q='perez'), ['farmacia.editar'])
+
+    def test_busca_por_ip_sobre_postgresql(self):
+        """`ip_address` es `inet`: la misma conversion que en activos."""
+        self.assertEqual(self._acciones(q='10.111.6.99'), ['despliegue.aprobar'])
+
+    def test_el_subtitulo_ya_no_afirma_un_corte_que_no_existe(self):
+        """Decia "Ultimos 200 eventos" despues de que la vista pasara a paginar: afirmaba
+        justo lo contrario de lo que ese cambio vino a arreglar."""
+        resp = self.client.get(self.url)
+        self.assertNotContains(resp, 'Últimos 200 eventos')
+        self.assertContains(resp, 'Registro inmutable')
+
+
+class BuscadorYPaginacionTanda2Tests(TestCase):
+    """Los tres listados que traian TODO (tanda 2): monitoreo de servidores, movimientos
+    de inventario y mantenimientos.
+
+    Dos de ellos no solo les faltaba buscador: cortaban o renderizaban la tabla completa.
+    `movimientos_inventario_lista` cortaba con `[:500]`, que es el mismo defecto que tenia
+    auditoria con `[:200]` — no una optimizacion sino una perdida silenciosa.
+    """
+
+    def setUp(self):
+        from apps.activos.models import MovimientoInventario, TipoConsumible
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRXT2')
+        self.farmacia = Farmacia.objects.create(
+            codigo='T2A001', nombre='Sucursal Tanda Dos', grupo=self.grupo, unidad_negocio=self.sg,
+        )
+        self.servidor = Estacion.objects.create(
+            codigo='T2A001-S', farmacia=self.farmacia, hostname='SRV-TANDA',
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, monitorear_recursos=True,
+        )
+        self.otro_servidor = Estacion.objects.create(
+            codigo='T2A001-T', farmacia=self.farmacia, hostname='SRV-OTRO',
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, monitorear_recursos=True,
+        )
+
+        self.bodega = Bodega.objects.create(
+            codigo='BOD-T2', nombre='Bodega tanda dos', unidad_negocio=self.sg,
+        )
+        self.consumible = TipoConsumible.objects.create(nombre='Toner negro 85A')
+        self.usuario = User.objects.create_user(username='u_tanda2', password='x')
+        MovimientoInventario.objects.create(
+            tipo_movimiento=MovimientoInventario.TipoMovimiento.INGRESO_CONSUMIBLE,
+            tipo_consumible=self.consumible, bodega_destino=self.bodega,
+            cantidad=5, motivo='Compra inicial del trimestre', realizado_por=self.usuario,
+        )
+        MovimientoInventario.objects.create(
+            tipo_movimiento=MovimientoInventario.TipoMovimiento.INGRESO_CONSUMIBLE,
+            tipo_consumible=self.consumible, bodega_destino=self.bodega,
+            cantidad=2, motivo='Reposicion de emergencia', realizado_por=self.usuario,
+        )
+
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        for app, codigo in (
+            ('monitoreo', 'view_muestrametrica'),
+            ('activos', 'view_movimientoinventario'),
+        ):
+            self.usuario.user_permissions.add(
+                Permission.objects.get(content_type__app_label=app, codename=codigo),
+            )
+        self.client.force_login(self.usuario)
+
+    def test_monitoreo_busca_y_pagina(self):
+        url = reverse('panel:monitoreo_lista')
+        resp = self.client.get(url)
+        self.assertEqual(len(resp.context['tarjetas']), 2)
+        self.assertIsNotNone(resp.context['pagina'], 'tiene que paginar, no traer los ~700')
+
+        resp = self.client.get(url, {'q': 'SRV-TANDA'})
+        self.assertEqual(
+            [t['estacion'].codigo for t in resp.context['tarjetas']], ['T2A001-S'],
+        )
+
+    def test_monitoreo_acota_los_calculos_a_la_pagina(self):
+        """La parte valiosa del cambio: al paginar ANTES de calcular, las consultas de
+        abajo —ultimas muestras, servicios caidos, series de los graficos— se acotan a la
+        pagina. Si alguien moviera el paginado despues del calculo, esto sigue en verde
+        pero la pantalla vuelve a trabajar sobre toda la flota; por eso se mide el numero
+        de consultas y no solo el resultado."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        url = reverse('panel:monitoreo_lista')
+        # Buscando UNA estacion, la pantalla no puede costar MAS consultas que sin buscar.
+
+        with CaptureQueriesContext(connection) as todas:
+            self.client.get(url)
+        with CaptureQueriesContext(connection) as una:
+            self.client.get(url, {'q': 'SRV-TANDA'})
+        self.assertLessEqual(len(una), len(todas))
+
+    def test_movimientos_busca_por_motivo(self):
+        url = reverse('panel:movimientos_inventario_lista')
+        resp = self.client.get(url, {'q': 'emergencia'})
+        motivos = [m.motivo for m in resp.context['movimientos']]
+        self.assertEqual(motivos, ['Reposicion de emergencia'])
+
+    def test_movimientos_busca_por_consumible_y_bodega(self):
+        url = reverse('panel:movimientos_inventario_lista')
+        self.assertEqual(len(self.client.get(url, {'q': 'Toner'}).context['movimientos']), 2)
+        self.assertEqual(len(self.client.get(url, {'q': 'BOD-T2'}).context['movimientos']), 2)
+
+    def test_movimientos_ya_no_corta_en_silencio(self):
+        """Antes la vista hacia `movimientos[:500]`: pasadas 500 filas habia movimientos
+        que existian y no se podian ver desde ninguna parte, sin aviso. Ahora el total
+        esta en el paginador, asi que nada queda escondido."""
+        url = reverse('panel:movimientos_inventario_lista')
+        resp = self.client.get(url)
+        self.assertEqual(resp.context['pagina'].paginator.count, 2)
+
+    def test_el_termino_se_conserva_al_paginar_en_los_tres(self):
+        for nombre in ('monitoreo_lista', 'movimientos_inventario_lista'):
+            with self.subTest(vista=nombre):
+                resp = self.client.get(reverse('panel:' + nombre), {'q': 'algo'})
+                self.assertIn('q=algo', resp.context['query_filtros'])
+
+
+class BuscadorTanda3Tests(TestCase):
+    """Los cuatro listados que crecen con el uso (tanda 3).
+
+    Dos reciben solo buscador y dos lo necesitaban por motivos distintos, y la diferencia
+    esta razonada en cada vista: el padron de colaboradores y el catalogo de software los
+    acota la realidad —las personas de la empresa, lo que se decide vigilar—, mientras que
+    las ejecuciones de scripts solo crecen, como auditoria.
+    """
+
+    def setUp(self):
+        from apps.activos.models import Colaborador
+        from apps.scripts.models import EjecucionScript, Script
+        from apps.software.models import AplicacionCatalogo
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.usuario = User.objects.create_user(username='u_tanda3', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+
+        Colaborador.objects.create(
+            nombre='Maria Lopez', cedula='0912345678', correo='maria@ejemplo.com',
+            unidad_negocio=self.sg,
+        )
+        Colaborador.objects.create(
+            nombre='Jorge Vera', cedula='0998765432', correo='jorge@ejemplo.com',
+            unidad_negocio=self.sg,
+        )
+
+        AplicacionCatalogo.objects.create(
+            nombre='Adobe Reader', fabricante='Adobe', categoria='ofimatica',
+            version_mas_reciente_conocida='2024.1', creado_por=self.usuario,
+        )
+        AplicacionCatalogo.objects.create(
+            nombre='7-Zip', fabricante='Igor Pavlov', categoria='utilidades',
+            version_mas_reciente_conocida='23.01', creado_por=self.usuario,
+        )
+
+        script = Script.objects.create(
+            nombre='Reiniciar servicio POS', contenido='echo hola', creado_por=self.usuario,
+        )
+        otro = Script.objects.create(
+            nombre='Limpiar temporales', contenido='echo chau', creado_por=self.usuario,
+        )
+        EjecucionScript.objects.create(
+            script=script, destino_tipo='estacion', creado_por=self.usuario, unidad_negocio=self.sg,
+        )
+        EjecucionScript.objects.create(
+            script=otro, destino_tipo='estacion', creado_por=self.usuario, unidad_negocio=self.sg,
+        )
+
+        for app, codigo in (
+            ('activos', 'view_colaborador'),
+            ('software', 'view_aplicacioncatalogo'),
+            ('scripts', 'view_ejecucionscript'),
+        ):
+            self.usuario.user_permissions.add(
+                Permission.objects.get(content_type__app_label=app, codename=codigo),
+            )
+        self.client.force_login(self.usuario)
+
+    def test_colaboradores_busca_por_nombre_y_cedula(self):
+        url = reverse('panel:colaboradores_lista')
+        self.assertEqual(
+            [c.nombre for c in self.client.get(url, {'q': 'Lopez'}).context['colaboradores']],
+            ['Maria Lopez'],
+        )
+        self.assertEqual(
+            [c.nombre for c in self.client.get(url, {'q': '0998765432'}).context['colaboradores']],
+            ['Jorge Vera'],
+        )
+
+    def test_aplicaciones_busca_por_nombre_y_fabricante(self):
+        url = reverse('panel:aplicaciones_lista')
+        self.assertEqual(
+            [a.nombre for a in self.client.get(url, {'q': '7-Zip'}).context['aplicaciones']],
+            ['7-Zip'],
+        )
+        self.assertEqual(
+            [a.nombre for a in self.client.get(url, {'q': 'Adobe'}).context['aplicaciones']],
+            ['Adobe Reader'],
+        )
+
+    def test_software_desactualizado_busca_por_aplicacion(self):
+        url = reverse('panel:software_desactualizado_lista')
+        resp = self.client.get(url, {'q': 'Adobe'})
+        self.assertEqual([f['aplicacion'].nombre for f in resp.context['filas']], ['Adobe Reader'])
+
+    def test_software_desactualizado_avisa_que_el_total_es_de_lo_buscado(self):
+        """Con una busqueda puesta el KPI cuenta lo buscado, no la flota. Decirlo es lo que
+        evita que alguien lea 3 y crea que son los 3 de toda la red."""
+        url = reverse('panel:software_desactualizado_lista')
+        self.assertNotContains(self.client.get(url), '(en lo buscado)')
+        self.assertContains(self.client.get(url, {'q': 'Adobe'}), '(en lo buscado)')
+
+    def test_ejecuciones_busca_por_script_y_pagina(self):
+        url = reverse('panel:ejecuciones_lista')
+        resp = self.client.get(url)
+        self.assertEqual(resp.context['pagina'].paginator.count, 2)
+
+        resp = self.client.get(url, {'q': 'temporales'})
+        self.assertEqual(
+            [e.script.nombre for e in resp.context['ejecuciones']], ['Limpiar temporales'],
+        )
+
+    def test_el_termino_vuelve_al_formulario_en_los_cuatro(self):
+        for nombre in (
+            'colaboradores_lista', 'aplicaciones_lista',
+            'software_desactualizado_lista', 'ejecuciones_lista',
+        ):
+            with self.subTest(vista=nombre):
+                resp = self.client.get(reverse('panel:' + nombre), {'q': 'xyz'})
+                self.assertEqual(resp.context['busqueda'], 'xyz')
+                self.assertContains(resp, 'value="xyz"')
+
+
+class BuscadorTanda4Tests(TestCase):
+    """Tanda 4: los listados cortos, caso por caso y no por parejo.
+
+    De los 19 que quedaban, reciben buscador los 12 que CRECEN con el uso. Los que la
+    realidad acota —seis bodegas, una decena de reglas de alerta, la cola de cierres en
+    conflicto que deberia estar casi vacia— se dejan sin buscador a proposito: un campo que
+    nadie usa es una funcionalidad por cantidad, justo lo que esta etapa no queria.
+
+    Y uno que faltaba y no era corto: `alertas_lista`, la lista principal del tecnico. Se
+    habia paginado sin darle busqueda, que es cambiar una pared de filas por veinte.
+    """
+
+    def setUp(self):
+        from apps.mqtt_worker.models import EnrolamientoRechazado
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRXT4')
+        self.farmacia = Farmacia.objects.create(
+            codigo='T4A001', nombre='Sucursal Tanda Cuatro', grupo=self.grupo, unidad_negocio=self.sg,
+        )
+        self.usuario = User.objects.create_user(username='u_tanda4', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+
+        EnrolamientoRechazado.objects.create(
+            codigo_recibido='T4A999-A', hostname='CAJA-FANTASMA',
+            motivo='farmacia no encontrada',
+        )
+        EnrolamientoRechazado.objects.create(
+            codigo_recibido='T4A001-B', hostname='CAJA-REAL', motivo='hardware no coincide',
+        )
+
+        # Sin try/except a proposito: un permiso mal escrito tiene que reventar aca y no
+        # degradarse en un 302 que luego aparece como "context is None" diez lineas mas
+        # abajo. Paso al escribir estas pruebas — se concedio
+        # `mqtt_worker.view_enrolamientorechazado` cuando la vista exige
+        # `catalogo.view_estacion`, y el except lo tapo.
+        for app, codigo in (
+            ('catalogo', 'view_estacion'),
+            ('monitoreo', 'view_alerta'),
+        ):
+            self.usuario.user_permissions.add(
+                Permission.objects.get(content_type__app_label=app, codename=codigo),
+            )
+        self.client.force_login(self.usuario)
+
+    def test_enrolamientos_rechazados_busca_por_codigo(self):
+        """Es la bandeja a la que se llega con un codigo en la mano, dicho por telefono."""
+        url = reverse('panel:enrolamientos_rechazados_lista')
+        resp = self.client.get(url, {'q': 'T4A999-A', 'todos': '1'})
+        self.assertEqual(
+            [r.codigo_recibido for r in resp.context['rechazados']], ['T4A999-A'],
+        )
+
+    def test_enrolamientos_rechazados_busca_por_motivo(self):
+        url = reverse('panel:enrolamientos_rechazados_lista')
+        resp = self.client.get(url, {'q': 'hardware', 'todos': '1'})
+        self.assertEqual(
+            [r.codigo_recibido for r in resp.context['rechazados']], ['T4A001-B'],
+        )
+
+    def test_el_contador_de_sin_revisar_no_lo_mueve_la_busqueda(self):
+        """Mismo contrato que el resto del panel: los contadores cuentan el conjunto
+        completo, los filtros recortan la tabla."""
+        url = reverse('panel:enrolamientos_rechazados_lista')
+        self.assertEqual(self.client.get(url).context['sin_revisar'], 2)
+        self.assertEqual(self.client.get(url, {'q': 'hardware'}).context['sin_revisar'], 2)
+
+    def test_alertas_busca_por_regla_y_por_donde_pasa(self):
+        from apps.monitoreo.models import Alerta, Metrica, ReglaAlerta
+
+        estacion = Estacion.objects.create(
+            codigo='T4A001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        regla_cpu = ReglaAlerta.objects.create(
+            nombre='CPU alta', metrica=Metrica.CPU_CARGA_PCT, umbral=90, creado_por=self.usuario,
+        )
+        regla_ram = ReglaAlerta.objects.create(
+            nombre='RAM alta', metrica=Metrica.RAM_USADA_PCT, umbral=90, creado_por=self.usuario,
+        )
+        Alerta.objects.create(regla=regla_cpu, estacion=estacion, valor_disparador=95)
+        Alerta.objects.create(regla=regla_ram, estacion=estacion, valor_disparador=95)
+
+        url = reverse('panel:alertas_lista')
+        resp = self.client.get(url, {'q': 'CPU'})
+        self.assertEqual([a.regla.nombre for a in resp.context['alertas']], ['CPU alta'])
+
+        # Por farmacia: es como llega el reporte — "me dicen que T4A001 tiene algo".
+        resp = self.client.get(url, {'q': 'T4A001'})
+        self.assertEqual(resp.context['pagina'].paginator.count, 2)
+
+    def test_los_listados_cortos_siguen_sin_buscador_a_proposito(self):
+        """Guarda de la decision, no del codigo: si alguien agrega un buscador a estas,
+        esta prueba falla y obliga a justificarlo. En una tabla de seis bodegas un campo de
+        busqueda es lugar ocupado que nadie usa.
+
+        No se mira la plantilla sino el CODIGO de la vista: una vista que no lee el termino
+        no busca, por mas que la plantilla muestre una caja.
+        """
+        import ast
+        from pathlib import Path
+
+        from django.conf import settings
+
+        sin_buscador = {
+            'bodegas_lista': 'son un punado de bodegas',
+            'reglas_alerta_lista': 'es configuracion, una decena de reglas',
+            'cierres_en_conflicto_lista': 'es una cola que deberia estar casi vacia',
+            'scripts_programados_lista': 'son pocas programaciones',
+        }
+        raiz = Path(settings.BASE_DIR) / 'apps' / 'panel' / 'views'
+        encontradas = {}
+        for archivo in raiz.glob('*.py'):
+            fuente = archivo.read_text(encoding='utf-8')
+            lineas = fuente.splitlines()
+            for nodo in ast.parse(fuente).body:
+                if isinstance(nodo, ast.FunctionDef) and nodo.name in sin_buscador:
+                    encontradas[nodo.name] = '\n'.join(lineas[nodo.lineno - 1:nodo.end_lineno])
+
+        self.assertEqual(
+            sorted(encontradas), sorted(sin_buscador),
+            'alguna de estas vistas se renombro o se movio: hay que revisar la decision',
+        )
+        for nombre, motivo in sin_buscador.items():
+            self.assertNotIn(
+                'buscar(', encontradas[nombre],
+                '%s recibio un buscador y la decision era NO ponerlo porque %s. '
+                'Si cambio, actualizar esta prueba con el motivo nuevo.' % (nombre, motivo),
+            )
+
+
+class TodosLosBuscadoresRespondenTests(TestCase):
+    """Prueba de humo: cada listado con buscador responde 200 con `?q=` puesto.
+
+    Existe por un error concreto. En `enrolamientos_rechazados_lista` el buscador quedo
+    insertado DESPUES de que la vista materializaba el queryset con `list()` para calcular
+    una columna, asi que `buscar` recibia una lista y la pantalla devolvia 500 con
+    "'list' object has no attribute 'model'". Ninguna prueba de las otras 21 vistas lo
+    habria detectado, porque el error es por vista y no del helper.
+
+    La lista de vistas se DESCUBRE leyendo el codigo, no se escribe a mano: un buscador
+    nuevo entra solo a esta prueba. Si se escribiera a mano, la vista numero 23 se agregaria
+    sin red, que es exactamente como se cuela este error.
+
+    Es de humo a proposito: no verifica QUE devuelve cada busqueda —eso lo hacen las
+    pruebas de cada tanda— sino que ninguna reviente. Es la unica forma barata de cubrir 22
+    pantallas contra esta familia de fallo.
+    """
+
+    def setUp(self):
+        self.usuario = User.objects.create_superuser(
+            username='u_humo', password='x', email='humo@ejemplo.com',
+        )
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def _vistas_con_buscador(self):
+        """Los nombres de URL de los listados cuya vista llama a `buscar`."""
+        import ast
+        import re
+        from pathlib import Path
+
+        from django.conf import settings
+
+        raiz = Path(settings.BASE_DIR) / 'apps' / 'panel'
+        nombres = []
+        for archivo in sorted((raiz / 'views').glob('*.py')):
+            if archivo.name == '__init__.py':
+                continue
+            fuente = archivo.read_text(encoding='utf-8')
+            lineas = fuente.splitlines()
+            for nodo in ast.parse(fuente).body:
+                if not isinstance(nodo, ast.FunctionDef):
+                    continue
+                cuerpo = '\n'.join(lineas[nodo.lineno - 1:nodo.end_lineno])
+                if 'buscar(' in cuerpo:
+                    nombres.append(nodo.name)
+
+        urls = (raiz / 'urls.py').read_text(encoding='utf-8')
+        sin_argumentos = []
+        for nombre in nombres:
+            # Se saca el `name=` de la ruta y NO se asume que es el de la funcion: en
+            # viaticos la vista `zonas_lista` se publica como `viaticos_zonas_lista`, y
+            # asumirlo hacia que esta prueba reventara con NoReverseMatch — un falso
+            # negativo que se ve igual que la pantalla rota que busca detectar.
+            m = re.search(
+                r"path\(\s*'([^']*)'\s*,\s*views\.%s\s*,\s*name='([^']+)'" % re.escape(nombre),
+                urls,
+            )
+            # Las rutas con `<pk>` se saltan: necesitan un objeto y no son listados.
+            if m and '<' not in m.group(1):
+                sin_argumentos.append(m.group(2))
+        return sin_argumentos
+
+    def test_hay_buscadores_que_probar(self):
+        """Si el descubrimiento se rompe, el bucle de abajo pasaria sin probar NADA —
+        una prueba que no prueba nada es peor que no tenerla."""
+        self.assertGreaterEqual(len(self._vistas_con_buscador()), 20)
+
+    def test_ninguno_revienta_con_un_termino_puesto(self):
+        for nombre in self._vistas_con_buscador():
+            with self.subTest(vista=nombre):
+                resp = self.client.get(reverse('panel:' + nombre), {'q': 'ML001'})
+                self.assertEqual(
+                    resp.status_code, 200,
+                    '%s devolvio %s buscando. Lo mas probable: `buscar` recibe una lista '
+                    'en vez de un queryset porque la vista ya hizo list() antes.'
+                    % (nombre, resp.status_code),
+                )
+
+    def test_ninguno_revienta_con_el_termino_vacio(self):
+        """`?q=` es lo que manda el formulario con el campo en blanco, y tiene que
+        significar "todo" — no "nada" ni un error."""
+        for nombre in self._vistas_con_buscador():
+            with self.subTest(vista=nombre):
+                resp = self.client.get(reverse('panel:' + nombre), {'q': ''})
+                self.assertEqual(resp.status_code, 200, nombre)
+
+    def test_ninguno_revienta_con_un_termino_raro(self):
+        """Lo que se pega desde un chat: espacios, comillas, un porcentaje — que en LIKE es
+        un comodin — y acentos."""
+        for termino in ('   ', "O'Brien", '100%', 'ñandú', '_', '%%'):
+            for nombre in self._vistas_con_buscador():
+                with self.subTest(vista=nombre, termino=termino):
+                    resp = self.client.get(reverse('panel:' + nombre), {'q': termino})
+                    self.assertEqual(resp.status_code, 200, '%s con %r' % (nombre, termino))

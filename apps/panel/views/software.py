@@ -4,6 +4,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
+from ..busqueda import buscar
 from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import (
     scope_opcional_por_unidad_negocio_activa, scope_por_unidad_negocio_activa, verificar_acceso,
@@ -20,7 +21,16 @@ def aplicaciones_lista(request):
     aplicaciones = scope_opcional_por_unidad_negocio_activa(
         AplicacionCatalogo.objects.filter(activo=True).prefetch_related('versiones'), request, 'unidad_negocio',
     ).order_by('nombre')
-    return render(request, 'panel/aplicaciones_lista.html', {'aplicaciones': aplicaciones})
+    # Buscador, 4-oct-2026. Sin paginar: el catalogo lo acota lo que la empresa decide
+    # vigilar, no el uso, asi que no crece solo.
+    aplicaciones, busqueda = buscar(aplicaciones, request, (
+        'nombre', 'fabricante', 'categoria', 'version_mas_reciente_conocida',
+    ))
+    return render(request, 'panel/aplicaciones_lista.html', {
+        'aplicaciones': aplicaciones,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Nombre, fabricante, categoria o version...',
+    })
 
 
 @login_required
@@ -37,6 +47,18 @@ def software_desactualizado_lista(request):
         request, 'unidad_negocio',
     ).order_by('nombre')
 
+    # El buscador filtra por APLICACIÓN, que es la clave con la que esta pantalla está
+    # agrupada. Y filtrar acá, antes del bucle, también recorta las consultas: abajo hay
+    # una por aplicación, así que buscar una sola deja una sola.
+    #
+    # NO busca por estación a propósito. Se podría —filtrando las listas anidadas— pero
+    # cambiaría lo que la pantalla significa: pasaría de "qué aplicaciones están atrasadas
+    # y dónde" a "qué le falta a esta estación", que es otra pregunta y la responde el
+    # detalle de la estación. Mezclarlas dejaría una pantalla que contesta a medias las dos.
+    aplicaciones, busqueda = buscar(aplicaciones, request, (
+        'nombre', 'fabricante', 'categoria',
+    ))
+
     filas = []
     for aplicacion in aplicaciones:
         detectados = list(scope_por_unidad_negocio_activa(
@@ -47,7 +69,13 @@ def software_desactualizado_lista(request):
 
     return render(request, 'panel/software_desactualizado_lista.html', {
         'filas': filas,
+        # Con una búsqueda puesta, este total es el de lo buscado y no el de la flota. Se
+        # dice en la pantalla en vez de calcularlo aparte: para que fuera el total real
+        # habría que correr el bucle dos veces, y un numero que no se puede explicar es
+        # peor que uno acotado que sí.
         'total_estaciones_desactualizadas': sum(len(f['detectados']) for f in filas),
+        'busqueda': busqueda,
+        'busqueda_pista': 'Aplicación, fabricante o categoría…',
     })
 
 
@@ -111,7 +139,14 @@ def solicitudes_instalacion_lista(request):
         .order_by('-fecha_creacion'),
         request, 'unidad_negocio',
     )
-    return render(request, 'panel/solicitudes_instalacion_lista.html', {'solicitudes': solicitudes})
+    solicitudes, busqueda = buscar(solicitudes, request, (
+        'version_aplicacion__aplicacion__nombre', 'version_aplicacion__version', 'accion', 'estado', 'creado_por__username',
+    ))
+    return render(request, 'panel/solicitudes_instalacion_lista.html', {
+        'solicitudes': solicitudes,
+        'busqueda': busqueda,
+        'busqueda_pista': 'Aplicacion, version, accion o estado...',
+    })
 
 
 @login_required
