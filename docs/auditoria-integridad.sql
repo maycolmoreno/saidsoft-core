@@ -16,11 +16,16 @@
 -- COMO SE CORRE (sin escribir ni imprimir ninguna credencial: psql corre DENTRO
 -- del contenedor y toma usuario y base de sus propias variables de entorno)
 --
---   cat docs/auditoria-integridad.sql | docker exec -i deploy-db-1 \
---     sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > /tmp/auditoria.txt 2>&1
+--   cd deploy
+--   docker compose --env-file .env exec -T db \
+--     sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+--     < ../docs/auditoria-integridad.sql > /tmp/auditoria.txt 2>&1
 --
---   Si el contenedor de la base no se llama deploy-db-1, verlo con:
---     docker ps --format '{{.Names}}'
+--   Se invoca por el NOMBRE DE SERVICIO (db), no por el del contenedor: el
+--   contenedor se llama <proyecto>-db-1 y el proyecto cambia segun desde donde se
+--   haya levantado el stack, asi que "docker exec -i deploy-db-1" falla con
+--   "No such container" en cualquier instalacion cuyo proyecto no sea "deploy".
+--   Compose resuelve el servicio sin importar como quedo nombrado el contenedor.
 --
 -- COMO SE LEE
 --   Cada bloque imprime su titulo y despues sus filas. "(0 rows)" = esa
