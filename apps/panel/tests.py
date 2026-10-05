@@ -11,7 +11,7 @@ from cryptography.fernet import Fernet
 from django.contrib.auth.models import Permission, User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from django_otp.oath import totp
@@ -7860,3 +7860,100 @@ class FarmaciaPrecargadaDesdeLaSerieTests(TestCase):
         self.assertIsNone(resp.context['farmacia_sugerida'])
         self.assertIsNone(resp.context['estacion'])
         self.assertContains(resp, 'No se encontró')
+
+
+class BusquedaCompartidaTests(TestCase):
+    """`apps.panel.busqueda.buscar`: el filtro libre que comparten los listados.
+
+    Existe para no escribir el mismo `Q(...)` en 28 vistas. Lo que estas pruebas fijan es
+    lo que cada una de esas 28 habria tenido que acordarse sola: convertir las columnas
+    `inet`, limpiar el termino, y que un termino vacio signifique "todo" y no "nada".
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXHLP')
+        self.farmacia = Farmacia.objects.create(
+            codigo='HLP001', nombre='Sucursal Helper', grupo=grupo, unidad_negocio=self.sg,
+        )
+        self.con_ip = Estacion.objects.create(
+            codigo='HLP001-A', farmacia=self.farmacia, hostname='CAJA-UNO',
+            ip_lan='10.60.3.44',
+        )
+        self.sin_ip = Estacion.objects.create(
+            codigo='HLP001-B', farmacia=self.farmacia, hostname='CAJA-DOS',
+        )
+        self.fabrica = RequestFactory()
+
+    def _buscar(self, termino, campos=('codigo', 'hostname', 'ip_lan')):
+        from apps.panel.busqueda import buscar
+
+        peticion = self.fabrica.get('/', {'q': termino} if termino is not None else {})
+        qs, devuelto = buscar(Estacion.objects.all(), peticion, campos)
+        return sorted(e.codigo for e in qs), devuelto
+
+    def test_busca_en_un_campo_de_texto(self):
+        self.assertEqual(self._buscar('CAJA-UNO')[0], ['HLP001-A'])
+
+    def test_busca_con_or_entre_los_campos(self):
+        """Un termino que calza por un campo en una fila y por otro campo en otra tiene que
+        traer las dos: es OR, no AND."""
+        codigos, _ = self._buscar('HLP001')
+        self.assertEqual(codigos, ['HLP001-A', 'HLP001-B'])
+
+    def test_sin_termino_devuelve_el_queryset_intacto(self):
+        """`?q=` es lo que manda un formulario con el campo en blanco, y significa "todo".
+        Si significara "nada", abrir el listado desde el formulario lo mostraria vacio."""
+        self.assertEqual(self._buscar('')[0], ['HLP001-A', 'HLP001-B'])
+        self.assertEqual(self._buscar(None)[0], ['HLP001-A', 'HLP001-B'])
+
+    def test_devuelve_el_termino_limpio(self):
+        """Se devuelve para que el formulario lo muestre de vuelta: sin eso, al buscar el
+        campo queda vacio y no se ve que se busco."""
+        codigos, termino = self._buscar('   CAJA-UNO   ')
+        self.assertEqual(termino, 'CAJA-UNO')
+        self.assertEqual(codigos, ['HLP001-A'], 'los espacios de un codigo pegado no cuentan')
+
+    def test_no_distingue_mayusculas(self):
+        self.assertEqual(self._buscar('caja-uno')[0], ['HLP001-A'])
+
+    def test_convierte_las_columnas_inet_antes_de_comparar(self):
+        """La razon principal de que este helper exista.
+
+        `ip_lan` es GenericIPAddressField, o sea `inet` en PostgreSQL: un `__icontains`
+        sobre ese tipo revienta la consulta. En SQLite pasa sin ruido, asi que una prueba
+        contra el motor equivocado no lo detecta — esta corre contra PostgreSQL real (ver
+        deploy/README-local.md).
+        """
+        self.assertEqual(self._buscar('10.60.3.44')[0], ['HLP001-A'])
+        # Parcial, que es como alguien escribe una IP a medias.
+        self.assertEqual(self._buscar('10.60.3.')[0], ['HLP001-A'])
+
+    def test_detecta_el_inet_cruzando_tablas(self):
+        """La deteccion camina la ruta por los modelos relacionados: si solo mirara el
+        modelo de arranque, `farmacia__ip_router` se le escaparia y volveria el mismo
+        error, pero en el listado que cruza tablas."""
+        self.farmacia.ip_router = '192.170.57.254'
+        self.farmacia.save(update_fields=['ip_router'])
+
+        codigos, _ = self._buscar('192.170.57.254', campos=('codigo', 'farmacia__ip_router'))
+        self.assertEqual(codigos, ['HLP001-A', 'HLP001-B'])
+
+    def test_una_ruta_que_no_existe_no_la_tapa_el_helper(self):
+        """Si la vista escribe mal un campo, tiene que fallar con el error de Django que
+        explica que paso — no quedar en silencio devolviendo cualquier cosa."""
+        from django.core.exceptions import FieldError
+
+        with self.assertRaises(FieldError):
+            self._buscar('algo', campos=('campo_que_no_existe',))
+
+    def test_el_parametro_se_puede_cambiar(self):
+        """Una pantalla con dos buscadores necesita nombres distintos."""
+        from apps.panel.busqueda import buscar
+
+        peticion = self.fabrica.get('/', {'buscar_equipo': 'CAJA-DOS'})
+        qs, termino = buscar(
+            Estacion.objects.all(), peticion, ('codigo', 'hostname'), parametro='buscar_equipo',
+        )
+        self.assertEqual(termino, 'CAJA-DOS')
+        self.assertEqual([e.codigo for e in qs], ['HLP001-B'])

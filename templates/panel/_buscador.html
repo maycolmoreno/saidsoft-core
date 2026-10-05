@@ -1,0 +1,19 @@
+{% comment %}
+Buscador compartido de los listados. Se incluye DENTRO del `<form method="get">` de
+filtros de cada pantalla:
+
+    {% include "panel/_buscador.html" %}
+
+y espera en el contexto `busqueda` (el término que devolvió `apps.panel.busqueda.buscar`)
+y, opcional, `busqueda_pista` para el texto de ejemplo.
+
+Va dentro del formulario que ya existe y no en uno propio: así buscar y filtrar se envían
+juntos y se combinan, en vez de que cada uno descarte lo del otro.
+
+Sin `onchange`: se envía con Enter. Un `submit` por tecla recargaría la tabla entera
+mientras alguien escribe un código de ocho caracteres.
+{% endcomment %}
+<input type="search" name="q" value="{{ busqueda }}"
+       placeholder="{{ busqueda_pista|default:'Buscar…' }}"
+       class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]"
+       style="border:1px solid var(--border); min-width:240px;">
