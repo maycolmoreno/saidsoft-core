@@ -675,7 +675,7 @@ def crear_activos_desde_estaciones(*, usuario, tipo=Activo.Tipo.DESKTOP, aplicar
     return resumen
 
 
-def datos_hardware_desde_estacion(numero_serie: str) -> dict | None:
+def datos_hardware_desde_estacion(numero_serie: str, *, usuario) -> dict | None:
     """Especificaciones que el agente RMM ya reportó para ese número de serie.
 
     Evita reingresar a mano lo que la estación reporta sola, y —más importante—
@@ -687,19 +687,41 @@ def datos_hardware_desde_estacion(numero_serie: str) -> dict | None:
 
     Solo se incluyen los campos que la estación realmente tiene cargados, para no
     pisar con vacíos lo que el usuario ya haya escrito.
+
+    `usuario` es OBLIGATORIO y acota la búsqueda a sus unidades de negocio. Hasta el
+    4-oct-2026 esta función no recibía nada y buscaba sobre TODAS las estaciones: alguien
+    de un cliente que escribiera una serie de otro recibía el código de esa estación y su
+    procesador, RAM y disco. Es poco, pero es dato de otro cliente, y una serie se puede
+    probar hasta acertar. Se pide explícito —y no se lee la sesión acá— por el mismo
+    criterio que `resumen_operacion`: el alcance lo decide quien llama.
+
+    Falla cerrado: con `usuario=None` el alcance queda VACÍO y devuelve None, no todas
+    las estaciones. Un llamador que se olvide del usuario no encuentra nada, que es el
+    modo correcto de equivocarse acá.
     """
     from apps.catalogo.models import Estacion
+    from apps.cuentas.services import scope_por_unidad_negocio
 
     serie = (numero_serie or '').strip()
     if not serie:
         return None
 
-    coincidencias = list(Estacion.objects.filter(numero_serie__iexact=serie)[:2])
+    # `scope_por_unidad_negocio` y no la variante "opcional": esa trata el campo nulo
+    # como recurso compartido, y una estación siempre pertenece a una farmacia de un
+    # cliente — nunca es de todos.
+    alcance = scope_por_unidad_negocio(
+        Estacion.objects.select_related('farmacia'), usuario, 'farmacia__unidad_negocio',
+    )
+    coincidencias = list(alcance.filter(numero_serie__iexact=serie)[:2])
     if len(coincidencias) != 1:
         return None
 
     estacion = coincidencias[0]
-    datos: dict = {'estacion': estacion}
+    # `farmacia` va en el resultado porque una estación que reporta esta serie ESTÁ
+    # instalada en un local: es exactamente el caso del campo "Farmacia (si ya está
+    # instalado)" del alta, y tenerlo que elegir a mano teniendo el dato era trabajo
+    # duplicado. Mismo criterio que el resto: se ofrece, no se impone.
+    datos: dict = {'estacion': estacion, 'farmacia': estacion.farmacia}
     if estacion.procesador:
         datos['procesador'] = estacion.procesador
     if estacion.ram_total_mb:

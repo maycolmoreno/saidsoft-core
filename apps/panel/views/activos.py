@@ -84,7 +84,7 @@ def especificaciones_por_serie_partial(request):
     render en JavaScript.
     """
     serie = request.GET.get('numero_serie', '').strip()
-    datos = activos_services.datos_hardware_desde_estacion(serie)
+    datos = activos_services.datos_hardware_desde_estacion(serie, usuario=request.user)
 
     # Se conserva lo que el usuario ya haya escrito: la estación solo COMPLETA lo
     # que falta, nunca pisa un dato cargado a mano.
@@ -92,10 +92,23 @@ def especificaciones_por_serie_partial(request):
         campo: request.GET.get(campo) or (datos or {}).get(campo)
         for campo in ('procesador', 'ram_gb', 'almacenamiento_gb')
     }
+
+    # La farmacia se sugiere solo si el usuario todavía no dijo dónde está el equipo, y
+    # eso incluye NO haber elegido bodega: "ingresa a bodega" y "ya está instalado en una
+    # farmacia" son las dos mitades de la misma pregunta (ver ActivoIngresoForm.clean).
+    # Rellenar la farmacia sobre una bodega ya elegida dejaría el formulario diciendo dos
+    # cosas a la vez, y la que pierde sería la que el usuario eligió a mano.
+    farmacia_sugerida = None
+    if not request.GET.get('farmacia') and not request.GET.get('bodega'):
+        farmacia_sugerida = (datos or {}).get('farmacia')
+        if farmacia_sugerida is not None:
+            inicial['farmacia'] = farmacia_sugerida.pk
+
     form = ActivoIngresoForm(user=request.user, initial=inicial)
     return render(request, 'panel/_especificaciones_computo.html', {
         'form': form,
         'estacion': (datos or {}).get('estacion'),
+        'farmacia_sugerida': farmacia_sugerida,
         # Distingue "todavía no busqué" de "busqué y no hay": sin esto, no encontrar
         # nada se ve igual que la carga inicial y el usuario no sabe si el botón hizo
         # algo.

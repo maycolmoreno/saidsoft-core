@@ -817,7 +817,15 @@ class DatosHardwareDesdeEstacionTests(TestCase):
     def setUp(self):
         sg = UnidadNegocio.objects.get(codigo='SG')
         grupo = Grupo.objects.create(codigo='TRX001')
-        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        farmacia = self.farmacia
+        # El alcance es obligatorio desde el 4-oct-2026: sin usuario la busqueda no
+        # devuelve nada. Acceso total para que estas pruebas midan la busqueda y no el
+        # scope, que tiene sus propias pruebas mas abajo.
+        from apps.cuentas.models import PerfilUsuario
+
+        self.usuario = User.objects.create_user(username='u_hardware', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
         self.estacion = Estacion.objects.create(
             codigo='ML001-A', farmacia=farmacia, numero_serie='MXL8192898',
             procesador='11th Gen Intel(R) Core(TM) i3-1115G4', ram_total_mb=7839,
@@ -827,21 +835,21 @@ class DatosHardwareDesdeEstacionTests(TestCase):
     def test_convierte_la_ram_de_mb_a_gb(self):
         # La estación reporta MB y el activo se lleva en GB: copiar el número tal cual
         # metería "7839" en un campo de gigabytes.
-        datos = datos_hardware_desde_estacion('MXL8192898')
+        datos = datos_hardware_desde_estacion('MXL8192898', usuario=self.usuario)
         self.assertEqual(datos['ram_gb'], 8)
         self.assertEqual(datos['almacenamiento_gb'], 446)
         self.assertEqual(datos['procesador'], '11th Gen Intel(R) Core(TM) i3-1115G4')
         self.assertEqual(datos['estacion'], self.estacion)
 
     def test_la_busqueda_ignora_mayusculas_y_espacios(self):
-        self.assertIsNotNone(datos_hardware_desde_estacion('  mxl8192898  '))
+        self.assertIsNotNone(datos_hardware_desde_estacion('  mxl8192898  ', usuario=self.usuario))
 
     def test_sin_serie_devuelve_none(self):
-        self.assertIsNone(datos_hardware_desde_estacion(''))
-        self.assertIsNone(datos_hardware_desde_estacion('   '))
+        self.assertIsNone(datos_hardware_desde_estacion('', usuario=self.usuario))
+        self.assertIsNone(datos_hardware_desde_estacion('   ', usuario=self.usuario))
 
     def test_serie_desconocida_devuelve_none(self):
-        self.assertIsNone(datos_hardware_desde_estacion('NO-EXISTE'))
+        self.assertIsNone(datos_hardware_desde_estacion('NO-EXISTE', usuario=self.usuario))
 
     def test_con_series_duplicadas_no_adivina(self):
         # Dato sucio: dos estaciones con la misma serie. Devolver una al azar sería
@@ -853,7 +861,7 @@ class DatosHardwareDesdeEstacionTests(TestCase):
         Estacion.objects.create(
             codigo='ML002-A', farmacia=otra_farmacia, numero_serie='MXL8192898',
         )
-        self.assertIsNone(datos_hardware_desde_estacion('MXL8192898'))
+        self.assertIsNone(datos_hardware_desde_estacion('MXL8192898', usuario=self.usuario))
 
     def test_solo_devuelve_los_campos_que_la_estacion_tiene(self):
         # Sin RAM ni disco cargados no se manda la clave, para no pisar con vacíos lo
@@ -861,7 +869,7 @@ class DatosHardwareDesdeEstacionTests(TestCase):
         self.estacion.ram_total_mb = None
         self.estacion.almacenamiento_total_gb = None
         self.estacion.save(update_fields=['ram_total_mb', 'almacenamiento_total_gb'])
-        datos = datos_hardware_desde_estacion('MXL8192898')
+        datos = datos_hardware_desde_estacion('MXL8192898', usuario=self.usuario)
         self.assertIn('procesador', datos)
         self.assertNotIn('ram_gb', datos)
         self.assertNotIn('almacenamiento_gb', datos)
@@ -2057,3 +2065,73 @@ class SeedPermisosIdempotenteTests(TestCase):
                          'add_ubicaciontecnico', 'add_activo'):
             with self.subTest(codename=codename):
                 self.assertIn(codename, codenames)
+
+
+class DatosHardwarePorSerieAislamientoTests(TestCase):
+    """La busqueda por serie no puede cruzar clientes.
+
+    Hasta el 4-oct-2026 `datos_hardware_desde_estacion` no recibia usuario y buscaba
+    sobre TODAS las estaciones: alguien de un cliente que escribiera una serie de otro
+    recibia el codigo de esa estacion y su procesador, RAM y disco. Es poco dato, pero es
+    de otro cliente, y una serie se puede probar hasta acertar.
+
+    Ahora el alcance es un parametro obligatorio y falla cerrado.
+    """
+
+    def setUp(self):
+        from apps.cuentas.models import PerfilUsuario
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRXAIS')
+        self.farmacia_sg = Farmacia.objects.create(
+            codigo='AIS001', grupo=grupo, unidad_negocio=self.sg,
+        )
+        self.farmacia_mia = Farmacia.objects.create(
+            codigo='AIS002', grupo=grupo, unidad_negocio=self.mia,
+        )
+        self.de_mia = Estacion.objects.create(
+            codigo='AIS002-A', farmacia=self.farmacia_mia, numero_serie='SERIE-AJENA',
+            procesador='Intel i5', ram_total_mb=8192, almacenamiento_total_gb=256,
+        )
+
+        self.de_sg = User.objects.create_user(username='u_ais_sg', password='x')
+        perfil = PerfilUsuario.objects.create(usuario=self.de_sg, acceso_todas_unidades=False)
+        perfil.unidades_negocio.add(self.sg)
+
+        self.interno = User.objects.create_user(username='u_ais_total', password='x')
+        PerfilUsuario.objects.create(usuario=self.interno, acceso_todas_unidades=True)
+
+    def test_no_devuelve_la_estacion_de_otro_cliente(self):
+        self.assertIsNone(
+            datos_hardware_desde_estacion('SERIE-AJENA', usuario=self.de_sg),
+            'un usuario de SG no puede ver una estacion de MIA ni por su numero de serie',
+        )
+
+    def test_el_equipo_interno_si_la_ve(self):
+        """Acceso total es acceso total: el aislamiento es por cliente, no un secreto."""
+        datos = datos_hardware_desde_estacion('SERIE-AJENA', usuario=self.interno)
+        self.assertEqual(datos['estacion'], self.de_mia)
+
+    def test_sin_usuario_no_devuelve_nada(self):
+        """Falla cerrado: un llamador que se olvide del usuario no encuentra nada, en vez
+        de encontrar todo."""
+        self.assertIsNone(datos_hardware_desde_estacion('SERIE-AJENA', usuario=None))
+
+    def test_la_misma_serie_en_dos_clientes_no_se_estorba(self):
+        """Antes, dos coincidencias devolvian None para todos. Con el alcance aplicado,
+        cada cliente ve UNA: la suya."""
+        propia = Estacion.objects.create(
+            codigo='AIS001-A', farmacia=self.farmacia_sg, numero_serie='SERIE-AJENA',
+            procesador='AMD Ryzen 5',
+        )
+        datos = datos_hardware_desde_estacion('SERIE-AJENA', usuario=self.de_sg)
+        self.assertEqual(datos['estacion'], propia)
+        # Y el interno, que ve las dos, sigue sin adivinar.
+        self.assertIsNone(datos_hardware_desde_estacion('SERIE-AJENA', usuario=self.interno))
+
+    def test_devuelve_la_farmacia_donde_esta_instalada(self):
+        """Una estacion que reporta esta serie ESTA instalada en un local, y ese es
+        justamente el campo "Farmacia (si ya esta instalado)" del alta de activo."""
+        datos = datos_hardware_desde_estacion('SERIE-AJENA', usuario=self.interno)
+        self.assertEqual(datos['farmacia'], self.farmacia_mia)

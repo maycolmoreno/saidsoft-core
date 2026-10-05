@@ -32,7 +32,7 @@
                     hx-get="{% url 'panel:especificaciones_por_serie_partial' %}"
                     hx-target="#especificaciones-computo"
                     hx-swap="innerHTML"
-                    hx-include="[name='numero_serie'],[name='procesador'],[name='ram_gb'],[name='almacenamiento_gb']"
+                    hx-include="[name='numero_serie'],[name='procesador'],[name='ram_gb'],[name='almacenamiento_gb'],[name='farmacia'],[name='bodega']"
                     hx-indicator="#buscando-serie">
                 Buscar equipo por serie
             </button>
@@ -83,7 +83,10 @@
             </div>
             {% endwith %}
             {% with field=form.farmacia %}
-            <div class="form-field">
+            {% comment %} El `id` es el destino del intercambio fuera de banda que manda
+               _especificaciones_computo.html cuando la serie encuentra una estación: así
+               el campo se completa sin salir de esta sección. {% endcomment %}
+            <div class="form-field" id="campo-farmacia">
                 <label for="{{ field.id_for_label }}">{{ field.label }}</label>
                 {{ field }}
                 {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}

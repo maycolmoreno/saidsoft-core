@@ -7759,3 +7759,104 @@ class EstacionesBusquedaTests(TestCase):
     def test_los_espacios_sobrantes_no_cuentan(self):
         """Pegar un código desde un chat trae espacios; sin el strip no encontraría nada."""
         self.assertEqual(self._codigos(q='  BUS001-A  '), ['BUS001-A'])
+
+
+class FarmaciaPrecargadaDesdeLaSerieTests(TestCase):
+    """El alta de activo precarga tambien la farmacia desde la serie.
+
+    Antes "Buscar equipo por serie" completaba procesador, RAM y disco, y mostraba de que
+    estacion habia salido — pero dejaba la farmacia vacia, teniendo el dato a la vista.
+    Elegirla a mano era trabajo duplicado, y la causa de que el activo quedara sin
+    farmacia cargada.
+
+    El campo se completa por intercambio FUERA DE BANDA de HTMX: tiene que quedar donde
+    el usuario lo espera, en la seccion "Ubicacion" junto a Bodega, y no mudarse al bloque
+    de especificaciones porque se apreto un boton.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRXPRE')
+        self.farmacia = Farmacia.objects.create(
+            codigo='PRE001', grupo=self.grupo, unidad_negocio=self.sg,
+        )
+        self.bodega = Bodega.objects.create(
+            codigo='BOD-PRE', nombre='Bodega de prueba', unidad_negocio=self.sg,
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='PRE001-A', farmacia=self.farmacia, numero_serie='SN-PRE-1',
+            procesador='Intel i3', ram_total_mb=7839, almacenamiento_total_gb=446,
+        )
+        self.usuario = User.objects.create_user(username='u_precarga', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='add_activo'),
+        )
+        self.client.force_login(self.usuario)
+        self.url = reverse('panel:especificaciones_por_serie_partial')
+
+    def test_la_precarga_y_lo_dice(self):
+        resp = self.client.get(self.url, {'numero_serie': 'SN-PRE-1'})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['farmacia_sugerida'], self.farmacia)
+        # El aviso tiene que nombrarla: completar un campo en silencio es peor que no
+        # completarlo, porque el usuario guarda sin mirar.
+        self.assertContains(resp, 'PRE001')
+        # Y va fuera de banda, para no mudar el campo de seccion.
+        self.assertContains(resp, 'hx-swap-oob')
+        self.assertContains(resp, 'id="campo-farmacia"')
+
+    def test_no_pisa_una_farmacia_ya_elegida(self):
+        """Mismo contrato que las especificaciones: la estacion COMPLETA lo que falta,
+        nunca reemplaza lo que el usuario cargo a mano."""
+        otra = Farmacia.objects.create(
+            codigo='PRE002', grupo=self.grupo, unidad_negocio=self.sg,
+        )
+        resp = self.client.get(self.url, {'numero_serie': 'SN-PRE-1', 'farmacia': str(otra.pk)})
+
+        self.assertIsNone(resp.context['farmacia_sugerida'])
+        self.assertNotContains(resp, 'hx-swap-oob')
+
+    def test_no_pisa_una_bodega_ya_elegida(self):
+        """"Ingresa a bodega" y "ya esta instalado en una farmacia" son las dos mitades de
+        la misma pregunta (ver ActivoIngresoForm.clean). Rellenar la farmacia sobre una
+        bodega elegida dejaria el formulario diciendo dos cosas a la vez, y la que pierde
+        seria la que el usuario eligio."""
+        resp = self.client.get(
+            self.url, {'numero_serie': 'SN-PRE-1', 'bodega': str(self.bodega.pk)},
+        )
+
+        self.assertIsNone(resp.context['farmacia_sugerida'])
+        self.assertNotContains(resp, 'hx-swap-oob')
+
+    def test_serie_desconocida_no_sugiere_nada(self):
+        resp = self.client.get(self.url, {'numero_serie': 'NO-EXISTE'})
+
+        self.assertIsNone(resp.context['farmacia_sugerida'])
+        self.assertNotContains(resp, 'hx-swap-oob')
+        # El aviso de "busque y no hay" sigue saliendo: es lo que distingue eso de la
+        # carga inicial del formulario.
+        self.assertContains(resp, 'NO-EXISTE')
+
+    def test_las_especificaciones_siguen_precargandose(self):
+        """Lo que ya funcionaba tiene que seguir funcionando."""
+        resp = self.client.get(self.url, {'numero_serie': 'SN-PRE-1'})
+
+        self.assertEqual(resp.context['form']['procesador'].value(), 'Intel i3')
+        self.assertEqual(resp.context['form']['ram_gb'].value(), 8)
+        self.assertEqual(resp.context['form']['almacenamiento_gb'].value(), 446)
+
+    def test_no_sugiere_la_farmacia_de_otro_cliente(self):
+        """El alcance lo aplica el servicio, pero la vista es la unica puerta expuesta:
+        si alguien lo cambia alla, esto falla aca."""
+        perfil = PerfilUsuario.objects.get(usuario=self.usuario)
+        perfil.acceso_todas_unidades = False
+        perfil.save(update_fields=['acceso_todas_unidades'])
+        perfil.unidades_negocio.add(UnidadNegocio.objects.get(codigo='MIA'))
+
+        resp = self.client.get(self.url, {'numero_serie': 'SN-PRE-1'})
+
+        self.assertIsNone(resp.context['farmacia_sugerida'])
+        self.assertIsNone(resp.context['estacion'])
+        self.assertContains(resp, 'No se encontró')

@@ -8,6 +8,10 @@ cuando se aprieta "Buscar" junto al número de serie
 <div class="mb-3 text-xs px-3 py-2 rounded-md alert sev-info">
     Datos tomados de la estación <span class="mono">{{ estacion.codigo }}</span>, que
     reporta este mismo número de serie. Podés corregirlos antes de guardar.
+    {% if farmacia_sugerida %}
+    También se completó la farmacia (<span class="mono">{{ farmacia_sugerida.codigo }}</span>),
+    donde esa estación está instalada.
+    {% endif %}
 </div>
 {% elif serie_buscada %}
 {% comment %} Se buscó y no hubo resultado. Es distinto de la carga inicial: sin este aviso el
@@ -29,3 +33,22 @@ cuando se aprieta "Buscar" junto al número de serie
     {% endwith %}
     {% endfor %}
 </div>
+{% if farmacia_sugerida %}
+{% comment %}
+Intercambio FUERA DE BANDA del campo de farmacia. HTMX reemplaza este bloque por `id`
+donde ya está —en la sección "Ubicación"—, en vez de meterlo dentro del bloque de
+especificaciones: el campo tiene que quedar donde el usuario lo espera, junto a Bodega,
+y no mudarse de sección porque se apretó "Buscar".
+
+Es la única forma de completar dos zonas distintas del formulario con una sola respuesta
+sin duplicar el render en JavaScript, que es lo que esta vista evita a propósito.
+{% endcomment %}
+{% with field=form.farmacia %}
+<div class="form-field" id="campo-farmacia" hx-swap-oob="true">
+    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+    {{ field }}
+    {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
+    {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+</div>
+{% endwith %}
+{% endif %}
