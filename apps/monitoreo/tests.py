@@ -1048,10 +1048,14 @@ class SincronizarAnchoBandaFarmaciasTests(TestCase):
 
 
 class SolicitarSondeoRedFarmaciasViaAgenteTests(TestCase):
-    """El servidor no tiene ruta de red hacia las IPs privadas de las farmacias
-    (confirmado 24-ago-2026) -- esto reemplaza en la práctica al sondeo directo,
-    pidiéndole a una estación de la propia LAN de cada farmacia que sondee su
-    Mikrotik local y reporte por MQTT."""
+    """Le pide a una estación de la propia LAN de cada farmacia que sondee su Mikrotik
+    local y reporte por MQTT.
+
+    Esta clase decía que "el servidor no tiene ruta de red hacia las IPs privadas de las
+    farmacias (confirmado 24-ago-2026) -- esto reemplaza en la práctica al sondeo
+    directo". Las dos mitades son falsas desde el 5-oct-2026: el sondeo directo escribe
+    252 de 270 farmacias en producción y esta ruta solo alcanza las que tienen una
+    estación en línea. Es un RESPALDO, y las pruebas de abajo lo fijan como tal."""
 
     def setUp(self):
         from .mikrotik import solicitar_sondeo_red_farmacias_via_agente
@@ -1106,6 +1110,69 @@ class SolicitarSondeoRedFarmaciasViaAgenteTests(TestCase):
             n = self.solicitar()
         self.assertEqual(n, 1)
         mock_enviar.assert_called_once()
+
+    # --- Es un RESPALDO, no un segundo escritor en paralelo (5-oct-2026) ---
+
+    def _estacion_online(self):
+        return Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+
+    def test_no_pide_sondeo_si_el_directo_ya_midio_hace_poco(self):
+        """El caso normal en producción: el sondeo directo funciona y esta ruta calla.
+
+        Sin esto, las farmacias con estación en línea recibían 21 filas por hora en vez
+        de 10 y `_calcular_tasa` promediaba ventanas de duración distinta en la misma
+        columna.
+        """
+        self._estacion_online()
+        MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia, bytes_recibidos=10 ** 6, bytes_enviados=10 ** 5,
+        )
+        with patch('apps.catalogo.services.enviar_consultar_red_farmacia', return_value=True) as mock_enviar:
+            n = self.solicitar()
+        self.assertEqual(n, 0)
+        mock_enviar.assert_not_called()
+
+    def test_si_pide_sondeo_cuando_la_ultima_muestra_quedo_vieja(self):
+        """Dos ciclos sin que el directo logre medir: el respaldo entra."""
+        from .mikrotik import MINUTOS_FRESCURA_RED_FARMACIA
+
+        estacion = self._estacion_online()
+        vieja = MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia, bytes_recibidos=10 ** 6, bytes_enviados=10 ** 5,
+        )
+        MuestraRedFarmacia.objects.filter(pk=vieja.pk).update(
+            timestamp=timezone.now() - timedelta(minutes=MINUTOS_FRESCURA_RED_FARMACIA + 1),
+        )
+        with patch('apps.catalogo.services.enviar_consultar_red_farmacia', return_value=True) as mock_enviar:
+            n = self.solicitar()
+        self.assertEqual(n, 1)
+        mock_enviar.assert_called_once_with(estacion, 'ml001')
+
+    def test_la_frescura_es_por_farmacia_y_no_global(self):
+        """Una farmacia medida hace poco no silencia a las demás.
+
+        Es el error que haría que una sola muestra reciente de cualquier sitio apagara el
+        respaldo en toda la red.
+        """
+        self._estacion_online()
+        MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia, bytes_recibidos=10 ** 6, bytes_enviados=10 ** 5,
+        )
+        otra = Farmacia.objects.create(
+            codigo='ML002', grupo=self.farmacia.grupo, unidad_negocio=self.farmacia.unidad_negocio,
+            ip_router='10.0.2.1',
+        )
+        estacion_otra = Estacion.objects.create(
+            codigo='ML002-A', farmacia=otra,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, estado_conexion=Estacion.EstadoConexion.ONLINE,
+        )
+        with patch('apps.catalogo.services.enviar_consultar_red_farmacia', return_value=True) as mock_enviar:
+            n = self.solicitar()
+        self.assertEqual(n, 1)
+        mock_enviar.assert_called_once_with(estacion_otra, 'ml002')
 
 
 class AlertaAbreMantenimientoTests(TestCase):

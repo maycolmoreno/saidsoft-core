@@ -103,6 +103,18 @@ _OID_IF_HC_OUT_OCTETS = '1.3.6.1.2.1.31.1.1.1.10'
 # del servidor con 600 sockets UDP simultáneos.
 _MAX_SONDEOS_CONCURRENTES = 25
 
+# Ventana que vuelve a `solicitar_sondeo_red_farmacias_via_agente` un RESPALDO del sondeo
+# directo en vez de un segundo escritor en paralelo: si la farmacia ya tiene una muestra
+# mas nueva que esto, el agente no la sondea.
+#
+# Son DOS ciclos del sondeo directo (5 min, ver CELERY_BEAT_SCHEDULE) a proposito. Con un
+# solo ciclo la decision dependeria del orden en que Beat dispare las dos tareas, que no
+# esta garantizado: si el agente corriera justo antes del directo, veria la muestra vieja
+# y sondearia igual. Con dos ciclos, en regimen normal siempre hay una muestra de menos de
+# 10 minutos y el agente no escribe nada; recien cuando el directo falla dos veces
+# seguidas, entra.
+MINUTOS_FRESCURA_RED_FARMACIA = 10
+
 # ifIndex de la interfaz WAN ya resuelto por IP — se resuelve una sola vez por
 # Mikrotik y se reusa en las corridas siguientes, no se repite el GET cada 5 min.
 _cache_indice_interfaz: dict[str, int] = {}
@@ -391,29 +403,59 @@ def sondear_y_guardar_farmacia(farmacia) -> bool:
 
 
 def solicitar_sondeo_red_farmacias_via_agente() -> int:
-    """Celery Beat periódico (cada 5 min, ver CELERY_BEAT_SCHEDULE): por cada
-    Farmacia con `ip_router` y al menos una Estacion aprobada y en línea, le pide a
-    ESA estación (misma LAN que el Mikrotik del sitio) que lo sondee por SNMP y
-    reporte por MQTT -- ver apps.catalogo.services.enviar_consultar_red_farmacia y
+    """Celery Beat periódico (cada 5 min, ver CELERY_BEAT_SCHEDULE): RESPALDO del sondeo
+    directo. Por cada Farmacia con `ip_router`, una Estacion aprobada y en línea, y **sin
+    una muestra reciente**, le pide a ESA estación (misma LAN que el Mikrotik del sitio)
+    que lo sondee por SNMP y reporte por MQTT -- ver
+    apps.catalogo.services.enviar_consultar_red_farmacia y
     apps.mqtt_worker.services.manejar_red_farmacia.
 
-    Reemplaza en la práctica a sincronizar_ancho_banda_farmacias (sondeo directo
-    desde ESTE servidor): confirmado el 24-ago-2026 que el servidor no tiene ninguna
-    ruta de red hacia las IPs privadas de las farmacias (100% de pérdida de ping,
-    sin entrada en la tabla de rutas del host) -- esa función nunca puede funcionar
-    desde acá. Una estación de la propia farmacia sí puede, porque está en la misma
-    LAN que su Mikrotik. Se deja sincronizar_ancho_banda_farmacias sin borrar (no
-    hace daño, solo loguea warnings) por si algún día existe una ruta VPN real y
-    vuelve a tener sentido correrla en paralelo.
+    **Es un respaldo y no un segundo escritor en paralelo desde el 5-oct-2026.** Este
+    docstring decía que "reemplaza en la práctica a sincronizar_ancho_banda_farmacias"
+    porque el 24-ago-2026 se confirmó que el servidor no tenía ninguna ruta a las IP
+    privadas de las farmacias y "esa función nunca puede funcionar desde acá". Las dos
+    mitades son falsas hoy, y la auditoría del 5-oct-2026 lo midió sobre la base real:
+
+    - El sondeo DIRECTO escribe **252 de 270** farmacias con muestras en la última hora.
+      Es la columna vertebral, no el camino muerto.
+    - Esta ruta solo alcanza farmacias con una estación en línea: 32 candidatas, de las
+      cuales **14 no produjeron ninguna fila** y 16 ya estaban cubiertas por el directo.
+      Su aporte de cobertura única era de 2 farmacias como máximo.
+    - El resultado de correr las dos en paralelo era **duplicar las filas de esas 16**
+      (21 por hora contra 10), con `_calcular_tasa` diferenciando contra la fila del otro
+      sondeador y promediando ventanas de 113 a 420 segundos en la misma columna. Y el
+      problema crecía con el rollout: a 1.300 farmacias con agente, el 100 % duplicado.
+
+    No se borra esta ruta porque es la única que funciona si el servidor vuelve a perder
+    la ruta hacia las farmacias -- nadie registró por qué apareció y el NUC sale por WiFi
+    sin VPN dedicada (ver CLAUDE.md). Lo que cambia es cuándo actúa: solo donde el directo
+    no logró medir en MINUTOS_FRESCURA_RED_FARMACIA.
 
     Devuelve cuántas estaciones recibieron el pedido (no confirma que hayan podido
     sondear su router -- eso se ve en manejar_red_farmacia/MuestraRedFarmacia)."""
     from apps.catalogo.models import Estacion
     from apps.catalogo.services import enviar_consultar_red_farmacia
 
+    from .models import MuestraRedFarmacia
+
+    # Las que el sondeo directo ya midió hace poco: de esas no hace falta pedir nada.
+    #
+    # Se materializa el conjunto de ids en Python en vez de dejarlo como subconsulta
+    # dentro del `exclude`, para que el filtro por tiempo sobre la hypertable se evalúe
+    # UNA vez y no quede anidado en la consulta de estaciones. Son pocas filas: solo las
+    # de los últimos 10 minutos, y la exclusión de chunks por tiempo las acota sin
+    # recorrer el histórico.
+    frescas = set(
+        MuestraRedFarmacia.objects.filter(
+            timestamp__gt=timezone.now() - timedelta(minutes=MINUTOS_FRESCURA_RED_FARMACIA),
+        ).values_list('farmacia_id', flat=True)
+    )
+
     candidatas = Estacion.objects.filter(
         estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, estado_conexion=Estacion.EstadoConexion.ONLINE,
-    ).exclude(farmacia__ip_router__isnull=True).select_related('farmacia').order_by('farmacia_id', 'codigo')
+    ).exclude(farmacia__ip_router__isnull=True).exclude(
+        farmacia_id__in=frescas,
+    ).select_related('farmacia').order_by('farmacia_id', 'codigo')
 
     farmacias_vistas = set()
     enviadas = 0

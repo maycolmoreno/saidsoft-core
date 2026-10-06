@@ -172,7 +172,13 @@ class MantenimientoListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_equipos(self, obj):
-        return ActivoResumenSerializer([me.equipo for me in obj.equipos.select_related('equipo')], many=True).data
+        # `.all()` y NO `.select_related('equipo')`: llamar select_related sobre el
+        # manager relacionado arma un queryset nuevo y DESCARTA la cache que dejo el
+        # prefetch_related del viewset, asi que volvia a consultar
+        # `mantenimiento_equipo` una vez por mantenimiento. El metodo de abajo
+        # (`get_farmacia`) ya usaba `.all()` y si aprovechaba la cache -- eran dos
+        # metodos del mismo serializer, uno bien y uno mal.
+        return ActivoResumenSerializer([me.equipo for me in obj.equipos.all()], many=True).data
 
     def get_farmacia(self, obj):
         """Farmacia del equipo principal, con coordenadas para que la app pueda abrir

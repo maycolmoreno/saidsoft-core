@@ -1,11 +1,15 @@
 from datetime import date, timedelta
 
 from django.contrib.auth.models import Permission, User
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.activos.models import Activo, Bodega, Colaborador, StockBodega, TipoConsumible
+from apps.activos.models import (
+    Activo, Bodega, CategoriaEquipo, Colaborador, Marca, StockBodega, TipoConsumible,
+)
 from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
 
@@ -1074,6 +1078,90 @@ class MantenimientoApiMovilTests(TestCase):
     def test_el_detalle_expone_la_verificacion_de_presencia(self):
         resp = self.client.get(f'/api/v1/mantenimientos/{self.mantenimiento.pk}/', **self._auth())
         self.assertEqual(resp.json()['presencia_en_sitio'], 'sin_datos')
+
+
+class ListaDeMantenimientosSinNMasUnoTests(TestCase):
+    """El costo de `/api/v1/mantenimientos/` no puede crecer con la cantidad de filas.
+
+    `list` NO pagina: devuelve todo el trabajo abierto del técnico. Así que una consulta
+    por fila no se diluye en una página de 25 -- la paga completa un teléfono en la
+    farmacia. Medido el 5-oct-2026, antes de arreglarlo: 4 consultas por mantenimiento
+    (169 para 40 filas, contra 11 con el prefetch completo).
+
+    Se compara 1 fila contra 6 en vez de fijar un número exacto: lo que hay que proteger
+    es que el conteo sea CONSTANTE, y un número fijo se rompe con cualquier cambio
+    ajeno (un middleware, una consulta de permisos) sin que haya reaparecido un N+1.
+    """
+
+    def setUp(self):
+        from rest_framework.authtoken.models import Token
+        self.tecnico = User.objects.create_user(username='tec_nmas1', password='x')
+        otorgar(self.tecnico, *PERMISOS_APP_CAMPO)
+        self.token = Token.objects.create(user=self.tecnico)
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX009')
+        self.marca = Marca.objects.create(nombre='HP')
+        self.categoria = CategoriaEquipo.objects.create(codigo='DSK-NM1', nombre='Escritorio')
+        self.tipo = TipoMantenimiento.objects.create(codigo='PREV-NM1', nombre='Preventivo')
+        self.unidad = sg
+
+    def _auth(self):
+        return {'HTTP_AUTHORIZATION': f'Token {self.token.key}'}
+
+    def _crear(self, n):
+        """n mantenimientos, cada uno con su propia farmacia, equipo, marca y categoría.
+
+        Entidades distintas por fila a propósito: si todas compartieran la misma marca,
+        el `select_related` faltante quedaría tapado por la caché de instancias de Django
+        y la prueba pasaría con el bug puesto.
+        """
+        ya_creados = Mantenimiento.objects.filter(tecnico=self.tecnico).count()
+        for i in range(ya_creados, ya_creados + n):
+            farmacia = Farmacia.objects.create(
+                codigo=f'MN{i:03d}', grupo=self.grupo, unidad_negocio=self.unidad,
+                nombre=f'Farmacia {i}', latitud=-2.17, longitud=-79.92,
+            )
+            equipo = Activo.objects.create(
+                codigo=f'CR-NM1-{i:04d}', tipo=Activo.Tipo.DESKTOP, farmacia=farmacia,
+                marca=Marca.objects.create(nombre=f'Marca {i}'),
+                categoria=CategoriaEquipo.objects.create(codigo=f'CAT-NM{i}', nombre=f'Cat {i}'),
+            )
+            mantenimiento = crear_mantenimiento_manual(
+                equipos=[equipo], tecnico=self.tecnico, descripcion=f'caso {i}',
+                fecha_programada=timezone.now(), usuario=self.tecnico,
+            )
+            mantenimiento.tipo_mantenimiento = self.tipo
+            mantenimiento.save(update_fields=['tipo_mantenimiento'])
+
+    def _consultas_de_la_lista(self):
+        with CaptureQueriesContext(connection) as capturadas:
+            respuesta = self.client.get('/api/v1/mantenimientos/', **self._auth())
+        self.assertEqual(respuesta.status_code, 200)
+        return len(capturadas), len(respuesta.json())
+
+    def test_el_conteo_de_consultas_no_crece_con_las_filas(self):
+        self._crear(1)
+        con_una, filas_una = self._consultas_de_la_lista()
+        self._crear(5)
+        con_seis, filas_seis = self._consultas_de_la_lista()
+
+        self.assertEqual(filas_una, 1)
+        self.assertEqual(filas_seis, 6)
+        self.assertEqual(
+            con_una, con_seis,
+            f'La lista pasó de {con_una} a {con_seis} consultas al ir de 1 a 6 '
+            f'mantenimientos: reapareció un N+1. Revisar el select_related/'
+            f'prefetch_related de MantenimientoViewSet.get_queryset y que '
+            f'MantenimientoListSerializer.get_equipos siga usando obj.equipos.all().',
+        )
+
+    def test_la_lista_sigue_trayendo_marca_y_categoria_de_cada_equipo(self):
+        """La corrección no puede lograrse a costa de dejar de devolver datos."""
+        self._crear(1)
+        equipos = self.client.get('/api/v1/mantenimientos/', **self._auth()).json()[0]['equipos']
+        self.assertEqual(len(equipos), 1)
+        self.assertEqual(equipos[0]['marca'], 'Marca 0')
+        self.assertEqual(equipos[0]['categoria'], 'Cat 0')
 
 
 class EquiposYNotificacionesApiTests(TestCase):

@@ -7,8 +7,14 @@ panel HTMX, app móvil Flutter, multi-cliente por `UnidadNegocio`). Tres unidade
 negocio: SG (393 farmacias), MIA (305), 7DIAS (2).
 
 **El estado real en una línea: la plataforma está construida; el despliegue no.**
-15 apps Django, ~832 pruebas, 700 farmacias modeladas — y **8 equipos con agente
+15 apps Django, 2.119 pruebas, 701 farmacias modeladas — y **66 equipos con agente
 instalado de ~1.800 estimados**. El cuello de botella dejó de ser el código.
+
+Los tres números se corrigieron el 5-oct-2026 contra la base de producción (decía
+"~832 pruebas, 700 farmacias, 8 equipos con agente"). 66 estaciones aprobadas, 55 con
+latido en las últimas 24 h. El rollout avanzó 8x respecto de lo que este archivo
+afirmaba, y eso cambia el orden de magnitud de varias cosas: ver §10-AX del plan y el
+informe de auditoría de esa fecha para las proyecciones hacia 1.300 farmacias.
 
 ### Producción
 
@@ -59,12 +65,22 @@ corre sobre `timescale/timescaledb`.
    MQTT sugieren que funciona. **Antes de rearmar el plan de rollout alrededor de esto,
    conviene entender por qué cambió y si es permanente**: nadie registró el cambio, y el
    NUC sale por WiFi (`wlo1`) con ruta por defecto, no por una VPN dedicada.
-2. **El instalador nunca se usó a escala.** Las 8 estaciones se hicieron a mano y cada
-   una destapó un bug distinto.
-3. **Los módulos están vacíos.** 9 activos, 9 colaboradores, 0 zonas de viáticos
-   cargadas — sin zonas, la alerta "fuera de zona" no se dispara nunca. Se construye
+2. **El instalador nunca se usó a escala.** Las primeras 8 estaciones se hicieron a mano
+   y cada una destapó un bug distinto.
+   **Ojo con este punto — 5-oct-2026:** hoy hay **66 estaciones enroladas**, no 8. Lo
+   que NO se verificó es *cómo* se instalaron las otras 58: si fue con el instalador, la
+   frase de arriba ya no vale y conviene reescribirla con lo que se aprendió; si también
+   fueron a mano, el pendiente es más grande de lo que dice. Preguntarle a quien las
+   instaló antes de planificar el rollout alrededor de esta frase.
+3. **Los módulos están vacíos.** 22 activos, 10 colaboradores, **0 zonas de viáticos
+   cargadas** (medido el 5-oct-2026; decía "9 activos, 9 colaboradores") — sin zonas, la
+   alerta "fuera de zona" no se dispara nunca, y eso sigue siendo cierto. Se construye
    más rápido de lo que se pone en uso: ese es el riesgo real del proyecto, no lo
    técnico.
+   Para dimensionarlo: 22 activos contra 701 farmacias y 66 estaciones con agente. El
+   módulo de ITAM está prácticamente sin usar, así que el cruce `activo` ×
+   `dispositivo_detectado` ("qué hay enchufado que nadie inventarió") no tiene contra qué
+   cruzar.
 
 ### Pendientes concretos
 
@@ -89,8 +105,10 @@ corre sobre `timescale/timescaledb`.
   **ignorado por git**, que existe en la máquina de quien desarrolla y no en un checkout
   limpio. 38 días en rojo, verde en local todo el tiempo.
   La lección general: **una prueba que lee algo ignorado por git no puede pasar en CI.**
-- **149 farmacias sin circuito de proveedor** y 3 códigos de planilla que no existen
-  en SAIDSOFT (`MCMB-2`, `MMIL10`, `MPREV1`).
+- ~~**149 farmacias sin circuito de proveedor.**~~ **RESUELTO — medido el 5-oct-2026:**
+  es **1 de 701**. `circuito_proveedor` está cargado en 700 farmacias. Quedan los 3
+  códigos de planilla que no existen en SAIDSOFT (`MCMB-2`, `MMIL10`, `MPREV1`), que son
+  otro problema y no se verificaron en esa pasada.
 - **Respaldos sin copia fuera del servidor** (diarios, cifrados con GPG, retención 14
   días — pero en la misma máquina que respaldan).
 - **Push FCM real**: falta registrar la app en Firebase. El nombre de paquete es

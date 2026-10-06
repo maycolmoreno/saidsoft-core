@@ -4089,3 +4089,105 @@ anduvo y no dejó rastro es el síntoma más difícil de diagnosticar que existe
 12 pruebas nuevas en `FarmaciaDeBajaNoAvisaTests`, una por cada puerta: el sondeo directo,
 el barrido, el aviso de caída, el de recuperación huérfana, la limpieza, su idempotencia,
 el `save_model` del admin por HTTP real, el KPI, el panel, el bot y las dos del comando.
+
+
+## §10-AX — El endpoint que usa la app de campo hacía 4 consultas por mantenimiento (5-oct-2026)
+
+`/api/v1/mantenimientos/` costaba **4 consultas por fila**: medido, 169 consultas para
+devolver 40 mantenimientos. Ahora son **11, constantes**. Salió de la auditoría de BD y
+código de esa fecha (ver `docs/auditoria-integridad.sql` y `docs/auditoria-seguimiento.sql`
+para las baterías de comprobación que la acompañan).
+
+Lo interesante no es el N+1, es **que el arreglo ya estaba puesto y el código lo
+desactivaba**:
+
+- **El viewset SÍ declaraba `prefetch_related('equipos__equipo__farmacia', …)`.** Pero
+  `MantenimientoListSerializer.get_equipos` hacía `obj.equipos.select_related('equipo')`,
+  y llamar `select_related` sobre el manager relacionado **arma un queryset nuevo y
+  descarta la caché del prefetch**. El método de al lado, `get_farmacia`, usaba
+  `obj.equipos.all()` y sí la aprovechaba: dos métodos del mismo serializer, uno bien y
+  uno mal, a diez líneas de distancia.
+- **Faltaban tres relaciones en la precarga.** `tipo_mantenimiento` se pinta como
+  `StringRelatedField` del mantenimiento, y `marca`/`categoria` desde
+  `ActivoResumenSerializer` por cada equipo. Ninguna de las tres estaba.
+- **`list` no pagina.** Devuelve todo el trabajo abierto del técnico, así que el costo no
+  se diluye en una página de 25: lo paga completo un teléfono en una farmacia, sobre
+  conexión móvil. Es la diferencia entre que la app abra y que parezca colgada.
+
+De paso, `create` serializaba el objeto que devuelve `crear_mantenimiento_manual`, que
+viene sin relaciones cargadas. Ahora re-lee por `get_queryset()` antes de serializar
+(`tecnico` es siempre `request.user` en ese endpoint, así que el filtro lo encuentra).
+
+**La prueba comprueba la propiedad, no un número.** `ListaDeMantenimientosSinNMasUnoTests`
+compara el conteo de consultas con 1 fila contra 6 y exige que sea **igual**. Fijar "11"
+la volvería frágil: cualquier middleware o consulta de permisos ajena la rompería sin que
+haya reaparecido un N+1. Cada fila se crea con su propia farmacia, marca y categoría a
+propósito — si compartieran marca, la caché de instancias de Django taparía el
+`select_related` faltante y la prueba pasaría con el bug puesto. Verificado al revés:
+reintroduciendo cada mitad del bug por separado, la prueba falla.
+
+Queda sin tocar `MantenimientoDetalleSerializer` para un objeto suelto: ahí el costo no
+depende de la cantidad de filas y las acciones (`iniciar`, `cerrar`, …) ya pasan por
+`get_object()`, que usa el queryset con el prefetch.
+
+
+## §10-AY — Dos sondeadores escribiendo la misma tabla, y la recomendación que estaba al revés (5-oct-2026)
+
+`muestra_red_farmacia` tenía **dos escritores periódicos de 5 minutos a la vez**:
+`sincronizar-ancho-banda-farmacias` (SNMP directo desde el servidor) y
+`sondear-red-farmacias-via-agente` (pedido por MQTT a una estación de la LAN). Ninguna
+columna decía quién había escrito cada fila.
+
+Medido sobre producción, contando filas por farmacia en una hora:
+
+| Filas/hora | Farmacias | Qué significa |
+| --- | --- | --- |
+| 9–11 | 252 | Un solo escritor (el directo) |
+| 20–21 | 16 | **Los dos** |
+
+Las 16 son exactamente las que tienen una estación con agente en línea, que es la
+condición que dispara el segundo sondeo. Los intervalos entre filas consecutivas de una
+de ellas fueron de **113, 141, 144, 145, 155, 159, 159, 164, 168, 172, 173 y 420
+segundos**: `_calcular_tasa` diferencia contra la última fila de la farmacia sin importar
+quién la escribió, así que `red_recibido_kbps` guardaba tasas promediadas sobre ventanas
+que varían 3,7× en la misma columna. No es un sesgo (con tráfico constante el valor sigue
+saliendo bien, se comprobó simulándolo) sino varianza: una serie que no es comparable
+consigo misma. Y el problema **crecía con el rollout**: la condición es tener una estación
+en línea, así que a 1.300 farmacias con agente habría sido el 100 % de la tabla.
+
+**Lo que hay que registrar es el error de diagnóstico, no el arreglo.** La primera versión
+del informe de auditoría recomendaba **desactivar el sondeo directo**, apoyándose en el
+comentario del `CELERY_BEAT_SCHEDULE` que afirmaba que "el dato de ancho de banda que el
+panel muestra viene de 'sondear-red-farmacias-via-agente'". Ese comentario estaba
+equivocado, y los datos lo mostraron recién al pedirlos:
+
+- El sondeo **directo** escribe **252 de 270** farmacias con muestras en la última hora.
+- La ruta vía agente tiene **32 candidatas**, de las cuales **14 no produjeron ninguna
+  fila** y 16 ya estaban cubiertas por el directo. Su aporte de cobertura única eran 2
+  farmacias como máximo.
+- Desactivar el directo habría dejado el ancho de banda a ciegas en el **93 %** de la red.
+
+El comentario venía de que el 24-ago-2026 se confirmó que el servidor no tenía ruta a las
+IP privadas de las farmacias — cierto entonces, falso desde el 11-sep-2026, y el
+docstring de `solicitar_sondeo_red_farmacias_via_agente` seguía afirmándolo junto con que
+"reemplaza en la práctica" al directo. **Las dos mitades eran falsas y nadie las volvió a
+mirar porque el sistema seguía mostrando datos**: los mostraba la tarea que el comentario
+daba por muerta.
+
+**La solución no fue quitar ninguna de las dos.** La ruta vía agente pasa a ser
+**respaldo**: solo sondea las farmacias sin muestra en los últimos
+`MINUTOS_FRESCURA_RED_FARMACIA` (10 min). Son DOS ciclos del directo a propósito — con uno
+el resultado dependería del orden en que Beat dispare las tareas, que no está garantizado.
+Duplicado de las 16 → 0, cobertura igual o mejor, y se conserva el único camino que
+funciona si el servidor vuelve a perder la ruta: nadie registró por qué apareció y el NUC
+sale por WiFi sin VPN dedicada (ver CLAUDE.md).
+
+3 pruebas nuevas en `SolicitarSondeoRedFarmaciasViaAgenteTests`: que calla cuando el
+directo midió hace poco, que entra cuando la muestra quedó vieja, y que la frescura es
+**por farmacia** y no global (el error que haría que una sola muestra reciente de
+cualquier sitio apagara el respaldo en toda la red). Verificado al revés: quitando el
+`exclude`, dos de las tres fallan.
+
+**Queda pendiente la columna `origen` en `muestra_red_farmacia`.** Que para responder
+"¿quién escribió esta fila?" haya que inferirlo contando filas por hora es justamente lo
+que dejó vivir un comentario falso durante seis semanas.

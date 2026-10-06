@@ -135,9 +135,19 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
     }
 
     def get_queryset(self):
+        # `tipo_mantenimiento` va en el select_related y `marca`/`categoria` en el
+        # prefetch porque el serializer los pinta por fila: el primero como
+        # StringRelatedField del mantenimiento, los otros dos desde
+        # ActivoResumenSerializer por cada equipo. Sin ellos, este endpoint costaba
+        # 4 consultas POR MANTENIMIENTO -- medido el 5-oct-2026: 169 consultas para
+        # 40 filas, contra 11 con esto. Y `list` no pagina (devuelve todo el trabajo
+        # del tecnico), asi que el costo lo paga completo un telefono en la farmacia.
         return Mantenimiento.objects.filter(tecnico=self.request.user).select_related(
-            'cliente', 'tecnico',
-        ).prefetch_related('equipos__equipo__farmacia', 'firmas', 'imagenes', 'eventos__usuario')
+            'cliente', 'tecnico', 'tipo_mantenimiento',
+        ).prefetch_related(
+            'equipos__equipo__farmacia', 'equipos__equipo__marca', 'equipos__equipo__categoria',
+            'firmas', 'imagenes', 'eventos__usuario',
+        )
 
     def list(self, request, *args, **kwargs):
         # Se ordena ACA y no en `get_queryset` porque el orden no es expresable en SQL:
@@ -174,7 +184,12 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         _auditar(request, 'mantenimiento.crear', mantenimiento)
-        return Response(MantenimientoDetalleSerializer(mantenimiento).data, status=status.HTTP_201_CREATED)
+        # Se re-lee por `get_queryset` y no se serializa el objeto que devolvio el
+        # servicio: ese viene sin las relaciones cargadas, y el serializer pinta la
+        # marca y la categoria de cada equipo. `tecnico` es siempre request.user en
+        # este endpoint (ver el docstring), asi que el filtro del queryset lo encuentra.
+        completo = self.get_queryset().get(pk=mantenimiento.pk)
+        return Response(MantenimientoDetalleSerializer(completo).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['get'])
     def checklist(self, request, pk=None):

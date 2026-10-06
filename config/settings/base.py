@@ -506,14 +506,28 @@ CELERY_BEAT_SCHEDULE = {
         # el sondeo tenga éxito o falle (ver _motor_snmp en apps.monitoreo.mikrotik).
         # Una tarea que "no hace nada" igual consume recursos.
         #
-        # El dato de ancho de banda que el panel muestra viene de
-        # 'sondear-red-farmacias-via-agente', abajo, que lo pide por MQTT al agente.
+        # ESTA es la fuente principal del ancho de banda, medido el 5-oct-2026: escribe
+        # 252 de las 270 farmacias con muestras en la última hora. El comentario que
+        # estaba acá decía que el dato "viene de 'sondear-red-farmacias-via-agente'": era
+        # al revés. Esa otra ruta solo alcanza farmacias con una estación en línea (32
+        # candidatas, 14 de ellas sin producir ninguna fila), así que si se quitara esta
+        # tarea el panel quedaría sin ancho de banda en el 93 % de la red.
         'schedule': 60.0 * 5,
     },
     'sondear-red-farmacias-via-agente': {
         'task': 'apps.monitoreo.tasks.solicitar_sondeo_red_farmacias_via_agente_task',
-        # Cada 5 min, mismo intervalo que el sondeo directo que reemplaza en la
-        # práctica -- ver docstring de solicitar_sondeo_red_farmacias_via_agente.
+        # RESPALDO del sondeo directo de arriba, no un segundo escritor en paralelo:
+        # desde el 5-oct-2026 solo pide el sondeo de las farmacias que el directo NO
+        # logró medir en los últimos MINUTOS_FRESCURA_RED_FARMACIA (ver el docstring de
+        # solicitar_sondeo_red_farmacias_via_agente para la medición que lo motivó).
+        #
+        # Corriendo las dos en paralelo, las 16 farmacias con estación en línea recibían
+        # 21 filas por hora en vez de 10, y `_calcular_tasa` promediaba ventanas de 113 a
+        # 420 segundos en la misma columna. A 1.300 farmacias con agente habría sido el
+        # 100 % de la tabla duplicado.
+        #
+        # Mismo intervalo que el directo: la ventana de frescura son DOS ciclos, así que
+        # no importa en qué orden los dispare Beat.
         'schedule': 60.0 * 5,
     },
     'resumen-diario-telegram': {
