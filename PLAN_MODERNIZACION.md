@@ -4227,3 +4227,51 @@ Quedan las otras tres partes de A-1 del informe, sin hacer: el `update_or_create
 `get_or_create` de `registrar_actividad_mensual` que se ejecuta cada minuto para una fila
 que cambia una vez por mes. Esa última es dato de FACTURACIÓN y el ahorro es de una
 consulta: no conviene apurarla.
+
+
+## §10-BA — El `update_or_create` que consultaba dos veces la misma fila (5-oct-2026)
+
+`registrar_estado_dispositivo` hacía un `SELECT` para averiguar el valor anterior de
+`en_linea` y después un `update_or_create`, que **repite ese mismo SELECT por dentro** (más
+el savepoint que abre). Reemplazado por `get_or_create` + un `save(update_fields=[...])`
+explícito, leyendo el valor anterior del objeto que devuelve antes de sobrescribirlo.
+
+Medido: el latido en régimen estable pasó de **9 a 6 consultas**. Acumulado con §10-AZ, de
+las 11 originales a 6 — un 45 % menos en la ruta de escritura más caliente del sistema. A
+1.300 farmacias (3.343 estaciones) son ~613 → ~334 consultas/s.
+
+**La trampa de este cambio, que casi se cuela:** `actualizado_en` es `auto_now=True`, pero
+con `update_fields` explícito **un campo ausente de la lista no se escribe, ni siendo
+`auto_now`**. Omitirlo habría congelado esa marca en la primera señal — y
+`evaluar_cruce_monitoreo` la usa contra `FRESCURA_MESHCENTRAL_MINUTOS` para decidir si el
+dato de MeshCentral sirve. El efecto habría sido que a los 30 minutos el cruce dejara de
+considerar en línea a una estación que MeshCentral sigue viendo, y abriera **de menos** la
+alerta `agente_caido_red_viva`: un monitoreo que avisa menos de lo que debe, sin un solo
+error visible.
+
+Lo fija `test_una_senal_repetida_igual_refresca_actualizado_en`, verificada al revés
+(quitando `actualizado_en` del `update_fields`, falla). Más
+`test_una_senal_repetida_igual_guarda_el_detalle_nuevo`, porque el snapshot tiene que
+sobrescribirse aunque `en_linea` no cambie: `detalle` puede traer datos nuevos de la fuente.
+
+### A-1c: DESCARTADA, y la justificación del informe era errónea
+
+El informe proponía `estacion.save(update_fields=[...])` en el latido "para reducir el
+ancho del UPDATE y la presión sobre `autovacuum`". La segunda mitad es falsa: en PostgreSQL
+un `UPDATE` escribe una versión nueva de la fila **completa** por MVCC, sin importar
+cuántas columnas liste el `SET`. Genera una tupla muerta igual y el trabajo de
+`autovacuum` es el mismo.
+
+Lo único que `update_fields` evitaría de verdad es re-serializar y re-TOASTear columnas
+grandes. Medido: `windows_update_detalle` —el único candidato en `estacion`— ocupa **5
+bytes** en las 66 estaciones, contra un umbral de TOAST de ~2 KB. Hoy el beneficio es cero.
+
+Contra eso, el riesgo es concreto: el latido escribe 21 campos, siete condicionales, y
+`Estacion.save()` genera `token_enrolamiento` y `hmac_secret` cuando están vacíos — con un
+`update_fields` incompleto, un `hmac_secret` vacío se regeneraría en cada latido **sin
+persistirse nunca**, dejando esa estación sin poder recibir comandos firmados.
+
+**Lo que sí atacaría la causa**, si el latido llega a doler a 3.343 estaciones: mover
+`ultimo_heartbeat` y `estado_conexion` a una tabla angosta aparte, para que cada latido
+genere una tupla muerta de decenas de bytes en vez de una de ~400. Cambio de esquema con
+migración; a 66 estaciones es prematuro.

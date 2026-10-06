@@ -203,13 +203,31 @@ def registrar_estado_dispositivo(estacion, *, fuente: str, en_linea: bool, detal
     (run_meshcentral_worker) — mismo motivo que ya usan los handlers de mqtt_worker.
     """
     cerrar_conexiones_viejas()
-    anterior = EstadoDispositivo.objects.filter(estacion=estacion, fuente=fuente).first()
-    cambio = anterior is None or anterior.en_linea != en_linea
-
-    EstadoDispositivo.objects.update_or_create(
+    # `get_or_create` y no un SELECT suelto seguido de `update_or_create`: esa forma
+    # consultaba DOS veces la misma fila, porque `update_or_create` repite por dentro el
+    # SELECT que ya se había hecho para averiguar el valor anterior (más el savepoint que
+    # abre). Es un detalle de nada por llamada, pero esta función está en la ruta del
+    # latido -- un mensaje por minuto por estación -- así que a 1.300 farmacias son ~56
+    # consultas/s de más (medido el 5-oct-2026: 3 entradas menos por latido).
+    #
+    # El orden importa: `estado.en_linea` tiene que leerse ANTES de sobrescribirlo, porque
+    # es el valor anterior y es lo único que distingue una transición de una señal más.
+    estado, creado = EstadoDispositivo.objects.get_or_create(
         estacion=estacion, fuente=fuente,
         defaults={'en_linea': en_linea, 'detalle': detalle or {}},
     )
+    cambio = creado or estado.en_linea != en_linea
+
+    if not creado:
+        # `actualizado_en` va en update_fields aunque sea auto_now: con update_fields
+        # explícito, un campo que no esté en la lista NO se escribe, ni siquiera los
+        # auto_now. Omitirlo dejaría el snapshot con la hora de la primera señal para
+        # siempre, y `evaluar_cruce_monitoreo` usa esa marca para decidir si el dato de
+        # MeshCentral está fresco (FRESCURA_MESHCENTRAL_MINUTOS).
+        estado.en_linea = en_linea
+        estado.detalle = detalle or {}
+        estado.save(update_fields=['en_linea', 'detalle', 'actualizado_en'])
+
     if cambio:
         EventoMonitoreo.objects.create(estacion=estacion, fuente=fuente, en_linea=en_linea, detalle=detalle or {})
         logger.info(

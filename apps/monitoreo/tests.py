@@ -209,6 +209,46 @@ class RegistrarEstadoDispositivoTests(TestCase):
         estado = EstadoDispositivo.objects.get(estacion=self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL)
         self.assertFalse(estado.en_linea)
 
+    def test_una_senal_repetida_igual_refresca_actualizado_en(self):
+        """Aunque el estado no cambie, la marca de tiempo tiene que avanzar.
+
+        `evaluar_cruce_monitoreo` decide si el dato de MeshCentral sirve mirando
+        `actualizado_en` contra FRESCURA_MESHCENTRAL_MINUTOS: si esa marca se congelara en
+        la primera señal, a los 30 minutos el cruce dejaría de considerar en línea a una
+        estación que MeshCentral sigue viendo, y abriría `agente_caido_red_viva` de menos.
+
+        Lo fija esta prueba porque el `save(update_fields=[...])` de
+        `registrar_estado_dispositivo` tiene que incluir `actualizado_en` a mano: con
+        update_fields explícito, un campo ausente no se escribe ni siendo `auto_now`.
+        """
+        registrar_estado_dispositivo(self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL, en_linea=True)
+        estado = EstadoDispositivo.objects.get(estacion=self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL)
+        # Se retrasa a mano para que el avance sea medible sin depender de la resolución
+        # del reloj entre dos llamadas seguidas.
+        EstadoDispositivo.objects.filter(pk=estado.pk).update(
+            actualizado_en=timezone.now() - timedelta(minutes=45),
+        )
+        vieja = EstadoDispositivo.objects.get(pk=estado.pk).actualizado_en
+
+        registrar_estado_dispositivo(self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL, en_linea=True)
+
+        nueva = EstadoDispositivo.objects.get(pk=estado.pk).actualizado_en
+        self.assertGreater(nueva, vieja, 'actualizado_en quedó congelado en la primera señal')
+        self.assertLess(timezone.now() - nueva, timedelta(minutes=1))
+
+    def test_una_senal_repetida_igual_guarda_el_detalle_nuevo(self):
+        """El snapshot se sobrescribe aunque `en_linea` no cambie: `detalle` puede traer
+        datos nuevos de la fuente (ej. el `conn` de MeshCentral)."""
+        registrar_estado_dispositivo(
+            self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL, en_linea=True, detalle={'conn': 1},
+        )
+        registrar_estado_dispositivo(
+            self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL, en_linea=True, detalle={'conn': 4},
+        )
+        estado = EstadoDispositivo.objects.get(estacion=self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL)
+        self.assertEqual(estado.detalle, {'conn': 4})
+        self.assertEqual(EventoMonitoreo.objects.filter(estacion=self.estacion).count(), 1)
+
     def test_dos_fuentes_de_la_misma_estacion_no_se_pisan(self):
         registrar_estado_dispositivo(self.estacion, fuente=EstadoDispositivo.Fuente.MQTT, en_linea=False)
         registrar_estado_dispositivo(self.estacion, fuente=EstadoDispositivo.Fuente.MESHCENTRAL, en_linea=True)
