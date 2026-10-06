@@ -216,9 +216,18 @@ def manejar_enrolamiento(payload: dict) -> dict:
 
 
 def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
+    # `select_related` porque este latido termina en `evaluar_regla_reloj` y
+    # `evaluar_regla_autocorrecciones_reloj`, y las dos arrancan con
+    # `estacion.farmacia.unidad_negocio` para buscar las reglas aplicables. Sin esto son
+    # dos cargas diferidas por latido -- medido el 5-oct-2026: 11 consultas por latido, de
+    # las cuales estas dos. Es la ruta de escritura más caliente del sistema (un latido por
+    # minuto por estación), así que a 1.300 farmacias son ~111 consultas/s solo de acá.
+    # Mismo patrón que ya usan `manejar_servicios_pos` y `manejar_eventos_sistema`.
     cerrar_conexiones_viejas()
     try:
-        estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
+        estacion = Estacion.objects.select_related('farmacia__unidad_negocio').get(
+            codigo=codigo_estacion, token_enrolamiento=payload.get('token'),
+        )
     except Estacion.DoesNotExist:
         logger.warning('Heartbeat con token inválido o estación desconocida: %s', codigo_estacion)
         return
@@ -736,9 +745,14 @@ def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:
 
 def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
     """Guarda una muestra de recursos reportada por el agente de un servidor."""
+    # `select_related` por lo mismo que en `manejar_heartbeat`: `registrar_muestra_metricas`
+    # termina en `evaluar_reglas_metricas`, que arranca con
+    # `estacion.farmacia.unidad_negocio`.
     cerrar_conexiones_viejas()
     try:
-        estacion = Estacion.objects.get(codigo=codigo_estacion, token_enrolamiento=payload.get('token'))
+        estacion = Estacion.objects.select_related('farmacia__unidad_negocio').get(
+            codigo=codigo_estacion, token_enrolamiento=payload.get('token'),
+        )
     except Estacion.DoesNotExist:
         logger.warning('Métricas con token inválido: %s', codigo_estacion)
         return

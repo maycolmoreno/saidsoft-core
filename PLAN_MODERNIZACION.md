@@ -4191,3 +4191,39 @@ cualquier sitio apagara el respaldo en toda la red). Verificado al revés: quita
 **Queda pendiente la columna `origen` en `muestra_red_farmacia`.** Que para responder
 "¿quién escribió esta fila?" haya que inferirlo contando filas por hora es justamente lo
 que dejó vivir un comentario falso durante seis semanas.
+
+
+## §10-AZ — Dos consultas diferidas por latido, en el camino de escritura más caliente (5-oct-2026)
+
+`manejar_heartbeat` y `manejar_metricas` resolvían `estacion` sin `select_related`, y las
+dos terminan evaluando reglas de alerta que arrancan con
+`estacion.farmacia.unidad_negocio`. Eran dos cargas diferidas por mensaje.
+
+Medido: el latido en régimen estable pasó de **11 a 9 consultas**, y `manejar_metricas` de
+**6 a 4**. El cambio son dos líneas, con el patrón que `manejar_servicios_pos` y
+`manejar_eventos_sistema` ya usaban en el mismo archivo.
+
+Importa por la frecuencia, no por el costo unitario: el latido es un mensaje por minuto
+por estación. A 1.300 farmacias (3.343 estaciones) la ruta pasa de ~613 a ~501
+consultas/s, unos 9,7 millones de consultas menos por día.
+
+**Lo que vale registrar es el error de la prueba.** La primera versión de
+`IngestaSinCargasDiferidasTests` pasaba igual con el `select_related` quitado. El motivo:
+`evaluar_regla_reloj` sale temprano si `desfase_reloj_segundos` es `None`, y el payload de
+la prueba no mandaba `reloj_epoch` — así que el latido nunca llegaba a tocar
+`farmacia.unidad_negocio` y la prueba no ejercitaba el camino que decía proteger. Un
+agente 0.30+ siempre lo manda, por eso la medición contra el código real sí mostraba el
+ahorro. **Una prueba de regresión que no se verifica al revés no prueba nada**, y esta lo
+habría parecido para siempre.
+
+La prueba comprueba qué TABLAS se leen y no un número de consultas: `select_related` emite
+`FROM "estacion" INNER JOIN "farmacia" …` y una carga diferida emite `FROM "farmacia"
+WHERE id = …`, así que mirar la tabla que sigue al FROM distingue las dos sin romperse
+ante cualquier consulta ajena que se agregue después.
+
+Quedan las otras tres partes de A-1 del informe, sin hacer: el `update_or_create` de
+`registrar_estado_dispositivo` que repite su propio SELECT, el `save()` sin
+`update_fields` que reescribe las ~60 columnas de `estacion` en cada latido, y el
+`get_or_create` de `registrar_actividad_mensual` que se ejecuta cada minuto para una fila
+que cambia una vez por mes. Esa última es dato de FACTURACIÓN y el ahorro es de una
+consulta: no conviene apurarla.

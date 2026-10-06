@@ -8,7 +8,9 @@ from unittest.mock import MagicMock, patch
 from cryptography.fernet import Fernet
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.catalogo.models import ClaveRecuperacionBitLocker, Estacion, Farmacia, Grupo, PerifericoDetectado, UnidadNegocio
@@ -452,6 +454,74 @@ class ManejarEnrolamientoTests(TestCase):
         primero = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
         segundo = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
         self.assertEqual(primero['hmac_secret'], segundo['hmac_secret'])
+
+
+class IngestaSinCargasDiferidasTests(TestCase):
+    """El latido y las métricas no pueden cargar `farmacia` ni `unidad_negocio` aparte.
+
+    Las dos rutas terminan evaluando reglas de alerta, y todas arrancan con
+    `estacion.farmacia.unidad_negocio`. Sin `select_related` eso son dos consultas sueltas
+    por mensaje. Importa por la frecuencia, no por el costo unitario: el latido es un
+    mensaje por minuto por estación — la ruta de escritura más caliente del sistema — así
+    que a 1.300 farmacias (3.343 estaciones) son ~111 consultas/s solo de estas dos.
+
+    Se comprueba qué TABLAS se consultan y no un número de consultas: `select_related`
+    emite `FROM "estacion" INNER JOIN "farmacia" …`, mientras una carga diferida emite
+    `FROM "farmacia" WHERE id = …`. Mirar la tabla que sigue al FROM distingue las dos sin
+    volverse frágil ante cualquier consulta ajena que se agregue después.
+    """
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            monitorear_recursos=True,
+        )
+
+    def _tablas_leidas_sueltas(self, fn):
+        """Las tablas que aparecen justo después de un FROM, o sea leídas por sí mismas."""
+        with CaptureQueriesContext(connection) as capturadas:
+            fn()
+        tablas = []
+        for consulta in capturadas.captured_queries:
+            sql = consulta['sql']
+            if ' FROM ' not in sql:
+                continue
+            tablas.append(sql.split(' FROM ', 1)[1].split()[0].strip('"'))
+        return tablas
+
+    def _latido(self):
+        # `reloj_epoch` NO es opcional para esta prueba: sin él, `desfase_reloj_segundos`
+        # queda en None, `evaluar_regla_reloj` sale temprano y el latido nunca llega a
+        # tocar `estacion.farmacia.unidad_negocio` -- así que la prueba pasaría igual sin
+        # el select_related. Un agente 0.30+ siempre lo manda. Mismo motivo para
+        # `autocorrecciones_reloj`, que es lo que hace entrar a la segunda regla.
+        manejar_heartbeat(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'version_agente': '0.31',
+            'reloj_epoch': timezone.now().timestamp(), 'autocorrecciones_reloj': 1,
+        })
+
+    def test_el_latido_no_carga_farmacia_ni_unidad_negocio_aparte(self):
+        self._latido()  # el primero publica la limpieza de actualización pendiente
+        tablas = self._tablas_leidas_sueltas(self._latido)
+        self.assertNotIn('farmacia', tablas, 'el latido volvió a cargar `farmacia` aparte')
+        self.assertNotIn('unidad_negocio', tablas, 'el latido volvió a cargar `unidad_negocio` aparte')
+
+    def test_las_metricas_no_cargan_farmacia_ni_unidad_negocio_aparte(self):
+        tablas = self._tablas_leidas_sueltas(lambda: manejar_metricas(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'ram_total': 8192, 'ram_usada': 4096,
+            'cpu_carga_pct': 20.0,
+        }))
+        self.assertNotIn('farmacia', tablas)
+        self.assertNotIn('unidad_negocio', tablas)
+
+    def test_la_unidad_de_negocio_sigue_llegando_al_motor_de_alertas(self):
+        """La precarga no puede lograrse a costa de que las reglas dejen de encontrarse."""
+        self._latido()
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.farmacia.unidad_negocio.codigo, 'SG')
 
 
 class ManejarHeartbeatTests(TestCase):
