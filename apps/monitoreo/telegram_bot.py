@@ -47,6 +47,7 @@ El transporte lo pone `run_telegram_bot` (long polling). Acá vive solo qué se 
 para que se pueda probar sin red.
 """
 import logging
+from datetime import timedelta
 
 from django.conf import settings
 from django.utils import timezone
@@ -376,13 +377,31 @@ def _comando_farmacia(codigo: str) -> str:
         lineas.append(f'Enlace: 🔴 caído hace {_texto_duracion(enlace.ultimo_cambio_estado)}')
     lineas.append(f'Router: {farmacia.ip_router} · circuito: {farmacia.circuito_proveedor or "sin dato"}')
 
-    muestra = MuestraRedFarmacia.objects.filter(farmacia=farmacia).order_by('-timestamp').first()
+    # El tráfico se acota a una muestra RECIENTE, no a la última que exista. Sin esta cota,
+    # una farmacia con el enlace caído mostraba el último tráfico medido antes de caerse
+    # —reportado el 6-oct-2026 con MM024: "caído hace 52 min" y "4452.6 kbps" en el mismo
+    # mensaje—, que es la contradicción que hace dudar de todo el resto del reporte.
+    #
+    # Es el mismo arreglo que ya tenía el panel desde el 3-oct (ver
+    # apps.panel.views.enlaces), y usa la MISMA constante: dos umbrales distintos para la
+    # misma pregunta terminarían diciendo cosas distintas del mismo sitio.
+    from .services import TOLERANCIA_FRESCURA_MINUTOS
+
+    limite_frescura = timezone.now() - timedelta(minutes=TOLERANCIA_FRESCURA_MINUTOS['red_farmacias'])
+    muestra = (
+        MuestraRedFarmacia.objects
+        .filter(farmacia=farmacia, timestamp__gte=limite_frescura)
+        .order_by('-timestamp').first()
+    )
     if muestra and muestra.red_total_kbps is not None:
         pct = muestra.porcentaje_del_contratado
         detalle = f' ({pct}% de {farmacia.ancho_contratado_mbps} Mbps)' if pct is not None else ''
         lineas.append(f'Tráfico: {muestra.red_total_kbps} kbps{detalle}')
     else:
-        lineas.append('Tráfico: sin SNMP')
+        # "Sin medición reciente" y no "sin SNMP": el sondeo puede existir y estar
+        # desactualizado, y decir "sin SNMP" mandaría a revisar una configuración que está
+        # bien. Un enlace caído cae siempre acá, que es lo correcto.
+        lineas.append('Tráfico: sin medición reciente')
 
     estaciones = list(farmacia.estaciones.filter(estado_aprobacion='aprobada').order_by('codigo'))
     if estaciones:

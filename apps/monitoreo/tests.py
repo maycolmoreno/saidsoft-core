@@ -4487,6 +4487,50 @@ class BotConsultasTests(TestCase):
         self.assertIn('telconet-sitio-dos', texto)
         self.assertIn('caído', texto)
 
+    def test_farmacia_no_muestra_trafico_viejo_de_un_enlace_caido(self):
+        """Reportado el 6-oct-2026 con MM024: el mensaje decía "caído hace 52 min" y
+        "4452.6 kbps" a la vez.
+
+        El bot traía la última muestra que existiera, sin cota de frescura, así que un
+        enlace caído mostraba el tráfico medido ANTES de caerse. Es la contradicción que
+        hace dudar del resto del reporte: si el tráfico miente, ¿por qué creerle al estado?
+
+        El panel ya lo tenía resuelto desde el 3-oct. Esta prueba fija que el bot use la
+        MISMA cota, porque dos umbrales para la misma pregunta terminan discrepando.
+        """
+        from apps.monitoreo.models import MuestraRedFarmacia
+        from apps.monitoreo.services import TOLERANCIA_FRESCURA_MINUTOS
+        from apps.monitoreo.telegram_bot import responder_a
+
+        farmacia = Farmacia.objects.get(codigo='TSTB02')
+        vieja = timezone.now() - timedelta(minutes=TOLERANCIA_FRESCURA_MINUTOS['red_farmacias'] + 40)
+        # `bytes_*` son obligatorios (contadores crudos del SNMP); los kbps son el
+        # calculo que el servicio deriva de dos lecturas consecutivas.
+        MuestraRedFarmacia.objects.create(
+            farmacia=farmacia, bytes_recibidos=10 ** 9, bytes_enviados=5 * 10 ** 8,
+            red_recibido_kbps=3000, red_enviado_kbps=1452, timestamp=vieja,
+        )
+
+        texto = responder_a('/farmacia TSTB02')
+        self.assertNotIn('4452', texto, 'no puede mostrar el trafico de antes de la caida')
+        self.assertIn('sin medición reciente', texto)
+
+    def test_farmacia_si_muestra_el_trafico_cuando_la_medicion_es_fresca(self):
+        """La cota no puede dejar la pantalla muda: una medición dentro de la ventana se
+        muestra igual que antes."""
+        from apps.monitoreo.models import MuestraRedFarmacia
+        from apps.monitoreo.telegram_bot import responder_a
+
+        MuestraRedFarmacia.objects.create(
+            farmacia=Farmacia.objects.get(codigo='TSTB02'),
+            bytes_recibidos=10 ** 9, bytes_enviados=5 * 10 ** 8,
+            red_recibido_kbps=3000, red_enviado_kbps=1452,
+        )
+
+        texto = responder_a('/farmacia TSTB02')
+        self.assertIn('4452', texto)
+        self.assertNotIn('sin medición reciente', texto)
+
     def test_farmacia_acepta_el_codigo_en_minuscula(self):
         from apps.monitoreo.telegram_bot import responder_a
 
