@@ -35,7 +35,11 @@
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ c.cargo|default:"—" }}</td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ c.sucursal|default:"—" }}</td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ c.zona|default:"—" }}</td>
-                <td class="px-4 py-3 text-[var(--text-dim)]">{{ c.activos_asignados.count }}</td>
+                {% comment %}
+                `n_activos` y no `activos_asignados.count`: la segunda forma dispara un
+                COUNT por fila, y esta tabla no pagina. Lo anota la vista.
+                {% endcomment %}
+                <td class="px-4 py-3 text-[var(--text-dim)]">{{ c.n_activos }}</td>
             </tr>
         {% empty %}
             <tr><td colspan="6">

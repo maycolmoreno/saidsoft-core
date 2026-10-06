@@ -4275,3 +4275,91 @@ persistirse nunca**, dejando esa estación sin poder recibir comandos firmados.
 `ultimo_heartbeat` y `estado_conexion` a una tabla angosta aparte, para que cada latido
 genere una tupla muerta de decenas de bytes en vez de una de ~400. Cambio de esquema con
 migración; a 66 estaciones es prematuro.
+
+
+## §10-BB — Dos listados del panel cuyo costo lo fijaba la tabla, no la página (5-oct-2026)
+
+A-3 del informe de auditoría. Son dos pantallas con el mismo síntoma —el trabajo crece con
+la tabla entera— y dos causas distintas, así que conviene no leerlas como un solo arreglo.
+
+### `/mantenimientos/?orden=fecha`: paginaba, pero el SQL salía sin `LIMIT`
+
+La rama por fecha llamaba a `precargar_acuerdos_sla` **antes** de paginar, y esa función
+termina en `list(...)`: el queryset se materializaba completo, así que el `SELECT` salía
+sin `LIMIT` y traía la tabla entera a memoria para mostrar 25 filas. El arreglo es invertir
+el orden de las dos operaciones en esa rama — paginar primero, precargar sobre
+`pagina.object_list`.
+
+Medido con 10, 60 y 200 mantenimientos:
+
+| | Antes | Ahora |
+|---|---|---|
+| `?orden=fecha`, filas traídas con 200 en tabla | 200 | **25** |
+| `?orden=fecha`, consultas | 14 (sin `LIMIT`) | 15 (con `LIMIT 25`) |
+
+**Sube una consulta y está bien que suba**: es el `COUNT` del paginador, que antes salía
+del `len()` de la lista ya materializada. Un `COUNT` contra traer 200 filas —1.300
+proyectadas— no es un empate.
+
+Precargar sobre la página no cuesta menos que sobre todo: `AcuerdoNivelServicio` son cuatro
+filas y se cargan una vez igual. Lo que cambia es cuántos mantenimientos se traen.
+
+**La rama por urgencia no se tocó, y sigue sin `LIMIT` a propósito.** `estado_sla` se
+deriva de la hora actual y del estado, no es una columna: ordenar por eso exige traer las
+filas. Llevarlo a SQL obligaría a reimplementar `orden_de_urgencia` en el ORM, y esa regla
+vive en un solo lugar justamente para que el panel y la app móvil muestren el mismo trabajo
+en el mismo orden (§10-AX). Duplicarla para ganar una consulta cambia un costo medible por
+un riesgo peor: que las dos superficies se desincronicen.
+
+**Lo que hay que registrar es el comentario.** El código afirmaba lo contrario de lo que
+hacía: "por fecha es un queryset, así que la página se trae con `LIMIT`: ahorro real".
+Nadie lo volvió a mirar porque la pantalla paginaba de verdad — lo que no acotaba era el
+SQL. Es la misma familia de error que el comentario del `CELERY_BEAT_SCHEDULE` de §10-AY:
+una afirmación sobre el costo, escrita de buena fe, que ninguna prueba contradecía.
+
+### `/colaboradores/`: 3,00 consultas por fila, sin paginación que las acote
+
+La tabla pinta tres cosas por fila y cada una costaba una consulta: `cargo` (faltaba
+`select_related`), `departamento` (lo toca `Cargo.__str__`, que devuelve "nombre
+(departamento)") y un `COUNT` de activos que disparaba la plantilla con
+`{{ c.activos_asignados.count }}`. Resuelto con `select_related('cargo__departamento')` +
+`annotate(n_activos=Count('activos_asignados'))` y `{{ c.n_activos }}` en la plantilla.
+
+Medido, misma pantalla, mismo usuario:
+
+| Filas | Antes | Ahora |
+|---|---|---|
+| 0 | 13 | 13 |
+| 10 | 43 | **13** |
+| 40 | 133 | **13** |
+| 200 | 613 | **13** |
+
+**Esta vista no pagina a propósito** ("el padrón de colaboradores lo acota la realidad") y
+se decidió **no** agregarle paginación: el `annotate` resuelve el problema sin cambiar una
+decisión de diseño documentada. Lo que hacía grave al N+1 era precisamente eso — sin página
+que lo acote, el costo lo fijaba el padrón entero.
+
+El riesgo del `annotate` es que un `COUNT` se infle por multiplicación de filas si el
+`JOIN` recorre una relación inversa. Verificado: los siete campos del buscador son locales
+o FK hacia adelante (`cargo__nombre`), ninguno inverso. Lo sostiene
+`test_el_buscador_no_infla_la_cuenta_de_activos`, que falla el día que alguien agregue
+`activos_asignados__codigo` al buscador.
+
+### Pruebas
+
+6 nuevas en `ListadosQueTraianLaTablaEnteraTests`, verificadas al revés (con el código
+viejo puesto: 2 fallan y 2 dan error). Las dos mitades se prueban distinto a propósito:
+
+- En `/mantenimientos/` se **mira el SQL**, no el número de consultas. El defecto no
+  agregaba consultas —la única consulta de filas traía 200 en vez de 25—, así que una
+  prueba que contara consultas habría pasado en verde con el bug puesto. Es el mismo
+  criterio que la prueba de §10-AZ, que mira qué tabla sigue al `FROM`.
+- En `/colaboradores/` se **cuenta** con dos padrones de tamaño distinto (2 y 20) y se
+  exige el mismo número. Ahí el defecto era lineal, y lo que hay que fijar es que el costo
+  no dependa de las filas.
+
+De paso, una prueba vieja cobró: el comentario de la plantilla se escribió primero como un
+`{# ... #}` de dos líneas, y `ComentariosDePlantillaTests` lo marcó. El `tag_re` de Django
+no usa `re.DOTALL`, así que ese comentario no era un comentario sino **texto visible** en la
+tabla de colaboradores — la regresión de §10-O, intentando colarse por tercera vez, esta vez
+atajada por la suite y no por el usuario.

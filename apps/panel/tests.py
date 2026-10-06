@@ -8559,3 +8559,160 @@ class TodosLosBuscadoresRespondenTests(TestCase):
                 with self.subTest(vista=nombre, termino=termino):
                     resp = self.client.get(reverse('panel:' + nombre), {'q': termino})
                     self.assertEqual(resp.status_code, 200, '%s con %r' % (nombre, termino))
+
+
+class ListadosQueTraianLaTablaEnteraTests(TestCase):
+    """A-3 de la auditoria del 5-oct-2026: dos pantallas cuyo costo lo fijaba la TABLA y
+    no la pagina.
+
+    Son dos defectos distintos y se prueban distinto a proposito:
+
+      - `/mantenimientos/?orden=fecha` paginaba DESPUES de precargar los acuerdos de SLA,
+        y `precargar_acuerdos_sla` termina en `list(...)`: el SQL salia sin `LIMIT` y
+        traia la tabla entera a memoria para mostrar 25 filas. Lo que hay que fijar es que
+        el `LIMIT` exista, porque el numero de consultas ya era correcto antes — por eso
+        aca se mira el SQL y no se cuentan consultas.
+      - `/colaboradores/` costaba 3 consultas POR FILA (cargo, departamento via
+        `Cargo.__str__` y un COUNT desde la plantilla) y esa vista no pagina, asi que el
+        costo lo fijaba el padron entero. Ahi lo que hay que fijar es que el costo sea
+        CONSTANTE, y eso se mide contando consultas con dos padrones de tamanio distinto.
+    """
+
+    def setUp(self):
+        from apps.activos.models import Cargo, Departamento
+
+        self.usuario = User.objects.create_user(username='u_a3', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        for app, codigo in (
+            ('mantenimiento', 'view_mantenimiento'),
+            ('activos', 'view_colaborador'),
+        ):
+            self.usuario.user_permissions.add(
+                Permission.objects.get(content_type__app_label=app, codename=codigo),
+            )
+        self.client.force_login(self.usuario)
+
+        self.departamento = Departamento.objects.create(nombre='Soporte A-3')
+        self.cargo = Cargo.objects.create(nombre='Tecnico de campo', departamento=self.departamento)
+
+    def _colaboradores(self, cuantos, prefijo):
+        for i in range(cuantos):
+            Colaborador.objects.create(
+                nombre='%s %02d' % (prefijo, i), cedula='%s%04d' % (prefijo[:2].upper(), i),
+                cargo=self.cargo, sucursal='Matriz', zona='Centro',
+            )
+
+    def _mantenimientos(self, cuantos, prefijo):
+        cliente = Colaborador.objects.create(nombre=prefijo, cedula='CL' + prefijo[:6])
+        for i in range(cuantos):
+            Mantenimiento.objects.create(
+                cliente=cliente, descripcion='%s %03d' % (prefijo, i),
+                fecha_programada=timezone.now() - timedelta(hours=i),
+            )
+
+    def _consultas(self, url, parametros=None):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            resp = self.client.get(url, parametros or {})
+        self.assertEqual(resp.status_code, 200)
+        return resp, [q['sql'] for q in ctx.captured_queries]
+
+    def test_mantenimientos_por_fecha_pide_solo_la_pagina(self):
+        """La prueba que importa de la parte 1: que el SELECT de las filas lleve `LIMIT`.
+
+        Se mira el SQL y no el numero de consultas porque el defecto no agregaba
+        consultas: la unica consulta de filas traia las 60 en vez de 25. Contar consultas
+        habria pasado en verde con el bug puesto.
+        """
+        self._mantenimientos(60, 'Fecha')
+        resp, consultas = self._consultas(reverse('panel:mantenimientos_lista'), {'orden': 'fecha'})
+
+        filas = [
+            sql for sql in consultas
+            if 'FROM "mantenimiento"' in sql and 'COUNT(' not in sql
+        ]
+        self.assertTrue(filas, 'no se encontro la consulta que trae los mantenimientos')
+        for sql in filas:
+            self.assertIn(
+                'LIMIT', sql,
+                'el listado por fecha volvio a traer la tabla entera: alguien movio el '
+                'paginado despues de `precargar_acuerdos_sla`, que materializa con list()',
+            )
+        self.assertEqual(len(resp.context['mantenimientos']), 25)
+        self.assertEqual(resp.context['pagina'].paginator.count, 60)
+
+    def test_mantenimientos_por_fecha_sigue_pintando_el_sla(self):
+        """El `LIMIT` no sirve de nada si se gano perdiendo la precarga: la columna de SLA
+        se pinta en los dos ordenes, y sin acuerdos precargados vuelve a costar 2
+        consultas por fila."""
+        self._mantenimientos(3, 'Sla')
+        resp, _ = self._consultas(reverse('panel:mantenimientos_lista'), {'orden': 'fecha'})
+        for mantenimiento in resp.context['mantenimientos']:
+            self.assertTrue(
+                hasattr(mantenimiento, '_acuerdos_precargados'),
+                'la pagina llego sin los acuerdos precargados',
+            )
+
+    def test_los_tres_modos_de_orden_siguen_respondiendo(self):
+        """`?orden=fecha`, `?orden=urgencia` y sin parametro. El cambio reordeno las dos
+        ramas del `if`, que es justo donde se rompe una sin que se note la otra."""
+        self._mantenimientos(30, 'Modo')
+        url = reverse('panel:mantenimientos_lista')
+        for parametros in ({'orden': 'fecha'}, {'orden': 'urgencia'}, {}):
+            with self.subTest(parametros=parametros):
+                resp, _ = self._consultas(url, parametros)
+                self.assertEqual(len(resp.context['mantenimientos']), 25)
+                self.assertEqual(resp.context['pagina'].paginator.count, 30)
+
+    def test_colaboradores_no_crece_con_el_padron(self):
+        """Medido antes del arreglo: 22 consultas con 0 filas, 52 con 10 y 142 con 40 —
+        3,00 por fila, lineal. Ahora tiene que ser el MISMO numero con 2 y con 20."""
+        url = reverse('panel:colaboradores_lista')
+        self._colaboradores(2, 'Pocos')
+        _, con_dos = self._consultas(url)
+
+        self._colaboradores(18, 'Muchos')
+        resp, con_veinte = self._consultas(url)
+
+        self.assertEqual(len(resp.context['colaboradores']), 20)
+        self.assertEqual(
+            len(con_veinte), len(con_dos),
+            'el listado de colaboradores volvio a costar por fila: faltan el '
+            "select_related('cargo__departamento') o el annotate de n_activos, o la "
+            'plantilla volvio a usar `activos_asignados.count`',
+        )
+
+    def test_colaboradores_cuenta_bien_los_activos_asignados(self):
+        """El `annotate` reemplaza a un COUNT por fila, asi que tiene que dar lo mismo que
+        daba ese COUNT: 2, 0 y 0 — no el total de la tabla ni un numero inflado."""
+        self._colaboradores(3, 'Cuenta')
+        con_activos = Colaborador.objects.get(nombre='Cuenta 00')
+        Activo.objects.create(
+            codigo='CR-DSK-A301', tipo=Activo.Tipo.DESKTOP, colaborador_actual=con_activos,
+        )
+        Activo.objects.create(
+            codigo='CR-LAP-A302', tipo=Activo.Tipo.LAPTOP, colaborador_actual=con_activos,
+        )
+        Activo.objects.create(codigo='CR-DSK-A303', tipo=Activo.Tipo.DESKTOP)
+
+        resp, _ = self._consultas(reverse('panel:colaboradores_lista'))
+        cuentas = {c.nombre: c.n_activos for c in resp.context['colaboradores']}
+        self.assertEqual(cuentas, {'Cuenta 00': 2, 'Cuenta 01': 0, 'Cuenta 02': 0})
+
+    def test_el_buscador_no_infla_la_cuenta_de_activos(self):
+        """El riesgo concreto del `annotate`: si el buscador recorriera una relacion
+        inversa, el JOIN multiplicaria filas y el COUNT contaria de mas. Los 7 campos del
+        buscador son locales o FK hacia adelante, y esta prueba es lo que lo mantiene asi
+        — si alguien agrega `activos_asignados__codigo` al buscador, falla."""
+        self._colaboradores(2, 'Busca')
+        persona = Colaborador.objects.get(nombre='Busca 00')
+        for i in range(3):
+            Activo.objects.create(
+                codigo='CR-DSK-B30%d' % i, tipo=Activo.Tipo.DESKTOP, colaborador_actual=persona,
+            )
+
+        resp, _ = self._consultas(reverse('panel:colaboradores_lista'), {'q': 'Tecnico de campo'})
+        cuentas = {c.nombre: c.n_activos for c in resp.context['colaboradores']}
+        self.assertEqual(cuentas, {'Busca 00': 3, 'Busca 01': 0})

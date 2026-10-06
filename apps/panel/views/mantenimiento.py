@@ -66,33 +66,41 @@ def mantenimientos_lista(request):
         'tecnico__first_name', 'tecnico__last_name', 'tecnico__username',
     ))
 
-    orden = 'fecha' if request.GET.get('orden') == 'fecha' else 'urgencia'
-    if orden == 'fecha':
-        # Se precargan los acuerdos igual: la columna de SLA se pinta en las dos
-        # vistas, y sin precargar cuesta 2 consultas por fila.
-        mantenimientos = mantenimiento_services.precargar_acuerdos_sla(
-            mantenimientos.order_by('-fecha_programada'),
-        )
-    else:
-        mantenimientos = mantenimiento_services.ordenar_por_urgencia(mantenimientos)
-
-    # Se paginan los dos órdenes, pero lo que se gana NO es lo mismo en cada uno, y
-    # conviene no confundirlo:
+    # Los dos órdenes paginan, pero el ORDEN de las operaciones no es el mismo, y esa es
+    # justamente la diferencia que este código tenía mal hasta el 5-oct-2026:
     #
-    #   - Por fecha es un queryset, así que la página se trae con LIMIT: ahorro real.
-    #   - Por urgencia es una LISTA ya ordenada en Python, así que paginar acota lo que se
-    #     RENDERIZA —que es lo que hacía la pantalla difícil de leer— pero no lo que se
-    #     consulta.
+    #   - Por FECHA se pagina PRIMERO y se precargan los acuerdos sobre la página. Antes
+    #     se hacía al revés, y como `precargar_acuerdos_sla` termina en `list(...)`, el
+    #     queryset se materializaba completo: el SQL salía SIN LIMIT y traía la tabla
+    #     entera a memoria para mostrar 25 filas. El comentario que estaba acá afirmaba lo
+    #     contrario ("por fecha es un queryset, así que la página se trae con LIMIT:
+    #     ahorro real") — verificado con 10, 60 y 200 filas, no había LIMIT en ninguno de
+    #     los tres modos.
+    #   - Por URGENCIA sigue materializando, y es inevitable: `estado_sla` se deriva de la
+    #     hora actual y del estado, no es una columna, así que ordenar por eso exige traer
+    #     las filas. Paginar acota lo que se RENDERIZA pero no lo que se consulta.
     #
     # Llevar el orden por urgencia a SQL sí ahorraría, pero obligaría a reimplementar
     # `orden_de_urgencia` en el ORM, y esa regla vive en un solo lugar a propósito: en
     # `services`, justo para que el panel y la API muestren el mismo trabajo en el mismo
     # orden (ver el docstring de arriba). Duplicarla para ganar una consulta es cambiar un
     # costo medible por un riesgo peor: que las dos superficies se desincronicen.
-    pagina, query_filtros = paginar(mantenimientos, request)
+    #
+    # Precargar sobre la página no cuesta menos que sobre todo: `AcuerdoNivelServicio` son
+    # cuatro filas y se cargan una vez igual. Lo que cambia es cuántos mantenimientos se
+    # traen.
+    orden = 'fecha' if request.GET.get('orden') == 'fecha' else 'urgencia'
+    if orden == 'fecha':
+        pagina, query_filtros = paginar(mantenimientos.order_by('-fecha_programada'), request)
+        en_pagina = mantenimiento_services.precargar_acuerdos_sla(pagina.object_list)
+    else:
+        pagina, query_filtros = paginar(
+            mantenimiento_services.ordenar_por_urgencia(mantenimientos), request,
+        )
+        en_pagina = pagina.object_list
 
     return render(request, 'panel/mantenimientos_lista.html', {
-        'mantenimientos': pagina.object_list,
+        'mantenimientos': en_pagina,
         'pagina': pagina,
         'query_filtros': query_filtros,
         'busqueda': busqueda,

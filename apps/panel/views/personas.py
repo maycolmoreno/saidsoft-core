@@ -6,6 +6,7 @@ y las visitas tecnicas que se les hacen.
 """
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
+from django.db.models import Count
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -23,8 +24,23 @@ from apps.cuentas.services import scope_opcional_por_unidad_negocio_activa, veri
 @login_required
 @permission_required('activos.view_colaborador', raise_exception=True)
 def colaboradores_lista(request):
+    # `select_related` y `annotate` porque la tabla pinta tres cosas por fila y las tres
+    # costaban una consulta cada una -- medido el 5-oct-2026: 3,00 consultas por fila,
+    # lineal (22 consultas con 0 filas, 52 con 10, 142 con 40):
+    #
+    #   - `cargo`, por la columna de cargo;
+    #   - `departamento`, porque `Cargo.__str__` devuelve "nombre (departamento)";
+    #   - un COUNT de activos, por `{{ c.n_activos }}` en la plantilla.
+    #
+    # Esta vista NO pagina a proposito (ver el comentario de abajo), asi que el costo no
+    # estaba acotado por el tamanio de una pagina sino por el padron entero: a 200
+    # personas eran 622 consultas por carga, a 500 eran 1.522.
     colaboradores = scope_opcional_por_unidad_negocio_activa(
-        Colaborador.objects.order_by('nombre'), request, 'unidad_negocio',
+        Colaborador.objects
+        .select_related('cargo__departamento')
+        .annotate(n_activos=Count('activos_asignados'))
+        .order_by('nombre'),
+        request, 'unidad_negocio',
     )
     # Buscador, 4-oct-2026. No se paginar: el padron de colaboradores lo acota la
     # realidad —son las personas de la empresa— y a esa escala un buscador alcanza.
