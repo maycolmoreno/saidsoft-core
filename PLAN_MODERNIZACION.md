@@ -4696,3 +4696,72 @@ JOIN pg_class c ON c.oid = idx.indrelid
 WHERE c.relname LIKE '_hyper_%_chunk' AND c.relnamespace = '_timescaledb_internal'::regnamespace
 ORDER BY c.relname, i.relname;
 ```
+
+
+## §10-BG — Diecinueve equipos que dicen llamarse igual, y tres lugares que les creían (6-oct-2026)
+
+M-8 del informe. Con esto **la primera tanda queda cerrada**.
+
+Medido contra producción el 5-oct-2026: **19 estaciones** reportan como `numero_serie` un
+valor de relleno del BIOS — `default string` ×11, `system serial number` ×5 y `none` ×2. No
+es dato sucio del agente: es lo que el equipo contesta cuando el fabricante no grabó un
+serial en el SMBIOS.
+
+**El daño no está en guardarlos, está en cruzarlos**, y había tres lugares que cruzan por
+serie:
+
+| Dónde | Qué habría pasado |
+|---|---|
+| `vincular_activos_por_numero_serie` (cruce diario) | Un activo cargado a mano con `default string` se vincula a una cualquiera de las once estaciones que dicen eso |
+| `crear_activos_desde_estaciones` (alta masiva desde RMM) | Crea once activos con el mismo "serial", y el cruce siguiente los mezcla |
+| `datos_hardware_desde_estacion` (precarga del alta en el panel) | Precarga el formulario con el procesador, la RAM y la **farmacia** de un equipo que no tiene nada que ver |
+
+El tercero es el más engañoso: hoy devuelve `None` de casualidad, porque hay más de una
+estación con ese texto y la función no adivina cuando hay varias coincidencias. El día que
+quede una sola, precarga datos ajenos sin que nada falle.
+
+**Lo que NO se hace es borrar esos seriales de las estaciones**, y el informe lo pedía
+explícitamente. Son lo que el equipo reporta: es el dato correcto para reclamarle al
+proveedor, o para saber que esa máquina no tiene serial grabado. Lo que se ignora es el
+cruce.
+
+**Estado real: latente, no activo.** Medido: hoy hay **0 activos** con un serial de relleno,
+así que no hay nada mal vinculado. Se cierra ahora porque el día que pase, el síntoma va a
+ser "el inventario dice que este equipo está en otra farmacia" y nadie va a ir a mirar el
+BIOS.
+
+### La decisión que hace esto seguro
+
+`SERIES_DE_RELLENO` se compara **exacto** sobre el texto normalizado (sin espacios al borde,
+en minúscula), nunca por subcadena. Un serial real que contenga la palabra `none`
+(`NONE-4471`) o que empiece con `0123456789` sigue siendo un serial real. Comparar por
+subcadena habría sido peor que el problema original: dejaría sin inventariar equipos que sí
+se pueden reconocer. Lo fija `test_la_comparacion_es_exacta_y_no_por_subcadena`.
+
+La lista lleva los tres valores observados en producción más los placeholders estándar del
+SMBIOS que salen del mismo lugar y harían el mismo daño (`to be filled by o.e.m.`,
+`not specified`, `n/a`, …). Esos todavía no aparecieron en esta flota, y está anotado cuáles
+son cuáles.
+
+### El efecto de rebote en aperturas, que no era obvio
+
+`_ejecutar_paso_activo` de `apps.aperturas` llama al alta masiva y, si no se creó ni vinculó
+nada, deja el paso en ERROR. Hasta ahora el único caso que llegaba ahí era "sin número de
+serie", y el comentario del código decía que se reintenta cuando el agente reporte. Con este
+cambio llega un segundo caso donde **reintentar no sirve**: el equipo va a seguir
+contestando `default string` para siempre, y lo que hay que hacer es leer la etiqueta.
+
+El comportamiento ya era el correcto —el detalle del resumen va entero al paso, así que el
+mensaje que ve la persona es el accionable— pero el comentario quedaba mintiendo. Corregido
+ahí mismo. Es la misma familia de problema de §10-AY y §10-BB: un comentario que describe un
+mundo que cambió, al lado de código que sigue funcionando.
+
+### Pruebas
+
+5 nuevas para la regla (`SeriesDeRellenoDelBiosTests`) y 4 en las clases de los dos cruces
+que tenían una. **Las dos mitades se verificaron al revés por separado**, y eso importó: el
+cruce diario filtra en SQL (`Lower(Trim(...))` contra la lista) y los otros dos con
+`serie_utilizable` sobre un valor suelto, así que desactivar una mitad deja la otra en
+verde. La primera pasada de verificación solo apagó `serie_utilizable` y las dos pruebas del
+cruce diario siguieron pasando — si me hubiera quedado ahí, habría dado por verificado algo
+que no lo estaba.

@@ -528,16 +528,88 @@ def scope_movimientos_visibles(queryset, user):
     )
 
 
+# --- Números de serie que no son números de serie -------------------------------------
+#
+# M-8 de la auditoría del 5-oct-2026. Medido contra producción: **19 estaciones** reportan
+# como `numero_serie` un valor de relleno del BIOS — `default string` ×11,
+# `system serial number` ×5 y `none` ×2. No es un dato sucio del agente: es lo que el
+# equipo realmente contesta cuando el fabricante no grabó un serial en el SMBIOS.
+#
+# El problema no es guardarlos, es CRUZARLOS. `vincular_activos_por_numero_serie` vincula
+# cuando el serial matchea con exactamente un `Activo`; con 11 estaciones diciendo
+# `default string`, el día que alguien cargue a mano un activo copiando ese texto del BIOS,
+# ese activo se vincula a una estación cualquiera de las once — y queda plausible, porque
+# nada falla. Lo mismo en el alta masiva desde RMM y en la precarga del formulario.
+#
+# **Estado real: latente, no activo.** Medido el 5-oct: hoy hay 0 activos con un serial de
+# relleno, así que no hay nada mal vinculado. Se cierra ahora porque el día que pase, el
+# síntoma va a ser "el inventario dice que este equipo está en otra farmacia" y nadie va a
+# mirar el BIOS.
+#
+# **Lo que NO se hace es borrar esos seriales de las estaciones.** Son lo que el equipo
+# reporta, y es el dato correcto para ir a reclamarle al proveedor o para reconocer que esa
+# máquina no tiene serial grabado. Lo que se ignora es el CRUCE, que es donde hacen daño.
+SERIES_DE_RELLENO = frozenset({
+    # Los tres observados en producción el 5-oct-2026.
+    'default string',
+    'system serial number',
+    'none',
+    # Placeholders estándar del SMBIOS/DMI que no aparecieron todavía en esta flota pero
+    # salen del mismo lugar y harían exactamente el mismo daño.
+    'to be filled by o.e.m.',
+    'to be filled by oem',
+    'not specified',
+    'not applicable',
+    'n/a',
+    'unknown',
+    'invalid',
+    'system serialnumber',
+    'base board serial number',
+    'chassis serial number',
+    '0123456789',
+})
+
+
+def serie_utilizable(serie) -> bool:
+    """False si `serie` es un valor de relleno del BIOS y no sirve para cruzar.
+
+    La comparación es EXACTA sobre el texto normalizado (sin espacios al borde, en
+    minúscula), nunca por subcadena: un serial real que contenga la palabra "none" o
+    empiece con "0123456789" sigue siendo un serial real, y excluirlo sería peor que el
+    problema que esto resuelve.
+    """
+    return (serie or '').strip().lower() not in SERIES_DE_RELLENO and bool((serie or '').strip())
+
+
+def _sin_series_de_relleno(queryset, campo='numero_serie'):
+    """El queryset sin las filas cuyo `campo` es un valor de relleno.
+
+    Se filtra en SQL —`Lower(Trim(...))` contra la lista— y no en Python para no traer
+    filas que se van a descartar; `serie_utilizable` es la misma regla para un valor suelto.
+    """
+    from django.db.models.functions import Lower, Trim
+
+    return queryset.annotate(_serie_normalizada=Lower(Trim(campo))).exclude(
+        _serie_normalizada__in=SERIES_DE_RELLENO,
+    )
+
+
 def vincular_activos_por_numero_serie() -> int:
     """Cruza `Estacion.numero_serie` (reportado por el agente RMM) contra
     `Activo.numero_serie` para vincular automáticamente el registro de ITAM con su
     identidad de red. Nunca adivina: si el número de serie no matchea con exactamente
     un Activo (0 o varios), esa estación se deja sin vincular. Idempotente — no repite
-    trabajo en estaciones que ya tienen un Activo vinculado."""
+    trabajo en estaciones que ya tienen un Activo vinculado.
+
+    Las estaciones cuyo serial es un valor de relleno del BIOS quedan fuera del cruce
+    (ver `SERIES_DE_RELLENO`): 11 equipos que dicen `default string` no son 11 equipos con
+    el mismo serial, son 11 equipos sin serial grabado."""
     from apps.catalogo.models import Estacion
 
     vinculados = 0
-    estaciones = Estacion.objects.exclude(numero_serie='').filter(activo_vinculado__isnull=True)
+    estaciones = _sin_series_de_relleno(
+        Estacion.objects.exclude(numero_serie='').filter(activo_vinculado__isnull=True),
+    )
     for estacion in estaciones:
         candidatos = list(Activo.objects.filter(numero_serie__iexact=estacion.numero_serie, estacion__isnull=True))
         if len(candidatos) == 1:
@@ -624,7 +696,10 @@ def crear_activos_desde_estaciones(*, usuario, tipo=Activo.Tipo.DESKTOP, aplicar
     """
     from apps.catalogo.models import Estacion
 
-    resumen = {'creados': 0, 'vinculados': 0, 'sin_serie': 0, 'ya_vinculadas': 0, 'detalle': []}
+    resumen = {
+        'creados': 0, 'vinculados': 0, 'sin_serie': 0, 'serie_de_relleno': 0,
+        'ya_vinculadas': 0, 'detalle': [],
+    }
 
     candidatas = Estacion.objects.filter(
         estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
@@ -640,6 +715,17 @@ def crear_activos_desde_estaciones(*, usuario, tipo=Activo.Tipo.DESKTOP, aplicar
         if not serie:
             resumen['sin_serie'] += 1
             resumen['detalle'].append(f'{estacion.codigo}: sin número de serie, se omite')
+            continue
+        if not serie_utilizable(serie):
+            # Un activo creado con `default string` de serial queda indistinguible de los
+            # otros diez que reportan lo mismo, y el proximo cruce los vincula al azar. Se
+            # informa en vez de crear: el equipo existe y hay que inventariarlo, pero el
+            # serial tiene que salir de la etiqueta, no del BIOS.
+            resumen['serie_de_relleno'] += 1
+            resumen['detalle'].append(
+                f'{estacion.codigo}: el BIOS reporta "{serie}", que no es un serial. '
+                f'Se omite — cargarlo a mano con el serial de la etiqueta.',
+            )
             continue
 
         existente = Activo.objects.filter(numero_serie__iexact=serie).first()
@@ -703,7 +789,11 @@ def datos_hardware_desde_estacion(numero_serie: str, *, usuario) -> dict | None:
     from apps.cuentas.services import scope_por_unidad_negocio
 
     serie = (numero_serie or '').strip()
-    if not serie:
+    if not serie or not serie_utilizable(serie):
+        # Con un valor de relleno del BIOS, `coincidencias` traeria dos y la funcion
+        # devolveria None igual — pero solo por casualidad, mientras haya mas de una
+        # estacion con ese texto. Con una sola, precargaria el formulario con los datos de
+        # un equipo que no tiene nada que ver. Se corta antes.
         return None
 
     # `scope_por_unidad_negocio` y no la variante "opcional": esa trata el campo nulo

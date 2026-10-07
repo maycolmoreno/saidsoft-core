@@ -400,9 +400,18 @@ def _ejecutar_paso_activo(paso):
     if resumen['creados'] or resumen['vinculados'] or resumen['ya_vinculadas']:
         marcar_paso(paso, PasoApertura.Estado.COMPLETADO, '; '.join(resumen['detalle']) or 'Ya estaba en ITAM')
         return
-    # El caso real que trae acá es "sin número de serie": el agente todavía no reportó el
-    # dato de BIOS. No es un error del sitio, es que falta un heartbeat con info — se
-    # reintenta desde el panel cuando la estación haya reportado.
+    # Dos casos distintos traen acá, y la acción que corresponde NO es la misma:
+    #
+    #   - "sin número de serie": el agente todavía no reportó el dato de BIOS. No es un
+    #     error del sitio, falta un heartbeat con info — se reintenta desde el panel
+    #     cuando la estación haya reportado.
+    #   - "el BIOS reporta un valor de relleno" (6-oct-2026, ver `SERIES_DE_RELLENO` en
+    #     apps.activos.services): acá reintentar no sirve, porque el equipo va a seguir
+    #     contestando lo mismo para siempre. Hay que cargar el activo a mano con el serial
+    #     de la etiqueta.
+    #
+    # Por eso el detalle del resumen va entero al paso en vez de un texto fijo: es lo único
+    # que distingue "esperá" de "andá a mirar la etiqueta".
     marcar_paso(paso, PasoApertura.Estado.ERROR, '; '.join(resumen['detalle']) or 'Sin datos suficientes')
 
 

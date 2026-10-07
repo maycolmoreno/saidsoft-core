@@ -646,6 +646,37 @@ class VincularActivosPorNumeroSerieTests(TestCase):
     def test_no_vincula_si_no_hay_match(self):
         self._crear_estacion('ML001-A', 'SN-0001')
         self.assertEqual(vincular_activos_por_numero_serie(), 0)
+    def test_no_vincula_por_un_serial_de_relleno_del_bios(self):
+        """M-8. Once estaciones que dicen `default string` no son once equipos con el mismo
+        serial: son once equipos sin serial grabado. Si alguien carga un activo copiando
+        ese texto del BIOS, el cruce lo vincularía a una cualquiera de las once y quedaría
+        plausible, porque nada falla.
+
+        Verificada al revés: sin la lista negra, vincula.
+        """
+        self._crear_estacion('ML001-A', 'Default string')
+        activo = Activo.objects.create(
+            codigo='CR-DSK-0009', tipo=Activo.Tipo.DESKTOP, numero_serie='Default string',
+        )
+
+        self.assertEqual(vincular_activos_por_numero_serie(), 0)
+        activo.refresh_from_db()
+        self.assertIsNone(activo.estacion)
+
+    def test_un_serial_de_relleno_no_frena_el_cruce_de_los_demas(self):
+        """La estación con el valor de relleno se saltea; la de al lado se vincula igual."""
+        self._crear_estacion('ML001-A', 'system serial number')
+        buena = self._crear_estacion('ML001-B', 'SN-0007')
+        Activo.objects.create(
+            codigo='CR-DSK-0010', tipo=Activo.Tipo.DESKTOP, numero_serie='system serial number',
+        )
+        activo_bueno = Activo.objects.create(
+            codigo='CR-DSK-0011', tipo=Activo.Tipo.DESKTOP, numero_serie='SN-0007',
+        )
+
+        self.assertEqual(vincular_activos_por_numero_serie(), 1)
+        activo_bueno.refresh_from_db()
+        self.assertEqual(activo_bueno.estacion, buena)
 
     def test_no_vincula_si_hay_series_duplicadas(self):
         self._crear_estacion('ML001-A', 'SN-0001')
@@ -966,6 +997,36 @@ class CrearActivosDesdeRmmTests(TestCase):
         self._crear()
         activo = Activo.objects.get(numero_serie='MXL8192898')
         self.assertEqual(activo.estacion, self.estacion)
+    def test_no_crea_un_activo_con_un_serial_de_relleno_del_bios(self):
+        """M-8. Un activo creado con `default string` de serial queda indistinguible de los
+        otros diez que reportan lo mismo, y el próximo cruce los vincula al azar. Se
+        informa en vez de crear: el equipo existe y hay que inventariarlo, pero el serial
+        tiene que salir de la etiqueta.
+
+        Verificada al revés: sin la lista negra, crea el activo.
+        """
+        self.estacion.numero_serie = 'Default string'
+        self.estacion.save(update_fields=['numero_serie'])
+
+        resumen = self._crear()
+
+        self.assertEqual(resumen['creados'], 0)
+        self.assertEqual(resumen['serie_de_relleno'], 1)
+        self.assertEqual(Activo.objects.count(), 0)
+
+    def test_lo_informa_distinto_de_una_estacion_sin_serie(self):
+        """No son el mismo caso y la acción no es la misma: sin serie se espera a que el
+        agente reporte; con un valor de relleno hay que ir a leer la etiqueta, porque el
+        equipo va a seguir contestando lo mismo para siempre."""
+        self.estacion.numero_serie = 'none'
+        self.estacion.save(update_fields=['numero_serie'])
+
+        resumen = self._crear()
+
+        self.assertEqual(resumen['sin_serie'], 0, 'no es el caso "sin serie"')
+        detalle = ' '.join(resumen['detalle'])
+        self.assertIn('no es un serial', detalle)
+        self.assertIn('etiqueta', detalle)
 
     def test_hereda_la_unidad_de_negocio_de_su_farmacia(self):
         """Un equipo instalado pertenece al cliente dueño de esa farmacia. Antes TODOS
@@ -2135,3 +2196,58 @@ class DatosHardwarePorSerieAislamientoTests(TestCase):
         justamente el campo "Farmacia (si ya esta instalado)" del alta de activo."""
         datos = datos_hardware_desde_estacion('SERIE-AJENA', usuario=self.interno)
         self.assertEqual(datos['farmacia'], self.farmacia_mia)
+class SeriesDeRellenoDelBiosTests(TestCase):
+    """M-8 de la auditoría: 19 estaciones reportan como `numero_serie` un valor de relleno
+    del BIOS — `default string` ×11, `system serial number` ×5, `none` ×2 (medido contra
+    producción el 5-oct-2026).
+
+    No es dato sucio del agente: es lo que el equipo contesta cuando el fabricante no grabó
+    un serial en el SMBIOS. El daño no está en guardarlo sino en CRUZARLO, y son tres los
+    lugares que cruzan por serie. Esta clase prueba la regla; cada cruce tiene además su
+    prueba en la clase que le corresponde.
+
+    Estado medido: latente. Hoy hay 0 activos con un serial de relleno, así que nada está
+    mal vinculado. El día que alguien cargue un activo copiando ese texto del BIOS, el
+    síntoma va a ser "el inventario dice que este equipo está en otra farmacia".
+    """
+
+    def test_los_tres_valores_medidos_en_produccion_no_son_utilizables(self):
+        from apps.activos.services import serie_utilizable
+
+        for valor in ('default string', 'system serial number', 'none'):
+            with self.subTest(valor=valor):
+                self.assertFalse(serie_utilizable(valor))
+
+    def test_no_importan_las_mayusculas_ni_los_espacios(self):
+        """El BIOS los reporta como se le ocurre: `Default String`, `DEFAULT STRING`, y el
+        agente puede mandarlos con espacios al borde."""
+        from apps.activos.services import serie_utilizable
+
+        for valor in ('Default String', 'DEFAULT STRING', '  default string  ', 'None', 'N/A'):
+            with self.subTest(valor=valor):
+                self.assertFalse(serie_utilizable(valor))
+
+    def test_un_serial_de_verdad_sigue_siendo_utilizable(self):
+        from apps.activos.services import serie_utilizable
+
+        for valor in ('MXL8192898', 'SN-0001', '5CD9231ABC'):
+            with self.subTest(valor=valor):
+                self.assertTrue(serie_utilizable(valor))
+
+    def test_la_comparacion_es_exacta_y_no_por_subcadena(self):
+        """La parte que hace que esto sea seguro. Si se comparara por subcadena, un serial
+        real que contenga "none" o empiece con "0123456789" quedaría descartado — y eso
+        sería peor que el problema que se está resolviendo, porque dejaría de inventariarse
+        un equipo que sí se puede reconocer."""
+        from apps.activos.services import serie_utilizable
+
+        for valor in ('NONE-4471', 'X-default string-9', '0123456789ABC', 'SN-NA-22'):
+            with self.subTest(valor=valor):
+                self.assertTrue(serie_utilizable(valor))
+
+    def test_vacio_tampoco_es_utilizable(self):
+        from apps.activos.services import serie_utilizable
+
+        for valor in ('', '   ', None):
+            with self.subTest(valor=valor):
+                self.assertFalse(serie_utilizable(valor))

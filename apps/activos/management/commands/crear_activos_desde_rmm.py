@@ -77,5 +77,14 @@ class Command(BaseCommand):
                 f'Sin número de serie, omitidas: {resumen["sin_serie"]}. Sin serie no hay '
                 f'forma de reconocer el equipo después ni de evitar duplicarlo.',
             ))
+        if resumen['serie_de_relleno']:
+            # Se informa aparte de `sin_serie` a propósito: estas estaciones SÍ reportan un
+            # valor, y mirando el panel parece un serial. La acción que corresponde es otra
+            # —ir a leer la etiqueta del equipo— y por eso el mensaje es distinto.
+            self.stdout.write(self.style.WARNING(
+                f'Con un valor de relleno del BIOS en vez de un serial, omitidas: '
+                f'{resumen["serie_de_relleno"]}. El equipo existe y hay que inventariarlo, '
+                f'pero el serial tiene que salir de la etiqueta: cargarlas a mano.',
+            ))
         if not options['aplicar']:
             self.stdout.write(self.style.WARNING('Simulación: no se escribió nada. Repetí con --aplicar.'))
