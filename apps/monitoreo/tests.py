@@ -717,7 +717,20 @@ class ReglasAplicablesMultiTenantTests(TestCase):
 # PostgreSQL. Una prueba no debe depender de qué módulo de settings esté cargado.
 @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class PurgarMetricasTaskTests(TestCase):
-    """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test."""
+    """CELERY_TASK_ALWAYS_EAGER=True hace que .delay() corra sincrónico en el test.
+
+    Desde el 6-oct-2026 estas pruebas fijan el camino SIN hypertable —el DELETE por fila,
+    que es lo que corre en SQLite y en un PostgreSQL pelado— y lo fuerzan a propósito: en
+    la base de pruebas las tablas SÍ son hypertables, y ahí la retención la hace
+    `drop_chunks`. Ese otro camino lo cubre `RetencionDeSeriesPorChunksTests`.
+    """
+
+    def setUp(self):
+        from apps.monitoreo import services
+
+        parche = patch.object(services, 'es_hypertable', return_value=False)
+        parche.start()
+        self.addCleanup(parche.stop)
 
     def test_delay_borra_muestras_viejas(self):
         from apps.monitoreo.tasks import purgar_metricas_task
@@ -735,7 +748,7 @@ class PurgarMetricasTaskTests(TestCase):
 
         self.assertFalse(MuestraMetrica.objects.filter(pk=vieja.pk).exists())
         self.assertTrue(MuestraMetrica.objects.filter(pk=reciente.pk).exists())
-        self.assertIn('1 muestra', resultado.get())
+        self.assertIn('1 fila(s) eliminada(s)', resultado.get())
 
 
 # `CELERY_TASK_ALWAYS_EAGER` solo está puesto en config/settings/desarrollo.py, y no
@@ -744,6 +757,21 @@ class PurgarMetricasTaskTests(TestCase):
 # PostgreSQL. Una prueba no debe depender de qué módulo de settings esté cargado.
 @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class PurgarEventosMonitoreoTaskTests(TestCase):
+    """Retención de `EventoMonitoreo`.
+
+    Desde el 6-oct-2026 estas pruebas fijan el camino SIN hypertable —el DELETE por fila,
+    que es lo que corre en SQLite y en un PostgreSQL pelado— y lo fuerzan a propósito: en
+    la base de pruebas las tablas SÍ son hypertables, y ahí la retención la hace
+    `drop_chunks`. Ese otro camino lo cubre `RetencionDeSeriesPorChunksTests`.
+    """
+
+    def setUp(self):
+        from apps.monitoreo import services
+
+        parche = patch.object(services, 'es_hypertable', return_value=False)
+        parche.start()
+        self.addCleanup(parche.stop)
+
     def test_delay_borra_eventos_viejos(self):
         from apps.monitoreo.tasks import purgar_eventos_monitoreo_task
 
@@ -763,7 +791,7 @@ class PurgarEventosMonitoreoTaskTests(TestCase):
 
         self.assertFalse(EventoMonitoreo.objects.filter(pk=viejo.pk).exists())
         self.assertTrue(EventoMonitoreo.objects.filter(pk=reciente.pk).exists())
-        self.assertIn('1 evento', resultado.get())
+        self.assertIn('1 fila(s) eliminada(s)', resultado.get())
 
 
 # `CELERY_TASK_ALWAYS_EAGER` solo está puesto en config/settings/desarrollo.py, y no
@@ -2369,9 +2397,19 @@ class PurgaMuestrasRedTests(TestCase):
     4 Mikrotiks responden SNMP. Se escribe una fila por farmacia cada 5 minutos: con las
     700 respondiendo son ~6 millones de filas por mes. El momento de arreglarlo es ahora,
     mientras borrar es barato.
+
+    Desde el 6-oct-2026 estas pruebas fijan el camino SIN hypertable —el DELETE por fila,
+    que es lo que corre en SQLite y en un PostgreSQL pelado— y lo fuerzan a propósito: en
+    la base de pruebas las tablas SÍ son hypertables, y ahí la retención la hace
+    `drop_chunks`. Ese otro camino lo cubre `RetencionDeSeriesPorChunksTests`.
     """
 
     def setUp(self):
+        from apps.monitoreo import services
+
+        parche = patch.object(services, 'es_hypertable', return_value=False)
+        parche.start()
+        self.addCleanup(parche.stop)
         grupo = Grupo.objects.create(codigo='TRX001')
         self.farmacia = Farmacia.objects.create(
             codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
@@ -2390,7 +2428,7 @@ class PurgaMuestrasRedTests(TestCase):
 
         self._muestra(45)
         self._muestra(31)
-        self.assertEqual(purgar_muestras_red_antiguas(dias=30), 2)
+        self.assertEqual(purgar_muestras_red_antiguas(dias=30).cantidad, 2)
 
     def test_no_toca_las_recientes(self):
         from apps.monitoreo.models import MuestraRedFarmacia
@@ -2417,7 +2455,7 @@ class PurgaMuestrasRedTests(TestCase):
         from apps.monitoreo.services import purgar_muestras_red_antiguas
 
         self._muestra(1)
-        self.assertEqual(purgar_muestras_red_antiguas(dias=30), 0)
+        self.assertEqual(purgar_muestras_red_antiguas(dias=30).cantidad, 0)
 
     def test_la_tarea_de_celery_la_invoca(self):
         from apps.monitoreo.models import MuestraRedFarmacia
@@ -2425,7 +2463,7 @@ class PurgaMuestrasRedTests(TestCase):
 
         self._muestra(45)
         resultado = purgar_muestras_red_task()
-        self.assertIn('1 muestra', resultado)
+        self.assertIn('1 fila(s) eliminada(s)', resultado)
         self.assertEqual(MuestraRedFarmacia.objects.count(), 0)
 
     def test_esta_agendada_en_beat(self):
@@ -2445,9 +2483,19 @@ class PurgaMuestrasServicioPosTests(TestCase):
     tres series sí entraban. Es la que más crece de las cuatro: una fila por servicio
     que responde, cuatro por estación cada 5 minutos, o sea ~1,7 millones de filas por
     día a 1.500 estaciones. Hoy no se nota porque reportan 8.
+
+    Desde el 6-oct-2026 estas pruebas fijan el camino SIN hypertable —el DELETE por fila,
+    que es lo que corre en SQLite y en un PostgreSQL pelado— y lo fuerzan a propósito: en
+    la base de pruebas las tablas SÍ son hypertables, y ahí la retención la hace
+    `drop_chunks`. Ese otro camino lo cubre `RetencionDeSeriesPorChunksTests`.
     """
 
     def setUp(self):
+        from apps.monitoreo import services
+
+        parche = patch.object(services, 'es_hypertable', return_value=False)
+        parche.start()
+        self.addCleanup(parche.stop)
         grupo = Grupo.objects.create(codigo='TRX001')
         farmacia = Farmacia.objects.create(
             codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
@@ -2469,7 +2517,7 @@ class PurgaMuestrasServicioPosTests(TestCase):
 
         self._muestra(45)
         self._muestra(31)
-        self.assertEqual(purgar_muestras_servicio_pos_antiguas(dias=30), 2)
+        self.assertEqual(purgar_muestras_servicio_pos_antiguas(dias=30).cantidad, 2)
 
     def test_no_toca_las_recientes(self):
         from apps.monitoreo.models import MuestraServicioPos
@@ -2496,7 +2544,7 @@ class PurgaMuestrasServicioPosTests(TestCase):
 
         self._muestra(45)
         resultado = purgar_muestras_servicio_pos_task()
-        self.assertIn('1 muestra', resultado)
+        self.assertIn('1 fila(s) eliminada(s)', resultado)
         self.assertEqual(MuestraServicioPos.objects.count(), 0)
 
     def test_el_comando_manual_la_invoca(self):
@@ -7889,3 +7937,201 @@ class FarmaciasAfectadasTests(TestCase):
         alerta.estado = Alerta.Estado.RESUELTA
         alerta.save(update_fields=['estado'])
         self.assertEqual(self._afectadas(), 0)
+
+
+class RetencionDeSeriesPorChunksTests(TestCase):
+    """A-2: cómo se acota cada serie con la compresión encendida (migración 0040).
+
+    La prueba que importa es la primera: que en una hypertable la purga **no emita un
+    DELETE**. Medido el 6-oct-2026 contra TimescaleDB 2.17.2, un DELETE que alcanza chunks
+    comprimidos falla con «tuple decompression limit exceeded by operation» y deja como
+    tuplas muertas lo que llegó a descomprimir (64 MB -> 106 MB por UN solo DELETE
+    fallido); por debajo de las 100.000 filas entra y descomprime en silencio los chunks
+    que se acababan de comprimir. Las dos variantes son invisibles desde el resultado de
+    la tarea.
+
+    Corre contra el motor de verdad: la imagen de CI y la de desarrollo son
+    `timescale/timescaledb`, y `template1` tiene la extensión, así que toda base de
+    pruebas la hereda y la migración 0035 convierte las cuatro tablas en hypertables.
+    """
+
+    def setUp(self):
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=self.farmacia)
+
+    def _metrica(self, dias_atras):
+        return MuestraMetrica.objects.create(
+            estacion=self.estacion, cpu_carga_pct=50,
+            timestamp=timezone.now() - timedelta(days=dias_atras),
+        )
+
+    def _muestra_red(self, dias_atras):
+        return MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia, bytes_recibidos=1, bytes_enviados=1,
+            timestamp=timezone.now() - timedelta(days=dias_atras),
+        )
+
+    def _vaciar_eventos_diferidos(self):
+        """Hace falta ACÁ y no en producción, y la diferencia vale explicarla.
+
+        Las FK que crea Django son `DEFERRABLE INITIALLY DEFERRED`, así que cada INSERT
+        deja un evento de trigger pendiente hasta el COMMIT, y PostgreSQL no permite
+        soltar un chunk que tenga eventos pendientes: «cannot DROP TABLE
+        "_hyper_7_3_chunk" because it has pending trigger events». En producción no ocurre
+        —la purga corre en autocommit, en una transacción propia donde nadie insertó— y
+        ocurre acá porque `TestCase` envuelve cada prueba en una transacción junto con las
+        filas que la prueba misma creó. Forzar las comprobaciones es lo que haría el
+        COMMIT, y deja la prueba ejercitando el `drop_chunks` real en vez de simularlo.
+        """
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')
+
+    def _es_hypertable(self, tabla):
+        from apps.monitoreo.services import es_hypertable
+
+        return es_hypertable(tabla)
+
+    def test_en_una_hypertable_la_purga_no_emite_ningun_delete(self):
+        """Se comprueba el SQL y no el resultado: la purga podría dejar la tabla igual de
+        acotada con un DELETE y seguir siendo el error que rompe la compresión.
+
+        Verificada al revés: devolviendo el DELETE de antes, falla.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from apps.monitoreo.services import purgar_metricas_antiguas
+
+        if not self._es_hypertable('muestra_metrica'):
+            self.skipTest('sin TimescaleDB no hay chunks comprimidos y el riesgo no existe')
+
+        self._metrica(45)
+        self._vaciar_eventos_diferidos()
+        with CaptureQueriesContext(connection) as ctx:
+            resultado = purgar_metricas_antiguas(dias=30)
+
+        consultas = [q['sql'] for q in ctx.captured_queries]
+        self.assertFalse(
+            [sql for sql in consultas if 'DELETE' in sql.upper() and 'muestra_metrica' in sql],
+            'la purga volvió a borrar filas sobre una hypertable: con la compresión '
+            'encendida ese DELETE falla contra los chunks comprimidos y deja bloat',
+        )
+        self.assertTrue(
+            [sql for sql in consultas if 'drop_chunks' in sql],
+            'no se soltó ningún chunk: la serie se quedó sin retención',
+        )
+        self.assertTrue(resultado.por_chunks)
+        self.assertEqual(resultado.cantidad, 1)
+        self.assertEqual(MuestraMetrica.objects.count(), 0)
+
+    def test_sin_hypertable_sigue_borrando_filas(self):
+        """El otro camino: SQLite en desarrollo y PostgreSQL pelado. Acá las pruebas SÍ
+        tienen TimescaleDB, así que este camino solo se ejercita forzándolo — y es el que
+        nadie ejercitaría si no se forzara, que es la lección de §10-BC al revés."""
+        from apps.monitoreo import services
+
+        self._metrica(45)
+        reciente = self._metrica(1)
+        with patch.object(services, 'es_hypertable', return_value=False):
+            resultado = services.purgar_metricas_antiguas(dias=30)
+
+        self.assertFalse(resultado.por_chunks)
+        self.assertEqual(resultado.cantidad, 1)
+        self.assertEqual(list(MuestraMetrica.objects.values_list('pk', flat=True)), [reciente.pk])
+
+    def test_la_granularidad_pasa_a_ser_el_chunk_y_no_la_fila(self):
+        """La consecuencia que hay que tener presente, y no es un defecto: `drop_chunks`
+        solo suelta un chunk cuando TODO su contenido superó la ventana, así que una fila
+        de 31 días sobrevive mientras comparta chunk con filas más nuevas.
+
+        `muestra_red_farmacia` tiene chunks de 7 días (migración 0035), así que su
+        retención real es de 30 a 37 días. Es siempre MÁS historial que el que promete la
+        política, nunca menos — y con la compresión encendida el espacio dejó de ser el
+        argumento para recortar la ventana, que es lo que el informe de auditoría pedía
+        explícitamente no hacer.
+        """
+        from apps.monitoreo.services import purgar_muestras_red_antiguas
+
+        if not self._es_hypertable('muestra_red_farmacia'):
+            self.skipTest('sin chunks la granularidad es la fila y esto no aplica')
+
+        vieja = self._muestra_red(45)
+        en_el_borde = self._muestra_red(31)
+        self._vaciar_eventos_diferidos()
+        purgar_muestras_red_antiguas(dias=30)
+
+        self.assertFalse(MuestraRedFarmacia.objects.filter(pk=vieja.pk).exists())
+        self.assertTrue(
+            MuestraRedFarmacia.objects.filter(pk=en_el_borde.pk).exists(),
+            'con chunks de 7 días la fila de 31 días todavía comparte chunk con filas de '
+            'menos de 30: soltarlo se llevaría historial que la política promete guardar',
+        )
+
+    def test_la_compresion_quedo_encendida_con_el_segmentby_elegido(self):
+        """De punta a punta: que la migración 0040 dejó las cuatro tablas comprimiendo, y
+        con el `segmentby` que se eligió MIDIENDO — la segunda columna cambia el factor de
+        11,6x a 42,5x en `muestra_servicio_pos` y de 16,7x a 110x en `evento_monitoreo`
+        (ver el docstring de la migración)."""
+        from django.db import connection
+
+        if not self._es_hypertable('muestra_metrica'):
+            self.skipTest('sin TimescaleDB no hay compresión que comprobar')
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT hypertable_name, compression_enabled '
+                'FROM timescaledb_information.hypertables',
+            )
+            encendida = dict(cursor.fetchall())
+            cursor.execute(
+                'SELECT hypertable_name, attname '
+                'FROM timescaledb_information.compression_settings '
+                'WHERE segmentby_column_index IS NOT NULL '
+                'ORDER BY hypertable_name, segmentby_column_index',
+            )
+            segmentby = {}
+            for tabla, columna in cursor.fetchall():
+                segmentby.setdefault(tabla, []).append(columna)
+
+        esperado = {
+            'muestra_metrica': ['estacion_id'],
+            'muestra_servicio_pos': ['estacion_id', 'servicio'],
+            'evento_monitoreo': ['estacion_id', 'fuente'],
+            'muestra_red_farmacia': ['farmacia_id'],
+        }
+        for tabla, columnas in esperado.items():
+            with self.subTest(tabla=tabla):
+                self.assertTrue(encendida.get(tabla), '%s se quedó sin compresión' % tabla)
+                self.assertEqual(segmentby.get(tabla), columnas)
+
+    def test_la_migracion_de_compresion_cubre_las_mismas_series_que_la_de_hypertables(self):
+        """Si mañana entra una quinta serie como hypertable y nadie la agrega a la
+        compresión, esto falla. Es el único lugar donde las dos listas se comparan: viven
+        en migraciones distintas y nada más las ataría."""
+        from importlib import import_module
+
+        hypertables = import_module('apps.monitoreo.migrations.0035_hypertables_de_verdad')
+        compresion = import_module('apps.monitoreo.migrations.0040_compresion_hypertables')
+
+        self.assertEqual(
+            sorted(tabla for tabla, _intervalo in hypertables.TABLAS),
+            sorted(tabla for tabla, _segmentby in compresion.TABLAS),
+        )
+
+    def test_comprime_despues_de_la_ventana_caliente_y_antes_de_la_retencion(self):
+        """Los tres números tienen que estar en este orden: comprimir (7 d) después de la
+        semana que miran los gráficos del panel, y antes de la retención (30 d). Si
+        alguien bajara la retención por debajo de la compresión, se comprimiría algo que
+        se va a soltar al día siguiente; si subiera la compresión por encima, no se
+        comprimiría nunca nada."""
+        from importlib import import_module
+
+        hypertables = import_module('apps.monitoreo.migrations.0035_hypertables_de_verdad')
+        compresion = import_module('apps.monitoreo.migrations.0040_compresion_hypertables')
+
+        self.assertLess(compresion.DIAS_COMPRESION, hypertables.DIAS_RETENCION)

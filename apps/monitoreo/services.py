@@ -10,6 +10,7 @@ import logging
 import urllib.error
 import urllib.request
 from datetime import timedelta
+from typing import NamedTuple
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -978,7 +979,101 @@ def escalar_alertas_abiertas() -> int:
     return escaladas
 
 
-def purgar_metricas_antiguas(*, dias: int = 30) -> int:
+# --- Retención: cómo se acota cada serie, y por qué no con un DELETE ---------------
+#
+# Desde la migración 0035 las cuatro series son hypertables con política de retención
+# nativa de 30 días, y estas purgas quedaron con la misma ventana como respaldo. Eso era
+# inofensivo mientras la compresión estuviera apagada. Al encenderla (migración 0040)
+# deja de serlo, y no en teoría — medido el 6-oct-2026 contra TimescaleDB 2.17.2 con
+# 665.280 filas con la forma de `muestra_metrica`:
+#
+#   - Un `DELETE ... WHERE timestamp < x` que alcanza chunks comprimidos **falla**:
+#     «tuple decompression limit exceeded by operation — current limit: 100000, tuples
+#     decompressed: 210210». La purga entera se cae y no borra nada.
+#   - Y no se cae gratis: la transacción abortada deja como tuplas muertas lo que llegó a
+#     descomprimir. La tabla pasó de 64 MB a 106 MB **por un solo DELETE fallido**.
+#   - Por debajo de ese límite el DELETE sí entra, y es peor: descomprime en silencio los
+#     chunks que se acababan de comprimir.
+#
+# Y pasaría TODAS las noches, no en un caso raro: `drop_chunks` solo se lleva un chunk
+# cuando TODO su contenido superó la ventana, así que siempre quedan filas de entre 30 y
+# 30+intervalo_de_chunk días vivas en un chunk que la política todavía no puede soltar.
+# Son justo las filas que el DELETE busca, y a esa edad el chunk ya está comprimido.
+#
+# Así que donde la tabla es hypertable, la purga suelta chunks en vez de borrar filas.
+# `drop_chunks` sí se puede: suelta un chunk comprimido sin descomprimirlo (medido), y
+# corre dentro de una transacción, así que las pruebas lo ejercitan de verdad.
+#
+# **Lo que esto NO es** es un no-op. Era la otra salida posible —no hacer nada donde la
+# retención es nativa— y se descartó por dos razones: la purga dejaría de ser la red de
+# seguridad si la política nativa se detiene en silencio (el modo de falla de §10-BC), y
+# `purgar_metricas --dias 7` —la salida de emergencia cuando el disco aprieta— pasaría a
+# no hacer nada sin decirlo. Con `drop_chunks` las dos cosas siguen funcionando.
+#
+# A cambio, la unidad cambia: un DELETE borra FILAS y `drop_chunks` suelta CHUNKS, y no
+# hay forma de informar filas en ese camino sin contar lo que se está por tirar. De ahí
+# `ResultadoPurga`, que dice cuál de las dos cosas hizo.
+
+
+class ResultadoPurga(NamedTuple):
+    """Lo que liberó una purga, en la unidad que de verdad liberó."""
+
+    cantidad: int
+    por_chunks: bool = False
+
+    def __str__(self):
+        return '%d %s' % (
+            self.cantidad,
+            'chunk(s) soltado(s)' if self.por_chunks else 'fila(s) eliminada(s)',
+        )
+
+
+def es_hypertable(tabla: str) -> bool:
+    """True si `tabla` es una hypertable de TimescaleDB.
+
+    False en SQLite (desarrollo) y en un PostgreSQL sin la extensión: ahí las tablas son
+    normales, no hay chunks ni compresión, y la purga vuelve a ser un DELETE.
+    """
+    from django.db import connection
+
+    if connection.vendor != 'postgresql':
+        return False
+    with connection.cursor() as cursor:
+        # Se pregunta por la extensión ANTES de tocar `timescaledb_information`: consultar
+        # un esquema inexistente aborta la transacción en curso, y el fallo no aparecería
+        # acá sino en lo que viniera después (el mismo cuidado que toma la migración 0035
+        # con sus savepoints).
+        cursor.execute("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")
+        if cursor.fetchone() is None:
+            return False
+        cursor.execute(
+            'SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = %s',
+            [tabla],
+        )
+        return cursor.fetchone() is not None
+
+
+def _purgar_serie(modelo, tabla: str, dias: int) -> ResultadoPurga:
+    """Acota una de las cuatro series a `dias` — ver el comentario de arriba."""
+    umbral = timezone.now() - timedelta(days=dias)
+    if not es_hypertable(tabla):
+        borradas, _ = modelo.objects.filter(timestamp__lt=umbral).delete()
+        return ResultadoPurga(borradas)
+
+    from django.db import connection
+
+    with connection.cursor() as cursor:
+        # `drop_chunks` devuelve una fila por chunk soltado. El umbral va como fecha y no
+        # como INTERVAL para que `dias` signifique exactamente lo mismo en los dos
+        # caminos.
+        cursor.execute('SELECT drop_chunks(%s, older_than => %s::timestamptz)', [tabla, umbral])
+        soltados = len(cursor.fetchall())
+    if soltados:
+        logger.info('%s: %d chunk(s) soltado(s) con más de %d días.', tabla, soltados, dias)
+    return ResultadoPurga(soltados, por_chunks=True)
+
+
+def purgar_metricas_antiguas(*, dias: int = 30) -> ResultadoPurga:
     """Borra MuestraMetrica más viejas que `dias`. Reemplaza el `vaciar_logs` del sistema
     viejo (que borraba TODO cada domingo) — retención por antigüedad, no total.
 
@@ -990,19 +1085,19 @@ def purgar_metricas_antiguas(*, dias: int = 30) -> int:
     `timescaledb_information.hypertables` devolvía cero filas).
 
     La migración 0035 arregló la causa y agregó una política de retención nativa con la
-    MISMA ventana de 30 días. Esta función sigue: es la retención donde no hay
-    TimescaleDB (SQLite en desarrollo, PostgreSQL pelado) y el respaldo donde sí lo hay.
-    Las dos ventanas tienen que moverse juntas.
+    MISMA ventana de 30 días. Esta función sigue siendo la retención donde no hay
+    TimescaleDB (SQLite en desarrollo, PostgreSQL pelado) y el respaldo donde sí lo hay —
+    pero desde el 6-oct-2026 ahí suelta chunks en vez de borrar filas, porque con la
+    compresión encendida el DELETE es el problema (ver `_purgar_serie`). Las dos ventanas
+    tienen que moverse juntas igual.
 
     La llaman tanto el comando manual (`purgar_metricas`) como la tarea periódica de
     Celery.
     """
-    umbral = timezone.now() - timedelta(days=dias)
-    borradas, _ = MuestraMetrica.objects.filter(timestamp__lt=umbral).delete()
-    return borradas
+    return _purgar_serie(MuestraMetrica, 'muestra_metrica', dias)
 
 
-def purgar_muestras_red_antiguas(*, dias: int = 30) -> int:
+def purgar_muestras_red_antiguas(*, dias: int = 30) -> ResultadoPurga:
     """Borra MuestraRedFarmacia más viejas que `dias`.
 
     Faltaba: `muestra_metrica` y `evento_monitoreo` tenían purga e hypertable desde el
@@ -1019,12 +1114,10 @@ def purgar_muestras_red_antiguas(*, dias: int = 30) -> int:
     retención el régimen estable queda en ~1,2 GB. PostgreSQL sin hypertable lo sostiene
     de sobra con el índice (farmacia, -timestamp) que ya existe.
     """
-    umbral = timezone.now() - timedelta(days=dias)
-    borradas, _ = MuestraRedFarmacia.objects.filter(timestamp__lt=umbral).delete()
-    return borradas
+    return _purgar_serie(MuestraRedFarmacia, 'muestra_red_farmacia', dias)
 
 
-def purgar_muestras_servicio_pos_antiguas(*, dias: int = 30) -> int:
+def purgar_muestras_servicio_pos_antiguas(*, dias: int = 30) -> ResultadoPurga:
     """Borra MuestraServicioPos más viejas que `dias`.
 
     El modelo nació diciendo "la serie crece sin parar y se purga" (ver su docstring) y
@@ -1037,18 +1130,14 @@ def purgar_muestras_servicio_pos_antiguas(*, dias: int = 30) -> int:
 
     Mismo criterio de retención que las otras tres: 30 días.
     """
-    umbral = timezone.now() - timedelta(days=dias)
-    borradas, _ = MuestraServicioPos.objects.filter(timestamp__lt=umbral).delete()
-    return borradas
+    return _purgar_serie(MuestraServicioPos, 'muestra_servicio_pos', dias)
 
 
-def purgar_eventos_monitoreo_antiguos(*, dias: int = 30) -> int:
+def purgar_eventos_monitoreo_antiguos(*, dias: int = 30) -> ResultadoPurga:
     """Borra EventoMonitoreo más viejos que `dias` — mismo criterio de retención que
     purgar_metricas_antiguas (EstadoDispositivo no se purga: es un snapshot, no un
     histórico)."""
-    umbral = timezone.now() - timedelta(days=dias)
-    borrados, _ = EventoMonitoreo.objects.filter(timestamp__lt=umbral).delete()
-    return borrados
+    return _purgar_serie(EventoMonitoreo, 'evento_monitoreo', dias)
 
 
 # --- Sondeo por ping de los activos sin agente (ver models.EstadoRedActivo) ---

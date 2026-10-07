@@ -18,24 +18,24 @@ def purgar_metricas_task():
     política de retención nativa de TimescaleDB con la MISMA ventana de 30 días; esto
     la respalda y es lo único que acota la tabla donde no hay hypertables (desarrollo).
     Si se cambia la ventana, hay que cambiarla en los dos lados."""
-    borradas = purgar_metricas_antiguas(dias=30)
-    return f'{borradas} muestra(s) de métricas eliminada(s).'
+    resultado = purgar_metricas_antiguas(dias=30)
+    return f'muestra_metrica: {resultado}.'
 
 
 @shared_task(name='apps.monitoreo.tasks.purgar_eventos_monitoreo_task')
 def purgar_eventos_monitoreo_task():
     """Diaria (ver CELERY_BEAT_SCHEDULE). Misma nota que purgar_metricas_task sobre la
     política nativa que la respalda desde la migración 0035."""
-    borrados = purgar_eventos_monitoreo_antiguos(dias=30)
-    return f'{borrados} evento(s) de monitoreo eliminado(s).'
+    resultado = purgar_eventos_monitoreo_antiguos(dias=30)
+    return f'evento_monitoreo: {resultado}.'
 
 
 @shared_task(name='apps.monitoreo.tasks.purgar_muestras_red_task')
 def purgar_muestras_red_task():
     """Diaria (ver CELERY_BEAT_SCHEDULE). Misma nota que purgar_metricas_task sobre la
     política nativa que la respalda desde la migración 0035."""
-    borradas = purgar_muestras_red_antiguas(dias=30)
-    return f'{borradas} muestra(s) de red eliminada(s).'
+    resultado = purgar_muestras_red_antiguas(dias=30)
+    return f'muestra_red_farmacia: {resultado}.'
 
 
 @shared_task(name='apps.monitoreo.tasks.purgar_muestras_servicio_pos_task')
@@ -43,8 +43,8 @@ def purgar_muestras_servicio_pos_task():
     """Diaria (ver CELERY_BEAT_SCHEDULE). La serie más grande de las cuatro: cuatro
     servicios por estación cada 5 minutos. Faltaba — ver
     `apps.monitoreo.services.purgar_muestras_servicio_pos_antiguas`."""
-    borradas = purgar_muestras_servicio_pos_antiguas(dias=30)
-    return f'{borradas} muestra(s) de servicios del POS eliminada(s).'
+    resultado = purgar_muestras_servicio_pos_antiguas(dias=30)
+    return f'muestra_servicio_pos: {resultado}.'
 
 
 @shared_task(name='apps.monitoreo.tasks.solicitar_sondeo_activos_task')

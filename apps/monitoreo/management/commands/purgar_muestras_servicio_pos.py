@@ -20,5 +20,5 @@ class Command(BaseCommand):
         parser.add_argument('--dias', type=int, default=30)
 
     def handle(self, *args, **options):
-        borradas = purgar_muestras_servicio_pos_antiguas(dias=options['dias'])
-        self.stdout.write(self.style.SUCCESS(f'{borradas} muestra(s) de servicios del POS eliminada(s).'))
+        resultado = purgar_muestras_servicio_pos_antiguas(dias=options['dias'])
+        self.stdout.write(self.style.SUCCESS(f'muestra_servicio_pos: {resultado}.'))

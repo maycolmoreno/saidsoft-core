@@ -4420,3 +4420,111 @@ producción, no una aproximación.
 Una tarea de Beat que falla cada 15 minutos durante tres semanas no le avisó a nadie: se
 descubrió leyendo `docker logs` a mano por otro motivo. No hay nada que vigile los fallos de
 Celery, y es lo que convirtió un bug de una línea en tres semanas de dato viejo silencioso.
+
+
+## §10-BD — Compresión en las cuatro hypertables, y la purga que había que arreglar antes (6-oct-2026)
+
+A-2 del informe de auditoría: la medida de mayor impacto en disco de toda la tanda —~15 GB
+proyectados contra 0,8–1,5 GB— y la que el informe marcaba como "hay que revisar las 4
+purgas **antes**". La migración 0035 ya lo había anticipado en su propio docstring: «No se
+activa compresión todavía. Un chunk comprimido cambia el comportamiento de los DELETE que
+las purgas siguen haciendo, y eso se prueba contra datos reales antes de encenderlo, no de
+entrada». Esto es esa prueba, y lo que encontró.
+
+### Lo medido, contra TimescaleDB 2.17.2 en una base aparte
+
+Cuatro preguntas que no se podían contestar leyendo documentación, con 665.280 filas con la
+forma real de `muestra_metrica` (series que se mueven poco, enteros repetidos, dos columnas
+en NULL):
+
+| Pregunta | Respuesta medida |
+|---|---|
+| ¿La PK `(id, timestamp)` que dejó 0035 impide comprimir? | **No.** Avisa «column "id" should be used for segmenting or ordering» y sigue |
+| ¿Qué hace el `DELETE` de la purga sobre chunks comprimidos? | **Falla**: «tuple decompression limit exceeded — current limit: 100000, tuples decompressed: 210210» |
+| ¿Y si falla, queda como estaba? | **No.** La transacción abortada deja lo descomprimido como tuplas muertas: **64 MB → 106 MB por un solo DELETE fallido** |
+| ¿Un INSERT atrasado (cola offline del agente) descomprime? | **No.** Una fila y una tanda de 2.000 sobre un chunk comprimido entran, el chunk sigue comprimido y lo insertado se lee |
+
+Y por debajo de las 100.000 filas el DELETE **sí** entra, que es el caso peor de los dos:
+descomprime en silencio los chunks que se acababan de comprimir, sin un error que lo diga.
+
+**Esto no era un caso de borde, era todas las noches.** `drop_chunks` solo suelta un chunk
+cuando TODO su contenido superó la ventana, así que con retención de 30 días siempre quedan
+filas de entre 30 y 30+intervalo_de_chunk días vivas en un chunk que la política todavía no
+puede soltar. Son exactamente las filas que el DELETE de la purga busca, y a esa edad el
+chunk ya está comprimido.
+
+### El `segmentby` se eligió midiendo, y la diferencia es grande
+
+| Tabla | `segmentby` | Factor |
+|---|---|---|
+| `muestra_servicio_pos` | `estacion_id` | 11,6x |
+| | **`estacion_id, servicio`** | **42,5x** |
+| `evento_monitoreo` | `estacion_id` | 16,7x |
+| | **`estacion_id, fuente`** | **110x** |
+| `muestra_metrica` | **`estacion_id`** (no tiene segunda columna que agrupe) | **10,7x** |
+
+La segunda columna cambia el resultado por un factor de 4 a 7, y el motivo es el mismo en
+las dos tablas: con ella cada segmento queda con UNA serie —un servicio de una estación,
+una fuente de una estación— en vez de varias entreveradas, y además ese valor repetido deja
+de almacenarse por fila y pasa a ser la clave del segmento. Elegirlo "por analogía" con
+`muestra_metrica` habría dejado cuatro quintos del ahorro en la mesa.
+
+Comprime **a los 7 días**: después de la semana caliente que miran los gráficos del panel y
+antes de la retención de 30. La ventana de 30 días **no se toca** — con compresión el
+espacio deja de ser el argumento para recortarla, que es justo lo que el informe pedía no
+hacer.
+
+### La purga: `drop_chunks`, y por qué NO un no-op
+
+El informe ofrecía dos salidas: dejar las purgas como no-op donde la retención es nativa, o
+convertirlas a `drop_chunks`. Se eligió la segunda, y lo que la decidió fueron dos
+mediciones más: `drop_chunks` **suelta un chunk comprimido sin descomprimirlo**, y **corre
+dentro de una transacción** (así que las pruebas lo ejercitan de verdad, no simulado).
+
+El no-op tenía dos costos que esto evita:
+
+- La purga dejaría de ser la red de seguridad si la política nativa se detuviera en
+  silencio. Es el modo de falla de §10-BC —una tarea periódica que falla y nadie se
+  entera— y no conviene repetirlo en la tabla que más crece.
+- `purgar_metricas --dias 7`, la salida de emergencia cuando el disco aprieta, pasaría a no
+  hacer nada **sin decirlo**.
+
+A cambio cambia la unidad, y ahí hubo que ser explícito: un DELETE borra FILAS y
+`drop_chunks` suelta CHUNKS, y no hay forma de informar filas en ese camino sin contar lo
+que se está por tirar. De ahí `ResultadoPurga(cantidad, por_chunks)`, que dice cuál de las
+dos cosas hizo — las tareas ahora reportan `muestra_metrica: 3 chunk(s) soltado(s)`.
+
+**La consecuencia que hay que tener presente:** la retención pasa a tener granularidad de
+chunk. Para `evento_monitoreo` y `muestra_red_farmacia`, con chunks de 7 días, la retención
+real es de **30 a 37 días**. Es siempre más historial que el que promete la política, nunca
+menos. Bajarlo a 30-31 es M-5 del informe (chunks de 1 día en esas dos), que queda aparte.
+
+### Pruebas
+
+6 nuevas en `RetencionDeSeriesPorChunksTests`, verificadas al revés (devolviendo el DELETE,
+fallan 2). La que importa **mira el SQL**: que la purga no emita un `DELETE` sobre una
+hypertable. Es el mismo criterio que §10-AZ y §10-BB — la purga podría dejar la tabla igual
+de acotada con un DELETE y seguir siendo el error que rompe la compresión, así que mirar el
+resultado no alcanza.
+
+Hay dos cosas que vale registrar del lado de las pruebas:
+
+- **Las pruebas corren con TimescaleDB, y nadie lo sabía.** `template1` tiene la extensión
+  (la imagen oficial la instala ahí), así que toda base de pruebas la hereda y la migración
+  0035 convierte las cuatro tablas en hypertables **también en la suite**. Por eso al
+  cambiar la purga fallaron 9 pruebas de golpe: estaban ejercitando, sin que nadie lo
+  hubiera decidido, el camino de producción. Las cuatro clases viejas ahora fuerzan
+  explícitamente el camino SIN hypertable —el DELETE por fila, que es el que corre en
+  SQLite y en un PostgreSQL pelado— y el de chunks tiene su clase propia.
+- **`SET CONSTRAINTS ALL IMMEDIATE` en la prueba, no en el código.** Las FK de Django son
+  `DEFERRABLE INITIALLY DEFERRED`, así que cada INSERT deja un evento de trigger pendiente
+  hasta el COMMIT y PostgreSQL no permite soltar un chunk que los tenga («cannot DROP TABLE
+  "_hyper_7_3_chunk" because it has pending trigger events»). En producción no pasa: la
+  purga corre en autocommit, en una transacción donde nadie insertó. Pasa en la suite porque
+  `TestCase` envuelve cada prueba junto con las filas que ella misma creó. La acomodación va
+  en la prueba —forzar las comprobaciones es lo que haría el COMMIT— y no en la purga:
+  doblar el código de producción para que una prueba pase habría sido el arreglo equivocado.
+  No se usó `TransactionTestCase`, que sería lo "natural", porque su `flush` se lleva los
+  datos que siembran las migraciones (`UnidadNegocio`, `Grupo`) de los que dependen cientos
+  de pruebas, y no hay ninguno en el repo: no es el cambio que corresponde traer de prestado
+  acá.
