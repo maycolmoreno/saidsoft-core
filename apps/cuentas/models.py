@@ -44,7 +44,8 @@ class PerfilUsuario(models.Model):
         help_text='chat_id de Telegram de esta persona. Con esto, sus comandos de acción '
                   'por Telegram se ejecutan con SUS permisos y quedan a su nombre en el '
                   'historial. Vacío = solo puede consultar (si su chat está en '
-                  'TELEGRAM_CHAT_IDS_AUTORIZADOS).',
+                  'TELEGRAM_CHAT_IDS_AUTORIZADOS). Cargarlo aca ya habilita a la persona a '
+                  'consultar: desde el 7-oct-2026 no hace falta tocar el .env.',
     )
 
     class Meta:

@@ -27,7 +27,9 @@ este permiso.
 
 **Dos autorizaciones distintas, y conviene no confundirlas.**
 
-*Consultar* se gobierna con `TELEGRAM_CHAT_IDS_AUTORIZADOS`, una lista en el .env. Un
+*Consultar* se gobierna con `chat_autorizado`, que acepta DOS fuentes: un
+`PerfilUsuario` activo con ese chat_id —el camino normal, se da de alta desde el admin— o
+`TELEGRAM_CHAT_IDS_AUTORIZADOS`, la lista del .env, para chats que no son una persona. Un
 bot de Telegram es público: cualquiera que adivine su nombre de usuario puede
 escribirle. A un chat que no está en la lista no se le contesta nada, ni siquiera "no
 autorizado" — confirmar que el bot existe y a qué responde ya es información. Lo que
@@ -1013,8 +1015,34 @@ def responder_a_callback(data: str, chat_id=None):
 
 
 def chat_autorizado(chat_id) -> bool:
+    """Si a este chat se le contesta. DOS fuentes, y cada una resuelve algo distinto.
+
+    1. Un `PerfilUsuario` con ese `telegram_chat_id` y su usuario ACTIVO. Es el camino
+       normal para una persona: se da de alta desde el admin y listo, sin tocar el
+       servidor ni recrear contenedores.
+    2. `TELEGRAM_CHAT_IDS_AUTORIZADOS`, la lista del .env, para los chats que NO son una
+       persona —un grupo, un canal de guardia— donde no hay perfil que vincular.
+
+    Hasta el 7-oct-2026 solo existía la segunda, y eso traía dos problemas. Uno de
+    comodidad: cargar el chat_id en el admin no habilitaba a nadie, no daba ningún error,
+    y el bot seguía mudo — pasó dos veces y las dos costó el mismo rato de diagnóstico.
+
+    El otro es de seguridad y es el que de verdad importa: **dar de baja a alguien en
+    Django no le quitaba el Telegram.** Su chat seguía en la lista del .env y podía seguir
+    consultando códigos de farmacia, IPs de routers y qué está caído. Ahora la baja le
+    corta el acceso en el mismo acto, porque `usuario_de_chat_telegram` exige `is_active`.
+
+    Se reusa esa función y no se consulta el perfil acá: es la misma puerta que ya decide
+    quién puede ACCIONAR, así que consultar y accionar no pueden discrepar sobre si una
+    persona existe. Lo que las sigue separando es el permiso, no la identidad.
+    """
     autorizados = [str(c).strip() for c in getattr(settings, 'TELEGRAM_CHAT_IDS_AUTORIZADOS', [])]
-    return str(chat_id) in autorizados
+    if str(chat_id) in autorizados:
+        return True
+
+    from apps.cuentas.services import usuario_de_chat_telegram
+
+    return usuario_de_chat_telegram(chat_id) is not None
 
 
 def responder_a(texto: str, chat_id=None):

@@ -86,6 +86,7 @@ class Command(BaseCommand):
         self._revisar_latidos(revisar)
         self._revisar_beat(revisar)
         self._revisar_sondeo_enlaces(revisar)
+        self._revisar_telegram(revisar)
         self._revisar_disco(revisar)
 
         if solo and solo not in revisados:
@@ -201,6 +202,53 @@ class Command(BaseCommand):
             'último sondeo hace %.0f min (umbral %d min). Si está vencido, lo más probable '
             'es que el barrido esté abortando por falta de ruta: buscar "Barrido de enlaces '
             'abortado" en el log del worker.' % (minutos, umbral),
+        )
+
+    def _revisar_telegram(self, revisar):
+        """Avisa de los chats del .env que le sobreviven a una baja.
+
+        Desde el 7-oct-2026 un chat se autoriza de dos formas: por `PerfilUsuario` activo
+        —el camino normal, desde el admin— o por `TELEGRAM_CHAT_IDS_AUTORIZADOS`, la lista
+        del .env, pensada para chats que no son una persona (un grupo, un canal).
+
+        La diferencia entre las dos es lo que esta revision vigila. El perfil se revoca
+        solo: desactivar al usuario en Django le corta el Telegram en el mismo acto. **La
+        lista del .env no.** Un chat que esta ahi sigue entrando aunque la persona ya no
+        trabaje, y nadie se entera: dar de baja a alguien se siente completo y no lo esta.
+
+        Por eso se revisa ESE sentido y no el inverso. Un perfil con chat_id y usuario
+        inactivo no es un problema —el bot ya no le contesta, que es lo correcto— y un chat
+        del .env sin perfil tampoco: es el caso legitimo de un grupo.
+        """
+        from django.conf import settings
+
+        from apps.cuentas.models import PerfilUsuario
+
+        autorizados = {str(c).strip() for c in getattr(settings, 'TELEGRAM_CHAT_IDS_AUTORIZADOS', [])}
+        if not autorizados:
+            revisar('telegram', True, 'sin chats fijos en el .env: todo se autoriza por perfil')
+            return
+
+        # Solo los del .env que SI son una persona y esa persona esta dada de baja.
+        de_baja = list(
+            PerfilUsuario.objects
+            .filter(telegram_chat_id__in=autorizados, usuario__is_active=False)
+            .select_related('usuario')
+            .values_list('usuario__username', 'telegram_chat_id'),
+        )
+        if de_baja:
+            revisar(
+                'telegram', False,
+                '%d chat(s) del .env pertenecen a usuarios DADOS DE BAJA y siguen '
+                'entrando: %s. La baja en Django no alcanza para esos: hay que sacarlos de '
+                'TELEGRAM_CHAT_IDS_AUTORIZADOS y recrear telegram_bot y celery_worker con '
+                '`up -d` (un `restart` conserva las variables viejas).'
+                % (len(de_baja), ', '.join('%s (%s)' % (u, c) for u, c in sorted(de_baja))),
+            )
+            return
+        revisar(
+            'telegram', True,
+            '%d chat(s) fijo(s) en el .env, ninguno de un usuario dado de baja' % len(autorizados),
         )
 
     def _revisar_disco(self, revisar):

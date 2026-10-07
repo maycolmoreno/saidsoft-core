@@ -7207,7 +7207,14 @@ class IdPorTelegramTests(TestCase):
     Eso cede parte del silencio que protege al bot del sondeo, y la contención es que a
     un desconocido se le manda el número pelado y nada más — ni que existe un panel, ni
     que hay comandos, ni si va a recibir acceso.
+
+    `DESCONOCIDO` es un chat SIN perfil, y desde el 7-oct-2026 eso importa: un chat con
+    perfil activo ya esta autorizado por si solo (ver `chat_autorizado`), asi que usar el
+    mismo numero para "desconocido" y para "atado a un usuario" dejo de ser posible. Antes
+    convivian porque la unica puerta era la lista del .env.
     """
+
+    DESCONOCIDO = 4001002003
 
     def setUp(self):
         from apps.cuentas.models import PerfilUsuario
@@ -7228,15 +7235,15 @@ class IdPorTelegramTests(TestCase):
         with patch('apps.monitoreo.services._enviar_telegram') as enviar:
             enviar.side_effect = lambda chat, texto, **kw: enviados.append((chat, texto)) or True
             respondio = telegram_bot.procesar_actualizacion({
-                'message': {'chat': {'id': 8063269004}, 'text': '/id'},
+                'message': {'chat': {'id': self.DESCONOCIDO}, 'text': '/id'},
             })
 
         self.assertTrue(respondio, 'a un chat sin autorizar hay que contestarle /id')
         self.assertEqual(len(enviados), 1)
         chat, texto = enviados[0]
-        self.assertEqual(chat, 8063269004)
+        self.assertEqual(chat, self.DESCONOCIDO)
         # El numero, y nada que describa el sistema.
-        self.assertEqual(texto.strip(), '8063269004')
+        self.assertEqual(texto.strip(), str(self.DESCONOCIDO))
         for filtracion in ('panel', 'permiso', 'alerta', 'comando', '/'):
             self.assertNotIn(
                 filtracion, texto.lower(),
@@ -7252,7 +7259,7 @@ class IdPorTelegramTests(TestCase):
         for texto in ('/alertas', '/estado', '/hora', '/reconocer 1', 'hola'):
             with patch('apps.monitoreo.services._enviar_telegram') as enviar:
                 respondio = telegram_bot.procesar_actualizacion({
-                    'message': {'chat': {'id': 8063269004}, 'text': texto},
+                    'message': {'chat': {'id': self.DESCONOCIDO}, 'text': texto},
                 })
             self.assertFalse(respondio, f'{texto} no puede contestarse sin autorizacion')
             enviar.assert_not_called()
@@ -8357,3 +8364,141 @@ class IndicesSinPrefijoRedundanteTests(TestCase):
                     '%s.%s se quedó sin NINGÚN índice que empiece por esa columna: borrar '
                     'la fila padre haría un seq scan de esta tabla' % (tabla, columna),
                 )
+
+class SaludDeTelegramTests(TestCase):
+    """`verificar_salud` avisa de los chats del .env que le sobreviven a una baja.
+
+    Desde el 7-oct-2026 un chat se autoriza por `PerfilUsuario` activo —el camino normal,
+    desde el admin— o por la lista del .env, para chats que no son una persona.
+
+    La diferencia entre las dos es lo que esta revision vigila. El perfil se revoca solo:
+    desactivar al usuario le corta el Telegram en el mismo acto. La lista del .env NO. Un
+    chat que esta ahi sigue entrando aunque la persona ya no trabaje, y nadie se entera:
+    dar de baja a alguien se siente completo y no lo esta.
+    """
+
+    def setUp(self):
+        from apps.cuentas.models import PerfilUsuario
+
+        self.usuario = User.objects.create_user(username='mateo.picon', password='x')
+        self.perfil = PerfilUsuario.objects.create(
+            usuario=self.usuario, acceso_todas_unidades=True, telegram_chat_id='999888777',
+        )
+
+    def _correr(self, *args):
+        """Mismo helper que VerificarSaludTests: devuelve (texto, codigo_de_salida)."""
+        salida = io.StringIO()
+        try:
+            call_command('verificar_salud', '--solo', 'telegram', *args,
+                         stdout=salida, stderr=salida)
+        except SystemExit as exc:
+            return salida.getvalue(), exc.code
+        return salida.getvalue(), 0
+
+    def _dar_de_baja(self):
+        self.usuario.is_active = False
+        self.usuario.save(update_fields=['is_active'])
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=['999888777'])
+    def test_avisa_del_chat_fijo_de_alguien_dado_de_baja(self):
+        """El caso que la revision existe para encontrar: la baja en Django no le quito el
+        Telegram porque su chat esta clavado en el .env."""
+        self._dar_de_baja()
+
+        texto, codigo = self._correr()
+        self.assertIn('PROBLEMA', texto)
+        self.assertIn('mateo.picon', texto)
+        self.assertNotEqual(codigo, 0)
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=['999888777'])
+    def test_el_aviso_dice_que_hacer_y_donde(self):
+        """Un aviso que no dice el remedio obliga a volver a investigar lo mismo."""
+        self._dar_de_baja()
+
+        texto, _ = self._correr()
+        self.assertIn('TELEGRAM_CHAT_IDS_AUTORIZADOS', texto)
+        self.assertIn('up -d', texto)
+        self.assertIn('restart', texto)
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=['999888777'])
+    def test_un_usuario_activo_en_la_lista_no_es_problema(self):
+        texto, codigo = self._correr()
+        self.assertIn('OK', texto)
+        self.assertEqual(codigo, 0)
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=['111222333'])
+    def test_un_chat_del_env_sin_perfil_no_es_problema(self):
+        """Es el caso legitimo de la lista: un grupo o un canal de guardia, donde no hay
+        persona que vincular."""
+        texto, codigo = self._correr()
+        self.assertIn('OK', texto)
+        self.assertEqual(codigo, 0)
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=[])
+    def test_un_perfil_de_baja_sin_estar_en_el_env_no_es_problema(self):
+        """El bot ya no le contesta —`chat_autorizado` exige usuario activo—, asi que no
+        hay nada que avisar. Marcarlo llenaria el reporte de ruido."""
+        self._dar_de_baja()
+
+        texto, codigo = self._correr()
+        self.assertIn('OK', texto)
+        self.assertEqual(codigo, 0)
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=[])
+    def test_sin_lista_fija_lo_dice(self):
+        """Es la configuracion recomendada, no una falta: todo se autoriza por perfil."""
+        texto, codigo = self._correr()
+        self.assertIn('OK', texto)
+        self.assertIn('por perfil', texto)
+        self.assertEqual(codigo, 0)
+
+
+class ChatAutorizadoPorPerfilTests(TestCase):
+    """`chat_autorizado` acepta un perfil activo, sin pasar por el .env.
+
+    Antes la unica fuente era la lista del .env, y eso traia dos problemas. Uno de
+    comodidad: cargar el chat_id en el admin no habilitaba a nadie y el bot seguia mudo,
+    sin ningun error — paso dos veces, el 3 y el 7-oct-2026.
+
+    El otro es de seguridad: dar de baja a alguien en Django NO le quitaba el Telegram.
+    """
+
+    def setUp(self):
+        from apps.cuentas.models import PerfilUsuario
+
+        self.usuario = User.objects.create_user(username='u_chat', password='x')
+        self.perfil = PerfilUsuario.objects.create(
+            usuario=self.usuario, acceso_todas_unidades=True, telegram_chat_id='555444333',
+        )
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=[])
+    def test_un_perfil_activo_alcanza(self):
+        """El alta es un campo en el admin: ni .env ni recrear contenedores."""
+        from apps.monitoreo.telegram_bot import chat_autorizado
+
+        self.assertTrue(chat_autorizado('555444333'))
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=[])
+    def test_dar_de_baja_al_usuario_le_corta_el_bot(self):
+        """Lo que antes no pasaba: la baja ahora es de verdad."""
+        from apps.monitoreo.telegram_bot import chat_autorizado
+
+        self.usuario.is_active = False
+        self.usuario.save(update_fields=['is_active'])
+
+        self.assertFalse(chat_autorizado('555444333'))
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=['777666555'])
+    def test_la_lista_del_env_sigue_valiendo(self):
+        """No se reemplaza: es lo unico que puede autorizar un grupo, donde no hay perfil."""
+        from apps.monitoreo.telegram_bot import chat_autorizado
+
+        self.assertTrue(chat_autorizado('777666555'))
+
+    @override_settings(TELEGRAM_CHAT_IDS_AUTORIZADOS=[])
+    def test_un_chat_desconocido_sigue_sin_entrar(self):
+        from apps.monitoreo.telegram_bot import chat_autorizado
+
+        self.assertFalse(chat_autorizado('000000000'))
+        self.assertFalse(chat_autorizado(''))
+        self.assertFalse(chat_autorizado(None))

@@ -59,11 +59,24 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 'TELEGRAM_BOT_TOKEN vacío — run_telegram_bot no hace nada.'))
             return
-        if not autorizados:
-            # Arrancar igual sería peor que no arrancar: el bot consumiría los mensajes
-            # sin contestarle a nadie, y desde afuera parecería que está roto.
+        # Desde el 7-oct-2026 un chat tambien se autoriza por `PerfilUsuario`, asi que la
+        # lista del .env vacia ya NO significa "nadie puede consultar": una instalacion
+        # puede autorizar solo por perfiles, que es ahora el camino normal. Negarse ahi
+        # dejaria el bot apagado justamente en la configuracion recomendada.
+        #
+        # La guarda se mantiene para el caso que si rompe —ninguna de las dos fuentes—
+        # porque arrancar asi es peor que no arrancar: el bot consumiria los mensajes sin
+        # contestarle a nadie, y desde afuera pareceria que esta roto.
+        from apps.cuentas.models import PerfilUsuario
+
+        hay_perfiles = PerfilUsuario.objects.exclude(telegram_chat_id='').filter(
+            usuario__is_active=True,
+        ).exists()
+        if not autorizados and not hay_perfiles:
             self.stdout.write(self.style.WARNING(
-                'TELEGRAM_CHAT_IDS_AUTORIZADOS vacío — nadie podría consultar, no se arranca.'))
+                'Sin chats autorizados: ni TELEGRAM_CHAT_IDS_AUTORIZADOS ni ningun '
+                'PerfilUsuario activo con telegram_chat_id. Nadie podria consultar, no se '
+                'arranca.'))
             return
 
         signal.signal(signal.SIGTERM, self._manejar_apagado)
