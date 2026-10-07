@@ -135,7 +135,22 @@ class ResultadoDespliegue(models.Model):
         ROLLBACK = 'rollback', 'Rollback ejecutado'
 
     despliegue = models.ForeignKey(Despliegue, on_delete=models.CASCADE, related_name='resultados')
-    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='resultados_despliegue')
+    # PROTECT y no CASCADE desde el 6-oct-2026. Esta fila, con su `EventoDespliegue`
+    # colgando, es el ACTA de que una versión llegó (o no) a esa caja: alimenta el informe
+    # de despliegues y es lo único que responde "¿esta estación recibió la 2.5.0?".
+    #
+    # Con CASCADE, borrar una estación desde el admin se llevaba esa acta en silencio —
+    # sin aviso, sin rastro de que existió. El propio proyecto ya aplica el criterio
+    # contrario donde importa: `EventoAuditoria.usuario` es SET_NULL, así que borrar a una
+    # persona no borra lo que hizo. Acá el historial era más frágil que la auditoría.
+    #
+    # El efecto de PROTECT es una pausa deliberada: una estación con despliegues no se
+    # borra hasta que alguien decida qué hacer con su historial. Eso es exactamente lo que
+    # se quiere en ese momento.
+    #
+    # El `despliegue` de arriba SIGUE en CASCADE a propósito: ahí el agregado es el
+    # despliegue, y sus resultados no significan nada sin él.
+    estacion = models.ForeignKey(Estacion, on_delete=models.PROTECT, related_name='resultados_despliegue')
     estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.PENDIENTE)
     version_previa = models.CharField(max_length=30, blank=True)
     version_nueva = models.CharField(max_length=30, blank=True)

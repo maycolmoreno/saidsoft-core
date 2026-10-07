@@ -574,3 +574,104 @@ class IngestaDeEstadoDeDespliegueTests(_BaseDespliegueTests):
         self.assertNotIn('ResultadoDespliegue', fuente)
         self.assertNotIn('EventoDespliegue', fuente)
         self.assertNotIn('_PASO_A_ESTADO', fuente)
+
+
+class BorrarEstacionNoSeLlevaElHistorialTests(TestCase):
+    """`ResultadoDespliegue.estacion` es PROTECT desde el 6-oct-2026.
+
+    Esa fila, con sus `EventoDespliegue`, es el acta de que una version llego (o no) a esa
+    caja: alimenta el informe de despliegues y es lo unico que responde "¿esta estacion
+    recibio la 2.5.0?". Con CASCADE, borrar la estacion desde el admin se la llevaba en
+    silencio.
+
+    El proyecto ya aplica el criterio contrario donde importa: `EventoAuditoria.usuario` es
+    SET_NULL, asi que borrar a una persona no borra lo que hizo. El historial de despliegues
+    era mas fragil que la auditoria, y no habia razon para que lo fuera.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXPRO')
+        self.farmacia = Farmacia.objects.create(
+            codigo='PRO001', grupo=grupo, unidad_negocio=self.sg,
+        )
+        self.estacion = Estacion.objects.create(
+            codigo='PRO001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_protect', password='x')
+
+    def _despliegue_con_resultado(self):
+        from apps.despliegues.models import Despliegue, EventoDespliegue, ResultadoDespliegue
+
+        despliegue = Despliegue.objects.create(
+            version='2.5.0', sha256='a' * 64, unidad_negocio=self.sg, creado_por=self.usuario,
+            destino_tipo='estaciones',
+        )
+        resultado = ResultadoDespliegue.objects.create(
+            despliegue=despliegue, estacion=self.estacion,
+        )
+        EventoDespliegue.objects.create(resultado=resultado, paso=EventoDespliegue.Paso.OK)
+        return despliegue, resultado
+
+    def test_no_se_puede_borrar_una_estacion_con_despliegues(self):
+        """PROTECT no es un bloqueo caprichoso: es la pausa para decidir que hacer con el
+        historial antes de perderlo."""
+        from django.db.models import ProtectedError
+
+        self._despliegue_con_resultado()
+
+        with self.assertRaises(ProtectedError):
+            self.estacion.delete()
+
+    def test_el_acta_sigue_ahi_despues_del_intento(self):
+        """Un borrado rechazado no puede dejar nada a medias."""
+        from apps.despliegues.models import EventoDespliegue, ResultadoDespliegue
+        from django.db import transaction
+        from django.db.models import ProtectedError
+
+        self._despliegue_con_resultado()
+
+        with transaction.atomic():
+            with self.assertRaises(ProtectedError):
+                self.estacion.delete()
+
+        self.assertEqual(ResultadoDespliegue.objects.count(), 1)
+        self.assertEqual(EventoDespliegue.objects.count(), 1)
+        self.assertTrue(Estacion.objects.filter(pk=self.estacion.pk).exists())
+
+    def test_una_estacion_sin_historial_si_se_borra(self):
+        """La proteccion no puede volver indestructible a cualquier estacion: una que nunca
+        recibio un despliegue no tiene acta que cuidar."""
+        sin_historial = Estacion.objects.create(
+            codigo='PRO001-B', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        sin_historial.delete()
+        self.assertFalse(Estacion.objects.filter(codigo='PRO001-B').exists())
+
+    def test_borrar_el_despliegue_si_se_lleva_sus_resultados(self):
+        """Lo que NO cambio, y es deliberado: ahi el agregado es el despliegue, y sus
+        resultados no significan nada sin el. Solo se protegio el lado de la estacion."""
+        from apps.despliegues.models import EventoDespliegue, ResultadoDespliegue
+
+        despliegue, _ = self._despliegue_con_resultado()
+        despliegue.delete()
+
+        self.assertEqual(ResultadoDespliegue.objects.count(), 0)
+        self.assertEqual(EventoDespliegue.objects.count(), 0)
+        self.assertTrue(Estacion.objects.filter(pk=self.estacion.pk).exists())
+
+    def test_las_series_de_tiempo_siguen_en_cascada(self):
+        """Tampoco cambio, y tambien es deliberado: tienen retencion de 30 dias y no
+        significan nada sin su estacion. Protegerlas dejaria millones de filas huerfanas."""
+        from apps.monitoreo.models import MuestraMetrica
+
+        otra = Estacion.objects.create(
+            codigo='PRO001-C', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        MuestraMetrica.objects.create(estacion=otra, cpu_carga_pct=42)
+
+        otra.delete()
+        self.assertEqual(MuestraMetrica.objects.count(), 0)

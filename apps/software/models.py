@@ -199,7 +199,11 @@ class ResultadoInstalacion(models.Model):
         ERROR = 'error', 'Error'
 
     solicitud = models.ForeignKey(SolicitudInstalacion, on_delete=models.CASCADE, related_name='resultados')
-    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='resultados_instalacion')
+    # PROTECT por el mismo motivo que `ResultadoDespliegue.estacion`: esta fila y su
+    # `EventoInstalacion` son el acta de que una aplicación se instaló en esa caja, y
+    # borrar la estación se la llevaba en silencio. La `solicitud` sigue en CASCADE: ahí
+    # el agregado es la solicitud.
+    estacion = models.ForeignKey(Estacion, on_delete=models.PROTECT, related_name='resultados_instalacion')
     estado = models.CharField(max_length=15, choices=Estado.choices, default=Estado.PENDIENTE)
     version_previa_detectada = models.CharField(max_length=50, blank=True)
     version_instalada = models.CharField(max_length=50, blank=True)
