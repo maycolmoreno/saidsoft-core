@@ -557,7 +557,15 @@ def sincronizar_identidad_equipos(farmacias=None) -> dict:
 
     if farmacias is None:
         from apps.catalogo.models import Farmacia
-        farmacias = Farmacia.objects.exclude(ip_router__isnull=True).order_by('codigo')
+        # `list(...)` y no el queryset, y no es cosmético: el generador de abajo
+        # (`_una(f) for f in farmacias`) se consume DENTRO de `asyncio.run`, así que
+        # recorrer un queryset sin evaluar sería una consulta desde contexto async —
+        # `SynchronousOnlyOperation`, y la tarea entera se cae. Pasó: desde el 14-sep-2026
+        # hasta el 6-oct Beat la reventó cada 15 minutos mientras el camino con lista
+        # explícita (el del comando a mano) seguía funcionando, así que el uptime de los
+        # Mikrotik se quedaba viejo sin que nada lo dijera. `sincronizar_ancho_banda_farmacias`
+        # materializa por esta misma razón.
+        farmacias = list(Farmacia.objects.exclude(ip_router__isnull=True).order_by('codigo'))
 
     puerto = _puerto()
     resumen = {
@@ -722,7 +730,12 @@ def sincronizar_dispositivos_detectados(farmacias=None) -> dict:
 
     if farmacias is None:
         from apps.catalogo.models import Farmacia
-        farmacias = Farmacia.objects.exclude(ip_router__isnull=True).order_by('codigo')
+        # Materializado por lo mismo que en `sincronizar_identidad_equipos`: el queryset se
+        # recorrería dentro de `asyncio.run` y eso es `SynchronousOnlyOperation`. Acá no lo
+        # destapó ningún log porque esta función no está en el Beat: solo se rompía
+        # `descubrir_dispositivos_farmacia` SIN `--farmacias`, o sea el modo "todas", que es
+        # para lo que existe el comando.
+        farmacias = list(Farmacia.objects.exclude(ip_router__isnull=True).order_by('codigo'))
 
     puerto = _puerto()
     resumen = {'farmacias_leidas': 0, 'sin_responder': 0, 'nuevos': 0, 'actualizados': 0, 'sin_declarar': []}

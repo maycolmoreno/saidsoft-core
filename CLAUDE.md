@@ -28,11 +28,18 @@ informe de auditoría de esa fecha para las proyecciones hacia 1.300 farmacias.
   El entrypoint corre las migraciones solo.
   **`build web` NO alcanza** (decía eso acá hasta el 11-sep-2026): los servicios
   comparten el mismo `Dockerfile` vía el ancla `x-app`, pero Compose genera **una
-  imagen por servicio** (`deploy-web`, `deploy-worker`, `deploy-celery_beat`,
-  `deploy-celery_worker`, `deploy-meshcentral_worker`). Con `build web` solo se
+  imagen por servicio** — hoy **seis**: `deploy-web`, `deploy-worker`,
+  `deploy-celery_beat`, `deploy-celery_worker`, `deploy-meshcentral_worker` y
+  `deploy-telegram_bot` (esta última faltaba en esta lista hasta el 6-oct-2026, y es
+  donde vive el bot de Telegram). Con `build web` solo se
   recrea `web` y el worker MQTT y Celery se quedan con el código viejo — pasó en el
   despliegue del 11-sep: beat seguía sin la tarea nueva y sin el `ping` del
   Dockerfile. `build` sin argumento las construye todas.
+  **Para comprobar que ninguna quedó con código viejo** (6-oct-2026), comparar el archivo
+  DENTRO del contenedor contra el checkout:
+  `docker exec deploy-worker-1 cat /app/apps/monitoreo/services.py | diff -q - apps/monitoreo/services.py`.
+  Es exacto y no depende de elegir bien una palabra a buscar ni de interpretar fechas de
+  imagen.
 - **Un cambio a `deploy/nginx/nginx.conf` exige RECREAR el contenedor, no recargarlo**:
   es un bind mount de archivo suelto y ata el inode, así que `git pull` no lo alcanza
   (ver §10-AA).

@@ -1815,6 +1815,34 @@ class IdentidadEquipoBordeTests(TestCase):
         with self.assertRaises(CommandError):
             call_command('sondear_identidad_mikrotik', '--farmacias', 'ML999', stdout=io.StringIO())
 
+    def test_sin_argumentos_es_el_camino_del_beat_y_es_el_que_nadie_probaba(self):
+        """`sincronizar_identidad_equipos()` SIN argumentos: el unico camino que corre en
+        produccion, y el unico que no estaba probado.
+
+        Las demas pruebas de esta clase pasan `[self.farmacia]` —una lista— y el comando a
+        mano arma otra lista cuando le dan `--farmacias`. El `farmacias=None` del Beat no lo
+        ejercitaba nadie, y es justo el que se rompia: el queryset llegaba sin evaluar al
+        `asyncio.run` y recorrerlo ahi dentro es una consulta desde contexto async, o sea
+        `SynchronousOnlyOperation`. La tarea se cayo cada 15 minutos entre el 14-sep-2026 y
+        el 6-oct, con el uptime de los Mikrotik quedandose viejo sin que nada lo dijera —
+        exactamente el problema que esta tarea existia para resolver.
+
+        Verificada al reves: quitando el `list(...)` de la funcion, falla.
+        """
+        from apps.monitoreo.mikrotik import sincronizar_identidad_equipos
+        from apps.monitoreo.models import EquipoBordeFarmacia
+
+        async def _falso(ip, comunidad, puerto):
+            return self._respuesta()
+
+        with patch('apps.monitoreo.mikrotik._leer_identidad', _falso):
+            resumen = sincronizar_identidad_equipos()
+
+        self.assertGreaterEqual(resumen['leidos'], 1)
+        self.assertEqual(
+            EquipoBordeFarmacia.objects.get(farmacia=self.farmacia).numero_serie, 'HH70A5GKB55',
+        )
+
 
 class DescubrimientoPorArpTests(TestCase):
     """Descubrimiento de equipos por la tabla ARP del Mikrotik.
@@ -2014,6 +2042,32 @@ class DescubrimientoPorArpTests(TestCase):
         texto = salida.getvalue()
         self.assertIn('Farmacias leídas: 1', texto)
         self.assertIn('SIN inventariar', texto)
+
+    def test_sin_argumentos_es_el_modo_todas_y_tenia_el_mismo_defecto(self):
+        """`sincronizar_dispositivos_detectados()` SIN argumentos, que es
+        `descubrir_dispositivos_farmacia` sin `--farmacias`: el modo para el que existe el
+        comando.
+
+        Mismo defecto que en `sincronizar_identidad_equipos` y por la misma razon, pero acá
+        ningun log lo delato: esta funcion no esta en el Beat, asi que solo reventaba cuando
+        alguien pedia TODAS las farmacias. Con `--farmacias` —que arma una lista— siempre
+        funciono, y es como se la corrio siempre.
+
+        Verificada al reves: quitando el `list(...)` de la funcion, falla.
+        """
+        from apps.monitoreo.mikrotik import sincronizar_dispositivos_detectados
+        from apps.monitoreo.models import DispositivoDetectado
+
+        filas = self._parseadas()
+
+        async def _falso(ip, comunidad, puerto):
+            return filas
+
+        with patch('apps.monitoreo.mikrotik._leer_tabla_arp', _falso):
+            resumen = sincronizar_dispositivos_detectados()
+
+        self.assertGreaterEqual(resumen['farmacias_leidas'], 1)
+        self.assertEqual(DispositivoDetectado.objects.filter(farmacia=self.farmacia).count(), 4)
 
 
 class MotorSnmpTests(SimpleTestCase):

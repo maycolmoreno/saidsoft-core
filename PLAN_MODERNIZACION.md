@@ -4363,3 +4363,60 @@ De paso, una prueba vieja cobró: el comentario de la plantilla se escribió pri
 no usa `re.DOTALL`, así que ese comentario no era un comentario sino **texto visible** en la
 tabla de colaboradores — la regresión de §10-O, intentando colarse por tercera vez, esta vez
 atajada por la suite y no por el usuario.
+
+
+## §10-BC — La tarea que existía para no depender de nadie se caía sola cada 15 minutos (6-oct-2026)
+
+Salió de revisar los logs **después** de desplegar A-3, no de una auditoría: `celery_worker`
+venía tirando `SynchronousOnlyOperation` en `sondear_identidad_equipos_task`. No lo causó
+ese despliegue — la función no se tocaba desde el 14-sep-2026.
+
+```python
+farmacias = Farmacia.objects.exclude(ip_router__isnull=True).order_by('codigo')  # lazy
+...
+return await asyncio.gather(*(_una(f) for f in farmacias))   # se recorre DENTRO del loop
+```
+
+El generador se consume dentro de `asyncio.run`, así que evaluar el queryset ahí es una
+consulta desde contexto async. La función vecina que sí funciona —
+`sincronizar_ancho_banda_farmacias`, el sondeo de tráfico de cada 5 min — hace lo mismo
+pero con `list(...)` delante. Arreglado igual, en los dos lugares donde faltaba.
+
+**El mismo defecto estaba dos veces.** `sincronizar_dispositivos_detectados` (descubrimiento
+por tabla ARP) tenía la línea idéntica. Esa no aparecía en ningún log porque no está en el
+Beat: solo reventaba `descubrir_dispositivos_farmacia` **sin** `--farmacias` — el modo
+"todas", que es para lo que existe el comando.
+
+### Por qué 2.135 pruebas en verde no lo vieron
+
+Las dos funciones aceptan `farmacias=None` y materializan ellas mismas. **Todas** las
+pruebas existentes —y el comando a mano cuando le dan `--farmacias`— pasan una **lista**:
+
+| Quién llama | Qué pasa | Resultado |
+|---|---|---|
+| Las 23 pruebas de las dos clases | `[self.farmacia]` | funciona |
+| Comando con `--farmacias` | `list(...)` | funciona |
+| **Celery Beat, cada 15 min** | **`None`** | **se cae** |
+| **Comando sin `--farmacias`** | **`None`** | **se cae** |
+
+O sea: el único camino que corre solo en producción era el único que nadie ejercitaba. Y el
+efecto no era un error visible sino **dato viejo**: el uptime de los Mikrotik y la detección
+de reinicios dejaron de actualizarse desde el 14-sep, que es *exactamente* el problema que
+esta tarea se agregó para resolver (el 15-sep se reinició GAT01 y el panel mostró 722 horas
+de uptime durante 40 minutos). La tarea escrita para no depender de que alguien corriera el
+comando a mano solo funcionaba si alguien corría el comando a mano.
+
+**La lección general, que es la que vale más que el `list(...)`:** cuando una función tiene
+un parámetro opcional que ella misma resuelve, el valor por defecto es una rama de código, y
+si las pruebas siempre pasan el argumento esa rama no está probada. Acá la rama no probada
+era la de producción. Las dos pruebas nuevas
+(`test_sin_argumentos_es_el_camino_del_beat_y_es_el_que_nadie_probaba` y
+`test_sin_argumentos_es_el_modo_todas_y_tenia_el_mismo_defecto`) llaman **sin argumentos** a
+propósito, y verificadas al revés reproducen el `SynchronousOnlyOperation` del log de
+producción, no una aproximación.
+
+### Pendiente que esto deja a la vista
+
+Una tarea de Beat que falla cada 15 minutos durante tres semanas no le avisó a nadie: se
+descubrió leyendo `docker logs` a mano por otro motivo. No hay nada que vigile los fallos de
+Celery, y es lo que convirtió un bug de una línea en tres semanas de dato viejo silencioso.
