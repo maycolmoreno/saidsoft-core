@@ -21,7 +21,10 @@ class MuestraMetrica(models.Model):
     desarrollo, SQLite basta y la purga de Celery hace de retención.
     """
 
-    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='metricas')
+    # Sin indice propio: `(estacion_id, timestamp DESC)` ya lo cubre. Ver migracion 0041.
+    estacion = models.ForeignKey(
+        Estacion, on_delete=models.CASCADE, related_name='metricas', db_index=False,
+    )
 
     # Memoria (MB)
     ram_total = models.PositiveIntegerField(null=True, blank=True)
@@ -107,7 +110,10 @@ class MuestraRedFarmacia(models.Model):
     esta farmacia, o el contador bajó respecto a la anterior (reinicio del router).
     """
 
-    farmacia = models.ForeignKey(Farmacia, on_delete=models.CASCADE, related_name='muestras_red')
+    # Sin indice propio: `(farmacia_id, timestamp DESC)` ya lo cubre. Ver migracion 0041.
+    farmacia = models.ForeignKey(
+        Farmacia, on_delete=models.CASCADE, related_name='muestras_red', db_index=False,
+    )
     bytes_recibidos = models.BigIntegerField()
     bytes_enviados = models.BigIntegerField()
     red_recibido_kbps = models.FloatField(null=True, blank=True)
@@ -210,7 +216,10 @@ class EstadoDispositivo(models.Model):
         # ESET = 'eset', 'ESET PROTECT'  # pendiente de aprobación de acceso a su API —
         # el modelo ya queda listo para sumarla (agregar el choice + un adapter nuevo).
 
-    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='estados_dispositivo')
+    # Sin indice propio: el UNIQUE `(estacion_id, fuente)` ya lo cubre. Ver migracion 0041.
+    estacion = models.ForeignKey(
+        Estacion, on_delete=models.CASCADE, related_name='estados_dispositivo', db_index=False,
+    )
     fuente = models.CharField(max_length=20, choices=Fuente.choices)
     en_linea = models.BooleanField()
     detalle = models.JSONField(
@@ -239,7 +248,10 @@ class EventoMonitoreo(models.Model):
     importa para el cruce y para auditar discrepancias es cuándo cambió el estado.
     """
 
-    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='eventos_monitoreo')
+    # Sin indice propio: `(estacion_id, timestamp DESC)` ya lo cubre. Ver migracion 0041.
+    estacion = models.ForeignKey(
+        Estacion, on_delete=models.CASCADE, related_name='eventos_monitoreo', db_index=False,
+    )
     fuente = models.CharField(max_length=20, choices=EstadoDispositivo.Fuente.choices)
     en_linea = models.BooleanField()
     detalle = models.JSONField(blank=True, default=dict)
@@ -451,7 +463,10 @@ class PosErrorDetectado(models.Model):
         # apps.monitoreo.services.clasificar_error_pos.
         NEGOCIO = 'negocio', 'Negocio (no cuenta para la alerta)'
 
-    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='pos_errores')
+    # Sin indice propio: el UNIQUE `(estacion_id, mensaje)` ya lo cubre. Ver migracion 0041.
+    estacion = models.ForeignKey(
+        Estacion, on_delete=models.CASCADE, related_name='pos_errores', db_index=False,
+    )
     mensaje = models.CharField(max_length=500)
     nivel = models.CharField(max_length=10, default='ERROR')
     categoria = models.CharField(max_length=10, choices=Categoria.choices, default=Categoria.SISTEMA)
@@ -660,7 +675,11 @@ class DispositivoDetectado(models.Model):
     justamente lo que permite notar que algo desapareció.
     """
 
-    farmacia = models.ForeignKey(Farmacia, on_delete=models.CASCADE, related_name='dispositivos_detectados')
+    # Sin indice propio: `(farmacia_id, ip)` y el UNIQUE `(farmacia_id, mac)` ya lo cubren.
+    # Ver migracion 0041.
+    farmacia = models.ForeignKey(
+        Farmacia, on_delete=models.CASCADE, related_name='dispositivos_detectados', db_index=False,
+    )
     mac = models.CharField(max_length=17, help_text='Normalizada a AA:BB:CC:DD:EE:FF, como `Activo.mac`.')
     ip = models.GenericIPAddressField()
     interfaz_indice = models.PositiveIntegerField(
@@ -1151,8 +1170,9 @@ class EventoSistemaDetectado(models.Model):
     juntó — que es justamente para lo que sirve poder darlo de baja.
     """
 
+    # Sin indice propio: `(estacion_id, ultima_vez DESC)` ya lo cubre. Ver migracion 0041.
     estacion = models.ForeignKey(
-        Estacion, on_delete=models.CASCADE, related_name='eventos_sistema',
+        Estacion, on_delete=models.CASCADE, related_name='eventos_sistema', db_index=False,
     )
     log = models.CharField(max_length=20)
     identificador = models.PositiveIntegerField(verbose_name='ID del evento')
@@ -1401,8 +1421,9 @@ class EstadoServicioPos(models.Model):
     # congelado y diría "todo bien" indefinidamente.
     HORAS_VERIFICACION_VIGENTE = EstadoRedActivo.HORAS_VERIFICACION_VIGENTE
 
+    # Sin indice propio: el UNIQUE `(estacion_id, servicio)` ya lo cubre. Ver migracion 0041.
     estacion = models.ForeignKey(
-        Estacion, on_delete=models.CASCADE, related_name='servicios_pos',
+        Estacion, on_delete=models.CASCADE, related_name='servicios_pos', db_index=False,
     )
     # Sin `choices`: que claves son validas dejo de estar fijo en codigo y vive en
     # ServicioPosMonitoreado, editable desde el admin. `registrar_servicios_pos` valida
@@ -1514,8 +1535,10 @@ class MuestraServicioPos(models.Model):
     curva, y graficarla como cero diría que contestó instantáneamente.
     """
 
+    # Sin indice propio: `(estacion_id, servicio, timestamp DESC)` ya lo cubre. Es el que mas
+    # ahorra de los nueve. Ver migracion 0041.
     estacion = models.ForeignKey(
-        Estacion, on_delete=models.CASCADE, related_name='muestras_servicios_pos',
+        Estacion, on_delete=models.CASCADE, related_name='muestras_servicios_pos', db_index=False,
     )
     # Sin `choices`: que claves son validas dejo de estar fijo en codigo y vive en
     # ServicioPosMonitoreado, editable desde el admin. `registrar_servicios_pos` valida

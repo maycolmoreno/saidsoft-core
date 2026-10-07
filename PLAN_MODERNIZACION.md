@@ -4598,3 +4598,101 @@ una dentro de los `defaults` del `get_or_create` —antes de que la fila exista,
 cruce no cambia nada— y otra justo antes del `save`. La primera versión de la prueba se
 colgaba de la primera lectura y pasaba en verde con el bug puesto. Es, otra vez, el mismo
 error que §10-AZ: una prueba de regresión que no se verifica al revés no prueba nada.
+
+
+## §10-BF — Nueve índices que se mantenían en cada INSERT sin que ninguna consulta los use (6-oct-2026)
+
+M-1 del informe, de la primera tanda (bajo riesgo, alto retorno) y la última que quedaba de
+ella sin hacer. Son los índices de UNA columna que Django crea solo por cada `ForeignKey`,
+en nueve tablas donde ya existe un índice compuesto que **empieza por esa misma columna**.
+PostgreSQL usa un índice compuesto para buscar por su primera columna, así que el de una
+columna no aporta nada: solo se escribe.
+
+Verificado en el catálogo antes de tocar nada — los nueve existían y cada uno era prefijo
+estricto de otro índice de su tabla:
+
+| tabla | se fue | ya lo cubre |
+|---|---|---|
+| `muestra_servicio_pos` | `(estacion_id)` | `(estacion_id, servicio, timestamp DESC)` |
+| `muestra_red_farmacia` | `(farmacia_id)` | `(farmacia_id, timestamp DESC)` |
+| `muestra_metrica` | `(estacion_id)` | `(estacion_id, timestamp DESC)` |
+| `evento_monitoreo` | `(estacion_id)` | `(estacion_id, timestamp DESC)` |
+| `evento_sistema_detectado` | `(estacion_id)` | UNIQUE `(estacion_id, log, origen, identificador)` |
+| `pos_error_detectado` | `(estacion_id)` | UNIQUE `(estacion_id, mensaje)` |
+| `estado_dispositivo` | `(estacion_id)` | UNIQUE `(estacion_id, fuente)` |
+| `estado_servicio_pos` | `(estacion_id)` | UNIQUE `(estacion_id, servicio)` |
+| `dispositivo_detectado` | `(farmacia_id)` | UNIQUE `(farmacia_id, mac)` |
+
+**Hay que corregir el beneficio que el informe le atribuía, y la causa es nuestra.** El
+informe proyectaba ~2,04 GB de ahorro en disco solo en `muestra_servicio_pos` (84,9 M filas
+× 24 B a 1.300 farmacias). Esa cuenta era correcta cuando se escribió, pero la migración
+0040 encendió la compresión **el mismo día**: un chunk comprimido no conserva los índices de
+la tabla, así que el índice redundante hoy solo existe en los chunks de los últimos 7 días.
+En disco queda una fracción de lo proyectado.
+
+Lo que no cambió —y es el motivo real para hacerlo— es la **escritura**: cada INSERT
+mantenía una entrada de índice de más en las tres tablas de más escritura, y a 1.300
+farmacias son ~1,7 millones de INSERT por día solo en `muestra_servicio_pos`. El ahorro es
+de trabajo por fila escrita, no de gigabytes.
+
+**No se tocan los otros 54 índices redundantes del esquema**, en tablas chicas: el informe
+recomendó dejarlos y tiene razón — el ahorro es de kilobytes y el riesgo de equivocarse no
+se compensa.
+
+### La migración está escrita a mano, y por un motivo concreto
+
+`makemigrations` genera un `AlterField` por campo que, además de soltar el índice, **tira y
+rehace la constraint de FK**:
+
+    ALTER TABLE "muestra_servicio_pos" DROP CONSTRAINT "..._fk_estacion_id";
+    DROP INDEX IF EXISTS "muestra_servicio_pos_estacion_id_163db46e";
+    ALTER TABLE "muestra_servicio_pos" ADD CONSTRAINT "..." FOREIGN KEY ...;
+
+Rehacer una FK **valida la tabla entera** y toma un lock fuerte. Sobre las hypertables de
+producción, con chunks comprimidos, eso es justo lo que no conviene para un cambio cuyo
+efecto deseado es una línea de DDL. Así que 0041 declara el estado con `state_operations` y
+contra la base corre solo el `DROP INDEX`.
+
+Tampoco hardcodea nombres de índice: busca el índice real de una columna en el catálogo y
+**comprueba, en el momento de correr, que existe otro índice que empieza por esa misma
+columna**. Si no lo encuentra, no borra nada y deja un `warning`. Eso no es ceremonia: el
+índice de una FK no es decorativo — al borrar una `Estacion`, PostgreSQL tiene que encontrar
+las filas que la referencian, y sin ningún índice sobre esa columna eso es un seq scan de la
+serie entera.
+
+### Las pruebas, y un error que casi las dejó sin valor
+
+`IndicesSinPrefijoRedundanteTests` no prueba "faltan estos nueve nombres": prueba **la
+regla**, con una consulta al catálogo. Un índice redundante que alguien agregue mañana —o
+que reaparezca porque a una FK se le quitó el `db_index=False`— cae ahí sin que nadie tenga
+que acordarse de actualizar una lista. Y hay una tercera prueba para la red de seguridad:
+que cada una de las nueve FK siga teniendo algún índice que empiece por ella.
+
+**El error que vale registrar.** La primera versión de esa consulta comparaba porciones de
+`pg_index.indkey` con `indkey[1:n]`, y devolvía 0 filas — verde. Lo era también con un
+índice redundante plantado a mano: `indkey` es un `int2vector`, que en PostgreSQL tiene
+**base 0**, así que `indkey[1:1]` devuelve la SEGUNDA columna y no la primera. La consulta no
+comparaba prefijos, comparaba cualquier cosa, y la prueba habría quedado en verde para
+siempre sin mirar nada.
+
+Se descubrió plantando un índice redundante a propósito y viendo que no lo detectaba. Por
+eso ahora hay una prueba —`test_la_consulta_detecta_un_indice_redundante_plantado`— que
+planta uno y exige que aparezca: la consulta tiene que demostrar que sabe encontrar lo que
+dice buscar. Es la misma lección de §10-AZ y §10-BE, en su tercera aparición en dos días:
+una prueba de regresión que no se verifica al revés no prueba nada.
+
+### Queda una pregunta abierta, para medir con datos reales
+
+Las tres hypertables tienen además un índice de Django sobre `("timestamp")` solo, y
+`create_hypertable` crea por su cuenta un índice sobre la columna de particionado en cada
+chunk. Si esos dos coexisten, es otro índice de más en las tablas más calientes — y uno más
+grande que los nueve de arriba. No se puede saber acá: la base de desarrollo tiene las
+hypertables en 0 chunks. Se resuelve mirando un chunk real en producción:
+
+```sql
+SELECT i.relname, pg_get_indexdef(i.oid)
+FROM pg_index idx JOIN pg_class i ON i.oid = idx.indexrelid
+JOIN pg_class c ON c.oid = idx.indrelid
+WHERE c.relname LIKE '_hyper_%_chunk' AND c.relnamespace = '_timescaledb_internal'::regnamespace
+ORDER BY c.relname, i.relname;
+```

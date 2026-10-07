@@ -8216,3 +8216,144 @@ class RetencionDeSeriesPorChunksTests(TestCase):
         compresion = import_module('apps.monitoreo.migrations.0040_compresion_hypertables')
 
         self.assertLess(compresion.DIAS_COMPRESION, hypertables.DIAS_RETENCION)
+
+
+class IndicesSinPrefijoRedundanteTests(TestCase):
+    """M-1: en las nueve tablas de más escritura, ningún índice es prefijo de otro.
+
+    Lo que se quitó (migración 0041) son los índices de UNA columna que Django crea solo
+    por cada `ForeignKey`, en tablas donde ya existía un índice compuesto que empieza por
+    esa misma columna. PostgreSQL usa un índice compuesto para buscar por su primera
+    columna, así que el de una columna no aportaba nada y se mantenía en cada INSERT.
+
+    No se prueba "faltan estos nueve nombres": se prueba la REGLA, con una consulta al
+    catálogo. Un índice redundante que alguien agregue mañana —o que reaparezca porque
+    alguien le saque el `db_index=False` a una FK— cae acá sin que haya que acordarse de
+    actualizar una lista.
+    """
+
+    # Las nueve del informe. Las otras tablas quedan FUERA a propósito: el informe
+    # encontró 54 índices redundantes más en tablas chicas y recomendó no tocarlos (el
+    # ahorro es de kilobytes y el riesgo de equivocarse no se compensa), así que esta
+    # prueba no puede exigir la regla ahí.
+    TABLAS = (
+        'muestra_servicio_pos', 'muestra_red_farmacia', 'muestra_metrica',
+        'evento_monitoreo', 'evento_sistema_detectado', 'pos_error_detectado',
+        'estado_dispositivo', 'estado_servicio_pos', 'dispositivo_detectado',
+    )
+
+    # Un índice es redundante cuando sus columnas son el PREFIJO de las de otro índice de
+    # la misma tabla. Se excluyen los únicos y el primary key (enforzan una constraint, no
+    # están para buscar), los parciales (`indpred`) y los de expresión (un 0 en `indkey`).
+    #
+    # Las dos listas de columnas se reconstruyen con `unnest ... WITH ORDINALITY` en vez de
+    # comparar porciones de `indkey` directamente, y ESO es deliberado: `indkey` es un
+    # `int2vector`, que en PostgreSQL tiene **base 0**, así que `indkey[1:1]` devuelve la
+    # SEGUNDA columna y no la primera. La primera versión de esta consulta hacía justo eso
+    # y daba 0 filas incluso con un índice redundante plantado a mano — una prueba que no
+    # probaba nada. De ahí la prueba de abajo que planta uno.
+    SQL = """
+        SELECT t.relname, i1.relname, i2.relname
+        FROM pg_index x1
+        JOIN pg_class i1 ON i1.oid = x1.indexrelid
+        JOIN pg_class t  ON t.oid  = x1.indrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        JOIN pg_index x2 ON x2.indrelid = x1.indrelid AND x2.indexrelid <> x1.indexrelid
+        JOIN pg_class i2 ON i2.oid = x2.indexrelid
+        WHERE n.nspname = 'public' AND t.relname = ANY(%s)
+          AND NOT x1.indisunique AND NOT x1.indisprimary
+          AND x1.indpred IS NULL AND x2.indpred IS NULL
+          AND 0 <> ALL(x1.indkey::int2[]) AND 0 <> ALL(x2.indkey::int2[])
+          AND x1.indnatts <= x2.indnatts
+          AND (SELECT array_agg(k ORDER BY i)
+                 FROM unnest(x1.indkey::int2[]) WITH ORDINALITY AS u(k, i))
+            = (SELECT array_agg(k ORDER BY i)
+                 FROM unnest(x2.indkey::int2[]) WITH ORDINALITY AS u(k, i)
+                WHERE i <= x1.indnatts)
+        ORDER BY 1, 2
+    """
+
+    def _redundantes(self, tablas=None):
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(self.SQL, [list(tablas or self.TABLAS)])
+            return cursor.fetchall()
+
+    def _salteo_si_no_es_postgres(self):
+        from django.db import connection
+
+        if connection.vendor != 'postgresql':
+            self.skipTest('el catálogo de índices que se consulta acá es de PostgreSQL')
+
+    def test_la_consulta_detecta_un_indice_redundante_plantado(self):
+        """Esta prueba existe por un error cometido al escribir la de abajo: la primera
+        versión de la consulta devolvía 0 filas **también** con un índice redundante
+        puesto, por la base 0 del `int2vector`. Verde y sin valor.
+
+        Se planta el índice sobre `pos_error_detectado`, que no es hypertable: así el DDL
+        de prueba no toca chunks ni compresión. La transacción de la prueba lo deshace.
+        """
+        self._salteo_si_no_es_postgres()
+        from django.db import connection
+
+        self.assertEqual(self._redundantes(['pos_error_detectado']), [])
+        with connection.cursor() as cursor:
+            # Prefijo del UNIQUE (estacion_id, mensaje) que ya existe.
+            cursor.execute('CREATE INDEX tmp_prefijo_redundante ON pos_error_detectado (estacion_id)')
+        encontrados = self._redundantes(['pos_error_detectado'])
+        self.assertEqual(
+            [(tabla, redundante) for tabla, redundante, _cubre in encontrados],
+            [('pos_error_detectado', 'tmp_prefijo_redundante')],
+        )
+
+    def test_ninguna_de_las_nueve_tablas_tiene_un_indice_de_prefijo_redundante(self):
+        self._salteo_si_no_es_postgres()
+
+        encontrados = self._redundantes()
+        self.assertEqual(
+            encontrados, [],
+            'volvió a aparecer un índice redundante por prefijo en una tabla de alta '
+            'escritura. Lo más probable: alguien le quitó el `db_index=False` a una FK de '
+            'apps/monitoreo/models.py (ver migración 0041). Cada uno de estos se mantiene '
+            'en cada INSERT sin que ninguna consulta lo use: %s' % (encontrados,),
+        )
+
+    def test_cada_fk_sigue_teniendo_un_indice_que_empiece_por_ella(self):
+        """La red de seguridad del cambio, y la mitad que de verdad importa.
+
+        Borrar el índice de una FK no es gratis: al borrar una `Estacion`, PostgreSQL tiene
+        que encontrar las filas que la referencian, y sin ningún índice sobre esa columna
+        eso es un seq scan de la serie entera. Lo que hace válido quitar el de una columna
+        es que OTRO índice empieza por ella. Si alguien quitara ese otro —el compuesto— el
+        ahorro de 0041 se convertiría en ese seq scan, y ninguna prueba de consultas lo
+        notaría.
+        """
+        self._salteo_si_no_es_postgres()
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT c.conrelid::regclass::text, a.attname,
+                       count(*) FILTER (WHERE primera.attname = a.attname)
+                FROM pg_constraint c
+                JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+                LEFT JOIN pg_index idx ON idx.indrelid = c.conrelid
+                LEFT JOIN pg_attribute primera
+                       ON primera.attrelid = c.conrelid AND primera.attnum = idx.indkey[0]
+                WHERE c.contype = 'f' AND c.conrelid::regclass::text = ANY(%s)
+                GROUP BY 1, 2 ORDER BY 1
+                """,
+                [list(self.TABLAS)],
+            )
+            filas = cursor.fetchall()
+
+        self.assertEqual(len(filas), len(self.TABLAS), 'faltan FK que comprobar: %s' % (filas,))
+        for tabla, columna, indices in filas:
+            with self.subTest(tabla=tabla):
+                self.assertGreaterEqual(
+                    indices, 1,
+                    '%s.%s se quedó sin NINGÚN índice que empiece por esa columna: borrar '
+                    'la fila padre haría un seq scan de esta tabla' % (tabla, columna),
+                )
