@@ -4528,3 +4528,73 @@ Hay dos cosas que vale registrar del lado de las pruebas:
   datos que siembran las migraciones (`UnidadNegocio`, `Grupo`) de los que dependen cientos
   de pruebas, y no hay ninguno en el repo: no es el cambio que corresponde traer de prestado
   acá.
+
+### Addendum a §10-BD (6-oct-2026): la compresión dejaba 4 jobs corriendo dentro de la base de pruebas
+
+Encontrado el mismo día, corriendo una sola clase de pruebas después de commitear A-2:
+
+    django.db.utils.OperationalError: deadlock detected
+    DETAIL: Process 36492 waits for ShareRowExclusiveLock on relation 1542733;
+            blocked by process 36530.
+
+**El segundo proceso no era otra prueba: era el planificador de TimescaleDB.** Las
+políticas que crean las migraciones 0035 y 0040 son filas en la base, así que la base de
+pruebas las hereda —comprobado: 8 jobs `scheduled = true`, 4 de retención cada 24 h y 4 de
+compresión cada 12 h— y el *background worker* las corre ahí también. `compress_chunk` toma
+locks fuertes sobre la hypertable, y una prueba escribiendo en esa misma tabla al mismo
+tiempo se traba contra él.
+
+Lo grave no es el deadlock sino **que es intermitente**: la suite completa había pasado en
+verde (2.143 pruebas) con esto ya puesto, y falló en una corrida dirigida de 8 pruebas.
+Depende de que un job se despierte durante la corrida, así que en CI aparecería una vez
+cada tanto y en el commit de otra persona. Es la familia de fallo que tuvo este repo 38
+días en rojo (ver CLAUDE.md, la prueba que leía un archivo ignorado por git): verde en
+local, rojo en otra parte, y el diagnóstico apuntando a cualquier lado menos a la causa.
+
+La solución es `config/test_runner.py` + `TEST_RUNNER` en settings: desagenda los 8 jobs en
+cuanto la base de pruebas queda creada. Una base efímera que vive minutos no necesita
+mantenimiento. No apaga la compresión —las cuatro tablas siguen con `compression_enabled` y
+`RetencionDeSeriesPorChunksTests` lo sigue comprobando—, solo evita que un job se despierte
+en medio de la suite.
+
+**Por qué en el runner y no en la migración.** La migración describe el esquema que
+producción tiene que tener, y ese esquema incluye las políticas; hacerla preguntar "¿soy una
+base de pruebas?" sería doblar la definición del esquema por conveniencia de la suite. El
+runner ya es código que existe solo para correr pruebas.
+
+
+## §10-BE — Un contador que se leía y se reescribía, con la concurrencia que todavía no existe (6-oct-2026)
+
+M-4 del informe. `registrar_errores_pos` hacía `detectado.cantidad_total += cantidad` y
+después `save(update_fields=[...])`: una lectura-modificación-escritura. Dos reportes del
+mismo mensaje que se cruzaran entre el `get_or_create` y el `save` dejarían el segundo
+pisando al primero, y el contador quedaría corto **sin ningún error** — o sea
+`evaluar_regla_pos_errores` avisando de menos. Reemplazado por
+`F('cantidad_total') + cantidad`, que deja el incremento en la base.
+
+**Lo que hay que registrar es que hoy no puede pasar, y decirlo igual.** El único que llama
+a esa función es `manejar_errores_pos` del worker MQTT, que corre en el hilo único de
+`loop_forever()` de paho, en un solo contenedor: los reportes se procesan uno detrás del
+otro. Es una trampa **latente**, no un bug activo. Se cierra porque cuesta una línea, no
+tiene riesgo —`cantidad_total` no se vuelve a leer en esa función, que es lo que haría
+peligroso un `F()`— y se abriría sola el día que el worker se replique, que es el
+movimiento obvio a 1.300 farmacias.
+
+Es el criterio opuesto al de A-1c, y vale la pena ver por qué no se contradicen: ahí el
+beneficio era cero **y** el riesgo concreto (un `update_fields` incompleto deja un
+`hmac_secret` sin persistir), así que se descartó. Acá el beneficio también es cero hoy,
+pero el riesgo es cero y el costo es una línea. Lo que decide no es "¿sirve hoy?" sino la
+relación entre las dos cosas.
+
+**Las pruebas.** Dos nuevas, verificadas al revés. Una mira el SQL —que el `UPDATE` lleve la
+columna a la derecha del `=`— porque el resultado es idéntico en el camino feliz y contar
+filas o comparar totales pasaría en verde con el `+=` puesto. La otra reproduce la
+actualización perdida **sin hilos y de forma determinista**: un `dict` cuyo `get('nivel')`
+mete un segundo reporte del mismo mensaje justo en el hueco entre el `get_or_create` y el
+`save`. Con `+=` el contador queda en 3 y con `F()` en 8.
+
+Ese punto de inyección no es arbitrario y costó encontrarlo: `nivel` se lee **dos** veces,
+una dentro de los `defaults` del `get_or_create` —antes de que la fila exista, donde el
+cruce no cambia nada— y otra justo antes del `save`. La primera versión de la prueba se
+colgaba de la primera lectura y pasaba en verde con el bug puesto. Es, otra vez, el mismo
+error que §10-AZ: una prueba de regresión que no se verifica al revés no prueba nada.

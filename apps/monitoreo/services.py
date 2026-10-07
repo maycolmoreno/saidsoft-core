@@ -14,7 +14,7 @@ from typing import NamedTuple
 
 from django.conf import settings
 from django.core.mail import send_mail
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.catalogo.db import cerrar_conexiones_viejas
@@ -467,7 +467,19 @@ def registrar_errores_pos(*, estacion, errores: list) -> int:
             estacion=estacion, mensaje=mensaje,
             defaults={'nivel': e.get('nivel') or 'ERROR', 'categoria': categoria},
         )
-        detectado.cantidad_total += cantidad
+        # `F()` y no `+=`: el incremento lo hace la base (`SET cantidad_total =
+        # cantidad_total + N`) en vez de leerse en Python y reescribirse. Con `+=`, dos
+        # reportes del MISMO mensaje que se cruzaran entre el `get_or_create` y este
+        # `save` dejarían el segundo pisando al primero, y el contador quedaría corto sin
+        # ningún error — o sea `evaluar_regla_pos_errores` avisando de MENOS.
+        #
+        # Hoy eso no puede pasar y conviene decirlo: el único que llama acá es
+        # `manejar_errores_pos` del worker MQTT, que corre en el hilo único de
+        # `loop_forever()` en un solo contenedor, así que los reportes se procesan uno
+        # detrás del otro. Es una trampa latente, no un bug activo — se cierra ahora
+        # porque cuesta una línea y se abriría sola el día que el worker se replique, que
+        # es el movimiento obvio a 1.300 farmacias.
+        detectado.cantidad_total = F('cantidad_total') + cantidad
         detectado.nivel = e.get('nivel') or detectado.nivel
         detectado.categoria = categoria
         detectado.save(update_fields=['cantidad_total', 'nivel', 'categoria', 'ultima_vez'])

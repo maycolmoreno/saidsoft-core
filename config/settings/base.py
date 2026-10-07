@@ -94,6 +94,12 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'config.wsgi.application'
+
+# El runner propio solo hace una cosa: desagendar los jobs de TimescaleDB de la base de
+# pruebas. Sin eso, el planificador corre las politicas de compresion y retencion DENTRO
+# de la base de pruebas y se traba contra las pruebas que escriben en las mismas
+# hypertables — deadlock intermitente, encontrado el 6-oct-2026. Ver config/test_runner.py.
+TEST_RUNNER = 'config.test_runner.RunnerSinJobsDeTimescale'
 ASGI_APPLICATION = 'config.asgi.application'
 
 # Base de datos: DATABASE_URL en .env. Por defecto, SQLite para desarrollo local

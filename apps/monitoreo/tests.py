@@ -7551,6 +7551,87 @@ class IngestaDeErroresPosTests(TestCase):
         self.assertEqual(fila.cantidad_total, 5)
         self.assertEqual(PosErrorDetectado.objects.count(), 1)
 
+    def test_el_incremento_lo_hace_la_base_y_no_python(self):
+        """M-4 del informe. Se mira el SQL porque el resultado es idéntico en el camino
+        feliz: el `UPDATE` tiene que llevar la columna a la DERECHA del `=`
+        (`cantidad_total = cantidad_total + 3`), no un número ya calculado en Python.
+
+        Verificada al revés: con `+=`, el UPDATE manda un literal y esto falla.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from apps.monitoreo.services import registrar_errores_pos
+
+        with CaptureQueriesContext(connection) as ctx:
+            registrar_errores_pos(estacion=self.estacion, errores=[
+                {'mensaje': 'Timeout conectando a la base', 'cantidad': 3},
+            ])
+
+        updates = [
+            q['sql'] for q in ctx.captured_queries
+            if q['sql'].startswith('UPDATE "pos_error_detectado"')
+        ]
+        self.assertTrue(updates, 'no se actualizó el contador')
+        self.assertIn(
+            '"cantidad_total" = ("pos_error_detectado"."cantidad_total"', updates[0],
+            'el contador se está calculando en Python y reescribiendo: dos reportes que '
+            'se cruzaran dejarían el segundo pisando al primero',
+        )
+
+    def test_un_reporte_que_entra_en_medio_de_otro_no_se_pierde(self):
+        """La actualización perdida, reproducida sin hilos y de forma determinista.
+
+        El `dict` de abajo mete un SEGUNDO reporte del mismo mensaje en el único momento
+        donde el intercalado importa: cuando el primero ya hizo su `get_or_create` y
+        todavía no guardó. Con `+=`, el `save` del primero escribe el valor que leyó y se
+        lleva por delante los 5 del segundo (queda en 3); con `F()` la base suma los dos
+        (8).
+
+        Hoy el worker MQTT corre en el hilo único de `loop_forever()`, así que esto no
+        ocurre en producción. La prueba existe para que siga sin ocurrir el día que ese
+        worker se replique.
+        """
+        from apps.monitoreo.models import PosErrorDetectado
+        from apps.monitoreo.services import registrar_errores_pos
+
+        mensaje = 'Timeout conectando a la base'
+        estacion = self.estacion
+
+        class ReporteQueSeCruzaConOtro(dict):
+            """`nivel` se lee DOS veces en `registrar_errores_pos`: una dentro de los
+            `defaults` del `get_or_create` —o sea antes de que la fila exista— y otra
+            justo antes del `save`. El cruce se mete en la segunda, que es la que cae
+            entre la lectura y la escritura del contador."""
+
+            lecturas_de_nivel = 0
+
+            def get(self, clave, *args):
+                if clave == 'nivel':
+                    ReporteQueSeCruzaConOtro.lecturas_de_nivel += 1
+                    if ReporteQueSeCruzaConOtro.lecturas_de_nivel == 2:
+                        registrar_errores_pos(
+                            estacion=estacion,
+                            errores=[{'mensaje': mensaje, 'cantidad': 5}],
+                        )
+                return super().get(clave, *args)
+
+        registrar_errores_pos(
+            estacion=estacion,
+            errores=[ReporteQueSeCruzaConOtro(mensaje=mensaje, cantidad=3)],
+        )
+
+        self.assertGreaterEqual(
+            ReporteQueSeCruzaConOtro.lecturas_de_nivel, 2,
+            'el cruce no se produjo: si `registrar_errores_pos` dejó de leer `nivel` dos '
+            'veces, esta prueba ya no prueba nada y hay que rehacerla',
+        )
+        self.assertEqual(
+            PosErrorDetectado.objects.get(estacion=estacion, mensaje=mensaje).cantidad_total, 8,
+            'se perdió un reporte: el contador quedó corto, y entonces la alerta de '
+            'errores del POS avisa de menos sin que nada falle',
+        )
+
     def test_solo_los_de_sistema_cuentan_para_la_alerta(self):
         """Un error de NEGOCIO se guarda igual pero no suma: si contara, una validación
         del POS funcionando bien abriría alertas para siempre."""
