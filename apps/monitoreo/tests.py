@@ -8502,3 +8502,158 @@ class ChatAutorizadoPorPerfilTests(TestCase):
         self.assertFalse(chat_autorizado('000000000'))
         self.assertFalse(chat_autorizado(''))
         self.assertFalse(chat_autorizado(None))
+
+
+class ProbarSnmpImpresoraTests(TestCase):
+    """El comando de diagnóstico de impresoras.
+
+    Las reglas que codifica no son de este proyecto sino de RFC 3805, y son justo las que
+    es fácil equivocar: `prtMarkerSuppliesLevel` NO es un porcentaje, y el índice de la
+    tabla de suministros NO es CMYK. Las dos se comprobaron contra una RICOH MP C2503 real
+    el 8-oct-2026 (ver `docs/auditoria-snmp.md` §0.1).
+    """
+
+    def _cmd(self):
+        from apps.monitoreo.management.commands.probar_snmp_impresora import Command
+
+        return Command()
+
+    # --- nivel de suministro: la regla que más se equivoca -----------------------
+
+    def test_los_centinelas_negativos_no_se_muestran_como_porcentaje(self):
+        """RFC 3805: -1 other, -2 unknown, -3 queda algo sin precisar. Mostrarlos como
+        "-2%" o convertirlos a 0% son las dos formas de mentir con este campo."""
+        cmd = self._cmd()
+        self.assertEqual(cmd._porcentaje('-1', '100', '19'), 'other')
+        self.assertEqual(cmd._porcentaje('-2', '100', '19'), 'desconocido')
+        self.assertIn('queda algo', cmd._porcentaje('-3', '100', '19'))
+
+    def test_si_la_unidad_ya_es_percent_el_nivel_se_usa_tal_cual(self):
+        """Es el caso de la Ricoh medida: SupplyUnit=19 y MaxCapacity=100."""
+        self.assertEqual(self._cmd()._porcentaje('80', '100', '19'), '80%')
+
+    def test_sin_unidad_percent_se_calcula_contra_la_capacidad(self):
+        self.assertEqual(self._cmd()._porcentaje('250', '1000', '7'), '25.0% (250/1000)')
+
+    def test_sin_capacidad_utilizable_no_se_inventa_un_porcentaje(self):
+        """Dividir por un máximo en 0 o ausente daría un porcentaje falso; se muestra el
+        valor crudo con su unidad."""
+        self.assertEqual(self._cmd()._porcentaje('250', '0', '8'), '250 hojas')
+        self.assertEqual(self._cmd()._porcentaje('250', None, None), '250 sin unidad')
+
+    def test_un_nivel_no_numerico_se_dice_en_vez_de_romper(self):
+        self.assertIn('no numérico', self._cmd()._porcentaje('N/A', '100', '19'))
+
+    # --- fabricante por sysObjectID ----------------------------------------------
+
+    def test_el_fabricante_sale_del_enterprise_y_no_de_parsear_sysDescr(self):
+        cmd = self._cmd()
+        self.assertEqual(cmd._fabricante('1.3.6.1.4.1.367.1.1'), 'Ricoh')
+        self.assertEqual(cmd._fabricante('1.3.6.1.4.1.11.2.3.9.1'), 'HP')
+        self.assertEqual(cmd._fabricante('1.3.6.1.4.1.253.8.62.1'), 'Xerox')
+
+    def test_un_enterprise_desconocido_se_informa_con_su_numero(self):
+        self.assertIn('99999', self._cmd()._fabricante('1.3.6.1.4.1.99999.1'))
+
+    def test_un_sysObjectID_con_otra_forma_no_revienta(self):
+        for valor in ('', None, '1.3.6.1.2.1', 'basura'):
+            with self.subTest(valor=valor):
+                self.assertIn('—', self._cmd()._fabricante(valor))
+
+    # --- la community no se imprime ----------------------------------------------
+
+    def test_la_community_sale_enmascarada(self):
+        """La salida de este comando termina pegada en un ticket, y SNMP v2c manda la
+        community en texto plano por la red."""
+        from apps.monitoreo.management.commands.probar_snmp_impresora import _enmascarar
+
+        self.assertEqual(_enmascarar('public'), 'pub****')
+        self.assertEqual(_enmascarar('secreto-largo'), 'sec****')
+        self.assertEqual(_enmascarar(''), '(vacía)')
+
+    # --- resolución del objetivo --------------------------------------------------
+
+    def test_una_IP_suelta_se_usa_tal_cual_aunque_no_este_inventariada(self):
+        """El caso de descubrimiento: primero se averigua si habla SNMP, después se
+        decide si se carga."""
+        activo, ip = self._cmd()._resolver('10.111.9.66')
+        self.assertIsNone(activo)
+        self.assertEqual(ip, '10.111.9.66')
+
+    def test_un_codigo_de_activo_resuelve_su_IP(self):
+        from apps.activos.models import Activo
+
+        Activo.objects.create(
+            codigo='CR-IMP-0100', tipo=Activo.Tipo.IMPRESORA, ip='10.111.9.66',
+        )
+        activo, ip = self._cmd()._resolver('cr-imp-0100')
+        self.assertEqual(activo.codigo, 'CR-IMP-0100')
+        self.assertEqual(ip, '10.111.9.66')
+
+    def test_un_objetivo_que_no_es_ni_activo_ni_IP_lo_dice(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError) as ctx:
+            self._cmd()._resolver('CR-XXX-9999')
+        self.assertIn('ni es una IP', str(ctx.exception))
+
+    def test_un_activo_sin_IP_no_se_puede_sondear(self):
+        from django.core.management.base import CommandError
+
+        from apps.activos.models import Activo
+
+        Activo.objects.create(codigo='CR-IMP-0101', tipo=Activo.Tipo.IMPRESORA)
+        with self.assertRaises(CommandError) as ctx:
+            self._cmd()._resolver('CR-IMP-0101')
+        self.assertIn('no tiene IP cargada', str(ctx.exception))
+
+    # --- la tabla de suministros, con los datos reales de la Ricoh ---------------
+
+    def test_el_indice_de_la_tabla_NO_es_CMYK(self):
+        """La trampa, con los datos exactos de la MP C2503: el índice .1.2 es el tóner
+        RESIDUAL, no el cian. Cablear .9.1.1 a .9.1.4 como CMYK habría leído el residual
+        como cian al 100% y corrido todos los colores un lugar."""
+        import io as _io
+        from unittest.mock import patch
+
+        from apps.monitoreo.management.commands.probar_snmp_impresora import Command
+
+        indices = ('1.1', '1.2', '1.3', '1.4', '1.5')
+        tablas = [
+            {'1.1': '3', '1.2': '4', '1.3': '3', '1.4': '3', '1.5': '3'},
+            {'1.1': 'Tóner negro', '1.2': 'Tóner residual', '1.3': 'Tóner cian',
+             '1.4': 'Tóner magenta', '1.5': 'Tóner amarillo'},
+            {k: '19' for k in indices},
+            {k: '100' for k in indices},
+            {'1.1': '80', '1.2': '100', '1.3': '90', '1.4': '80', '1.5': '90'},
+            {'1.1': 'black', '1.2': 'other', '1.3': 'cyan', '1.4': 'magenta',
+             '1.5': 'yellow'},
+        ]
+        # `stdout` por constructor y no por asignación: BaseCommand lo envuelve en un
+        # OutputWrapper, que es quien agrega los saltos de línea. Con un StringIO crudo
+        # toda la salida queda en un renglón y `splitlines()` deja de distinguir filas.
+        salida_buffer = _io.StringIO()
+        cmd = Command(stdout=salida_buffer)
+        with patch.object(Command, '_walks', return_value=tablas):
+            cmd._paso_suministros('10.0.0.1', 'public', 161)
+        salida = salida_buffer.getvalue()
+
+        self.assertIn('Tóner residual', salida)
+        self.assertIn('tóner residual', salida)
+        for linea in salida.splitlines():
+            if 'residual' in linea:
+                self.assertNotIn('cyan', linea)
+        self.assertIn('Tóner cian', salida)
+        self.assertIn('90%', salida)
+
+    def test_un_equipo_sin_tabla_de_suministros_lo_dice_en_vez_de_mostrar_vacio(self):
+        import io as _io
+        from unittest.mock import patch
+
+        from apps.monitoreo.management.commands.probar_snmp_impresora import Command
+
+        salida_buffer = _io.StringIO()
+        cmd = Command(stdout=salida_buffer)
+        with patch.object(Command, '_walks', return_value=[{}] * 6):
+            cmd._paso_suministros('10.0.0.1', 'public', 161)
+        self.assertIn('NO publica', salida_buffer.getvalue())

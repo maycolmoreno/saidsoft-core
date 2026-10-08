@@ -77,6 +77,64 @@ mcar3   10.101.41.193   RouterOS RB951Ui-2HnD
 
 Los tres respondieron. **El instrumento funciona; el silencio de las impresoras es real.**
 
+### 8-oct-2026: la primera Ricoh real — la compuerta de la FASE 0 SE CIERRA
+
+`RICOH MP C2503` en `10.111.9.66`, sondeada desde `deploy-celery_worker-1` con
+`probe_snmp_impresora.py`. Responde ping a 12 ms y **responde SNMP con community
+`public`: no hubo nada que habilitar**.
+
+| Dato | Valor | OID |
+|---|---|---|
+| `sysDescr` | `RICOH MP C2503 1.22 / RICOH Network Printer…` | `1.3.6.1.2.1.1.1.0` |
+| `sysObjectID` | `1.3.6.1.4.1.367.1.1` → Ricoh | `1.3.6.1.2.1.1.2.0` |
+| **Número de serie** | **`E215M660354`** | `prtGeneralSerialNumber` |
+| **Contador** | **`509.664`** | `prtMarkerLifeCount` |
+| **Unidad del contador** | **`8` = HOJAS, no impresiones** | `prtMarkerCounterUnit` |
+| Estado | `hrPrinterStatus=3` (idle), `hrDeviceStatus=3` (**warning**) | HOST-RESOURCES |
+| Display | `No hay papel: Bandeja 2` | `prtConsoleDisplayBufferText` |
+| Alerta | `No hay papel: Bandeja 2 {13300}` | `prtAlertDescription` |
+| Bandejas | `165`, `0`, `0` hojas | `prtInputCurrentLevel` |
+
+**Suministros: 5 filas, y el índice NO es CMYK.** Es la trampa de §4.3 confirmada en datos
+reales:
+
+| Índice | `Type` | `Colorant` | Descripción | Nivel |
+|---|---|---|---|---|
+| `.1.1` | 3 (tóner) | black | Tóner negro | **80 %** |
+| `.1.2` | **4 (residual)** | other | **Tóner residual** | 100 % |
+| `.1.3` | 3 | cyan | Tóner cian | 90 % |
+| `.1.4` | 3 | magenta | Tóner magenta | 80 % |
+| `.1.5` | 3 | yellow | Tóner amarillo | 90 % |
+
+Quien hubiera cableado `...9.1.1` a `...9.1.4` como CMYK habría leído **el tóner residual
+como "cian al 100 %"** y el cian real como magenta. Hay que caminar la tabla y leer
+`prtMarkerSuppliesType` — ahora con una prueba viva de por qué.
+
+`SupplyUnit = 19` (percent) y `MaxCapacity = 100`, así que acá el nivel **ya es** un
+porcentaje y no hay centinelas negativos. No se puede generalizar desde un equipo: la
+lógica igual tiene que calcular `level/maxCapacity` y manejar `-1/-2/-3`.
+
+**Hallazgo que cambia el diseño del estado:** `hrPrinterDetectedErrorState` devuelve
+`0x00` —**ningún bit encendido**— con la impresora reportando falta de papel. En esta
+Ricoh el bitmask estándar **no sirve**. Lo que sí:
+
+1. `hrDeviceStatus = 3` (warning) — binario pero confiable.
+2. `prtConsoleDisplayBufferText` y `prtAlertDescription` — **ya vienen en español**.
+3. `prtInputCurrentLevel` — la bandeja 2 en `0` hojas: es el mismo hecho, numérico y
+   umbralizable, que es lo que sirve para una `ReglaAlerta`.
+
+(`prtAlertSeverityLevel` devolvió `808`, que no es un valor válido del enum 1-4. No se usa.)
+
+**Perfiles propietarios: CERO, confirmado contra el equipo.** El árbol de tóner de Ricoh
+(`367.3.2.1.2.24.1.1.5`) devuelve `80, 90, 80, 90` — **idéntico al estándar**, sin el bug
+de "50 % constante" de LibreNMS. Regla 0.5.8: propietario presente + estándar OK = **no se
+hace perfil**. Xerox (`253`) y HP (`11`) ausentes, como corresponde.
+
+**La única excepción, y solo si se factura por clic:** `367.3.2.1.2.19` trae 20 filas con
+`1.0 = 509.664` (coincide con el estándar), `2.0 = 445.008`, `4.0 = 64.413`. Eso es el
+**desglose blanco y negro / color** que el MIB estándar no da. Si el contrato se factura
+por clic diferenciado, ahí está; si no, el estándar alcanza.
+
 ### Consecuencias directas sobre este documento
 
 1. **§3.3 queda RESUELTA, y en el peor sentido.** El atajo "colgar la alerta de la
