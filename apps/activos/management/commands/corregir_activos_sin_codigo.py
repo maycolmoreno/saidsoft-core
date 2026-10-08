@@ -205,13 +205,11 @@ class Command(BaseCommand):
                 codigo_viejo = activo.codigo
                 activo.codigo = generar_codigo_activo(activo.tipo)
                 activo.save(update_fields=['codigo'])
-                # DATOS_RED_CARGADOS es la única choice que hoy usa una corrección de
-                # datos por comando (ver `completar_datos_topologia`) y no una transición
-                # del ciclo de vida. La etiqueta habla de IP/MAC/serie, así que `detalle`
-                # dice sin ambigüedad qué se corrigió. Agregar una choice propia exigiría
-                # una migración, que esta fase no toca.
+                # `detalle` sigue diciendo qué se corrigió aunque la etiqueta ya lo nombre:
+                # el historial de un activo se lee de a un evento, y "Corrección de datos"
+                # sin el antes y el después no deja reconstruir nada.
                 EventoActivo.objects.create(
-                    activo=activo, tipo_evento=EventoActivo.TipoEvento.DATOS_RED_CARGADOS,
+                    activo=activo, tipo_evento=EventoActivo.TipoEvento.CORRECCION_DATOS,
                     usuario=usuario,
                     detalle={
                         'correccion': 'codigo_vacio',

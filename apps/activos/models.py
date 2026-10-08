@@ -602,6 +602,12 @@ class EventoActivo(models.Model):
         TRANSITO = 'transito', 'En tránsito entre bodegas'
         UBICACION_ACTUALIZADA = 'ubicacion_actualizada', 'Ubicación (farmacia) actualizada'
         DATOS_RED_CARGADOS = 'datos_red_cargados', 'Datos de red cargados (IP/MAC/serie)'
+        # No es una transición del ciclo de vida: es alguien arreglando un dato que quedó
+        # mal. Existe porque la corrección de los activos sin código tuvo que pedir
+        # prestada `DATOS_RED_CARGADOS` —la única que cubría una corrección por comando— y
+        # el historial terminaba diciendo "Datos de red cargados (IP/MAC/serie)" cuando lo
+        # que había cambiado era el código. El `detalle` aclara SIEMPRE qué se corrigió.
+        CORRECCION_DATOS = 'correccion_datos', 'Corrección de datos'
 
     activo = models.ForeignKey(Activo, on_delete=models.CASCADE, related_name='eventos')
     tipo_evento = models.CharField(max_length=25, choices=TipoEvento.choices)

@@ -2348,7 +2348,11 @@ class CorregirActivosSinCodigoTests(TestCase):
         es menos real que asignárselo a alguien."""
         self._correr('--aplicar')
         evento = EventoActivo.objects.get(activo=self.huerfano)
-        self.assertEqual(evento.tipo_evento, EventoActivo.TipoEvento.DATOS_RED_CARGADOS)
+        self.assertEqual(evento.tipo_evento, EventoActivo.TipoEvento.CORRECCION_DATOS)
+        # La etiqueta tiene que decir lo que pasó: antes pedía prestada DATOS_RED_CARGADOS
+        # y el historial afirmaba "Datos de red cargados (IP/MAC/serie)" sobre un cambio
+        # de código.
+        self.assertEqual(evento.get_tipo_evento_display(), 'Corrección de datos')
         self.assertEqual(evento.detalle['correccion'], 'codigo_vacio')
         self.assertEqual(evento.detalle['codigo_anterior'], '')
         self.assertEqual(evento.detalle['codigo_nuevo'], 'CR-IMP-0003')
