@@ -33,17 +33,52 @@ def _obtener_y_bloquear_stock(bodega, tipo_consumible):
     return StockBodega.objects.select_for_update().get(bodega=bodega, tipo_consumible=tipo_consumible)
 
 
+# El sufijo de un código válido es solo dígitos. Se compara contra esto en vez de
+# confiar en que todo lo que haya en la columna tenga la forma esperada: ver el docstring
+# de `generar_codigo_activo`.
+_SUFIJO_DE_CODIGO = re.compile(r'^\d+$')
+
+
 def generar_codigo_activo(tipo: str) -> str:
     """CR-[TIPO]-[NNNN], secuencial global por tipo, nunca reinicia.
 
-    Nota: en concurrencia alta esto puede colisionar entre dos altas simultáneas
-    del mismo tipo; el `unique=True` de Activo.codigo actúa de red de seguridad
-    (la segunda inserción fallaría con IntegrityError). A esta escala no hace
-    falta más que eso.
+    **Solo mira los códigos que ya tienen esa forma**, y es deliberado. La versión
+    anterior tomaba el código más alto del tipo con `order_by('-codigo')` y le hacía
+    `int(codigo.rsplit('-', 1)[-1])`, lo que la dejaba a merced de cualquier fila con otro
+    formato: con un `codigo=''` como único activo del tipo, eso era `int('')` y un
+    `ValueError` que impedía dar de alta cualquier activo más de ese tipo. Pasó de verdad
+    —el `Activo id=20` que entró por el admin antes del 16-sep-2026— y lo peor era el
+    orden de los factores: la función que asigna los códigos se rompía justamente con el
+    tipo de dato que había que arreglar. Y no era hipotético: este repo todavía crea un
+    activo con `codigo='PRUEBA-EQ'` en `apps/viaticos/.../sembrar_escenarios_prueba.py`.
+
+    Los códigos que no encajan **se ignoran para el cálculo y no se tocan**: corregirlos es
+    una decisión de datos, no un efecto colateral de dar de alta un equipo
+    (`manage.py corregir_activos_sin_codigo` es el que los limpia).
+
+    Se filtra por prefijo en la base y se valida el sufijo en Python, en vez de un
+    `__regex`: la sintaxis de regex difiere entre PostgreSQL y SQLite, y acá no hace falta
+    pagar esa diferencia por una lista de códigos cortos.
+
+    De paso arregla un segundo problema que el orden lexicográfico tenía escondido: con
+    `CR-IMP-9999` y `CR-IMP-10000` cargados, `'9999' > '10000'` como texto, así que la
+    versión anterior devolvía `CR-IMP-10000` —ya ocupado— y el alta moría contra el índice
+    único. `max()` sobre enteros no tiene ese problema.
+
+    Nota que sigue valiendo: en concurrencia alta esto puede colisionar entre dos altas
+    simultáneas del mismo tipo; el `unique=True` de Activo.codigo actúa de red de seguridad
+    (la segunda inserción fallaría con IntegrityError). A esta escala no hace falta más que
+    eso.
     """
-    ultimo = Activo.objects.filter(tipo=tipo).order_by('-codigo').first()
-    ultimo_num = int(ultimo.codigo.rsplit('-', 1)[-1]) if ultimo else 0
-    return f'CR-{tipo}-{ultimo_num + 1:04d}'
+    prefijo = f'CR-{tipo}-'
+    numeros = [
+        int(sufijo)
+        for codigo in Activo.objects.filter(
+            tipo=tipo, codigo__startswith=prefijo,
+        ).values_list('codigo', flat=True)
+        if _SUFIJO_DE_CODIGO.match(sufijo := codigo[len(prefijo):])
+    ]
+    return f'{prefijo}{max(numeros, default=0) + 1:04d}'
 
 
 @transaction.atomic

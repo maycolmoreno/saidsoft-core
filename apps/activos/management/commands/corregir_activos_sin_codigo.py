@@ -8,12 +8,12 @@ camino entraba con `codigo=''` y la segunda rompía contra el índice único. El
 cerró el 16-sep-2026 con `ActivoAdmin.save_model`; este comando limpia lo que quedó de
 antes.
 
-**El huérfano no es solo cosmético.** `generar_codigo_activo` hace
-`int(ultimo.codigo.rsplit('-', 1)[-1])` sobre el código más alto del tipo. Si el ÚNICO
-activo de un tipo tuviera el código vacío, eso sería `int('')` y lanzaría `ValueError`: no
-se podría dar de alta ningún activo más de ese tipo. Hoy no pasa porque el tipo IMP tiene
-además CR-IMP-0001 y CR-IMP-0002 y el orden descendente deja el vacío al final — o sea,
-está desactivado por casualidad. Corregir la fila lo desarma de verdad.
+**El huérfano no era solo cosmético.** `generar_codigo_activo` tomaba el código más alto
+del tipo y le hacía `int(codigo.rsplit('-', 1)[-1])`, así que un código vacío como ÚNICO
+activo de su tipo era `int('')` y un `ValueError`: no se podía dar de alta ningún activo
+más de ese tipo. Eso **ya está arreglado** — la función ahora ignora los códigos que no
+tienen la forma esperada— pero el dato sigue mereciendo corrección: un activo sin código
+no tiene etiqueta con la que buscarlo.
 
 Simula por defecto y escribe solo con `--aplicar`, igual que `completar_topologia` e
 `importar_planilla_ips`: el mismo criterio de que una corrección de datos se mira antes de
@@ -125,18 +125,21 @@ class Command(BaseCommand):
     def _codigo_propuesto(self, activo):
         """`(codigo, None)`, o `(None, motivo)` si la numeración no puede resolverlo.
 
-        `generar_codigo_activo` lee el código más alto del tipo y le hace
-        `int(codigo.rsplit('-', 1)[-1])`. Si el activo sin código es el ÚNICO de su tipo,
-        ese "más alto" es el vacío y el `int('')` lanza `ValueError` — o sea, la función
-        que arregla el problema se rompe justamente con el problema. No se la parchea
-        desde acá: el comando lo detecta, lo informa y no escribe nada.
+        Red de seguridad, hoy inalcanzable a propósito. `generar_codigo_activo` ignora los
+        códigos que no tienen la forma `CR-TIPO-NNNN`, así que ya no puede fallar con los
+        datos que este comando viene a corregir. Antes sí: tomaba el más alto del tipo y le
+        hacía `int(...)`, y con un código vacío como único del tipo eso era `int('')`.
+
+        Se conserva porque el costo es nulo y la alternativa es confiar en que la
+        numeración nunca vuelva a lanzar: si alguna vez lo hiciera, lo que importa es que
+        este comando lo informe con el id en vez de morir a mitad de una corrección.
         """
         try:
             return generar_codigo_activo(activo.tipo), None
         except ValueError:
             return None, (
-                'es el único activo del tipo %s, así que `generar_codigo_activo` lee su '
-                'propio código vacío como el más alto y falla con int(\'\')'
+                '`generar_codigo_activo(%r)` lanzó ValueError. Ya ignora los códigos sin '
+                'la forma CR-TIPO-NNNN, así que la causa es otra y hay que mirarla'
                 % activo.tipo
             )
 
@@ -153,9 +156,9 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR('  id=%s: %s' % (activo.pk, motivo)))
         raise CommandError(
             'La numeración no puede resolver %d activo(s). No se escribió nada. '
-            'Hace falta que `apps.activos.services.generar_codigo_activo` ignore los '
-            'códigos no numéricos antes de poder corregirlos — es un cambio fuera del '
-            'alcance de este comando.' % len(bloqueados),
+            '`apps.activos.services.generar_codigo_activo` ya ignora los códigos sin la '
+            'forma CR-TIPO-NNNN, así que llegar acá significa que falló por otro motivo: '
+            'hay que mirarlo antes de insistir.' % len(bloqueados),
         )
 
     def _verificar_conflictos(self, pendientes, propuestos):

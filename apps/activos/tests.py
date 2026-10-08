@@ -14,7 +14,7 @@ from .models import (
     OrdenCompraDetalle, RecepcionLote, StockBodega, TipoConsumible,
 )
 from .services import (
-    activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, crear_activos_desde_estaciones, activos_por_vencer_garantia, anular_recepcion_lote, datos_hardware_desde_estacion, registrar_ajuste_inventario, registrar_asignacion, registrar_ingreso, registrar_recepcion_lote, registrar_salida_stock, registrar_traslado_bodega, registrar_ubicacion_farmacia, scope_movimientos_visibles, stock_bajo_minimo, vincular_activos_por_numero_serie,
+    activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, crear_activos_desde_estaciones, activos_por_vencer_garantia, anular_recepcion_lote, datos_hardware_desde_estacion, generar_codigo_activo, registrar_ajuste_inventario, registrar_asignacion, registrar_ingreso, registrar_recepcion_lote, registrar_salida_stock, registrar_traslado_bodega, registrar_ubicacion_farmacia, scope_movimientos_visibles, stock_bajo_minimo, vincular_activos_por_numero_serie,
 )
 
 
@@ -2378,34 +2378,94 @@ class CorregirActivosSinCodigoTests(TestCase):
         # Después: la numeración sigue, ya sin ninguna fila vacía de la que depender.
         self.assertEqual(generar_codigo_activo(Activo.Tipo.IMPRESORA), 'CR-IMP-0004')
 
-    def test_un_codigo_vacio_como_unico_activo_del_tipo_bloquea_y_no_escribe_nada(self):
-        """La falla que encontró esta misma prueba: `generar_codigo_activo` lee el código
-        más alto del tipo y le hace `int(codigo.rsplit('-',1)[-1])`. Si el activo sin
-        código es el ÚNICO de su tipo, ese "más alto" es el vacío y el `int('')` revienta
-        — la función que tiene que arreglar el problema se rompe con el problema.
+    def test_un_codigo_vacio_como_unico_activo_del_tipo_ya_no_bloquea_la_numeracion(self):
+        """Antes esto era la bomba: `generar_codigo_activo` tomaba el código más alto del
+        tipo y le hacía `int(...)`, así que un vacío como ÚNICO activo del tipo era
+        `int('')` y el comando no podía ni proponer un código. Desde que la función ignora
+        los códigos sin la forma CR-TIPO-NNNN, el caso se corrige como cualquier otro.
 
-        El comando NO parchea la numeración desde afuera: detecta el caso, lo informa con
-        el id, y aborta sin escribir. El `--aplicar` del principio no es decorativo:
-        `unique=True` permite UN solo string vacío en toda la tabla, así que para crear el
-        caso UPS hay que liberar antes el de IMP. Esa misma restricción es lo que acota el
-        daño del bug original —nunca puede haber más de un activo sin código a la vez— y
-        es la razón por la que la segunda alta por el admin rompía con un 500 en vez de
-        pasar en silencio."""
-        from django.core.management.base import CommandError
-
+        El `--aplicar` del principio no es decorativo: `unique=True` permite UN solo string
+        vacío en toda la tabla, así que para crear el caso UPS hay que liberar antes el de
+        IMP. Esa misma restricción es lo que acota el daño del bug original —nunca puede
+        haber más de un activo sin código a la vez— y es la razón por la que la segunda
+        alta por el admin rompía con un 500 en vez de pasar en silencio."""
         from apps.activos.services import generar_codigo_activo
 
         self._correr('--aplicar')
         ups = Activo.objects.create(codigo='', tipo=Activo.Tipo.UPS, unidad_negocio=self.unidad)
 
-        with self.assertRaises(ValueError):
-            generar_codigo_activo(Activo.Tipo.UPS)
+        # Ya no lanza: el vacío se ignora, así que el tipo arranca su serie en 0001.
+        self.assertEqual(generar_codigo_activo(Activo.Tipo.UPS), 'CR-UPS-0001')
 
-        for argumentos in ((), ('--aplicar',)):
-            with self.subTest(argumentos=argumentos):
-                with self.assertRaises(CommandError) as ctx:
-                    self._correr(*argumentos)
-                self.assertIn('generar_codigo_activo', str(ctx.exception))
-                ups.refresh_from_db()
-                self.assertEqual(ups.codigo, '')
-                self.assertFalse(EventoActivo.objects.filter(activo=ups).exists())
+        self._correr('--aplicar')
+
+        ups.refresh_from_db()
+        self.assertEqual(ups.codigo, 'CR-UPS-0001')
+        self.assertEqual(Activo.objects.filter(codigo='').count(), 0)
+
+
+class GenerarCodigoActivoTests(TestCase):
+    """`generar_codigo_activo` frente a códigos que no tienen la forma CR-TIPO-NNNN.
+
+    La versión anterior tomaba el código más alto del tipo con `order_by('-codigo')` y le
+    hacía `int(codigo.rsplit('-', 1)[-1])`: cualquier fila con otro formato la rompía con
+    `ValueError`, y justo la función que asigna los códigos se caía con el tipo de dato que
+    había que arreglar. No era hipotético — pasó con el `Activo id=20` que entró por el
+    admin, y este repo todavía crea un activo con `codigo='PRUEBA-EQ'` en el seed de
+    viáticos.
+    """
+
+    IMP = Activo.Tipo.IMPRESORA
+
+    def _crear(self, *codigos, tipo=None):
+        for codigo in codigos:
+            Activo.objects.create(codigo=codigo, tipo=tipo or self.IMP)
+
+    def test_caso_A_secuencia_normal_continua_donde_iba(self):
+        self._crear('CR-IMP-0001', 'CR-IMP-0002', 'CR-IMP-0003')
+        self.assertEqual(generar_codigo_activo(self.IMP), 'CR-IMP-0004')
+
+    def test_caso_B_un_codigo_vacio_se_ignora_y_no_lanza(self):
+        self._crear('CR-IMP-0001', '')
+        self.assertEqual(generar_codigo_activo(self.IMP), 'CR-IMP-0002')
+
+    def test_caso_C_un_sufijo_no_numerico_se_ignora(self):
+        self._crear('CR-IMP-0001', 'CR-IMP-ABC')
+        self.assertEqual(generar_codigo_activo(self.IMP), 'CR-IMP-0002')
+
+    def test_caso_D_invalidos_mezclados_con_validos(self):
+        """El caso completo: el resultado lo deciden solo los válidos."""
+        self._crear('CR-IMP-0001', 'CR-IMP-0002', 'CR-IMP-ABC', 'CR-IMP-', '', 'CR-IMP-0003')
+        self.assertEqual(generar_codigo_activo(self.IMP), 'CR-IMP-0004')
+
+    def test_caso_E_sin_ningun_codigo_valido_arranca_la_serie_del_tipo(self):
+        self.assertEqual(generar_codigo_activo(Activo.Tipo.CAMARA), 'CR-CAM-0001')
+        self._crear('', tipo=Activo.Tipo.CAMARA)
+        self.assertEqual(generar_codigo_activo(Activo.Tipo.CAMARA), 'CR-CAM-0001')
+
+    def test_el_formato_del_seed_de_viaticos_no_rompe_la_numeracion(self):
+        """`sembrar_escenarios_prueba` crea un activo con `codigo='PRUEBA-EQ'`. Con la
+        versión anterior, `int('EQ')` reventaba."""
+        self._crear('CR-IMP-0001', 'PRUEBA-EQ')
+        self.assertEqual(generar_codigo_activo(self.IMP), 'CR-IMP-0002')
+
+    def test_un_codigo_de_otro_tipo_no_cuenta_para_esta_serie(self):
+        """Cada tipo lleva su propia serie: un `CR-DSK-0009` guardado con tipo IMP es un
+        dato inconsistente y no debe adelantar la numeración de las impresoras."""
+        self._crear('CR-IMP-0001', 'CR-DSK-0009')
+        self.assertEqual(generar_codigo_activo(self.IMP), 'CR-IMP-0002')
+
+    def test_pasado_el_cuarto_digito_el_orden_sigue_siendo_numerico(self):
+        """Lo que el orden lexicográfico escondía: como texto `'9999' > '10000'`, así que la
+        versión anterior devolvía CR-IMP-10000 estando ya ocupado y el alta moría contra el
+        índice único."""
+        self._crear('CR-IMP-9999', 'CR-IMP-10000')
+        self.assertEqual(generar_codigo_activo(self.IMP), 'CR-IMP-10001')
+
+    def test_no_modifica_ningun_activo(self):
+        """Los códigos que no encajan se ignoran para el cálculo; corregirlos es una
+        decisión de datos, no un efecto colateral de dar de alta un equipo."""
+        self._crear('CR-IMP-0001', 'CR-IMP-ABC', '')
+        antes = sorted(Activo.objects.values_list('pk', 'codigo'))
+        generar_codigo_activo(self.IMP)
+        self.assertEqual(sorted(Activo.objects.values_list('pk', 'codigo')), antes)
