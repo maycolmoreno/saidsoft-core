@@ -86,24 +86,34 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
                        vencimiento_garantia, orden_compra, usuario, bodega=None,
                        categoria=None, procesador='', ram_gb=None, almacenamiento_gb=None,
                        codigo_sap='', condicion_al_recibir='', farmacia=None,
-                       estado_fisico=None, ip=None, mac='', ubicacion_interna='', slot=''):
+                       estado_fisico=None, ip=None, mac='', ubicacion_interna='', slot='',
+                       ubicacion=None, observaciones=''):
     """Da de alta un activo, ya sea que ENTRE a bodega o que ya esté instalado.
 
     El flujo original asumía que todo activo nace en una bodega, lo que sirve para una
     compra nueva pero no para inventariar lo que ya está funcionando en una farmacia:
     obligaba a inventar una bodega por la que el equipo nunca pasó.
 
-    Se exige bodega O farmacia (no las dos, aunque se aceptan juntas si el equipo pasó
-    por bodega y ya se despachó):
+    Se exige bodega, farmacia O ubicación (no varias, aunque se aceptan juntas si el
+    equipo pasó por bodega y ya se despachó):
 
-    - Con bodega y sin farmacia: queda EN_BODEGA, como siempre.
+    - Con bodega y sin destino: queda EN_BODEGA, como siempre.
     - Con farmacia: queda ASIGNADO, que en este dominio significa "en servicio", no
       "entregado a una persona" -- un PDV no tiene colaborador en el mismo sentido que
       un equipo de oficina (ver registrar_ubicacion_farmacia).
+    - Con ubicación: igual, ASIGNADO. Es el caso del equipo en servicio en matriz o en
+      una oficina, que antes no tenía forma de registrarse sin mentir: había que meterlo
+      en una bodega (y entonces figura "almacenado") o inventarle una farmacia.
+
+    **Lo que esto NO resuelve, y conviene saberlo:** un activo que nace ASIGNADO queda
+    fuera del circuito de custodio, porque `registrar_asignacion` exige EN_BODEGA. Para
+    una farmacia eso es correcto y deliberado (un PDV no tiene custodio); para una
+    impresora de matriz es una limitación real — el custodio se carga por el admin. Darle
+    una vía propia es un cambio aparte, no un efecto colateral de este campo.
 
     `estado_fisico` por defecto es NUEVO para una compra, pero un equipo que ya está
-    operando no es nuevo: cuando se registra directo en farmacia se asume BUENO, y
-    quien carga puede corregirlo.
+    operando no es nuevo: cuando se registra directo en farmacia o en una ubicación se
+    asume BUENO, y quien carga puede corregirlo.
 
     `ip`/`mac`/`ubicacion_interna`/`slot` (topología) se aceptan en el alta y no solo
     después: el momento en que alguien inventaria el switch de una farmacia es el mismo
@@ -112,10 +122,18 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
     eso ninguno se adivina: vacío significa "todavía no lo sabemos", nunca un
     placeholder.
     """
-    if bodega is None and farmacia is None:
-        raise ValueError('Indicá la bodega donde ingresa el equipo o la farmacia donde ya está instalado.')
+    if bodega is None and farmacia is None and ubicacion is None:
+        raise ValueError(
+            'Indicá dónde está el equipo: la bodega donde ingresa, la farmacia donde ya '
+            'está instalado, o la ubicación (matriz/oficina) donde está en servicio.',
+        )
 
-    ya_instalado = farmacia is not None and bodega is None
+    # `ubicacion` cuenta como "ya instalado" por el mismo motivo que `farmacia`: es un
+    # equipo en servicio, no uno que entró a stock. Lo que decide es que NO pasó por
+    # bodega — si se indican bodega y destino juntos, el equipo se recibió y se despachó,
+    # y entonces el estado físico por defecto sigue siendo NUEVO.
+    en_servicio = farmacia if farmacia is not None else ubicacion
+    ya_instalado = en_servicio is not None and bodega is None
     if estado_fisico is None:
         estado_fisico = Activo.EstadoFisico.BUENO if ya_instalado else Activo.EstadoFisico.NUEVO
 
@@ -124,9 +142,10 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
         procesador=procesador, ram_gb=ram_gb, almacenamiento_gb=almacenamiento_gb,
         codigo_sap=codigo_sap, condicion_al_recibir=condicion_al_recibir, farmacia=farmacia,
         ip=ip, mac=mac, ubicacion_interna=ubicacion_interna, slot=slot,
+        ubicacion=ubicacion, observaciones=observaciones,
         fecha_compra=fecha_compra, vencimiento_garantia=vencimiento_garantia,
         orden_compra=orden_compra, bodega_actual=bodega,
-        estado=Activo.Estado.ASIGNADO if farmacia is not None else Activo.Estado.EN_BODEGA,
+        estado=Activo.Estado.ASIGNADO if en_servicio is not None else Activo.Estado.EN_BODEGA,
         estado_fisico_actual=estado_fisico,
         # Un equipo instalado en una farmacia pertenece al cliente dueño de esa
         # farmacia: heredarlo acá es lo que hace que el aislamiento por tenant
@@ -143,6 +162,7 @@ def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
             'proveedor': orden_compra.proveedor if orden_compra else None,
             'bodega': bodega.codigo if bodega else None,
             'farmacia': farmacia.codigo if farmacia else None,
+            'ubicacion': ubicacion.nombre if ubicacion else None,
             'marca': marca.nombre if marca else None,
             'categoria': categoria.nombre if categoria else None,
             'ip': ip,

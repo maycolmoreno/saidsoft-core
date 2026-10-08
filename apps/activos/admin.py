@@ -153,11 +153,12 @@ class EventoActivoInline(admin.TabularInline):
 class ActivoAdmin(admin.ModelAdmin):
     list_display = (
         'codigo', 'tipo', 'marca', 'categoria', 'modelo', 'estado', 'estado_fisico_actual',
-        'farmacia', 'slot', 'ubicacion_interna', 'ip', 'bodega_actual', 'colaborador_actual',
-        'unidad_negocio', 'baja_recomendada',
+        'farmacia', 'ubicacion', 'slot', 'ubicacion_interna', 'ip', 'bodega_actual',
+        'colaborador_actual', 'unidad_negocio', 'baja_recomendada',
     )
     list_filter = (
-        'tipo', 'estado', 'ubicacion_interna', 'bodega_actual', 'unidad_negocio', 'baja_recomendada',
+        'tipo', 'estado', 'ubicacion', 'ubicacion_interna', 'bodega_actual', 'unidad_negocio',
+        'baja_recomendada',
     )
     # `ip` queda afuera a propósito: en PostgreSQL es de tipo inet y un `icontains` sobre
     # ella revienta (mismo motivo por el que enlaces_farmacias_lista castea ip_router a
@@ -165,7 +166,7 @@ class ActivoAdmin(admin.ModelAdmin):
     search_fields = ('codigo', 'numero_serie', 'marca__nombre', 'modelo', 'codigo_sap', 'mac', 'slot')
     autocomplete_fields = (
         'orden_compra', 'bodega_actual', 'colaborador_actual', 'farmacia', 'marca', 'categoria', 'unidad_negocio',
-        'estacion',
+        'estacion', 'ubicacion',
     )
     readonly_fields = ('codigo', 'fecha_creacion', 'ip_reportada_por_el_agente')
     inlines = [EventoActivoInline]

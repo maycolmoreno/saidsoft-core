@@ -8716,3 +8716,57 @@ class ListadosQueTraianLaTablaEnteraTests(TestCase):
         resp, _ = self._consultas(reverse('panel:colaboradores_lista'), {'q': 'Tecnico de campo'})
         cuentas = {c.nombre: c.n_activos for c in resp.context['colaboradores']}
         self.assertEqual(cuentas, {'Busca 00': 3, 'Busca 01': 0})
+
+
+class AltaDeActivoEnUbicacionTests(TestCase):
+    """La vista de alta del panel con un activo que NO está en bodega ni en farmacia.
+
+    El mensaje de éxito resolvía el destino con dos ramas —bodega, si no farmacia— y
+    hacía `activo.farmacia.codigo`. Un activo registrado en una `ubicacion` no tiene
+    ninguna de las dos, así que eso era un `AttributeError` sobre None justo después de
+    guardar: el activo quedaba creado y la respuesta era un 500.
+    """
+
+    def setUp(self):
+        from apps.activos.models import Ubicacion
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.ubicacion = Ubicacion.objects.create(nombre='Matriz Guayaquil')
+        self.bodega = Bodega.objects.create(codigo='BOD-PV', nombre='Bodega', unidad_negocio=self.sg)
+        self.usuario = User.objects.create_user(username='u_alta_ubic', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='activos', codename='add_activo'),
+            Permission.objects.get(content_type__app_label='activos', codename='view_activo'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _alta(self, **extra):
+        datos = {'tipo': Activo.Tipo.IMPRESORA, 'modelo': 'MP C3004'}
+        datos.update(extra)
+        return self.client.post(reverse('panel:activo_crear'), datos, follow=True)
+
+    def test_dar_de_alta_en_una_ubicacion_no_revienta_y_nombra_el_destino(self):
+        resp = self._alta(ubicacion=self.ubicacion.pk)
+        self.assertEqual(resp.status_code, 200)
+        activo = Activo.objects.get(modelo='MP C3004')
+        self.assertEqual(activo.ubicacion, self.ubicacion)
+        self.assertEqual(activo.estado, Activo.Estado.ASIGNADO)
+        self.assertContains(resp, 'Matriz Guayaquil')
+
+    def test_la_ficha_muestra_la_ubicacion_en_vez_de_decir_que_no_la_tiene(self):
+        """Antes la ficha afirmaba "Administrativo / oficina (sin farmacia asignada)"
+        incluso con una ubicación cargada: decía que no se sabía dónde está el equipo
+        cuando sí se sabía."""
+        self._alta(ubicacion=self.ubicacion.pk, observaciones='La trajo contabilidad.')
+        activo = Activo.objects.get(modelo='MP C3004')
+        resp = self.client.get(reverse('panel:activo_detalle', args=[activo.pk]))
+        self.assertContains(resp, 'Matriz Guayaquil')
+        self.assertNotContains(resp, 'sin ubicación ni farmacia asignada')
+        self.assertContains(resp, 'La trajo contabilidad.')
+
+    def test_el_alta_en_bodega_sigue_nombrando_la_bodega(self):
+        resp = self._alta(bodega=self.bodega.pk)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'BOD-PV')
+        self.assertEqual(Activo.objects.get(modelo='MP C3004').estado, Activo.Estado.EN_BODEGA)

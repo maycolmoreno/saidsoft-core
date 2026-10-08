@@ -489,6 +489,31 @@ class Activo(models.Model):
     estado = models.CharField(max_length=15, choices=Estado.choices, default=Estado.EN_BODEGA)
     estado_fisico_actual = models.CharField(max_length=10, choices=EstadoFisico.choices, blank=True)
 
+    # Tercer lugar donde puede estar un activo, además de `bodega_actual` y `farmacia`.
+    #
+    # Hasta ahora `registrar_ingreso` exigía bodega O farmacia, así que un equipo en
+    # servicio en matriz —la impresora administrativa, el switch de la oficina— obligaba a
+    # elegir entre dos mentiras: ponerlo en una bodega (queda EN_BODEGA, o sea
+    # "almacenado") o inventarle una farmacia (aparece en un local donde no está). El
+    # help_text de `farmacia` decía "vacío = administrativo/oficina o en bodega", que es
+    # justamente el problema: los dos casos se veían iguales.
+    #
+    # Se reusa `Ubicacion` y no se agregan campos sueltos porque ya trae nombre, agencia,
+    # dirección, ciudad, parroquia, provincia, `departamento` y `encargado`: un solo FK
+    # resuelve "ubicación física", "área/departamento" y "responsable del sitio".
+    #
+    # PROTECT y no CASCADE: una ubicación con activos no se borra por accidente.
+    ubicacion = models.ForeignKey(
+        Ubicacion, on_delete=models.PROTECT, null=True, blank=True, related_name='activos',
+        help_text='Sede o área donde está el equipo cuando NO está en una farmacia ni en bodega '
+                  '(matriz, oficinas). El departamento y el encargado salen de la ubicación.',
+    )
+    observaciones = models.TextField(
+        blank=True,
+        help_text='Lo que no entra en ningún otro campo: de dónde salió el equipo, qué es cuando '
+                  'la marca no se reconoce, por qué está donde está.',
+    )
+
     # --- Topología de infraestructura (Fase A) ---
     # Para los dispositivos de la farmacia que NO tienen agente: switch, Mikrotik,
     # impresoras, teléfono. Los que sí lo tienen ya reportan su IP solos en

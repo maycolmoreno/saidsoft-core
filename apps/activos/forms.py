@@ -166,6 +166,18 @@ class ActivoIngresoForm(forms.Form):
         help_text='Para inventariar un equipo que ya está funcionando en un local. '
                   'Queda como "en servicio", sin pasar por bodega.',
     )
+    ubicacion = forms.ModelChoiceField(
+        queryset=None, required=False, widget=forms.Select(attrs={'class': INPUT_CLASS}),
+        label='Ubicación (si está en matriz u oficina)',
+        help_text='Para un equipo en servicio fuera de las farmacias. Queda como "en '
+                  'servicio", sin pasar por bodega. El departamento y el encargado salen '
+                  'de la ubicación.',
+    )
+    observaciones = forms.CharField(
+        required=False, widget=forms.Textarea(attrs={'class': INPUT_CLASS, 'rows': 3}),
+        help_text='Lo que no entra en ningún otro campo: de dónde salió, qué es cuando la '
+                  'marca no se reconoce, por qué está donde está.',
+    )
 
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -181,13 +193,24 @@ class ActivoIngresoForm(forms.Form):
         self.fields['farmacia'].queryset = scope_opcional_por_unidad_negocio(
             Farmacia.objects.filter(activa=True), user, 'unidad_negocio',
         ).order_by('codigo')
+        # `Ubicacion` no tiene unidad_negocio, así que no se filtra por cliente: matriz y
+        # las oficinas son compartidas, igual que una bodega sin unidad asignada.
+        from .models import Ubicacion
+        self.fields['ubicacion'].queryset = Ubicacion.objects.filter(activo=True).order_by('nombre')
 
     def clean(self):
         datos = super().clean()
-        if not datos.get('bodega') and not datos.get('farmacia'):
+        if not datos.get('bodega') and not datos.get('farmacia') and not datos.get('ubicacion'):
             raise forms.ValidationError(
-                'Indicá dónde está el equipo: la bodega donde ingresa, o la farmacia '
-                'donde ya está instalado.',
+                'Indicá dónde está el equipo: la bodega donde ingresa, la farmacia donde '
+                'ya está instalado, o la ubicación (matriz/oficina) donde está en servicio.',
+            )
+        # Un equipo está en UN lugar. bodega + destino se acepta (pasó por bodega y se
+        # despachó), pero farmacia y ubicación a la vez no significa nada.
+        if datos.get('farmacia') and datos.get('ubicacion'):
+            raise forms.ValidationError(
+                'Un equipo está en una farmacia o en una ubicación, no en las dos. '
+                'La ubicación es para lo que NO está en un local.',
             )
         return datos
 

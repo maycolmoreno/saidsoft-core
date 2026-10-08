@@ -4,6 +4,7 @@ import io
 
 from django.contrib.auth.models import Group, User
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -11,7 +12,7 @@ from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 
 from .models import (
     Activo, Bodega, Cargo, Colaborador, Departamento, EventoActivo, MovimientoInventario, OrdenCompra,
-    OrdenCompraDetalle, RecepcionLote, StockBodega, TipoConsumible,
+    OrdenCompraDetalle, RecepcionLote, StockBodega, TipoConsumible, Ubicacion,
 )
 from .services import (
     activos_dados_de_baja_pero_conectados, activos_movidos_sin_registro, crear_activos_desde_estaciones, activos_por_vencer_garantia, anular_recepcion_lote, datos_hardware_desde_estacion, generar_codigo_activo, registrar_ajuste_inventario, registrar_asignacion, registrar_ingreso, registrar_recepcion_lote, registrar_salida_stock, registrar_traslado_bodega, registrar_ubicacion_farmacia, scope_movimientos_visibles, stock_bajo_minimo, vincular_activos_por_numero_serie,
@@ -2473,3 +2474,269 @@ class GenerarCodigoActivoTests(TestCase):
         antes = sorted(Activo.objects.values_list('pk', 'codigo'))
         generar_codigo_activo(self.IMP)
         self.assertEqual(sorted(Activo.objects.values_list('pk', 'codigo')), antes)
+
+
+class IngresoEnUbicacionTests(TestCase):
+    """Un activo en servicio en matriz, que antes no tenía forma de registrarse.
+
+    `registrar_ingreso` exigía bodega O farmacia, así que una impresora administrativa
+    obligaba a elegir entre dos mentiras: meterla en una bodega (queda EN_BODEGA, o sea
+    "almacenada") o inventarle una farmacia (figura en un local donde no está). El
+    help_text de `farmacia` decía "vacío = administrativo/oficina o en bodega", que era
+    justamente el problema: los dos casos se veían iguales.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.bodega = Bodega.objects.create(codigo='BOD-FB', nombre='Bodega', unidad_negocio=self.sg)
+        self.departamento = Departamento.objects.create(nombre='Sistemas')
+        self.ubicacion = Ubicacion.objects.create(
+            nombre='Matriz', ciudad='Guayaquil', departamento=self.departamento,
+        )
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML016', grupo=Grupo.objects.create(codigo='TRX-FB', version_objetivo='4.2.1'),
+            unidad_negocio=self.sg,
+        )
+
+    def _ingresar(self, **extra):
+        datos = dict(
+            tipo=Activo.Tipo.IMPRESORA, marca=None, modelo='MP C3004', numero_serie='',
+            fecha_compra=None, vencimiento_garantia=None, orden_compra=None, usuario=None,
+        )
+        datos.update(extra)
+        return registrar_ingreso(**datos)
+
+    def test_una_impresora_de_matriz_queda_en_servicio_y_no_en_bodega(self):
+        activo = self._ingresar(ubicacion=self.ubicacion)
+        self.assertEqual(activo.estado, Activo.Estado.ASIGNADO)
+        self.assertEqual(activo.ubicacion, self.ubicacion)
+        self.assertIsNone(activo.bodega_actual)
+        self.assertIsNone(activo.farmacia)
+
+    def test_el_estado_fisico_por_defecto_es_BUENO_porque_ya_esta_operando(self):
+        """Mismo criterio que con farmacia: un equipo que ya funciona no es NUEVO."""
+        self.assertEqual(
+            self._ingresar(ubicacion=self.ubicacion).estado_fisico_actual,
+            Activo.EstadoFisico.BUENO,
+        )
+
+    def test_si_paso_por_bodega_y_se_despacho_sigue_siendo_NUEVO(self):
+        activo = self._ingresar(bodega=self.bodega, ubicacion=self.ubicacion)
+        self.assertEqual(activo.estado_fisico_actual, Activo.EstadoFisico.NUEVO)
+        self.assertEqual(activo.estado, Activo.Estado.ASIGNADO)
+
+    def test_la_ubicacion_queda_en_el_historial(self):
+        activo = self._ingresar(ubicacion=self.ubicacion)
+        evento = activo.eventos.get(tipo_evento=EventoActivo.TipoEvento.INGRESO)
+        self.assertEqual(evento.detalle['ubicacion'], 'Matriz')
+        self.assertIsNone(evento.detalle['farmacia'])
+        self.assertIsNone(evento.detalle['bodega'])
+
+    def test_sin_bodega_ni_farmacia_ni_ubicacion_sigue_siendo_un_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._ingresar()
+        self.assertIn('ubicación', str(ctx.exception))
+
+    def test_las_observaciones_se_guardan(self):
+        activo = self._ingresar(
+            ubicacion=self.ubicacion, observaciones='Sin marca legible; la trajo contabilidad.',
+        )
+        self.assertEqual(activo.observaciones, 'Sin marca legible; la trajo contabilidad.')
+
+    def test_el_departamento_y_el_encargado_llegan_por_la_ubicacion(self):
+        """El motivo de reusar `Ubicacion` en vez de agregar campos sueltos: un solo FK
+        resuelve ubicación física, área y responsable del sitio."""
+        activo = self._ingresar(ubicacion=self.ubicacion)
+        self.assertEqual(activo.ubicacion.departamento.nombre, 'Sistemas')
+        self.assertEqual(activo.ubicacion.ciudad, 'Guayaquil')
+
+    def test_no_cambia_nada_de_lo_que_ya_funcionaba(self):
+        """Las dos ramas viejas tienen que seguir idénticas: es el único constructor de
+        Activo del sistema y lo usan el panel, el admin y crear_topologia_farmacia."""
+        en_bodega = self._ingresar(bodega=self.bodega)
+        self.assertEqual(en_bodega.estado, Activo.Estado.EN_BODEGA)
+        self.assertEqual(en_bodega.estado_fisico_actual, Activo.EstadoFisico.NUEVO)
+        self.assertIsNone(en_bodega.ubicacion)
+        self.assertEqual(en_bodega.observaciones, '')
+
+        en_farmacia = self._ingresar(farmacia=self.farmacia)
+        self.assertEqual(en_farmacia.estado, Activo.Estado.ASIGNADO)
+        self.assertEqual(en_farmacia.estado_fisico_actual, Activo.EstadoFisico.BUENO)
+        self.assertEqual(en_farmacia.unidad_negocio, self.sg)
+        self.assertIsNone(en_farmacia.ubicacion)
+
+    def test_una_ubicacion_con_activos_no_se_puede_borrar(self):
+        """PROTECT: borrar la sede no puede llevarse el inventario que está en ella."""
+        from django.db.models import ProtectedError
+
+        self._ingresar(ubicacion=self.ubicacion)
+        with self.assertRaises(ProtectedError):
+            self.ubicacion.delete()
+
+
+class FormularioDeAltaConUbicacionTests(TestCase):
+    """El `clean()` del formulario de alta: es el camino del panel y un error acá bloquea
+    altas que hoy funcionan."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.usuario = User.objects.create_superuser('alta.fb', 'a@b.c', 'x')
+        self.bodega = Bodega.objects.create(codigo='BOD-FB2', nombre='Bodega', unidad_negocio=self.sg)
+        self.ubicacion = Ubicacion.objects.create(nombre='Matriz')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML017', grupo=Grupo.objects.create(codigo='TRX-FB2', version_objetivo='4.2.1'),
+            unidad_negocio=self.sg,
+        )
+
+    def _form(self, **extra):
+        from apps.activos.forms import ActivoIngresoForm
+
+        datos = {'tipo': Activo.Tipo.IMPRESORA}
+        datos.update({k: v.pk if hasattr(v, 'pk') else v for k, v in extra.items()})
+        return ActivoIngresoForm(datos, user=self.usuario)
+
+    def test_solo_con_ubicacion_es_valido(self):
+        form = self._form(ubicacion=self.ubicacion)
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_sin_ningun_lugar_no_es_valido(self):
+        form = self._form()
+        self.assertFalse(form.is_valid())
+        self.assertIn('ubicación', ' '.join(form.non_field_errors()))
+
+    def test_farmacia_y_ubicacion_juntas_no_significan_nada(self):
+        """Un equipo está en un lugar. bodega + destino sí se acepta (pasó por bodega y
+        se despachó), pero no puede estar en un local y en matriz a la vez."""
+        form = self._form(farmacia=self.farmacia, ubicacion=self.ubicacion)
+        self.assertFalse(form.is_valid())
+        self.assertIn('no en las dos', ' '.join(form.non_field_errors()))
+
+    def test_las_dos_combinaciones_que_ya_funcionaban_siguen_validas(self):
+        for nombre, extra in (('bodega', {'bodega': self.bodega}),
+                              ('farmacia', {'farmacia': self.farmacia}),
+                              ('bodega+farmacia', {'bodega': self.bodega, 'farmacia': self.farmacia})):
+            with self.subTest(caso=nombre):
+                form = self._form(**extra)
+                self.assertTrue(form.is_valid(), form.errors)
+
+
+class ImportarUbicacionesTests(TestCase):
+    """El catálogo de ubicaciones, que en producción está vacío y hace que
+    `Activo.ubicacion` sea un desplegable sin opciones.
+
+    Lee un CSV en vez de traer datos propios: las ubicaciones reales las conoce quien las
+    carga, y `seed_activos` —que sí crea Ubicacion— es un seed de demostración con datos
+    inventados que no debe correr en producción.
+    """
+
+    def setUp(self):
+        self.departamento = Departamento.objects.create(nombre='Tecnologías e Innovación')
+        self.encargado = Colaborador.objects.create(nombre='Responsable', cedula='0912345678')
+
+    def _csv(self, contenido):
+        import tempfile
+
+        archivo = tempfile.NamedTemporaryFile(
+            'w', suffix='.csv', delete=False, newline='', encoding='utf-8',
+        )
+        archivo.write(contenido)
+        archivo.close()
+        return archivo.name
+
+    def _correr(self, contenido, *extra):
+        salida = io.StringIO()
+        call_command('importar_ubicaciones', '--datos', self._csv(contenido), *extra, stdout=salida)
+        return salida.getvalue()
+
+    CABECERA = 'nombre,agencia,direccion,ciudad,parroquia,provincia,departamento,encargado\n'
+
+    def test_simula_por_defecto_y_no_escribe(self):
+        salida = self._correr(self.CABECERA + 'Matriz,,,Guayaquil,,Guayas,,\n')
+        self.assertIn('Simulación', salida)
+        self.assertEqual(Ubicacion.objects.count(), 0)
+
+    def test_con_aplicar_crea_la_ubicacion_con_todos_sus_campos(self):
+        self._correr(
+            self.CABECERA
+            + 'Matriz,Matriz,Av. 9 de Octubre 100,Guayaquil,Tarqui,Guayas,'
+              'Tecnologías e Innovación,0912345678\n',
+            '--aplicar',
+        )
+        ubicacion = Ubicacion.objects.get(nombre='Matriz')
+        self.assertEqual(ubicacion.ciudad, 'Guayaquil')
+        self.assertEqual(ubicacion.provincia, 'Guayas')
+        self.assertEqual(ubicacion.direccion, 'Av. 9 de Octubre 100')
+        self.assertEqual(ubicacion.departamento, self.departamento)
+        self.assertEqual(ubicacion.encargado, self.encargado)
+
+    def test_solo_el_nombre_es_obligatorio(self):
+        self._correr(self.CABECERA + 'Oficina chica,,,,,,,\n', '--aplicar')
+        self.assertTrue(Ubicacion.objects.filter(nombre='Oficina chica').exists())
+
+    def test_sin_nombre_es_un_error_y_no_escribe_nada(self):
+        with self.assertRaises(CommandError):
+            self._correr(self.CABECERA + 'Matriz,,,,,,,\n,,,Quito,,,,\n', '--aplicar')
+        self.assertEqual(Ubicacion.objects.count(), 0)
+
+    def test_es_idempotente_y_no_pisa_lo_cargado(self):
+        """Mismo criterio que `completar_topologia`: si la planilla trae otro valor, eso
+        es un conflicto que resuelve una persona, no un UPDATE silencioso."""
+        fila = self.CABECERA + 'Matriz,,,Guayaquil,,Guayas,,\n'
+        self._correr(fila, '--aplicar')
+        self._correr(self.CABECERA + 'Matriz,,,Quito,,Pichincha,,\n', '--aplicar')
+        self.assertEqual(Ubicacion.objects.count(), 1)
+        self.assertEqual(Ubicacion.objects.get(nombre='Matriz').ciudad, 'Guayaquil')
+
+    def test_avisa_en_que_difiere_lo_que_no_va_a_pisar(self):
+        self._correr(self.CABECERA + 'Matriz,,,Guayaquil,,Guayas,,\n', '--aplicar')
+        salida = self._correr(self.CABECERA + 'Matriz,,,Quito,,Guayas,,\n')
+        self.assertIn('ya existe, NO se toca', salida)
+        self.assertIn('Guayaquil', salida)
+        self.assertIn('Quito', salida)
+
+    def test_un_departamento_inexistente_es_un_error_de_planilla(self):
+        with self.assertRaises(CommandError):
+            self._correr(self.CABECERA + 'Matriz,,,,,,Departamento Fantasma,\n', '--aplicar')
+        self.assertEqual(Ubicacion.objects.count(), 0)
+
+    def test_no_crea_departamentos_como_efecto_colateral(self):
+        """Crear departamentos al importar ubicaciones es la misma trampa que dar de alta
+        equipos fantasma desde una planilla."""
+        antes = Departamento.objects.count()
+        with self.assertRaises(CommandError):
+            self._correr(self.CABECERA + 'Matriz,,,,,,Nuevo Depto,\n', '--aplicar')
+        self.assertEqual(Departamento.objects.count(), antes)
+
+    def test_un_encargado_inexistente_es_un_error_de_planilla(self):
+        with self.assertRaises(CommandError):
+            self._correr(self.CABECERA + 'Matriz,,,,,,,0000000000\n', '--aplicar')
+        self.assertEqual(Ubicacion.objects.count(), 0)
+
+    def test_una_fila_repetida_en_la_planilla_es_un_error(self):
+        with self.assertRaises(CommandError):
+            self._correr(self.CABECERA + 'Matriz,,,,,,,\nmatriz,,,,,,,\n', '--aplicar')
+        self.assertEqual(Ubicacion.objects.count(), 0)
+
+    def test_dos_ubicaciones_con_el_mismo_nombre_no_se_pueden_resolver(self):
+        """`Ubicacion.nombre` NO es unique en la base, así que esto puede existir de
+        antes y el comando no puede decidir a cuál se refiere la fila."""
+        Ubicacion.objects.create(nombre='Matriz', ciudad='Guayaquil')
+        Ubicacion.objects.create(nombre='Matriz', ciudad='Quito')
+        with self.assertRaises(CommandError):
+            self._correr(self.CABECERA + 'Matriz,,,,,,,\n', '--aplicar')
+
+    def test_una_columna_desconocida_se_rechaza_antes_de_mirar_los_datos(self):
+        with self.assertRaises(CommandError) as ctx:
+            self._correr('nombre,cuidad\nMatriz,Guayaquil\n', '--aplicar')
+        self.assertIn('cuidad', str(ctx.exception))
+
+    def test_listar_departamentos_dice_que_poner_en_el_csv(self):
+        salida = io.StringIO()
+        call_command('importar_ubicaciones', '--listar-departamentos', stdout=salida)
+        self.assertIn('Tecnologías e Innovación', salida.getvalue())
+
+    def test_un_csv_de_excel_con_BOM_se_lee_igual(self):
+        """Sin `utf-8-sig` la primera columna se llama '\ufeffnombre' y no coincide con
+        nada, así que la planilla entera parece vacía."""
+        self._correr('﻿' + self.CABECERA + 'Matriz,,,Guayaquil,,,,\n', '--aplicar')
+        self.assertTrue(Ubicacion.objects.filter(nombre='Matriz').exists())

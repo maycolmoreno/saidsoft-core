@@ -93,7 +93,26 @@
                 {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
             </div>
             {% endwith %}
+            {% with field=form.ubicacion %}
+            <div class="form-field">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
+                {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+            </div>
+            {% endwith %}
         </div>
+    </div>
+
+    <div class="section-divider">
+        <div class="section-head"><div class="label"><h3>Observaciones</h3></div></div>
+        {% with field=form.observaciones %}
+        <div class="form-field">
+            {{ field }}
+            {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
+            {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+        {% endwith %}
     </div>
 
     <div class="flex items-center gap-3 pt-6">

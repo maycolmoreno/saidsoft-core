@@ -143,13 +143,19 @@ def activo_crear(request):
                 procesador=d['procesador'], ram_gb=d['ram_gb'], almacenamiento_gb=d['almacenamiento_gb'],
                 codigo_sap=d['codigo_sap'], condicion_al_recibir=d['condicion_al_recibir'],
                 fecha_compra=d['fecha_compra'], vencimiento_garantia=d['vencimiento_garantia'],
-                orden_compra=d['orden_compra'], bodega=d['bodega'], farmacia=d['farmacia'], usuario=request.user,
+                orden_compra=d['orden_compra'], bodega=d['bodega'], farmacia=d['farmacia'],
+                ubicacion=d['ubicacion'], observaciones=d['observaciones'], usuario=request.user,
             )
             registrar_evento(usuario=request.user, accion='activo.ingreso', objeto=activo, request=request)
-            donde = (
-                activo.bodega_actual.codigo if activo.bodega_actual_id
-                else f'la farmacia {activo.farmacia.codigo}'
-            )
+            # Tres ramas y no dos: un activo registrado en una `ubicacion` no tiene
+            # bodega ni farmacia, y la version anterior hacia `activo.farmacia.codigo`
+            # sobre None -> AttributeError justo al guardar.
+            if activo.bodega_actual_id:
+                donde = activo.bodega_actual.codigo
+            elif activo.farmacia_id:
+                donde = f'la farmacia {activo.farmacia.codigo}'
+            else:
+                donde = activo.ubicacion.nombre
             messages.success(request, f'Activo {activo.codigo} registrado en {donde}.')
             return redirect('panel:activo_detalle', pk=activo.pk)
     else:
