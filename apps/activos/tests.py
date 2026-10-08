@@ -2251,3 +2251,161 @@ class SeriesDeRellenoDelBiosTests(TestCase):
         for valor in ('', '   ', None):
             with self.subTest(valor=valor):
                 self.assertFalse(serie_utilizable(valor))
+
+
+class CorregirActivosSinCodigoTests(TestCase):
+    """El comando que limpia los activos que quedaron con `codigo=''`.
+
+    El caso real: entre el alta por el admin de Django y el arreglo de
+    `ActivoAdmin.save_model` (16-sep-2026) se podía insertar un activo sin código, porque
+    `codigo` es `readonly_fields` ahí y el generador vive en `registrar_ingreso`. Como
+    `unique=True` acepta UN string vacío, la primera pasaba y la segunda rompía.
+    """
+
+    def setUp(self):
+        # Las unidades de negocio las siembra una migración; no se crean acá.
+        self.unidad = UnidadNegocio.objects.get(codigo='SG')
+        User.objects.create_superuser('admin.pruebas', 'a@b.c', 'x')
+        # Los dos que ya existían del tipo, para reproducir el escenario de producción:
+        # el vacío NO es el único IMP, que es lo que hoy mantiene a flote a
+        # generar_codigo_activo (ver el docstring del comando).
+        for _ in range(2):
+            registrar_ingreso(
+                tipo=Activo.Tipo.IMPRESORA, marca=None, modelo='L3250', numero_serie='',
+                fecha_compra=None, vencimiento_garantia=None, orden_compra=None,
+                usuario=None, bodega=self._bodega(),
+            )
+        # El huérfano: se crea salteando el servicio, que es exactamente como entró el real.
+        self.huerfano = Activo.objects.create(
+            codigo='', tipo=Activo.Tipo.IMPRESORA, unidad_negocio=self.unidad,
+            estado=Activo.Estado.ASIGNADO, ip='10.101.49.136',
+        )
+
+    def _bodega(self):
+        if not hasattr(self, '_bodega_cache'):
+            self._bodega_cache = Bodega.objects.create(
+                codigo='BOD-PRUEBA', nombre='Bodega de prueba', unidad_negocio=self.unidad,
+            )
+        return self._bodega_cache
+
+    def _correr(self, *extra):
+        salida = io.StringIO()
+        call_command('corregir_activos_sin_codigo', *extra, stdout=salida)
+        return salida.getvalue()
+
+    def test_detecta_el_activo_sin_codigo_y_muestra_lo_necesario_para_decidir(self):
+        salida = self._correr()
+        self.assertIn('Activos sin código: 1', salida)
+        self.assertIn(str(self.huerfano.pk), salida)
+        self.assertIn(Activo.Tipo.IMPRESORA, salida)
+        self.assertIn('CR-IMP-0003', salida)          # código propuesto
+        self.assertIn(Activo.Estado.ASIGNADO, salida)
+        self.assertIn('10.101.49.136', salida)
+
+    def test_sin_aplicar_no_escribe_nada(self):
+        """Simular por defecto es la mitad del valor del comando: una corrección de datos
+        se mira antes de hacerse, igual que en completar_topologia."""
+        salida = self._correr()
+        self.assertIn('Simulación: no se escribió nada', salida)
+        self.assertEqual(Activo.objects.filter(codigo='').count(), 1)
+        self.huerfano.refresh_from_db()
+        self.assertEqual(self.huerfano.codigo, '')
+        self.assertFalse(EventoActivo.objects.filter(activo=self.huerfano).exists())
+
+    def test_con_aplicar_asigna_el_codigo_que_da_la_numeracion_del_sistema(self):
+        self._correr('--aplicar')
+        self.huerfano.refresh_from_db()
+        self.assertEqual(self.huerfano.codigo, 'CR-IMP-0003')
+        self.assertEqual(Activo.objects.filter(codigo='').count(), 0)
+
+    def test_es_idempotente(self):
+        """Correrlo dos veces no puede renumerar nada: el segundo pase no encuentra
+        pendientes y termina bien."""
+        self._correr('--aplicar')
+        codigo_asignado = Activo.objects.get(pk=self.huerfano.pk).codigo
+        eventos_tras_el_primero = EventoActivo.objects.filter(activo=self.huerfano).count()
+
+        salida = self._correr('--aplicar')
+
+        self.assertIn('No hay activos sin código', salida)
+        self.assertEqual(Activo.objects.get(pk=self.huerfano.pk).codigo, codigo_asignado)
+        self.assertEqual(
+            EventoActivo.objects.filter(activo=self.huerfano).count(), eventos_tras_el_primero,
+        )
+
+    def test_no_toca_los_activos_que_ya_tienen_codigo(self):
+        antes = dict(
+            Activo.objects.exclude(pk=self.huerfano.pk).values_list('pk', 'codigo'),
+        )
+        self._correr('--aplicar')
+        despues = dict(
+            Activo.objects.exclude(pk=self.huerfano.pk).values_list('pk', 'codigo'),
+        )
+        self.assertEqual(antes, despues)
+
+    def test_deja_rastro_en_el_historial_con_el_codigo_anterior_y_el_nuevo(self):
+        """El historial de un activo es de auditoría permanente: corregirle el código no
+        es menos real que asignárselo a alguien."""
+        self._correr('--aplicar')
+        evento = EventoActivo.objects.get(activo=self.huerfano)
+        self.assertEqual(evento.tipo_evento, EventoActivo.TipoEvento.DATOS_RED_CARGADOS)
+        self.assertEqual(evento.detalle['correccion'], 'codigo_vacio')
+        self.assertEqual(evento.detalle['codigo_anterior'], '')
+        self.assertEqual(evento.detalle['codigo_nuevo'], 'CR-IMP-0003')
+        self.assertEqual(evento.detalle['comando'], 'corregir_activos_sin_codigo')
+        self.assertIsNotNone(evento.usuario)
+        self.assertIsNotNone(evento.timestamp)
+
+    def test_sin_pendientes_termina_bien_y_no_exige_superusuario(self):
+        """Con la base ya limpia el comando no puede fallar por no encontrar a quién
+        atribuir el evento: no hay evento que atribuir."""
+        Activo.objects.filter(pk=self.huerfano.pk).update(codigo='CR-IMP-0099')
+        User.objects.filter(is_superuser=True).delete()
+        self.assertIn('No hay activos sin código', self._correr('--aplicar'))
+
+    def test_generar_codigo_activo_para_IMP_sigue_funcionando_despues_de_la_correccion(self):
+        """Regresión del `ValueError` latente: `generar_codigo_activo` hace
+        `int(ultimo.codigo.rsplit('-', 1)[-1])`, y con un código vacío como ÚNICO activo
+        del tipo eso es `int('')`. Acá se comprueba el antes y el después."""
+        from apps.activos.services import generar_codigo_activo
+
+        # Antes: no explota porque el vacío no es el único IMP (queda último al ordenar
+        # descendente), que es exactamente la situación de producción.
+        self.assertEqual(generar_codigo_activo(Activo.Tipo.IMPRESORA), 'CR-IMP-0003')
+
+        self._correr('--aplicar')
+
+        # Después: la numeración sigue, ya sin ninguna fila vacía de la que depender.
+        self.assertEqual(generar_codigo_activo(Activo.Tipo.IMPRESORA), 'CR-IMP-0004')
+
+    def test_un_codigo_vacio_como_unico_activo_del_tipo_bloquea_y_no_escribe_nada(self):
+        """La falla que encontró esta misma prueba: `generar_codigo_activo` lee el código
+        más alto del tipo y le hace `int(codigo.rsplit('-',1)[-1])`. Si el activo sin
+        código es el ÚNICO de su tipo, ese "más alto" es el vacío y el `int('')` revienta
+        — la función que tiene que arreglar el problema se rompe con el problema.
+
+        El comando NO parchea la numeración desde afuera: detecta el caso, lo informa con
+        el id, y aborta sin escribir. El `--aplicar` del principio no es decorativo:
+        `unique=True` permite UN solo string vacío en toda la tabla, así que para crear el
+        caso UPS hay que liberar antes el de IMP. Esa misma restricción es lo que acota el
+        daño del bug original —nunca puede haber más de un activo sin código a la vez— y
+        es la razón por la que la segunda alta por el admin rompía con un 500 en vez de
+        pasar en silencio."""
+        from django.core.management.base import CommandError
+
+        from apps.activos.services import generar_codigo_activo
+
+        self._correr('--aplicar')
+        ups = Activo.objects.create(codigo='', tipo=Activo.Tipo.UPS, unidad_negocio=self.unidad)
+
+        with self.assertRaises(ValueError):
+            generar_codigo_activo(Activo.Tipo.UPS)
+
+        for argumentos in ((), ('--aplicar',)):
+            with self.subTest(argumentos=argumentos):
+                with self.assertRaises(CommandError) as ctx:
+                    self._correr(*argumentos)
+                self.assertIn('generar_codigo_activo', str(ctx.exception))
+                ups.refresh_from_db()
+                self.assertEqual(ups.codigo, '')
+                self.assertFalse(EventoActivo.objects.filter(activo=ups).exists())
