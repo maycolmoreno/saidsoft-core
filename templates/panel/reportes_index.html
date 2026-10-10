@@ -7,11 +7,15 @@
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
     {# --- Resumen por cliente --- #}
+    {% comment %}La tarjeta se guarda con el mismo permiso que la vista exige: ofrecerla a quien
+       no lo tiene es mandarlo a un 403 desde la pantalla que existe para encontrar reportes.{% endcomment %}
+    {% if perms.facturacion.view_actividadmensualestacion %}
     <div class="card p-5" style="border-color:var(--accent-dim);">
         <h2 class="font-medium mb-1">Resumen por cliente</h2>
         <p class="text-sm text-[var(--text-faint)] mb-4">Cumplimiento, despliegues, alertas y activos de un solo cliente en un período — para entregar.</p>
         <a href="{% url 'panel:reporte_cliente_resumen' %}" class="btn primary w-full justify-center">Generar resumen</a>
     </div>
+    {% endif %}
 
     {# --- Cumplimiento --- #}
     <div class="card p-5">

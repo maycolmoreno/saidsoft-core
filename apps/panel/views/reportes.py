@@ -208,6 +208,14 @@ def reporte_mantenimiento_csv(request):
 
 
 @login_required
+# El permiso de facturación y no uno propio: de los seis dominios que esta pantalla agrega,
+# los endpoints facturables del mes son el dato que no sale de ningún otro lado del panel, y
+# su CSV equivalente (`reporte_facturacion_csv`) ya se guarda con este mismo permiso. Sin
+# ningún `permission_required` —como estuvo hasta el 10-oct-2026— era la única vista de este
+# módulo abierta a cualquier autenticado: los otros seis reportes sí lo exigían, así que el
+# criterio ya existía y a esta se le había pasado. `verificar_acceso` de más abajo no cubría
+# el hueco: acota de qué cliente son los datos, no quién tiene derecho al informe.
+@permission_required('facturacion.view_actividadmensualestacion', raise_exception=True)
 def reporte_cliente_resumen(request):
     unidades_negocio = unidades_negocio_visibles(request.user)
     unidad = _resolver_unidad_negocio(request)
