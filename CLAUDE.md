@@ -154,6 +154,73 @@ corre sobre `timescale/timescaledb`.
 - Nunca versionar secretos ni imprimirlos. `deploy/.env`, `key.properties` y los
   `.jks` quedan fuera de git.
 
+## Arquitectura: dónde está cada cosa
+
+El mapa completo (stack con versiones, 95 modelos, flujos, convenciones, entorno de
+pruebas) está en **`docs/auditoria/fase1-descubrimiento.md`**. Leelo antes de trabajar
+sobre un módulo que no conocés; acá va solo lo que hay que tener a mano siempre.
+
+15 apps Django bajo `apps/`. La lógica de negocio vive en `apps/<app>/services.py`, nunca
+en las vistas. `apps/panel` es presentación de todo el sistema y no tiene modelos.
+Tres componentes separados: backend (`saidsoft-core`), agente Windows (`agente-prueba/`)
+y app Flutter (`movil-campo/`).
+
+## Regla de reutilización
+
+Antes de crear una implementación nueva: **buscar si ya existe**, identificarla, evaluar
+si sirve, y proponer una nueva solo si la existente no alcanza — explicando por qué.
+Si ya existe una implementación para una función, documentala; no propongas otra.
+
+| Necesidad | Reusar |
+|---|---|
+| SNMP al equipo de borde (ancho de banda, identidad, ARP) | `apps/monitoreo/mikrotik.py` |
+| SNMP a cualquier otro dispositivo (impresora, switch, UPS) | `apps/monitoreo/snmp/` — para un tipo nuevo, **una entrada en `catalogo.py`**, no un módulo nuevo |
+| Alertas por estación | `apps/monitoreo/services.py` (`ReglaAlerta`/`Alerta`) |
+| Alertas por sitio/enlace | `apps/monitoreo/enlaces.py` |
+| Cifrado de credenciales | `apps/catalogo/crypto.py` (Fernet) |
+| Inventario físico | `apps/activos/models.py` → `Activo` |
+| Trazabilidad de un activo | `EventoActivo` |
+| Auditoría de acciones humanas | `apps/auditoria` → `registrar_evento()` |
+| Tareas periódicas | Celery / `CELERY_BEAT_SCHEDULE` en `config/settings/base.py` |
+| Observación por ARP | `apps/monitoreo/models.py` → `DispositivoDetectado` |
+
+**No crear arquitecturas paralelas.**
+
+## Reglas de dominio que no se cambian sin evidencia
+
+- **`Activo` es la entidad central del inventario físico.** No crear un modelo paralelo
+  para el mismo equipo. `Activo` nunca se elimina: `delete()` lanza `NotImplementedError`.
+- **Inventario declarado ≠ observado.** `Activo` es lo que alguien declaró;
+  `DispositivoDetectado` (ARP) y `EquipoBordeFarmacia` (SNMP) son lo que la red reporta.
+  El cruce entre los dos es el producto, no una duplicación a eliminar.
+- **Una sola fuente de verdad para la IP.** Si el activo tiene `estacion` vinculada, manda
+  `Estacion.ip_lan` (la reporta el agente); si no, `Activo.ip` cargada a mano. Lo resuelve
+  `Activo.ip_efectiva`, y `Activo.clean()` impide cargar las dos a la vez.
+- **Estados de inventario y de monitoreo están separados.** `Activo.Estado` (en_bodega /
+  asignado / en_reparacion / dado_de_baja) no representa conectividad;
+  `Estacion.EstadoConexion` no representa custodia. No mezclarlos.
+- **Tres niveles de ubicación, deliberadamente separados.** `Activo.farmacia` = en qué
+  sitio de la red está. `Activo.ubicacion` → `Ubicacion` (agencia/sede con dirección y
+  coordenadas, la misma que usan las visitas técnicas y los colaboradores) = dónde está
+  cuando NO está en farmacia ni en bodega: matriz, oficinas. `UbicacionInterna` (choices) =
+  dónde está montado dentro de la farmacia. No colapsarlos.
+- **Los secretos no se leen ni se imprimen.** `.env` y `deploy/.env` quedan fuera de git y
+  fuera de cualquier lectura. Para entender la configuración están `.env.example` y
+  `deploy/.env.prod.example`.
+
+## Límites de los agentes de auditoría
+
+Los agentes de `.claude/agents/` **auditan; no corrigen**. No modifican código,
+migraciones ni datos; no ejecutan pruebas ni `manage.py shell`; no se conectan a ninguna
+base de datos; no hacen commits ni operaciones de git que escriban. Entregan hallazgos con
+evidencia (archivo, línea, función) para que un humano decida. Ningún hallazgo se marca
+CONFIRMADO por inferencia: si hace falta ejecutar algo, se marca pendiente de reproducción.
+
+Las restricciones de lectura y de shell están en `.claude/settings.json`. Las reglas `deny`
+sobre `Bash` son una **lista negra, no un sandbox**: acotan los comandos escritos de la
+forma habitual, no cierran toda vía posible. El control estructural real es el `tools:` de
+cada agente — `revisor-bd` y `revisor-inventario` no reciben `Bash` en absoluto.
+
 ## Mantener la documentación al día
 
 `README.md` y `PLAN_MODERNIZACION.md` son documentación **viva**, no una foto del

@@ -4765,3 +4765,107 @@ cruce diario filtra en SQL (`Lower(Trim(...))` contra la lista) y los otros dos 
 verde. La primera pasada de verificación solo apagó `serie_utilizable` y las dos pruebas del
 cruce diario siguieron pasando — si me hubiera quedado ahí, habría dado por verificado algo
 que no lo estaba.
+
+---
+
+## §10-BH — Auditoría por agentes: 94 hallazgos que esta entrada NO cierra (10-oct-2026)
+
+**Esta entrada abre trabajo, no lo cierra.** Es la excepción en §10: todas las demás
+documentan algo que se arregló; esta documenta una medición. **La auditoría no corrigió un
+solo hallazgo, y no tocó una sola línea de código, migración o dato.**
+
+Uno se corrigió después, aparte y en su propio commit: `BUG-01` (`ecc9e70`), la llamada a
+`_payload` con un argumento de menos que hacía fallar toda apertura con paso
+`DESPLIEGUE_POS`. Se adelantó al triage por dos razones que no valen para los demás: su
+evidencia se sostiene sin ejecutar nada —una firma de función contra su llamada, las dos en
+el mismo archivo— y era una ruta rota en producción, no una deuda a priorizar. **Los 93
+restantes siguen sin tocar.**
+
+Cuatro agentes de auditoría (`.claude/agents/`) corrieron una vez cada uno sobre `master` @
+`0515773`, en solo lectura. Los dos que miran el modelo de datos y el inventario
+(`revisor-bd`, `revisor-inventario`) **no reciben `Bash` en absoluto**: su restricción es
+estructural, no depende de que las reglas `deny` de `.claude/settings.json` estén bien
+escritas. Resultado completo en **`docs/auditoria/fase4-hallazgos.md`** (los cuatro
+informes íntegros más el análisis consolidado); el mapa de arquitectura que usaron está en
+`docs/auditoria/fase1-descubrimiento.md`.
+
+| Agente | Hallazgos | "No hallado" |
+|---|---|---|
+| `revisor-arquitectura` | 31 | 5 |
+| `revisor-bd` | 19 | 5 |
+| `revisor-inventario` | 20 | sección propia |
+| `cazador-bugs` | 30 | sección propia + los 48 avisos de `pyflakes` clasificados |
+| **Bruto** | **100** | |
+| **Únicos tras deduplicar** | **94**, de los cuales **12 ALTO** | |
+
+Las secciones "no hallado" no son relleno: acotan el alcance. Dicen qué se buscó y no
+estaba — sin ciclos de import, sin inventario paralelo, sin drift de migraciones, sin
+huecos de tenant en el panel— y evitan que la próxima auditoría vuelva a buscarlo.
+
+### Nada está reproducido, y eso es deliberado
+
+Ningún hallazgo lleva `Reproducción: SÍ`. Por §9 del documento de descubrimiento, las
+pruebas, `manage.py` y el acceso a base y broker estaban prohibidos en esta etapa: el
+análisis es por lectura de código. Donde un informe dice "BUG CONFIRMADO" significa que la
+evidencia se sostiene sola —una firma de función contra su llamada, dos ramas mutuamente
+excluyentes, una cabecera que nginx manda y Django no lee—, no que se haya ejecutado nada.
+
+**Las reproducciones pendientes hay que correrlas contra PostgreSQL.** `RIESGO-04` y
+`HALLAZGO-16` son invisibles en SQLite, que es exactamente lo que este repo viene pagando
+desde §10: probar en un motor y desplegar en otro.
+
+### Los cinco temas de severidad ALTA
+
+| Tema | Hallazgos |
+|---|---|
+| Ciclo de vida de la credencial en el broker | `B-1`/`RIESGO-07` (rechazar una estación no revoca su credencial EMQX; el re-enrolamiento no mira `estado_aprobacion`), `B-2` (toda estación puede pedir el re-enrolamiento de otra por el tópico global), `A-6` (`hardware_id` cae a constante compartida) |
+| Secretos de flota | `A-2` — `generar_paquete_apertura` sigue escribiendo el HMAC compartido que el fan-out por estación ya volvió innecesario. Es el límite que §10-Z dejó anotado, todavía abierto |
+| Pérdida de trabajo de campo | `C-1`/`RIESGO-11` — la clave de idempotencia de la cola offline es `(usuario, origen_id)` con `origen_id` = autoincremento de SQLite del teléfono. Refina lo que §10-AÑ dio por cerrado |
+| Integridad del inventario | `INV-01`, `INV-02`/`HALLAZGO-19`, `INV-04`, `INV-05`, `INV-07` |
+| Rutas rotas | `BUG-01` — `publicar_despliegue_a_estacion` llama a `_payload` con un argumento donde la firma pide dos, y **dentro del `try`**: toda apertura cero-touch con paso `DESPLIEGUE_POS` falla en silencio. El servicio que §10 agregó en la entrada de aperturas. **Corregido en `ecc9e70`**, con las tres pruebas que le faltaban al camino de una sola estación |
+
+### Lo que enseñó deduplicar
+
+**Seis pares resultaron el mismo defecto**, encontrado por dos agentes que no se ven entre
+sí: `INV-08`≡`BD-07`, `INV-02`≡`HALLAZGO-19`, `B-1`≡`RIESGO-07`, `C-1`≡`RIESGO-11`,
+`INV-16`≡`HALLAZGO-20`, `INV-13`≡`E-1`. En tres de esos pares **discreparon en severidad**.
+Se conservó la más alta: que dos auditores independientes caigan en la misma línea es señal
+a favor del hallazgo, no ruido a descartar.
+
+**Y uno que parecía par y no lo era.** `BD-04` e `INV-18` apuntan los dos a
+`apps/mqtt_worker/services.py:325`, el mismo `estacion.save()`. Son defectos distintos:
+BD-04 es la pérdida de ediciones concurrentes por guardar la fila completa sin
+`update_fields`; INV-18 es que el latido escribe `numero_serie`/`ip_lan` sin validar y sin
+notar un cambio de identidad. Arreglar uno deja el otro intacto. **Deduplicar por
+`archivo:línea` sin leer las fichas habría perdido uno de los dos** — vale anotarlo para la
+próxima, porque es exactamente el atajo que uno quiere tomar con 100 hallazgos.
+
+### Separar lo nuevo de la deuda vieja
+
+Entre la revalidación de §0.9 (`5732676`) y la ejecución entraron 3 commits más, todos en
+el paquete SNMP, el mismo día. Los hallazgos que caen sobre ese código —`BD-09`, `BD-10`,
+`E-1`…`E-4`, `INV-11`…`INV-13`, `BUG-02`, `HALLAZGO-26`— están marcados en cada informe
+como **trabajo legítimo en progreso**, no como defectos heredados. `BD-09` habla
+literalmente de los tres índices parciales que `0515773` acababa de crear.
+
+Es la lección de §0.9 cobrándose sola dentro del mismo día, y por eso quedó escrita en
+§0.9.1 del documento de descubrimiento: revalidar al arrancar cada fase no es formalidad.
+
+### Detalle operativo que costó dos intentos
+
+Claude Code busca `.claude/agents/` y `.claude/settings.json` en la raíz **desde donde se lo
+lanzó**. Abierto desde `C:\Proyectos` en vez de `C:\Proyectos\saidsoft-core`, los cuatro
+agentes no aparecen y las reglas `deny` nunca se aplican — sin ningún aviso. Antes de
+auditar hay que verificar que las reglas **bloquean de verdad** (que `psql --version` quede
+rechazado *por permisos* y no responda "command not found"), porque una regla `deny` que no
+se validó no está funcionando. El runbook está en §0.10 del documento de descubrimiento.
+
+El orden de los agentes, en cambio, resultó indiferente: son subagentes aislados y ninguno
+ve la salida de otro, así que corrieron en paralelo sin efecto sobre los hallazgos.
+
+### Lo que sigue
+
+Triage humano de los 94 y autorización para ejecutar pruebas contra PostgreSQL, que es lo
+único que puede mover un hallazgo a `Reproducción: SÍ`. **Ninguno de los 93 restantes debe
+corregirse sin esa decisión**, y `BD-11` en particular propone tocar índices mientras su propio informe pide
+medir primero.

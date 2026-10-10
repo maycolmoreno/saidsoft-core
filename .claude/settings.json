@@ -1,5 +1,73 @@
 {
   "enabledPlugins": {
     "claude-code-setup@claude-plugins-official": true
+  },
+  "permissions": {
+    "blockReadsOutsideWorkingDirectories": true,
+    "deny": [
+      "Read(./.env)",
+      "Read(./deploy/.env)",
+      "Read(./deploy/certs/key.pem)",
+      "Read(./movil-campo/android/key.properties)",
+      "Read(./movil-campo/android/cresio-campo-release.jks)",
+
+      "Bash(python manage.py migrate*)",
+      "Bash(python manage.py makemigrations*)",
+      "Bash(python manage.py flush*)",
+      "Bash(python manage.py shell*)",
+      "Bash(python manage.py dbshell*)",
+      "Bash(python manage.py sqlmigrate*)",
+      "Bash(python manage.py loaddata*)",
+      "Bash(python manage.py test*)",
+      "Bash(pytest*)",
+      "Bash(psql*)",
+      "Bash(pg_dump*)",
+      "Bash(pg_restore*)",
+
+      "Bash(pip install*)",
+      "Bash(pip uninstall*)",
+      "Bash(python -m pip install*)",
+      "Bash(python -m pip uninstall*)",
+
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git reset*)",
+      "Bash(git checkout*)",
+      "Bash(git restore*)",
+      "Bash(git clean*)",
+      "Bash(git add*)",
+      "Bash(git stash*)",
+      "Bash(git rebase*)",
+      "Bash(git merge*)",
+
+      "Bash(rm *)",
+      "Bash(rmdir*)",
+      "Bash(mv *)",
+      "Bash(truncate*)",
+      "Bash(Remove-Item*)",
+
+      "Edit(./apps/**)",
+      "Edit(./config/**)",
+      "Edit(./agente-prueba/**)",
+      "Edit(./movil-campo/**)",
+      "Edit(./deploy/**)",
+      "Edit(./templates/**)",
+      "Edit(./docs/auditoria-integridad.sql)",
+      "Edit(./docs/auditoria-seguimiento.sql)"
+    ],
+    "allow": [
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Bash(git blame*)",
+      "Bash(git status*)",
+      "Bash(git reflog*)",
+      "Bash(git ls-files*)",
+      "Bash(git rev-parse*)",
+      "Bash(git branch --show-current*)",
+      "Bash(git branch -v*)",
+      "Bash(git branch --contains*)",
+      "Bash(python -m pyflakes*)"
+    ]
   }
 }
