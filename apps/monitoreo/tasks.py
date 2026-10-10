@@ -312,3 +312,44 @@ def resumen_diario_telegram_task():
     from apps.monitoreo.telegram_bot import teclado_menu
     enviados = sum(1 for canal in canales if _enviar_telegram(canal.destino, texto, teclado=teclado_menu()))
     return f'Resumen diario enviado a {enviados} de {canales.count()} canal(es).'
+
+
+# --- SNMP: abanico Beat -> lotes -> workers (FASE 4) ------------------------------
+
+@shared_task(name='apps.monitoreo.tasks.repartir_sondeo_snmp_task')
+def repartir_sondeo_snmp_task(cadencia):
+    """Beat: elige los objetivos vencidos de una cadencia y encola un task por lote.
+
+    **No sondea nada.** Es a propósito: si esta tarea leyera los dispositivos, volvería a
+    ser el patrón de `sincronizar_ancho_banda_farmacias` —un solo task con un semáforo—
+    que con los destinos muertos no cierra el ciclo pasados los ~1.000 dispositivos. Acá
+    la perilla de escalado es cuántos workers hay, no un número en un módulo.
+
+    Encolar es barato y esta tarea es corta, así que no compite con los sondeos por el
+    worker.
+    """
+    from .snmp.sondeo import objetivos_pendientes, partir_en_lotes
+
+    lotes = partir_en_lotes(objetivos_pendientes(cadencia))
+    for ids in lotes:
+        sondear_lote_snmp_task.delay(ids, cadencia)
+    total = sum(len(ids) for ids in lotes)
+    logger.info(
+        'SNMP %s: %d objetivo(s) en %d lote(s) encolados.', cadencia, total, len(lotes),
+    )
+    return {'cadencia': cadencia, 'objetivos': total, 'lotes': len(lotes)}
+
+
+@shared_task(name='apps.monitoreo.tasks.sondear_lote_snmp_task')
+def sondear_lote_snmp_task(ids, cadencia=None):
+    """Worker: sondea un lote y guarda. Nunca lanza, así que Celery no lo reintenta.
+
+    Un reintento sobre un sondeo ya hecho solo duplica trabajo, y el ciclo siguiente va a
+    volver a pasar por los que fallaron de todos modos — con el backoff ya aplicado.
+    """
+    from .snmp.sondeo import sondear_lote
+
+    resumen = sondear_lote(ids, cadencia)
+    if resumen['abortado']:
+        logger.error('SNMP: lote de %d objetivo(s) abortado sin escribir.', len(ids))
+    return resumen

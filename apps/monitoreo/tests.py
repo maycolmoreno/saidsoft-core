@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import urllib.error
@@ -9,6 +10,8 @@ from django.contrib.auth.models import Permission, User
 from django.core import mail
 from django.core.management import call_command
 from cryptography.fernet import Fernet
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -9238,3 +9241,447 @@ class LecturaSnmpActualTests(TestCase):
         self._lectura()
         self.objetivo.delete()
         self.assertEqual(LecturaSnmpActual.objects.count(), 0)
+
+
+# =============================================================================
+# FASE 4 de docs/auditoria-snmp.md: el motor de polling.
+# =============================================================================
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=CLAVE_FERNET_PRUEBAS)
+class SondeoSnmpBase(TestCase):
+    """Objetivos de prueba con la community ya cifrada."""
+
+    def setUp(self):
+        from apps.monitoreo.models import PerfilSnmp
+
+        self.perfil = PerfilSnmp(nombre='Impresoras')
+        self.perfil.asignar_comunidad('public')
+        self.perfil.save()
+
+    def _objetivo(self, n=1, **extra):
+        from apps.activos.models import Activo
+        from apps.monitoreo.models import ObjetivoSnmp
+
+        # Contador por instancia y no `n`: hay pruebas que crean dos lotes seguidos, y
+        # armar el codigo desde `n` los hacia chocar contra el unique de Activo.codigo.
+        self._creados = getattr(self, '_creados', 0) + 1
+        activo = Activo.objects.create(
+            codigo='CR-IMP-%04d' % (300 + self._creados), tipo=Activo.Tipo.IMPRESORA,
+        )
+        datos = dict(
+            activo=activo, perfil=self.perfil, ip_sondeada='10.0.0.%d' % (n % 254 + 1),
+            catalogo=ObjetivoSnmp.Catalogo.IMPRESORA,
+        )
+        datos.update(extra)
+        return ObjetivoSnmp.objects.create(**datos)
+
+    def _lecturas(self):
+        from apps.monitoreo.snmp.normalizar import LecturaSnmp
+
+        return [
+            LecturaSnmp('toner.black.nivel', 80.0, 80, 'porcentaje', 'Tóner negro'),
+            LecturaSnmp('paginas.total', 509685.0, 509685, 'contador'),
+            LecturaSnmp('equipo.serie', texto='E215M660354', unidad='texto'),
+        ]
+
+
+class ElegirObjetivosPendientesTests(SondeoSnmpBase):
+    def test_un_objetivo_nunca_leido_siempre_esta_pendiente(self):
+        from apps.monitoreo.snmp.sondeo import objetivos_pendientes
+        from apps.monitoreo.snmp import Cadencia
+
+        objetivo = self._objetivo()
+        self.assertIn(objetivo, objetivos_pendientes(Cadencia.RAPIDA))
+
+    def test_uno_recien_leido_no_vuelve_a_entrar_en_el_mismo_ciclo(self):
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.snmp.sondeo import objetivos_pendientes
+
+        self._objetivo(ultima_lectura=timezone.now())
+        self.assertEqual(objetivos_pendientes(Cadencia.RAPIDA), [])
+
+    def test_la_cadencia_lenta_espera_mas_que_la_rapida(self):
+        """El tóner no se mueve en cinco minutos. Es lo que acota el volumen."""
+        from datetime import timedelta
+
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.snmp.sondeo import objetivos_pendientes
+
+        objetivo = self._objetivo(ultima_lectura=timezone.now() - timedelta(minutes=10))
+        self.assertIn(objetivo, objetivos_pendientes(Cadencia.RAPIDA))
+        self.assertEqual(objetivos_pendientes(Cadencia.LENTA), [])
+
+    def test_un_objetivo_deshabilitado_no_se_sondea(self):
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.snmp.sondeo import objetivos_pendientes
+
+        self._objetivo(habilitado=False)
+        self.assertEqual(objetivos_pendientes(Cadencia.RAPIDA), [])
+
+    def test_el_backoff_saca_del_ciclo_a_los_que_vienen_fallando(self):
+        """Sin esto, los dispositivos de baja se llevan la mayor parte del presupuesto de
+        tiempo de cada ciclo — y son justamente los que menos importan."""
+        from datetime import timedelta
+
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.snmp.sondeo import objetivos_pendientes
+
+        hace_diez = timezone.now() - timedelta(minutes=10)
+        sano = self._objetivo(1, ultima_lectura=hace_diez)
+        castigado = self._objetivo(2, ultima_lectura=hace_diez, fallas_consecutivas=4)
+
+        pendientes = objetivos_pendientes(Cadencia.RAPIDA)
+        self.assertIn(sano, pendientes)
+        self.assertNotIn(castigado, pendientes)   # 5 min × (1 + 16) = 85 min de espera
+
+    def test_elegir_los_pendientes_no_es_N_mas_1(self):
+        """`select_related` no es cosmético: sin él, leer `objetivo.perfil.comunidad()`
+        dentro del lote es una consulta por dispositivo, justo en el camino que tiene que
+        escalar."""
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.snmp.sondeo import objetivos_pendientes
+
+        for n in range(12):
+            self._objetivo(n)
+        with self.assertNumQueries(1):
+            pendientes = objetivos_pendientes(Cadencia.RAPIDA)
+            for objetivo in pendientes:
+                objetivo.perfil.nombre        # ya viene
+                objetivo.activo.codigo        # ya viene
+        self.assertEqual(len(pendientes), 12)
+
+
+class PartirEnLotesTests(SondeoSnmpBase):
+    def test_los_lotes_llevan_ids_y_no_objetos(self):
+        """Lo que viaja por Redis tiene que ser chico y no quedar viejo: entre que Beat
+        encola y el worker toma el lote, el objetivo puede haberse deshabilitado."""
+        from apps.monitoreo.snmp.sondeo import partir_en_lotes
+
+        objetivos = [self._objetivo(n) for n in range(5)]
+        lotes = partir_en_lotes(objetivos, tamano=2)
+        self.assertEqual([len(l) for l in lotes], [2, 2, 1])
+        self.assertTrue(all(isinstance(i, int) for l in lotes for i in l))
+
+    def test_sin_objetivos_no_hay_lotes(self):
+        from apps.monitoreo.snmp.sondeo import partir_en_lotes
+
+        self.assertEqual(partir_en_lotes([]), [])
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=CLAVE_FERNET_PRUEBAS)
+class SondearLoteTests(SondeoSnmpBase):
+    def _correr(self, ids, devuelve):
+        """Corre el lote con el lector mockeado. `devuelve` puede ser una lista de
+        lecturas, None (falla) o un callable que recibe el objetivo."""
+        from unittest.mock import patch
+
+        from apps.monitoreo.snmp.sondeo import sondear_lote
+
+        async def lector(ip, comunidad, catalogo, puerto=161, cadencias=None):
+            return devuelve(ip) if callable(devuelve) else devuelve
+
+        with patch('apps.monitoreo.snmp.sondeo.leer', new=lector):
+            return sondear_lote(ids)
+
+    def test_guarda_las_lecturas_y_marca_el_exito(self):
+        from apps.monitoreo.models import LecturaSnmpActual, ObjetivoSnmp
+
+        objetivo = self._objetivo()
+        resumen = self._correr([objetivo.pk], self._lecturas())
+
+        self.assertEqual(resumen['con_lectura'], 1)
+        self.assertEqual(resumen['claves'], 3)
+        self.assertEqual(LecturaSnmpActual.objects.count(), 3)
+        objetivo = ObjetivoSnmp.objects.get(pk=objetivo.pk)
+        self.assertIsNotNone(objetivo.ultimo_exito)
+        self.assertEqual(objetivo.fallas_consecutivas, 0)
+        self.assertEqual(objetivo.ultimo_error, '')
+
+    def test_el_centinela_se_guarda_crudo_y_sin_valor(self):
+        from apps.monitoreo.models import LecturaSnmpActual
+        from apps.monitoreo.snmp.normalizar import LecturaSnmp
+
+        objetivo = self._objetivo()
+        self._correr([objetivo.pk], [LecturaSnmp('toner.black.nivel', None, -2, 'porcentaje')])
+        lectura = LecturaSnmpActual.objects.get(clave='toner.black.nivel')
+        self.assertIsNone(lectura.valor)
+        self.assertEqual(lectura.valor_crudo, -2)
+        self.assertFalse(lectura.medido)
+
+    def test_correrlo_dos_veces_actualiza_en_vez_de_duplicar(self):
+        """El UNIQUE (objetivo, clave) convierte el guardado en un upsert, y eso es lo que
+        hace que un lote reintentado por Celery no duplique filas."""
+        from apps.monitoreo.models import LecturaSnmpActual
+        from apps.monitoreo.snmp.normalizar import LecturaSnmp
+
+        objetivo = self._objetivo()
+        self._correr([objetivo.pk], [LecturaSnmp('toner.black.nivel', 80.0, 80, 'porcentaje')])
+        self._correr([objetivo.pk], [LecturaSnmp('toner.black.nivel', 70.0, 70, 'porcentaje')])
+        self.assertEqual(LecturaSnmpActual.objects.count(), 1)
+        self.assertEqual(LecturaSnmpActual.objects.get().valor, 70.0)
+
+    def test_una_falla_suma_al_contador_y_clasifica_el_motivo(self):
+        from apps.monitoreo.models import ObjetivoSnmp
+
+        objetivo = self._objetivo()
+        resumen = self._correr([objetivo.pk], None)
+        self.assertEqual(resumen['fallados'], 1)
+        objetivo = ObjetivoSnmp.objects.get(pk=objetivo.pk)
+        self.assertEqual(objetivo.fallas_consecutivas, 1)
+        self.assertEqual(objetivo.ultimo_error, ObjetivoSnmp.Error.TIMEOUT)
+        self.assertIsNotNone(objetivo.ultima_lectura)
+        self.assertIsNone(objetivo.ultimo_exito)       # nunca respondió
+
+    def test_una_falla_no_borra_lo_ultimo_que_se_supo(self):
+        """Vaciar las lecturas convertiría "no pudimos leer" en "no hay nada", que es una
+        afirmación más fuerte y falsa. Su `actualizado_en` ya dice cuánto hace."""
+        from apps.monitoreo.models import LecturaSnmpActual
+
+        objetivo = self._objetivo()
+        self._correr([objetivo.pk], self._lecturas())
+        self._correr([objetivo.pk], None)
+        self.assertEqual(LecturaSnmpActual.objects.count(), 3)
+
+    def test_un_lote_que_falla_casi_entero_no_escribe_nada(self):
+        """La guarda de `sondear_enlaces_farmacias`: 50 equipos no se caen a la vez — lo
+        que se cayó es la ruta desde donde se sondea. Sin esto, un cambio de red llena la
+        base de fallas falsas y envejece todas las lecturas parejo."""
+        from apps.monitoreo.models import LecturaSnmpActual, ObjetivoSnmp
+
+        objetivos = [self._objetivo(n) for n in range(10)]
+        vivo = objetivos[0].ip_sondeada
+        resumen = self._correr(
+            [o.pk for o in objetivos],
+            lambda ip: self._lecturas() if ip == vivo else None,
+        )
+        self.assertTrue(resumen['abortado'])
+        self.assertEqual(LecturaSnmpActual.objects.count(), 0)
+        self.assertEqual(
+            ObjetivoSnmp.objects.filter(fallas_consecutivas__gt=0).count(), 0,
+        )
+
+    def test_un_solo_objetivo_que_falla_no_dispara_la_guarda(self):
+        """Con un dispositivo, "100 % falló" no dice nada sobre la ruta: es simplemente un
+        equipo apagado, y tiene que quedar registrado como tal."""
+        from apps.monitoreo.models import ObjetivoSnmp
+
+        objetivo = self._objetivo()
+        resumen = self._correr([objetivo.pk], None)
+        self.assertFalse(resumen['abortado'])
+        self.assertEqual(ObjetivoSnmp.objects.get(pk=objetivo.pk).fallas_consecutivas, 1)
+
+    def test_un_objetivo_deshabilitado_entre_el_encolado_y_el_lote_no_se_sondea(self):
+        """Por eso viajan ids y no objetos: el worker relee."""
+        objetivo = self._objetivo()
+        objetivo.habilitado = False
+        objetivo.save(update_fields=['habilitado'])
+        self.assertEqual(self._correr([objetivo.pk], self._lecturas())['sondeados'], 0)
+
+    def test_un_perfil_sin_community_se_reporta_como_tal_y_no_como_timeout(self):
+        """Un error de configuración y un equipo apagado se arreglan en lugares distintos."""
+        from apps.monitoreo.models import ObjetivoSnmp, PerfilSnmp
+        from apps.monitoreo.snmp.sondeo import sondear_lote
+
+        perfil = PerfilSnmp.objects.create(nombre='Sin credencial')
+        objetivo = self._objetivo(9, perfil=perfil)
+        sondear_lote([objetivo.pk])
+        self.assertEqual(
+            ObjetivoSnmp.objects.get(pk=objetivo.pk).ultimo_error,
+            ObjetivoSnmp.Error.PERFIL_SIN_COMUNIDAD,
+        )
+
+    def test_una_excepcion_del_lector_no_tumba_el_lote(self):
+        """Un lote es una tarea entre muchas: que una explote no puede dejar al resto del
+        ciclo sin correr."""
+        from unittest.mock import patch
+
+        from apps.monitoreo.models import ObjetivoSnmp
+        from apps.monitoreo.snmp.sondeo import sondear_lote
+
+        objetivo = self._objetivo()
+
+        async def explota(*args, **kwargs):
+            raise RuntimeError('socket roto')
+
+        with patch('apps.monitoreo.snmp.sondeo.leer', new=explota):
+            resumen = sondear_lote([objetivo.pk])
+        self.assertFalse(resumen['abortado'])
+        self.assertEqual(resumen['fallados'], 1)
+        self.assertEqual(ObjetivoSnmp.objects.get(pk=objetivo.pk).fallas_consecutivas, 1)
+
+    def test_un_lote_vacio_no_hace_nada(self):
+        self.assertEqual(self._correr([], self._lecturas())['sondeados'], 0)
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=CLAVE_FERNET_PRUEBAS, CELERY_TASK_ALWAYS_EAGER=True)
+class RepartirSondeoSnmpTests(SondeoSnmpBase):
+    def test_beat_encola_un_task_por_lote_y_no_sondea_el_mismo(self):
+        """Si esta tarea leyera los dispositivos volvería a ser el patrón de un solo task
+        con un semáforo, que con los destinos muertos no cierra el ciclo pasados los
+        ~1.000 dispositivos."""
+        from unittest.mock import patch
+
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.tasks import repartir_sondeo_snmp_task
+
+        for n in range(7):
+            self._objetivo(n)
+        with patch('apps.monitoreo.snmp.sondeo.OBJETIVOS_POR_LOTE', 3), \
+             patch('apps.monitoreo.tasks.sondear_lote_snmp_task.delay') as encolar:
+            resumen = repartir_sondeo_snmp_task(Cadencia.RAPIDA)
+
+        self.assertEqual(resumen['objetivos'], 7)
+        self.assertEqual(resumen['lotes'], 3)
+        self.assertEqual(encolar.call_count, 3)
+        self.assertEqual(sum(len(c.args[0]) for c in encolar.call_args_list), 7)
+
+    def test_sin_pendientes_no_encola_nada(self):
+        from unittest.mock import patch
+
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.tasks import repartir_sondeo_snmp_task
+
+        self._objetivo(ultima_lectura=timezone.now())
+        with patch('apps.monitoreo.tasks.sondear_lote_snmp_task.delay') as encolar:
+            repartir_sondeo_snmp_task(Cadencia.RAPIDA)
+        encolar.assert_not_called()
+
+    def test_las_tres_cadencias_estan_agendadas_en_beat(self):
+        """Tres entradas y no una: son lo que acota el volumen."""
+        from django.conf import settings
+
+        entradas = {
+            nombre: conf for nombre, conf in settings.CELERY_BEAT_SCHEDULE.items()
+            if conf['task'] == 'apps.monitoreo.tasks.repartir_sondeo_snmp_task'
+        }
+        self.assertEqual(len(entradas), 3)
+        self.assertEqual(
+            {conf['args'][0] for conf in entradas.values()},
+            {'rapida', 'lenta', 'identidad'},
+        )
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=CLAVE_FERNET_PRUEBAS)
+class CargaDelSondeoSnmpTests(SondeoSnmpBase):
+    """**La compuerta de la FASE 4.** Mide el peor caso en vez de afirmarlo.
+
+    El peor caso no es excepcional, es el NORMAL de noche: las farmacias cierran y apagan
+    los equipos, así que cada consulta agota el timeout. El patrón de
+    `sincronizar_ancho_banda_farmacias` —un solo task con `Semaphore(25)`— tarda
+    `dispositivos × viajes × timeout / concurrencia`, que con 1.000 dispositivos son 360 s
+    contra un ciclo de 300: no cierra.
+
+    Lo que se mide acá es que un LOTE queda acotado, porque es lo que el abanico convierte
+    en la unidad de trabajo. Con eso, el ciclo completo es `lotes / workers × tiempo_lote`,
+    y la perilla pasa a ser `--concurrency` del worker en vez de un número en un módulo.
+    """
+
+    #: Timeout simulado por consulta. Chico para que la prueba corra rápido; lo que se
+    #: verifica es la FORMA del crecimiento, no el valor absoluto.
+    TIMEOUT_SIMULADO = 0.05
+
+    def _medir_lote(self, cantidad):
+        """Segundos que tarda un lote de `cantidad` objetivos con TODOS en timeout."""
+        import time
+        from unittest.mock import patch
+
+        from apps.monitoreo.snmp.sondeo import sondear_lote
+
+        objetivos = [self._objetivo(n) for n in range(cantidad)]
+
+        async def muerto(*args, **kwargs):
+            await asyncio.sleep(self.TIMEOUT_SIMULADO)
+            return None
+
+        with patch('apps.monitoreo.snmp.sondeo.leer', new=muerto):
+            inicio = time.monotonic()
+            resumen = sondear_lote([o.pk for o in objetivos])
+            return time.monotonic() - inicio, resumen
+
+    def test_el_semaforo_acota_el_tiempo_del_lote_en_vez_de_que_crezca_lineal(self):
+        """Lo que se verifica: 50 objetivos en timeout NO tardan 50 × timeout. Con
+        `Semaphore(25)` tardan ~2 tandas. Si alguien quitara el semáforo esto seguiría
+        pasando (sería más rápido), pero si lo cambiara por un bucle secuencial, falla."""
+        import asyncio as _asyncio   # noqa: F401  (lo usa `muerto`)
+
+        segundos, resumen = self._medir_lote(50)
+        self.assertEqual(resumen['sondeados'], 50)
+        # Secuencial serían 50 × 0.05 = 2.5 s. Con 25 concurrentes, ~2 tandas = ~0.1 s.
+        # El tope es generoso para no volverse frágil en una máquina cargada.
+        self.assertLess(segundos, 1.0, 'el lote no está corriendo concurrente')
+
+    def test_un_lote_de_50_todos_muertos_cabe_de_sobra_en_el_ciclo_mas_corto(self):
+        """El cálculo que importa, con el timeout real de 3 s: 50 objetivos × 3 viajes ×
+        3 s / 25 concurrentes ≈ 18 s, contra un ciclo RÁPIDO de 300 s."""
+        from apps.monitoreo.snmp.sondeo import (
+            MAX_SONDEOS_CONCURRENTES, MINUTOS_POR_CADENCIA, OBJETIVOS_POR_LOTE,
+        )
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.snmp.cliente import TIMEOUT_SEGUNDOS
+
+        viajes = 3     # un GET de escalares + los recorridos de bandejas y suministros
+        peor_caso = OBJETIVOS_POR_LOTE * viajes * TIMEOUT_SEGUNDOS / MAX_SONDEOS_CONCURRENTES
+        ciclo = MINUTOS_POR_CADENCIA[Cadencia.RAPIDA] * 60
+        self.assertLess(peor_caso, ciclo / 4, 'un lote no deja margen dentro del ciclo')
+
+    def test_el_tiempo_del_lote_no_crece_lineal_con_la_cantidad(self):
+        """La forma del crecimiento es lo que distingue el abanico del patrón viejo: el
+        doble de objetivos NO cuesta el doble mientras entren en el semáforo."""
+        segundos_10, _ = self._medir_lote(10)
+        segundos_20, _ = self._medir_lote(20)
+        # Con 25 concurrentes, 10 y 20 caben los dos en una sola tanda.
+        self.assertLess(segundos_20, segundos_10 * 1.8 + 0.2)
+
+    def test_mil_objetivos_se_reparten_en_veinte_lotes(self):
+        """Lo que convierte el problema en horizontal: 1.000 dispositivos son 20 tareas de
+        Celery, no una tarea con 1.000 sondeos. Con `--concurrency=2` eso son 10 tandas de
+        ~18 s = ~180 s, dentro del ciclo de 300. A 5.000 serían ~900 s y NO cierra: ahí hay
+        que subir workers, y eso se hace en el compose."""
+        from apps.monitoreo.snmp.sondeo import OBJETIVOS_POR_LOTE, partir_en_lotes
+
+        class Falso:
+            def __init__(self, pk):
+                self.pk = pk
+
+        lotes = partir_en_lotes([Falso(n) for n in range(1000)])
+        self.assertEqual(len(lotes), 1000 // OBJETIVOS_POR_LOTE)
+        self.assertEqual(sum(len(l) for l in lotes), 1000)
+
+        # El hallazgo de la prueba de carga, y no era lo que esperaba: con UN worker el
+        # ciclo de 1.000 dispositivos NO cierra (20 lotes x 18 s = 360 s contra 300). Con
+        # los dos que hoy tiene `celery_worker --concurrency=2`, si. Es exactamente el
+        # numero que hay que mirar antes de sumar dispositivos.
+        tiempo_lote = OBJETIVOS_POR_LOTE * 3 * 3 / 25
+        for workers, cierra in ((1, False), (2, True), (4, True)):
+            with self.subTest(workers=workers):
+                ciclo = len(lotes) / workers * tiempo_lote
+                self.assertEqual(ciclo < 300, cierra, 'con %d worker(s): %.0f s' % (workers, ciclo))
+
+    def test_guardar_un_lote_no_es_N_mas_1_por_lectura(self):
+        """El guardado tiene que crecer con las lecturas, no multiplicarse: un upsert por
+        clave más uno por objetivo, y nada más."""
+        from apps.monitoreo.snmp.sondeo import guardar_lecturas
+
+        objetivo = self._objetivo()
+        # Un INSERT ... ON CONFLICT con todas las claves + un UPDATE del objetivo, dentro
+        # de la transaccion. Lo que importa es que NO crece con la cantidad de lecturas:
+        # con `update_or_create` eran ~7 por clave, y un lote de 50 equipos con 15 claves
+        # cada uno habria costado ~5.250 consultas solo para guardar.
+        consultas = []
+        for cantidad in (1, 3, 6):
+            lecturas = self._lecturas()[:1] * 1 if cantidad == 1 else self._lecturas()
+            if cantidad == 6:
+                from apps.monitoreo.snmp.normalizar import LecturaSnmp
+                lecturas = self._lecturas() + [
+                    LecturaSnmp('toner.cyan.nivel', 90.0, 90, 'porcentaje'),
+                    LecturaSnmp('toner.magenta.nivel', 80.0, 80, 'porcentaje'),
+                    LecturaSnmp('toner.yellow.nivel', 90.0, 90, 'porcentaje'),
+                ]
+            with CaptureQueriesContext(connection) as captura:
+                guardar_lecturas(objetivo, lecturas)
+            consultas.append(len(captura))
+        self.assertEqual(
+            consultas[0], consultas[-1],
+            'el guardado crece con la cantidad de lecturas: %s' % consultas,
+        )

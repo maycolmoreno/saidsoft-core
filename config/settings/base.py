@@ -550,6 +550,41 @@ CELERY_BEAT_SCHEDULE = {
         # caídas que el barrido va detectando, en vez de partirla en tres.
         'schedule': 60.0 * 5,
     },
+    # --- SNMP de dispositivos sin agente (ver apps.monitoreo.snmp.sondeo) ---
+    #
+    # Tres entradas y no una: son las tres clases de cadencia, y son lo que de verdad
+    # acota el volumen. Con 10.000 dispositivos y 20 metricas cada 5 minutos serian ~57
+    # millones de filas por dia; con estas tres, ~4 millones. El toner no se mueve en
+    # cinco minutos y la serie del equipo no cambia nunca.
+    #
+    # Cada una NO sondea: elige los objetivos vencidos y encola un task por lote. El
+    # sondeo lo hacen los lotes en paralelo en celery_worker, asi que la perilla de
+    # escalado es `--concurrency` del worker y no un numero en un modulo. El patron de
+    # `sincronizar-ancho-banda-farmacias` —un solo task con Semaphore(25)— deja de cerrar
+    # el ciclo pasados los ~1.000 dispositivos cuando los destinos estan muertos, que es
+    # el caso normal de noche con las farmacias cerradas.
+    #
+    # Intervalos numericos y no crontab: son cortos, y la trampa del estado de beat que se
+    # pierde en cada despliegue solo muerde a los intervalos de un dia.
+    'sondear-snmp-rapido': {
+        'task': 'apps.monitoreo.tasks.repartir_sondeo_snmp_task',
+        'args': ('rapida',),
+        # Estado, errores y bandejas. Aca el valor ES la velocidad de deteccion.
+        'schedule': 60.0 * 5,
+    },
+    'sondear-snmp-lento': {
+        'task': 'apps.monitoreo.tasks.repartir_sondeo_snmp_task',
+        'args': ('lenta',),
+        # Toner y contadores de paginas.
+        'schedule': 60.0 * 60,
+    },
+    'sondear-snmp-identidad': {
+        'task': 'apps.monitoreo.tasks.repartir_sondeo_snmp_task',
+        'args': ('identidad',),
+        # Serie, modelo, descripcion. Diaria y con crontab porque es de un dia: a las
+        # 5:00, despues de las purgas de las 3 y antes de que abran las farmacias.
+        'schedule': crontab(hour=5, minute=0),
+    },
     'sondear-enlaces-farmacias': {
         'task': 'apps.monitoreo.tasks.sondear_enlaces_farmacias_task',
         # Cada 2 min, más seguido que el resto de apps.monitoreo a propósito: acá el
