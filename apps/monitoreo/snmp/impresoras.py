@@ -20,7 +20,7 @@ corrido todos los colores un lugar. La clave de cada lectura se arma con
 
 **Trampa 2: el nivel no es un porcentaje.** Ver `normalizar.interpretar_nivel`.
 """
-from .normalizar import LecturaSnmp, interpretar_nivel, nombre_de_unidad
+from .normalizar import LecturaSnmp, interpretar_nivel, limpiar_texto, nombre_de_unidad
 
 # prtMarkerSuppliesType (RFC 3805). Solo los que aparecen en equipos reales; el resto cae
 # en el `else` y se nombra por su número, que es mejor que inventarle una etiqueta.
@@ -78,7 +78,7 @@ def interpretar_suministros(columnas) -> list:
             valor=valor,
             crudo=crudo,
             unidad='porcentaje' if valor is not None else nombre_de_unidad(unidad),
-            texto=str(descrs.get(indice, '')).strip(),
+            texto=limpiar_texto(descrs.get(indice, '')),
         ))
         # La clase va aparte y como texto: es lo que distingue "se consume" de "se llena",
         # y sin eso nadie puede saber que en el residual el 100 % es el problema.
@@ -101,9 +101,9 @@ def interpretar_alertas(columnas) -> list:
     """
     descripciones = columnas[0] if columnas else {}
     return [
-        LecturaSnmp(clave='alerta.%s' % indice, unidad='texto', texto=str(texto).strip())
+        LecturaSnmp(clave='alerta.%s' % indice, unidad='texto', texto=limpiar_texto(texto))
         for indice, texto in sorted(descripciones.items(), key=lambda par: _orden_de_indice(par[0]))
-        if str(texto).strip()
+        if limpiar_texto(texto)
     ]
 
 

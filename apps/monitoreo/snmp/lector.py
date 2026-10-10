@@ -22,7 +22,9 @@ import logging
 
 from .catalogo import Cadencia, Unidad
 from .cliente import leer_escalares, recorrer_tablas
-from .normalizar import LecturaSnmp, interpretar_nivel, nombre_de_unidad
+from .normalizar import (
+    LecturaSnmp, a_hexadecimal, interpretar_nivel, limpiar_texto, nombre_de_unidad,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +85,17 @@ def _normalizar_escalares(metricas, crudos):
                 clave=metrica.clave, valor=valor, crudo=crudo,
                 unidad=metrica.unidad, texto='',
             )
+        elif metrica.unidad == Unidad.BITMASK:
+            yield LecturaSnmp(
+                clave=metrica.clave, unidad=metrica.unidad, texto=a_hexadecimal(bruto),
+            )
         else:
-            yield LecturaSnmp(clave=metrica.clave, unidad=metrica.unidad, texto=str(bruto))
+            # `limpiar_texto` y no `str()`: el firmware de un equipo puede mandar bytes de
+            # control, y PostgreSQL rechaza un NUL en un campo de texto (pasó con
+            # hrPrinterDetectedErrorState en 0x00).
+            yield LecturaSnmp(
+                clave=metrica.clave, unidad=metrica.unidad, texto=limpiar_texto(bruto),
+            )
 
 
 async def _leer_indexadas(ip, comunidad, catalogo, puerto, cadencias):
@@ -107,7 +118,9 @@ async def _leer_indexadas(ip, comunidad, catalogo, puerto, cadencias):
                     clave=clave, valor=valor, crudo=crudo, unidad=metrica.unidad,
                 ))
             else:
-                lecturas.append(LecturaSnmp(clave=clave, unidad=metrica.unidad, texto=str(bruto)))
+                lecturas.append(LecturaSnmp(
+                    clave=clave, unidad=metrica.unidad, texto=limpiar_texto(bruto),
+                ))
     return lecturas
 
 

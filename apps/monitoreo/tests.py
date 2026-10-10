@@ -9685,3 +9685,116 @@ class CargaDelSondeoSnmpTests(SondeoSnmpBase):
             consultas[0], consultas[-1],
             'el guardado crece con la cantidad de lecturas: %s' % consultas,
         )
+
+
+class TextoDeEquipoSnmpTests(TestCase):
+    """Los bytes que PostgreSQL rechaza y SQLite acepta.
+
+    **No es paranoia defensiva: pasó en producción.** `hrPrinterDetectedErrorState` es un
+    BITS y en la RICOH MP C2503 vale `0x00`. La primera escritura real murió con
+
+        DataError: PostgreSQL text fields cannot contain NUL (0x00) bytes
+
+    y las pruebas habían pasado porque SQLite lo acepta sin chistar. Es la familia de bugs
+    que CLAUDE.md advierte —probar en un motor y desplegar en otro— en la dirección inversa
+    a la documentada.
+
+    Estas pruebas corren en los dos motores: no comprueban que la base rechace el byte,
+    comprueban que el byte **no llegue nunca** a la base.
+    """
+
+    def test_el_NUL_se_saca_del_texto(self):
+        from apps.monitoreo.snmp.normalizar import limpiar_texto
+
+        self.assertEqual(limpiar_texto('\x00'), '')
+        self.assertEqual(limpiar_texto('Bandeja\x002'), 'Bandeja2')
+
+    def test_los_controles_C0_se_sacan_pero_el_texto_util_queda(self):
+        from apps.monitoreo.snmp.normalizar import limpiar_texto
+
+        self.assertEqual(limpiar_texto('Tóner\x01 negro\x1f'), 'Tóner negro')
+        self.assertEqual(limpiar_texto('  No hay papel: Bandeja 2  '), 'No hay papel: Bandeja 2')
+
+    def test_el_tab_y_el_salto_de_linea_no_son_basura(self):
+        from apps.monitoreo.snmp.normalizar import limpiar_texto
+
+        self.assertEqual(limpiar_texto('a\tb'), 'a\tb')
+
+    def test_un_bitmask_se_guarda_en_hex_y_no_como_texto(self):
+        """Pasarlo por el camino de texto lo dejaría vacío, y se perdería la diferencia
+        entre "todo en ceros" y "no vino" — que para este campo es justo la que importa:
+        ese 0x00 NO significa "sin problemas"."""
+        from apps.monitoreo.snmp.normalizar import a_hexadecimal
+
+        self.assertEqual(a_hexadecimal('\x00'), '00')
+        self.assertEqual(a_hexadecimal('\x00\x00'), '0000')
+        self.assertEqual(a_hexadecimal('\x40'), '40')
+        self.assertEqual(a_hexadecimal(''), '')
+        self.assertEqual(a_hexadecimal(None), '')
+
+    def test_ninguna_lectura_del_lector_trae_un_NUL(self):
+        """La prueba que de verdad cierra el agujero: con el catálogo completo y un equipo
+        que manda NUL en varios campos, nada de lo que sale tiene bytes de control."""
+        import asyncio as _asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from apps.monitoreo import snmp
+        from apps.monitoreo.snmp import catalogo as cat
+
+        crudos = {
+            cat.OID_SYS_DESCR: 'RICOH MP C2503\x00',
+            cat.OID_SYS_NAME: 'MP C2503',
+            cat.OID_PRT_CONSOLA: 'No hay papel\x00: Bandeja 2',
+            cat.OID_HR_ERROR_STATE: '\x00',
+            cat.OID_PRT_SERIE: 'E215M660354',
+        }
+        columnas = [dict(c) for c in COLUMNAS_RICOH_MP_C2503]
+        columnas[1]['1.1'] = 'Tóner negro\x00'
+
+        async def recorrer(ip, comunidad, bases, puerto=161, timeout=4):
+            return columnas if len(bases) == 7 else [{} for _ in bases]
+
+        with patch('apps.monitoreo.snmp.lector.leer_escalares',
+                   new=AsyncMock(return_value=crudos)), \
+             patch('apps.monitoreo.snmp.lector.recorrer_tablas', new=recorrer):
+            lecturas = _asyncio.run(snmp.leer('10.0.0.1', 'public', snmp.IMPRESORA))
+
+        self.assertTrue(lecturas)
+        for lectura in lecturas:
+            with self.subTest(clave=lectura.clave):
+                self.assertNotIn('\x00', lectura.texto)
+                self.assertNotIn('\x00', lectura.clave)
+
+        por = {l.clave: l for l in lecturas}
+        self.assertEqual(por['sistema.descripcion'].texto, 'RICOH MP C2503')
+        self.assertEqual(por['equipo.consola'].texto, 'No hay papel: Bandeja 2')
+        self.assertEqual(por['estado.errores_bitmask'].texto, '00')
+        self.assertEqual(por['toner.black.nivel'].texto, 'Tóner negro')
+
+    def test_guardar_lo_que_manda_un_equipo_con_NUL_no_rompe_la_base(self):
+        """La prueba de extremo a extremo. En PostgreSQL esto fallaba con DataError; acá
+        comprueba que el texto que llega a la base ya viene limpio."""
+        from cryptography.fernet import Fernet
+        from django.test import override_settings
+
+        from apps.activos.models import Activo
+        from apps.monitoreo.models import LecturaSnmpActual, ObjetivoSnmp, PerfilSnmp
+        from apps.monitoreo.snmp.normalizar import LecturaSnmp, limpiar_texto
+        from apps.monitoreo.snmp.sondeo import guardar_lecturas
+
+        with override_settings(BITLOCKER_ENCRYPTION_KEY=Fernet.generate_key().decode()):
+            perfil = PerfilSnmp(nombre='P-nul')
+            perfil.asignar_comunidad('public')
+            perfil.save()
+            activo = Activo.objects.create(codigo='CR-IMP-0400', tipo=Activo.Tipo.IMPRESORA)
+            objetivo = ObjetivoSnmp.objects.create(
+                activo=activo, perfil=perfil, ip_sondeada='10.0.0.1',
+                catalogo=ObjetivoSnmp.Catalogo.IMPRESORA,
+            )
+            guardar_lecturas(objetivo, [
+                LecturaSnmp('equipo.consola', texto=limpiar_texto('No hay papel\x00'), unidad='texto'),
+            ])
+
+        guardado = LecturaSnmpActual.objects.get(clave='equipo.consola').texto
+        self.assertEqual(guardado, 'No hay papel')
+        self.assertNotIn('\x00', guardado)

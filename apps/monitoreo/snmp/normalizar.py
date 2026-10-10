@@ -91,6 +91,48 @@ def interpretar_nivel(nivel, maximo=None, unidad='') -> tuple[float | None, int 
     return float(crudo), crudo
 
 
+def limpiar_texto(valor) -> str:
+    """El texto de un equipo SNMP, sin los bytes que PostgreSQL no acepta.
+
+    **No es paranoia defensiva: pasó.** `hrPrinterDetectedErrorState` es un BITS, y en una
+    RICOH MP C2503 vale `0x00`. Guardar eso como texto revienta con
+
+        DataError: PostgreSQL text fields cannot contain NUL (0x00) bytes
+
+    y lo peor es que **SQLite lo acepta**, así que las pruebas pasaban y la primera
+    escritura real contra producción fallaba. Es exactamente la familia de bugs que
+    CLAUDE.md advierte —probar en un motor y desplegar en otro— en la dirección inversa a
+    la documentada.
+
+    Se aplica a TODO texto que venga de un equipo, no solo al bitmask: la descripción de
+    un suministro, el texto de una consola y una alerta vienen de firmware arbitrario, y
+    cualquiera puede traer bytes de control. Se limpia en el borde, una vez, en vez de
+    confiar en que cada intérprete se acuerde.
+    """
+    if valor is None:
+        return ''
+    texto = valor if isinstance(valor, str) else str(valor)
+    # Se quitan NUL y el resto de los controles C0 salvo tab/salto, que sí son texto.
+    return ''.join(c for c in texto if c >= ' ' or c in '\t\n').strip()
+
+
+def a_hexadecimal(valor) -> str:
+    """Un OCTET STRING como hex imprimible: `'\\x00'` -> `'00'`.
+
+    Para los campos que son BITS y no texto. Convertirlos con `limpiar_texto` los dejaría
+    vacíos y se perdería la diferencia entre "todo en ceros" y "no vino" — que para
+    `hrPrinterDetectedErrorState` es justo la distinción que importa: ese `0x00` NO
+    significa "sin problemas".
+    """
+    if valor is None:
+        return ''
+    texto = valor if isinstance(valor, str) else str(valor)
+    try:
+        return ''.join('%02x' % ord(c) for c in texto)
+    except (TypeError, ValueError):
+        return ''
+
+
 def es_centinela(crudo) -> bool:
     valor = _entero(crudo)
     return valor is not None and valor in CENTINELAS

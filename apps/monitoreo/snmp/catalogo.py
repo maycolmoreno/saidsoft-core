@@ -49,6 +49,10 @@ class Unidad:
     ENUM = 'enum'
     TEXTO = 'texto'
     SEGUNDOS = 'segundos'
+    #: Un OCTET STRING que son BITS y no texto. Se guarda en hex: pasarlo por el camino
+    #: de texto lo dejaria vacio (`0x00` son bytes de control) y se perderia la diferencia
+    #: entre "todo en ceros" y "no vino".
+    BITMASK = 'bitmask'
 
 
 @dataclass(frozen=True)
@@ -176,7 +180,7 @@ IMPRESORA = CatalogoSnmp(
         MetricaEscalar('equipo.consola', OID_PRT_CONSOLA, Unidad.TEXTO, Cadencia.RAPIDA),
         MetricaEscalar('estado.dispositivo', OID_HR_DEVICE_STATUS, Unidad.ENUM, Cadencia.RAPIDA),
         MetricaEscalar('estado.impresora', OID_HR_PRINTER_STATUS, Unidad.ENUM, Cadencia.RAPIDA),
-        MetricaEscalar('estado.errores_bitmask', OID_HR_ERROR_STATE, Unidad.TEXTO, Cadencia.RAPIDA),
+        MetricaEscalar('estado.errores_bitmask', OID_HR_ERROR_STATE, Unidad.BITMASK, Cadencia.RAPIDA),
     ),
     indexadas=(
         # Esta es la que de verdad sirve para una ReglaAlerta de "sin papel": es numérica
