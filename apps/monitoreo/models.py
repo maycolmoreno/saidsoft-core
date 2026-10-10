@@ -1661,3 +1661,295 @@ class ConfiguracionMonitoreo(models.Model):
         """La configuración vigente, creándola con los valores por defecto si no existe."""
         configuracion, _ = cls.objects.get_or_create(pk=1)
         return configuracion
+
+
+# =============================================================================
+# SNMP para dispositivos sin agente (FASE 3 de docs/auditoria-snmp.md).
+#
+# Tres tablas y ni una más. El sujeto monitoreado es `activos.Activo`, que ya existe:
+# tiene `tipo`, `ip`, `mac`, `farmacia`, `estacion` y ahora `ubicacion`. Crear una tabla
+# `dispositivo` sería un segundo inventario, y el inventario tiene que seguir siendo uno.
+#
+# Tampoco hay tabla de alertas, de eventos ni de notificaciones: `ReglaAlerta`, `Alerta`,
+# `EventoActivo` y `CanalNotificacion` ya están, probados en producción.
+# =============================================================================
+
+
+class PerfilSnmp(models.Model):
+    """Cómo hablarle a un grupo de dispositivos: versión, credencial y transporte.
+
+    Existe para que la credencial sea **dato y no código**. Hoy
+    `apps.monitoreo.mikrotik._comunidad_para` deriva la community de los Mikrotik del
+    código de la farmacia en minúscula: es una regla escrita en Python, que no generaliza
+    —las impresoras vienen en `public`— y que no se puede cambiar sin desplegar.
+
+    Son unidades, no miles: un perfil por familia de equipos. Por eso la identidad es el
+    `nombre` y no hay nada por sitio.
+    """
+
+    class Version(models.TextChoices):
+        V2C = '2c', 'SNMP v2c'
+        # v3 todavía NO. Sus campos (usuario, nivel de seguridad, protocolos y las dos
+        # claves) se agregan cuando se implemente: columnas nullable que nadie llena son
+        # deuda, y el v3 necesita decisiones propias que no se pueden anticipar bien acá.
+
+    nombre = models.CharField(
+        max_length=80, unique=True,
+        help_text='Para qué familia de equipos es, ej. "Impresoras administrativas".',
+    )
+    version = models.CharField(max_length=2, choices=Version.choices, default=Version.V2C)
+    comunidad_cifrada = models.TextField(
+        blank=True,
+        help_text='Token Fernet — nunca texto plano. Se carga con `asignar_comunidad()`.',
+    )
+    puerto = models.PositiveSmallIntegerField(default=161)
+    timeout_segundos = models.PositiveSmallIntegerField(
+        default=3,
+        help_text='3 s es lo que ya está validado contra equipos de producción en '
+                  'apps.monitoreo.mikrotik.',
+    )
+    reintentos = models.PositiveSmallIntegerField(
+        default=1,
+        help_text='1 y no 0 como los Mikrotik: una impresora en ahorro de energía tarda en '
+                  'despertar, y un router no duerme.',
+    )
+    unidad_negocio = models.ForeignKey(
+        UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='perfiles_snmp',
+        help_text='Vacío = perfil global, aplica a todos los clientes. Mismo criterio que '
+                  'ReglaAlerta.',
+    )
+    activo = models.BooleanField(default=True)
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'perfil_snmp'
+        ordering = ['nombre']
+        verbose_name = 'Perfil SNMP'
+        verbose_name_plural = 'Perfiles SNMP'
+
+    def __str__(self):
+        """El nombre, nunca la credencial.
+
+        `__str__` termina en el admin, en los logs de Django y en cualquier `%s`: una
+        community que se imprima ahí ya salió del sistema.
+        """
+        return self.nombre
+
+    def __repr__(self):
+        return '<PerfilSnmp: %s>' % self.nombre
+
+    def asignar_comunidad(self, comunidad_plana: str) -> None:
+        """Cifra y guarda la community. No llama a `save()`: lo decide quien edita.
+
+        El cifrado vive acá y no en un servicio porque este modelo no tiene otro flujo
+        alrededor: tenerlo en el modelo hace más difícil escribir el campo sin cifrar, que
+        es justamente lo que hay que impedir.
+        """
+        from apps.catalogo import crypto
+
+        self.comunidad_cifrada = crypto.cifrar(comunidad_plana) if comunidad_plana else ''
+
+    def comunidad(self) -> str:
+        """La community en claro, para pasársela al cliente SNMP.
+
+        Devuelve '' si no hay nada cargado, en vez de lanzar: un perfil sin credencial es
+        un error de configuración que el sondeo tiene que poder reportar como tal, no una
+        excepción a mitad de un ciclo de 700 dispositivos.
+        """
+        from apps.catalogo import crypto
+
+        if not self.comunidad_cifrada:
+            return ''
+        return crypto.descifrar(self.comunidad_cifrada)
+
+    @property
+    def tiene_comunidad(self) -> bool:
+        """Para que el admin pueda mostrar si está cargada sin mostrar el valor."""
+        return bool(self.comunidad_cifrada)
+
+
+class ObjetivoSnmp(models.Model):
+    """Un `Activo` que se sondea por SNMP, con qué perfil y cómo viene saliendo.
+
+    **Por qué no se fusiona con `EstadoRedActivo`:** los modos de falla son distintos y la
+    combinación es la información. "Responde ICMP pero SNMP da timeout" significa SNMP
+    apagado o un firewall; "no responde ninguno" significa el equipo apagado. Fundirlos
+    pierde justamente el diagnóstico — y es el mismo motivo por el que el estado del
+    polling vive acá y no mezclado con el estado del dispositivo.
+
+    **No tiene `metodo_monitoreo`.** Que un activo se monitoree por SNMP se sabe porque
+    existe esta fila; que se monitoree por agente, porque tiene `estacion`; por ICMP,
+    porque tiene `EstadoRedActivo`. Una columna con el método sería una fuente de verdad
+    más que se desincroniza en la primera baja de equipo, y este repo ya pagó por un
+    estado que nadie asignaba (ver el comentario de `Activo.Estado` sobre EN_TRANSITO).
+    """
+
+    class Catalogo(models.TextChoices):
+        # Los nombres son los de `apps.monitoreo.snmp.CATALOGOS`. No se importan de ahí
+        # para que una migración no dependa de ese módulo, pero hay una prueba que
+        # comprueba que las dos listas coinciden.
+        IMPRESORA = 'IMPRESORA', 'Impresora (Printer-MIB)'
+        RED = 'RED', 'Switch / router (IF-MIB)'
+        GENERICO = 'GENERICO', 'Genérico (solo identidad)'
+
+    class Error(models.TextChoices):
+        """Por qué falló el último sondeo. Un código, nunca el mensaje crudo.
+
+        El mensaje de pysnmp puede traer la community, y esto se muestra en el panel.
+        Clasificar también obliga a decidir qué hacer con cada caso (ver §9.2 de la
+        auditoría) en vez de mostrar un texto que nadie sabe cómo accionar.
+        """
+
+        TIMEOUT = 'timeout', 'Sin respuesta (timeout)'
+        SIN_RUTA = 'sin_ruta', 'Sin ruta de red hasta el equipo'
+        SNMP_SIN_RESPUESTA = 'snmp_sin_respuesta', 'Responde ping pero no SNMP'
+        POSIBLE_CREDENCIAL = 'posible_credencial', 'Posible community equivocada'
+        AUTENTICACION = 'autenticacion', 'Fallo de autenticación (v3)'
+        SIN_SOPORTE = 'sin_soporte', 'El equipo no publica estas métricas'
+        PERFIL_SIN_COMUNIDAD = 'perfil_sin_comunidad', 'El perfil no tiene community cargada'
+
+    #: Un activo se sondea con UN perfil y un catálogo: dos filas para el mismo equipo
+    #: serían dos escritores de la misma serie, que es el precedente que `muestra_red_farmacia`
+    #: ya dejó (21 filas/hora donde debían ser 10) y que no hay que repetir.
+    activo = models.OneToOneField(
+        'activos.Activo', on_delete=models.CASCADE, related_name='objetivo_snmp',
+    )
+    perfil = models.ForeignKey(PerfilSnmp, on_delete=models.PROTECT, related_name='objetivos')
+    catalogo = models.CharField(
+        max_length=20, choices=Catalogo.choices, default=Catalogo.GENERICO,
+        help_text='Qué métricas pedirle. GENERICO sirve para descubrir qué es un equipo '
+                  'antes de clasificarlo.',
+    )
+    ip_sondeada = models.GenericIPAddressField(
+        help_text='La IP que se sondeó. Se guarda aparte de `Activo.ip` porque la del '
+                  'activo puede cambiar, y entonces este estado habla de otro destino '
+                  '(mismo criterio que EstadoRedActivo.ip_sondeada).',
+    )
+    habilitado = models.BooleanField(
+        default=True,
+        help_text='Apagarlo deja de sondear sin perder el historial ni la configuración.',
+    )
+
+    ultima_lectura = models.DateTimeField(
+        null=True, blank=True, help_text='Último intento, exitoso o no.',
+    )
+    ultimo_exito = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Vacío = nunca respondió desde que se lo monitorea, que NO es lo mismo '
+                  'que "se cayó recién" (mismo criterio que EstadoRedActivo.ultima_respuesta).',
+    )
+    fallas_consecutivas = models.PositiveSmallIntegerField(
+        default=0,
+        help_text='Para el backoff: un equipo de baja no debe costar un timeout por ciclo '
+                  'para siempre.',
+    )
+    ultimo_error = models.CharField(max_length=24, choices=Error.choices, blank=True)
+
+    class Meta:
+        db_table = 'objetivo_snmp'
+        ordering = ['activo__codigo']
+        verbose_name = 'Objetivo SNMP'
+        verbose_name_plural = 'Objetivos SNMP'
+        indexes = [
+            # El scheduler pregunta "a quién le toca": los habilitados ordenados por
+            # cuándo se leyeron por última vez. Sin este índice eso es un scan completo
+            # en cada ciclo.
+            models.Index(fields=['habilitado', 'ultima_lectura'], name='objetivo_snmp_pendientes'),
+        ]
+
+    def __str__(self):
+        return '%s (%s)' % (self.activo.codigo, self.ip_sondeada)
+
+    #: Tres fallas seguidas antes de darlo por caído. Misma convención que
+    #: `EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS`: un timeout aislado es ruido.
+    UMBRAL_FALLAS_CONSECUTIVAS = 3
+    #: Tope del backoff exponencial, en ciclos. 2^5 = 32 ciclos: con la cadencia lenta de
+    #: 60 min, un equipo muerto se reintenta una vez por día en vez de una por hora.
+    MAX_CICLOS_DE_ESPERA = 5
+
+    @property
+    def caido(self) -> bool:
+        return self.fallas_consecutivas >= self.UMBRAL_FALLAS_CONSECUTIVAS
+
+    @property
+    def ciclos_a_saltar(self) -> int:
+        """Cuántos ciclos esperar antes del próximo intento.
+
+        Crece exponencial con las fallas y se corta en `MAX_CICLOS_DE_ESPERA`. Sin esto,
+        los dispositivos de baja se llevan la mayor parte del presupuesto de tiempo de
+        cada ciclo — y son justamente los que menos importan.
+        """
+        if not self.fallas_consecutivas:
+            return 0
+        return 2 ** min(self.fallas_consecutivas, self.MAX_CICLOS_DE_ESPERA)
+
+
+class LecturaSnmpActual(models.Model):
+    """El último valor de cada métrica de un objetivo. Se actualiza en el lugar.
+
+    **Por qué existe además de una serie de tiempo:** el panel pregunta "¿cómo está esta
+    impresora ahora?", y resolverlo con un `ORDER BY timestamp DESC LIMIT 1` por métrica
+    sobre un hypertable es caro y N+1. Es el mismo patrón que el código ya usa dos veces:
+    `EstadoDispositivo` (snapshot) junto a `EventoMonitoreo` (histórico), y
+    `EquipoBordeFarmacia` (casi nunca cambia) junto a `MuestraRedFarmacia` (serie).
+
+    **`valor` y `valor_crudo` por separado no es redundancia.** Es la diferencia entre "la
+    impresora no sabe cuánto tóner queda" y "está vacía": `prtMarkerSuppliesLevel` usa
+    `-1/-2/-3` como centinelas (RFC 3805), y con una sola columna un `-2` se convierte en
+    `-2 %` o en `0 %`. Las dos son mentira.
+
+    La tabla es estrecha (clave/valor) a propósito. No es EAV en el sentido peligroso: no
+    reemplaza una relación, es una serie de medidas con unidad. Una tabla ancha por tipo de
+    dispositivo —como `MuestraMetrica`— no generaliza a UPS ni PDU, que es el requisito
+    explícito. El costo es la pérdida de tipado, y se paga con el catálogo declarativo
+    validando claves y unidades en un solo lugar.
+    """
+
+    objetivo = models.ForeignKey(
+        ObjetivoSnmp, on_delete=models.CASCADE, related_name='lecturas',
+    )
+    clave = models.CharField(
+        max_length=60,
+        help_text='La clave normalizada del catálogo: toner.black.nivel, paginas.total, '
+                  'bandeja.1.2.nivel. NUNCA un OID — el panel no tiene por qué saberlos.',
+    )
+    valor = models.FloatField(
+        null=True, blank=True,
+        help_text='Vacío = el equipo no pudo dar el dato. NO es lo mismo que cero.',
+    )
+    valor_crudo = models.IntegerField(
+        null=True, blank=True,
+        help_text='Lo que vino sin interpretar, incluidos los centinelas -1/-2/-3.',
+    )
+    unidad = models.CharField(max_length=20, blank=True)
+    texto = models.CharField(
+        max_length=200, blank=True,
+        help_text='La descripción que da el equipo ("Tóner residual") o el texto de una '
+                  'alerta. Viene en español en varios modelos, que es más accionable que '
+                  'un enum.',
+    )
+    actualizado_en = models.DateTimeField()
+
+    class Meta:
+        db_table = 'lectura_snmp_actual'
+        ordering = ['objetivo__activo__codigo', 'clave']
+        verbose_name = 'Lectura SNMP actual'
+        verbose_name_plural = 'Lecturas SNMP actuales'
+        constraints = [
+            # Una lectura por métrica por objetivo. Es lo que convierte el guardado en un
+            # upsert y hace que un lote reintentado no duplique filas.
+            models.UniqueConstraint(fields=['objetivo', 'clave'], name='una_lectura_por_clave'),
+        ]
+
+    def __str__(self):
+        return '%s: %s' % (self.clave, self.valor if self.medido else 'sin dato')
+
+    @property
+    def medido(self) -> bool:
+        """False si el equipo no pudo dar el dato.
+
+        Un recurso que no se pudo medir **no es un recurso sano**: mismo criterio que
+        `apps.panel.umbrales.clasificar`, que devuelve 'sin_dato' y no 'ok' para un None
+        justamente para no pintar de verde algo que nadie midió.
+        """
+        return self.valor is not None

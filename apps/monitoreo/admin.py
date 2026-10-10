@@ -1,9 +1,10 @@
+from django import forms
 from django.contrib import admin
 
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_por_unidad_negocio
 
 from .models import (
-    Alerta, CanalNotificacion, ConfiguracionMonitoreo, DispositivoDetectado, EquipoBordeFarmacia, EstadoDispositivo, EstadoEnlaceFarmacia, EstadoServicioPos, EventoEnlaceFarmacia, EventoMonitoreo, EventoSistemaDetectado, EventoSistemaVigilado, MuestraMetrica, MuestraRedFarmacia, PosErrorDetectado, ReglaAlerta, ServicioPosMonitoreado, VentanaMantenimiento,
+    Alerta, CanalNotificacion, ConfiguracionMonitoreo, DispositivoDetectado, EquipoBordeFarmacia, EstadoDispositivo, EstadoEnlaceFarmacia, EstadoServicioPos, EventoEnlaceFarmacia, EventoMonitoreo, EventoSistemaDetectado, EventoSistemaVigilado, LecturaSnmpActual, MuestraMetrica, MuestraRedFarmacia, ObjetivoSnmp, PerfilSnmp, PosErrorDetectado, ReglaAlerta, ServicioPosMonitoreado, VentanaMantenimiento,
 )
 
 
@@ -534,3 +535,95 @@ class EventoSistemaDetectadoAdmin(admin.ModelAdmin):
     readonly_fields = tuple(
         f.name for f in EventoSistemaDetectado._meta.fields if f.name != 'id'
     )
+
+
+# --- SNMP (FASE 3) ----------------------------------------------------------------
+
+class PerfilSnmpForm(forms.ModelForm):
+    """Deja cargar la community en claro una sola vez, y la guarda cifrada.
+
+    `comunidad_cifrada` no se expone como campo editable: si estuviera en el formulario,
+    alguien podría pegar ahí texto plano y el campo quedaría sin cifrar sin que nada se
+    queje. El campo de entrada es `write_only` y no muestra nunca lo cargado.
+    """
+
+    comunidad = forms.CharField(
+        required=False, widget=forms.PasswordInput(render_value=False),
+        label='Community (solo lectura en el equipo)',
+        help_text='Se guarda cifrada. Dejar vacío para no cambiar la que ya está. '
+                  'La community del equipo tiene que ser de SOLO LECTURA: SNMP v2c la '
+                  'manda en texto plano por la red y es adivinable.',
+    )
+
+    class Meta:
+        model = PerfilSnmp
+        exclude = ('comunidad_cifrada',)
+
+    def save(self, commit=True):
+        perfil = super().save(commit=False)
+        nueva = self.cleaned_data.get('comunidad')
+        # Vacío = no tocar. Sin esto, editar el puerto de un perfil le borraría la
+        # credencial, que es el tipo de efecto colateral que nadie espera de un formulario.
+        if nueva:
+            perfil.asignar_comunidad(nueva)
+        if commit:
+            perfil.save()
+        return perfil
+
+
+@admin.register(PerfilSnmp)
+class PerfilSnmpAdmin(admin.ModelAdmin):
+    """Alta y edición de perfiles. La credencial NUNCA se muestra, solo si está cargada."""
+
+    form = PerfilSnmpForm
+    list_display = (
+        'nombre', 'version', 'credencial_cargada', 'puerto', 'timeout_segundos',
+        'reintentos', 'unidad_negocio', 'activo',
+    )
+    list_filter = ('version', 'activo', 'unidad_negocio')
+    search_fields = ('nombre',)
+    autocomplete_fields = ('unidad_negocio',)
+    readonly_fields = ('fecha_creacion',)
+
+    def get_queryset(self, request):
+        return scope_opcional_por_unidad_negocio(
+            super().get_queryset(request), request.user, 'unidad_negocio',
+        )
+
+    @admin.display(description='Community', boolean=True)
+    def credencial_cargada(self, obj):
+        """Si está cargada, no cuál es. Mismo criterio que el admin de GrupoPos."""
+        return obj.tiene_comunidad
+
+
+@admin.register(ObjetivoSnmp)
+class ObjetivoSnmpAdmin(admin.ModelAdmin):
+    list_display = (
+        'activo', 'catalogo', 'perfil', 'ip_sondeada', 'habilitado',
+        'ultima_lectura', 'ultimo_exito', 'fallas_consecutivas', 'ultimo_error',
+    )
+    list_filter = ('catalogo', 'habilitado', 'ultimo_error', 'perfil')
+    # `ip_sondeada` queda afuera a propósito: en PostgreSQL es de tipo inet y un
+    # `icontains` sobre ella revienta — mismo motivo por el que ActivoAdmin excluye `ip`.
+    search_fields = ('activo__codigo', 'activo__numero_serie')
+    autocomplete_fields = ('activo', 'perfil')
+    readonly_fields = ('ultima_lectura', 'ultimo_exito', 'fallas_consecutivas', 'ultimo_error')
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('activo', 'perfil')
+
+
+@admin.register(LecturaSnmpActual)
+class LecturaSnmpActualAdmin(admin.ModelAdmin):
+    """Solo lectura: esto lo escribe el sondeo, no una persona."""
+
+    list_display = ('objetivo', 'clave', 'valor', 'valor_crudo', 'unidad', 'texto', 'actualizado_en')
+    list_filter = ('unidad', 'objetivo__catalogo')
+    search_fields = ('clave', 'objetivo__activo__codigo')
+    readonly_fields = tuple(f.name for f in LecturaSnmpActual._meta.fields if f.name != 'id')
+
+    def has_add_permission(self, request):
+        return False
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('objetivo__activo')

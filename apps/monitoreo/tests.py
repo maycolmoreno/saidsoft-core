@@ -8,6 +8,7 @@ import websocket
 from django.contrib.auth.models import Permission, User
 from django.core import mail
 from django.core.management import call_command
+from cryptography.fernet import Fernet
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -8978,3 +8979,262 @@ class ProbarSnmpImpresoraTests(TestCase):
         cmd = self._cmd(buffer)
         cmd._mostrar_consumibles([])
         self.assertIn('NO publica', buffer.getvalue())
+
+
+# =============================================================================
+# FASE 3 de docs/auditoria-snmp.md: los tres modelos.
+# =============================================================================
+
+CLAVE_FERNET_PRUEBAS = Fernet.generate_key().decode()
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=CLAVE_FERNET_PRUEBAS)
+class PerfilSnmpTests(TestCase):
+    """La credencial es dato y no código, y nunca sale en claro de donde no debe."""
+
+    def test_la_community_queda_cifrada_en_la_base_y_no_en_texto_plano(self):
+        """La compuerta de esta fase. Se lee la COLUMNA, no la propiedad: si alguien
+        guardara la community sin cifrar, la propiedad igual la devolvería bien y la
+        prueba pasaría sin probar nada."""
+        from apps.monitoreo.models import PerfilSnmp
+
+        perfil = PerfilSnmp(nombre='Impresoras administrativas')
+        perfil.asignar_comunidad('public')
+        perfil.save()
+
+        crudo = PerfilSnmp.objects.values_list('comunidad_cifrada', flat=True).get(pk=perfil.pk)
+        self.assertNotEqual(crudo, 'public')
+        self.assertNotIn('public', crudo)
+        self.assertTrue(crudo.startswith('gAAAAA'))        # prefijo de un token Fernet v1
+        self.assertEqual(PerfilSnmp.objects.get(pk=perfil.pk).comunidad(), 'public')
+
+    def test_un_perfil_sin_community_devuelve_vacio_y_no_lanza(self):
+        """Un perfil sin credencial es un error de configuración que el sondeo tiene que
+        poder reportar como tal, no una excepción a mitad de un ciclo de 700 equipos."""
+        from apps.monitoreo.models import PerfilSnmp
+
+        perfil = PerfilSnmp.objects.create(nombre='Sin credencial')
+        self.assertEqual(perfil.comunidad(), '')
+        self.assertFalse(perfil.tiene_comunidad)
+
+    def test_asignar_vacio_borra_la_credencial_en_vez_de_cifrar_un_vacio(self):
+        from apps.monitoreo.models import PerfilSnmp
+
+        perfil = PerfilSnmp(nombre='Perfil')
+        perfil.asignar_comunidad('public')
+        perfil.asignar_comunidad('')
+        self.assertEqual(perfil.comunidad_cifrada, '')
+
+    def test_str_y_repr_no_filtran_la_community(self):
+        """`__str__` termina en el admin, en los logs de Django y en cualquier %s: una
+        community impresa ahí ya salió del sistema."""
+        from apps.monitoreo.models import PerfilSnmp
+
+        perfil = PerfilSnmp(nombre='Impresoras')
+        perfil.asignar_comunidad('secreto-publico')
+        self.assertEqual(str(perfil), 'Impresoras')
+        self.assertNotIn('secreto', repr(perfil))
+        self.assertNotIn('secreto', str(perfil))
+
+    def test_descifrar_con_otra_clave_falla_en_vez_de_devolver_basura(self):
+        from apps.monitoreo.models import PerfilSnmp
+
+        perfil = PerfilSnmp(nombre='Perfil')
+        perfil.asignar_comunidad('public')
+        with override_settings(BITLOCKER_ENCRYPTION_KEY=Fernet.generate_key().decode()):
+            with self.assertRaises(ValueError):
+                perfil.comunidad()
+
+    def test_el_nombre_es_unico(self):
+        from django.db.utils import IntegrityError
+
+        from apps.monitoreo.models import PerfilSnmp
+
+        PerfilSnmp.objects.create(nombre='Impresoras')
+        with self.assertRaises(IntegrityError):
+            PerfilSnmp.objects.create(nombre='Impresoras')
+
+    def test_los_valores_por_defecto_son_los_ya_validados_contra_equipos_reales(self):
+        """3 s de timeout viene de mikrotik.py; 1 reintento y no 0 porque una impresora en
+        ahorro de energía tarda en despertar y un router no duerme."""
+        from apps.monitoreo.models import PerfilSnmp
+
+        perfil = PerfilSnmp.objects.create(nombre='Defaults')
+        self.assertEqual((perfil.puerto, perfil.timeout_segundos, perfil.reintentos), (161, 3, 1))
+        self.assertEqual(perfil.version, PerfilSnmp.Version.V2C)
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=CLAVE_FERNET_PRUEBAS)
+class ObjetivoSnmpTests(TestCase):
+    def setUp(self):
+        from apps.activos.models import Activo
+        from apps.monitoreo.models import PerfilSnmp
+
+        self.perfil = PerfilSnmp.objects.create(nombre='Impresoras')
+        self.activo = Activo.objects.create(
+            codigo='CR-IMP-0200', tipo=Activo.Tipo.IMPRESORA, ip='10.111.9.66',
+        )
+
+    def _objetivo(self, **extra):
+        from apps.monitoreo.models import ObjetivoSnmp
+
+        datos = dict(
+            activo=self.activo, perfil=self.perfil, ip_sondeada='10.111.9.66',
+            catalogo=ObjetivoSnmp.Catalogo.IMPRESORA,
+        )
+        datos.update(extra)
+        return ObjetivoSnmp.objects.create(**datos)
+
+    def test_un_activo_tiene_un_solo_objetivo(self):
+        """Dos filas para el mismo equipo serían dos escritores de la misma serie — el
+        precedente que `muestra_red_farmacia` ya dejó (21 filas/hora donde debían ser 10)
+        y que no hay que repetir."""
+        from django.db.utils import IntegrityError
+
+        self._objetivo()
+        with self.assertRaises(IntegrityError):
+            self._objetivo()
+
+    def test_los_catalogos_del_modelo_coinciden_con_los_del_motor(self):
+        """El modelo no importa `snmp.CATALOGOS` para que una migración no dependa de ese
+        módulo, así que esta prueba es lo único que impide que las dos listas se
+        desincronicen."""
+        from apps.monitoreo.models import ObjetivoSnmp
+        from apps.monitoreo.snmp import CATALOGOS
+
+        self.assertEqual(
+            set(ObjetivoSnmp.Catalogo.values), set(CATALOGOS),
+        )
+
+    def test_borrar_el_activo_se_lleva_su_objetivo_pero_no_al_reves(self):
+        """CASCADE desde el activo (el objetivo no significa nada sin él) y PROTECT sobre
+        el perfil (un perfil en uso no se borra por accidente)."""
+        from django.db.models import ProtectedError
+
+        from apps.monitoreo.models import ObjetivoSnmp
+
+        self._objetivo()
+        with self.assertRaises(ProtectedError):
+            self.perfil.delete()
+        self.activo.estado = self.activo.Estado.DADO_DE_BAJA
+        self.activo.save(update_fields=['estado'])
+        self.assertEqual(ObjetivoSnmp.objects.count(), 1)   # dar de baja NO borra
+
+    def test_nunca_respondio_se_distingue_de_se_cayo_recien(self):
+        """Mismo criterio que `EstadoRedActivo.ultima_respuesta`: un `ultimo_exito` vacío
+        es "nunca respondió desde que se lo monitorea", que se arregla en otro lugar que
+        "respondía y dejó de responder"."""
+        objetivo = self._objetivo()
+        self.assertIsNone(objetivo.ultimo_exito)
+        self.assertIsNone(objetivo.ultima_lectura)
+
+    def test_tres_fallas_seguidas_lo_dan_por_caido(self):
+        """Misma convención que `EstadoEnlaceFarmacia.UMBRAL_FALLAS_CONSECUTIVAS`: un
+        timeout aislado es ruido, no una caída."""
+        objetivo = self._objetivo()
+        for fallas, caido in ((0, False), (1, False), (2, False), (3, True), (9, True)):
+            with self.subTest(fallas=fallas):
+                objetivo.fallas_consecutivas = fallas
+                self.assertEqual(objetivo.caido, caido)
+
+    def test_el_backoff_crece_exponencial_y_se_corta(self):
+        """Sin tope, un equipo de baja se lleva la mayor parte del presupuesto de tiempo
+        de cada ciclo — y es justamente el que menos importa."""
+        objetivo = self._objetivo()
+        esperado = {0: 0, 1: 2, 2: 4, 3: 8, 4: 16, 5: 32, 6: 32, 20: 32}
+        for fallas, ciclos in esperado.items():
+            with self.subTest(fallas=fallas):
+                objetivo.fallas_consecutivas = fallas
+                self.assertEqual(objetivo.ciclos_a_saltar, ciclos)
+
+    def test_la_ip_sondeada_se_guarda_aparte_de_la_del_activo(self):
+        """La del activo puede cambiar, y entonces el estado hablaría de otro destino.
+        Mismo criterio que `EstadoRedActivo.ip_sondeada`."""
+        objetivo = self._objetivo()
+        self.activo.ip = '10.111.9.99'
+        self.activo.save(update_fields=['ip'])
+        objetivo.refresh_from_db()
+        self.assertEqual(objetivo.ip_sondeada, '10.111.9.66')
+
+    def test_el_error_es_un_codigo_y_no_el_mensaje_crudo(self):
+        """El mensaje de pysnmp puede traer la community, y esto se muestra en el panel."""
+        from apps.monitoreo.models import ObjetivoSnmp
+
+        objetivo = self._objetivo(ultimo_error=ObjetivoSnmp.Error.SNMP_SIN_RESPUESTA)
+        self.assertIn('no SNMP', objetivo.get_ultimo_error_display())
+        self.assertLessEqual(
+            max(len(v) for v in ObjetivoSnmp.Error.values),
+            ObjetivoSnmp._meta.get_field('ultimo_error').max_length,
+        )
+
+
+@override_settings(BITLOCKER_ENCRYPTION_KEY=CLAVE_FERNET_PRUEBAS)
+class LecturaSnmpActualTests(TestCase):
+    def setUp(self):
+        from apps.activos.models import Activo
+        from apps.monitoreo.models import ObjetivoSnmp, PerfilSnmp
+
+        activo = Activo.objects.create(codigo='CR-IMP-0201', tipo=Activo.Tipo.IMPRESORA)
+        self.objetivo = ObjetivoSnmp.objects.create(
+            activo=activo, perfil=PerfilSnmp.objects.create(nombre='P'),
+            ip_sondeada='10.0.0.1', catalogo=ObjetivoSnmp.Catalogo.IMPRESORA,
+        )
+
+    def _lectura(self, clave='toner.black.nivel', **extra):
+        from apps.monitoreo.models import LecturaSnmpActual
+
+        datos = dict(objetivo=self.objetivo, clave=clave, actualizado_en=timezone.now())
+        datos.update(extra)
+        return LecturaSnmpActual.objects.create(**datos)
+
+    def test_una_lectura_por_clave_por_objetivo(self):
+        """Es lo que convierte el guardado en un upsert y hace que un lote reintentado no
+        duplique filas."""
+        from django.db.utils import IntegrityError
+
+        self._lectura(valor=80.0)
+        with self.assertRaises(IntegrityError):
+            self._lectura(valor=70.0)
+
+    def test_el_centinela_se_guarda_crudo_y_el_valor_queda_vacio(self):
+        """La diferencia entre "la impresora no sabe" y "está vacía". Con una sola columna
+        un -2 se convierte en -2 % o en 0 %, y las dos son mentira."""
+        lectura = self._lectura(valor=None, valor_crudo=-2, unidad='porcentaje')
+        self.assertFalse(lectura.medido)
+        self.assertEqual(lectura.valor_crudo, -2)
+        self.assertIn('sin dato', str(lectura))
+
+    def test_el_cero_es_un_valor_medido(self):
+        """Una bandeja en 0 hojas es la señal que importa; tratarla como "sin dato" pierde
+        justamente el caso que hay que alertar."""
+        lectura = self._lectura(clave='bandeja.1.2.nivel', valor=0.0, valor_crudo=0, unidad='hojas')
+        self.assertTrue(lectura.medido)
+
+    def test_la_clave_guarda_la_normalizada_y_nunca_un_OID(self):
+        from apps.monitoreo.models import LecturaSnmpActual
+
+        self._lectura(clave='toner.black.nivel', valor=80.0)
+        for clave in LecturaSnmpActual.objects.values_list('clave', flat=True):
+            self.assertNotIn('1.3.6.1', clave)
+
+    def test_las_claves_del_motor_entran_en_la_columna(self):
+        """Si una clave del catálogo no cupiera, el sondeo fallaría en producción con un
+        DataError y no acá."""
+        from apps.monitoreo.models import LecturaSnmpActual
+        from apps.monitoreo.snmp import IMPRESORA, RED
+        from apps.monitoreo.snmp.impresoras import interpretar_suministros
+
+        tope = LecturaSnmpActual._meta.get_field('clave').max_length
+        claves = [m.clave for m in IMPRESORA.escalares + RED.escalares]
+        claves += [m.clave.format(indice='1.10') for m in IMPRESORA.indexadas + RED.indexadas]
+        claves += [l.clave for l in interpretar_suministros(COLUMNAS_RICOH_MP_C2503)]
+        for clave in claves:
+            with self.subTest(clave=clave):
+                self.assertLessEqual(len(clave), tope)
+
+    def test_borrar_el_objetivo_se_lleva_sus_lecturas(self):
+        from apps.monitoreo.models import LecturaSnmpActual
+
+        self._lectura()
+        self.objetivo.delete()
+        self.assertEqual(LecturaSnmpActual.objects.count(), 0)
