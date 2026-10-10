@@ -920,13 +920,20 @@ re-exports de `apps/panel/views/__init__.py`.
 - **FASE 4**: **completada el 10-oct-2026** sobre `master` @ `0515773`. Los cuatro agentes
   corrieron una vez cada uno, en solo lectura. Resultado en
   **`docs/auditoria/fase4-hallazgos.md`** (94 hallazgos únicos, 12 de severidad ALTA, los
-  cuatro informes íntegros). **Ningún hallazgo fue corregido y ninguno está reproducido.**
-- **Fase siguiente, pendiente de decisión humana**: triage de los 94 hallazgos y
-  autorización para ejecutar pruebas contra PostgreSQL, que es lo único que puede mover un
-  hallazgo a `Reproducción: SÍ`.
+  cuatro informes íntegros). **La auditoría no corrigió ningún hallazgo y ninguno está
+  reproducido.**
+- **Corregido después, fuera de la auditoría**: `BUG-01` (`ecc9e70`, 10-oct-2026), la
+  llamada a `_payload` con un argumento de menos que hacía fallar toda apertura con paso
+  `DESPLIEGUE_POS`. Se adelantó al triage porque su evidencia se sostiene sin ejecutar nada
+  —una firma de función contra su llamada— y porque era una ruta rota en producción. Lleva
+  las tres pruebas que le faltaban al camino de una sola estación. Ver §10-BH del plan.
+- **Fase siguiente, pendiente de decisión humana**: triage de los **93 hallazgos que
+  quedan** y autorización para ejecutar pruebas contra PostgreSQL, que es lo único que
+  puede mover un hallazgo a `Reproducción: SÍ`.
 
 Hasta la FASE 2 este archivo era el único que la auditoría había escrito en el repositorio.
 Desde el 10-oct-2026 son cuatro los caminos que le pertenecen: este archivo,
 `fase4-hallazgos.md`, `.claude/agents/` y los bloques agregados a `CLAUDE.md` y
 `.claude/settings.json`. **Ningún archivo de código, migración o dato fue tocado por la
-auditoría.**
+auditoría.** La corrección de `BUG-01` no es una excepción a eso: es trabajo posterior, con
+su propio commit y sus propias pruebas, decidido con el hallazgo ya sobre la mesa.
