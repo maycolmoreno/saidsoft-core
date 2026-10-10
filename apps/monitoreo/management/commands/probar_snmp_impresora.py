@@ -19,23 +19,13 @@ impresoras vienen casi siempre en `public`. Por eso acá el default es `public` 
 reusa esa función.
 
 No escribe nada: es solo diagnóstico. Lo que sí hace es comparar lo que dice el equipo
-contra lo que dice el inventario — si la IP cargada apunta a otra impresora, todo lo que
-se monitoree de ese activo es de otro equipo (mismo chequeo que `EquipoBordeFarmacia.nombre_coincide`).
+contra lo que dice el inventario — si la IP cargada apunta a otra impresora, todo lo que se
+monitoree de ese activo es de otro equipo (mismo chequeo que `EquipoBordeFarmacia.nombre_coincide`).
 
-Medido contra una RICOH MP C2503 real el 8-oct-2026 (ver `docs/auditoria-snmp.md` §0.1).
-Dos cosas que ese equipo obligó a hacer distinto de lo que parecía razonable en papel:
-
-- **El índice de la tabla de suministros NO es CMYK.** En esa Ricoh `.1.2` es el tóner
-  RESIDUAL, no el cian. Hay que caminar la tabla y leer `prtMarkerSuppliesType` y
-  `prtMarkerColorantValue`; cablear `.9.1.1` a `.9.1.4` habría leído el residual como
-  "cian al 100%".
-- **`hrPrinterDetectedErrorState` puede devolver 0x00 con la impresora sin papel.** Pasó.
-  Lo que sí avisa es `hrDeviceStatus`, el texto de la consola y `prtInputCurrentLevel` por
-  bandeja — el último es el único numérico, o sea el único umbralizable.
-
-Las constantes de OID viven acá por ahora. La FASE 2 las mueve a un catálogo declarativo
-(ver el plan en `docs/auditoria-snmp.md` §15); mientras no exista, un comando de
-diagnóstico autosuficiente es mejor que media abstracción.
+**Desde la FASE 2 este comando no tiene OIDs propios**: pide el catálogo `IMPRESORA` a
+`apps.monitoreo.snmp` y solo presenta el resultado. Tener dos listas de OIDs —una acá y una
+en el motor— es la deuda #3 de `docs/auditoria-snmp.md` en miniatura: se desincronizan y
+nadie se entera hasta que una impresora deja de reportar algo que la otra sí pedía.
 """
 import asyncio
 import ipaddress
@@ -44,46 +34,13 @@ import subprocess
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.activos.models import Activo
-from apps.monitoreo.mikrotik import _motor_snmp, _texto_snmp
-
-# --- Estándar. Printer-MIB = RFC 3805, HOST-RESOURCES-MIB = RFC 2790 ---
-_OID_SYS_NAME = '1.3.6.1.2.1.1.5.0'
-_OID_SYS_DESCR = '1.3.6.1.2.1.1.1.0'
-_OID_SYS_OBJECT_ID = '1.3.6.1.2.1.1.2.0'
-_OID_SERIE = '1.3.6.1.2.1.43.5.1.1.17.1'
-_OID_CONTADOR = '1.3.6.1.2.1.43.10.2.1.4.1.1'
-_OID_CONTADOR_UNIDAD = '1.3.6.1.2.1.43.10.2.1.3.1.1'
-_OID_CONSOLA = '1.3.6.1.2.1.43.16.5.1.2.1.1'
-_OID_DEVICE_STATUS = '1.3.6.1.2.1.25.3.2.1.5.1'
-_OID_PRINTER_STATUS = '1.3.6.1.2.1.25.3.5.1.1.1'
-_OID_ERROR_STATE = '1.3.6.1.2.1.25.3.5.1.2.1'
-
-# Tablas: hay que recorrerlas, el índice no es fijo.
-_OID_SUP_TIPO = '1.3.6.1.2.1.43.11.1.1.5'
-_OID_SUP_DESCR = '1.3.6.1.2.1.43.11.1.1.6'
-_OID_SUP_UNIDAD = '1.3.6.1.2.1.43.11.1.1.7'
-_OID_SUP_MAXIMO = '1.3.6.1.2.1.43.11.1.1.8'
-_OID_SUP_NIVEL = '1.3.6.1.2.1.43.11.1.1.9'
-_OID_COLORANTE = '1.3.6.1.2.1.43.12.1.1.4'
-_OID_BANDEJA_NIVEL = '1.3.6.1.2.1.43.8.2.1.10'
-_OID_ALERTA_DESCR = '1.3.6.1.2.1.43.18.1.1.8'
-
-# prtMarkerSuppliesType (RFC 3805). Solo los que aparecen en la práctica.
-_TIPOS_SUMINISTRO = {
-    '1': 'otro', '2': 'desconocido', '3': 'tóner', '4': 'tóner residual', '5': 'tinta',
-    '6': 'cartucho de tinta', '9': 'revelador', '10': 'aceite de fusor',
-    '15': 'cinta', '21': 'kit de mantenimiento',
-}
-_UNIDADES = {'7': 'impresiones', '8': 'hojas', '13': 'décimas de gramo', '19': 'porcentaje'}
-_ESTADO_IMPRESORA = {'1': 'other', '2': 'unknown', '3': 'inactiva', '4': 'imprimiendo', '5': 'calentando'}
-_ESTADO_DISPOSITIVO = {'1': 'unknown', '2': 'funcionando', '3': 'ADVERTENCIA', '4': 'en prueba', '5': 'CAÍDO'}
-# El enterprise de sysObjectID identifica al fabricante sin depender de parsear sysDescr.
-_FABRICANTES = {
-    '11': 'HP', '253': 'Xerox', '367': 'Ricoh', '1248': 'Epson', '1347': 'Kyocera',
-    '641': 'Lexmark', '2435': 'Brother', '1602': 'Canon', '236': 'Samsung',
-}
-# Centinelas de prtMarkerSuppliesLevel / MaxCapacity (RFC 3805).
-_CENTINELAS = {-1: 'other', -2: 'desconocido', -3: 'queda algo (cantidad indeterminada)'}
+from apps.monitoreo import snmp
+from apps.monitoreo.snmp import catalogo as cat
+from apps.monitoreo.snmp.impresoras import (
+    ESTADO_DISPOSITIVO, ESTADO_IMPRESORA, bitmask_sin_informacion,
+)
+from apps.monitoreo.snmp.lector import por_clave
+from apps.monitoreo.snmp.normalizar import UNIDAD_HOJAS, describir_crudo, nombre_de_unidad
 
 _COMUNIDAD_POR_DEFECTO = 'public'
 
@@ -119,13 +76,16 @@ class Command(BaseCommand):
 
         if not self._paso_ping(ip):
             return
-        datos = self._paso_snmp(ip, comunidad, puerto)
-        if datos is None:
+        lecturas = self._paso_snmp(ip, comunidad, puerto)
+        if lecturas is None:
             return
 
-        self._paso_identidad(datos, activo)
-        self._paso_suministros(ip, comunidad, puerto)
-        self._paso_estado(ip, comunidad, puerto, datos)
+        indice = por_clave(lecturas)
+        self._mostrar_identidad(indice, activo)
+        self._mostrar_consumibles(lecturas)
+        self._mostrar_estado(indice, lecturas)
+        self._mostrar_alertas(lecturas)
+        self._avisar_bitmask(ip, comunidad, puerto)
 
     # --- resolución del objetivo -------------------------------------------------
 
@@ -178,23 +138,26 @@ class Command(BaseCommand):
         return False
 
     def _paso_snmp(self, ip, comunidad, puerto):
-        """Los escalares de una sola consulta, o None si no contesta."""
-        oids = [_OID_SYS_NAME, _OID_SYS_DESCR, _OID_SYS_OBJECT_ID, _OID_SERIE,
-                _OID_CONTADOR, _OID_CONTADOR_UNIDAD, _OID_CONSOLA,
-                _OID_DEVICE_STATUS, _OID_PRINTER_STATUS]
-        valores = asyncio.run(self._get(ip, comunidad, puerto, oids))
-        if valores is not None:
-            self._ok('2. Responde SNMP — el equipo dice llamarse "%s".' % (valores[0] or '(sin nombre)'))
-            return dict(zip(oids, valores))
+        """Las lecturas del catálogo IMPRESORA, o None si el equipo no contestó."""
+        lecturas = asyncio.run(snmp.leer(ip, comunidad, snmp.IMPRESORA, puerto))
+        if lecturas is not None:
+            nombre = por_clave(lecturas).get('sistema.nombre')
+            self._ok('2. Responde SNMP — el equipo dice llamarse "%s".' % (
+                (nombre.texto if nombre else '') or '(sin nombre)',
+            ))
+            return lecturas
 
         # Distinguir "SNMP apagado" de "otra community" es la mitad del diagnóstico.
         if comunidad != _COMUNIDAD_POR_DEFECTO:
-            con_default = asyncio.run(self._get(ip, _COMUNIDAD_POR_DEFECTO, puerto, [_OID_SYS_NAME]))
+            con_default = asyncio.run(
+                snmp.leer(ip, _COMUNIDAD_POR_DEFECTO, snmp.GENERICO, puerto),
+            )
             if con_default is not None:
+                nombre = por_clave(con_default).get('sistema.nombre')
                 self._falla(
                     '2. SNMP está PRENDIDO pero con otra community.',
                     'Con "%s" sí responde (se llama "%s").'
-                    % (_COMUNIDAD_POR_DEFECTO, con_default[0]),
+                    % (_COMUNIDAD_POR_DEFECTO, nombre.texto if nombre else '?'),
                     'Volvé a correr sin --comunidad, o corregí la community del equipo.',
                 )
                 return None
@@ -209,13 +172,16 @@ class Command(BaseCommand):
         )
         return None
 
-    def _paso_identidad(self, datos, activo):
+    # --- presentación -------------------------------------------------------------
+
+    def _mostrar_identidad(self, indice, activo):
         self.stdout.write('')
         self.stdout.write('   IDENTIDAD')
-        descr = datos[_OID_SYS_DESCR]
+        descr = self._texto(indice, 'sistema.descripcion')
         self.stdout.write('     modelo (sysDescr)  %s' % (descr or '—'))
-        self.stdout.write('     fabricante         %s' % self._fabricante(datos[_OID_SYS_OBJECT_ID]))
-        serie = datos[_OID_SERIE]
+        fabricante = cat.fabricante_desde_object_id(self._texto(indice, 'sistema.object_id'))
+        self.stdout.write('     fabricante         %s' % (fabricante or '— (sin sysObjectID)'))
+        serie = self._texto(indice, 'equipo.serie')
         self.stdout.write('     número de serie    %s' % (serie or 'NO LO PUBLICA'))
 
         if activo is None:
@@ -242,176 +208,101 @@ class Command(BaseCommand):
                 % activo.codigo,
             ))
 
-    def _paso_suministros(self, ip, comunidad, puerto):
-        """Camina la tabla. NO asume que el índice sea CMYK — ver el docstring del módulo."""
+    def _mostrar_consumibles(self, lecturas):
+        """Las claves ya vienen armadas con el TIPO y el COLOR, no con la posición.
+
+        Es lo que evita la trampa que una RICOH MP C2503 real destapó: su índice `.1.2` es
+        el tóner residual, así que leer `.9.1.1` a `.9.1.4` como CMYK habría mostrado el
+        residual como "cian al 100 %".
+        """
         self.stdout.write('')
         self.stdout.write('   CONSUMIBLES')
-        tablas = asyncio.run(self._walks(ip, comunidad, puerto, [
-            _OID_SUP_TIPO, _OID_SUP_DESCR, _OID_SUP_UNIDAD, _OID_SUP_MAXIMO,
-            _OID_SUP_NIVEL, _OID_COLORANTE,
-        ]))
-        if tablas is None:
-            self.stdout.write(self.style.ERROR('     No se pudo recorrer la tabla.'))
-            return
-        tipos, descrs, unidades, maximos, niveles, colorantes = tablas
+        niveles = [l for l in lecturas if l.clave.endswith('.nivel') and not l.clave.startswith('bandeja.')]
+        clases = {l.clave: l.texto for l in lecturas if l.clave.endswith('.clase')}
         if not niveles:
             self.stdout.write(self.style.WARNING(
                 '     Este equipo NO publica prtMarkerSuppliesTable: no hay monitoreo de '
                 'tóner por MIB estándar.',
             ))
             return
-
-        for indice in sorted(niveles):
-            tipo = _TIPOS_SUMINISTRO.get(tipos.get(indice), tipos.get(indice, '?'))
-            color = colorantes.get(indice, '')
+        for lectura in niveles:
+            se_llena = clases.get(lectura.clave[: -len('nivel')] + 'clase') == 'se_llena'
             self.stdout.write('     %-26s %-14s %s%s' % (
-                descrs.get(indice, '(sin descripción)'),
-                self._porcentaje(niveles.get(indice), maximos.get(indice), unidades.get(indice)),
-                tipo,
-                '' if color in ('', 'other') else ' / %s' % color,
+                lectura.texto or lectura.clave,
+                self._nivel(lectura),
+                lectura.clave.rsplit('.', 1)[0],
+                '  (se llena: 100 % es el problema)' if se_llena else '',
             ))
 
-    def _paso_estado(self, ip, comunidad, puerto, datos):
+    def _mostrar_estado(self, indice, lecturas):
         self.stdout.write('')
         self.stdout.write('   ESTADO Y VOLUMEN')
-        unidad = _UNIDADES.get(datos[_OID_CONTADOR_UNIDAD], datos[_OID_CONTADOR_UNIDAD] or '?')
-        self.stdout.write('     contador           %s %s' % (datos[_OID_CONTADOR] or '—', unidad))
-        if datos[_OID_CONTADOR_UNIDAD] == '8':
+        contador = indice.get('paginas.total')
+        unidad_cruda = self._texto(indice, 'paginas.unidad')
+        self.stdout.write('     contador           %s %s' % (
+            int(contador.valor) if contador and contador.medido else '—',
+            nombre_de_unidad(unidad_cruda),
+        ))
+        if unidad_cruda == UNIDAD_HOJAS:
             self.stdout.write(self.style.WARNING(
                 '                        son HOJAS, no impresiones: a doble faz una hoja '
                 'son dos impresiones. Importa si se factura por clic.',
             ))
-        self.stdout.write('     impresora          %s' % _ESTADO_IMPRESORA.get(
-            datos[_OID_PRINTER_STATUS], datos[_OID_PRINTER_STATUS] or '—'))
-        dispositivo = _ESTADO_DISPOSITIVO.get(
-            datos[_OID_DEVICE_STATUS], datos[_OID_DEVICE_STATUS] or '—')
-        self.stdout.write('     dispositivo        %s' % dispositivo)
-        if datos[_OID_CONSOLA]:
-            self.stdout.write('     pantalla           %s' % datos[_OID_CONSOLA])
+        self.stdout.write('     impresora          %s' % ESTADO_IMPRESORA.get(
+            self._texto(indice, 'estado.impresora'), '—'))
+        self.stdout.write('     dispositivo        %s' % ESTADO_DISPOSITIVO.get(
+            self._texto(indice, 'estado.dispositivo'), '—').upper())
+        consola = self._texto(indice, 'equipo.consola')
+        if consola:
+            self.stdout.write('     pantalla           %s' % consola)
 
-        bandejas = asyncio.run(self._walks(ip, comunidad, puerto, [_OID_BANDEJA_NIVEL]))
-        if bandejas and bandejas[0]:
-            for indice, valor in sorted(bandejas[0].items()):
-                vacia = valor == '0'
-                linea = '     bandeja %-10s %s hojas' % (indice, valor)
-                self.stdout.write(self.style.ERROR(linea + '   <- VACÍA') if vacia else linea)
+        for lectura in [l for l in lecturas if l.clave.startswith('bandeja.')]:
+            etiqueta = lectura.clave.split('.', 1)[1].rsplit('.', 1)[0]
+            vacia = lectura.medido and lectura.valor == 0
+            linea = '     bandeja %-10s %s hojas' % (
+                etiqueta, int(lectura.valor) if lectura.medido else describir_crudo(lectura.crudo) or '?',
+            )
+            self.stdout.write(self.style.ERROR(linea + '   <- VACÍA') if vacia else linea)
 
-        alertas = asyncio.run(self._walks(ip, comunidad, puerto, [_OID_ALERTA_DESCR]))
-        if alertas and alertas[0]:
-            self.stdout.write('')
-            self.stdout.write('   ALERTAS DEL EQUIPO')
-            for _indice, texto in sorted(alertas[0].items()):
-                self.stdout.write(self.style.WARNING('     %s' % texto))
+    def _mostrar_alertas(self, lecturas):
+        alertas = [l for l in lecturas if l.clave.startswith('alerta.')]
+        if not alertas:
+            return
+        self.stdout.write('')
+        self.stdout.write('   ALERTAS DEL EQUIPO')
+        for lectura in alertas:
+            self.stdout.write(self.style.WARNING('     %s' % lectura.texto))
 
-        # El bitmask estándar no es confiable: una Ricoh MP C2503 real devolvió 0x00
-        # estando sin papel. Se informa para que nadie lo tome como "sin problemas".
-        crudo = asyncio.run(self._get_bytes(ip, comunidad, puerto, _OID_ERROR_STATE))
-        if crudo is not None and not any(crudo):
-            self.stdout.write('')
-            self.stdout.write(self.style.WARNING(
-                '   hrPrinterDetectedErrorState viene en 0x00 (ningún bit). En varios '
-                'equipos eso NO significa "sin problemas": mirar el estado del '
-                'dispositivo, la pantalla y las bandejas de arriba.',
-            ))
+    def _avisar_bitmask(self, ip, comunidad, puerto):
+        """`hrPrinterDetectedErrorState` en 0x00 NO prueba que no haya problemas.
 
-    # --- SNMP ---------------------------------------------------------------------
-
-    async def _get(self, ip, comunidad, puerto, oids):
-        """Lista de valores como texto, o None si el equipo no contestó. Nunca lanza."""
-        from pysnmp.hlapi.v3arch.asyncio import (
-            CommunityData, ContextData, ObjectIdentity, ObjectType, UdpTransportTarget, get_cmd,
-        )
-
-        with _motor_snmp() as engine:
-            try:
-                target = await UdpTransportTarget.create((ip, puerto), timeout=3, retries=1)
-                error_ind, error_est, _idx, enlaces = await get_cmd(
-                    engine, CommunityData(comunidad), target, ContextData(),
-                    *(ObjectType(ObjectIdentity(o)) for o in oids),
-                )
-            except Exception:
-                return None
-            if error_ind or error_est or not enlaces:
-                return None
-            return [_texto_snmp(valor) for _nombre, valor in enlaces]
-
-    async def _get_bytes(self, ip, comunidad, puerto, oid):
-        """Los bytes crudos de un OCTET STRING, para el bitmask de errores."""
-        from pysnmp.hlapi.v3arch.asyncio import (
-            CommunityData, ContextData, ObjectIdentity, ObjectType, UdpTransportTarget, get_cmd,
-        )
-
-        with _motor_snmp() as engine:
-            try:
-                target = await UdpTransportTarget.create((ip, puerto), timeout=3, retries=1)
-                error_ind, error_est, _idx, enlaces = await get_cmd(
-                    engine, CommunityData(comunidad), target, ContextData(),
-                    ObjectType(ObjectIdentity(oid)),
-                )
-                if error_ind or error_est or not enlaces:
-                    return None
-                return bytes(enlaces[0][1].asOctets())
-            except Exception:
-                return None
-
-    async def _walks(self, ip, comunidad, puerto, bases):
-        """Una lista de `{indice: valor}`, en el orden de `bases`. None si falló."""
-        from pysnmp.hlapi.v3arch.asyncio import (
-            CommunityData, ContextData, ObjectIdentity, ObjectType, UdpTransportTarget,
-            bulk_walk_cmd,
-        )
-
-        resultado = []
-        with _motor_snmp() as engine:
-            try:
-                target = await UdpTransportTarget.create((ip, puerto), timeout=4, retries=1)
-                for base in bases:
-                    filas = {}
-                    async for error_ind, error_est, _idx, enlaces in bulk_walk_cmd(
-                        engine, CommunityData(comunidad), target, ContextData(),
-                        0, 20, ObjectType(ObjectIdentity(base)), lexicographicMode=False,
-                    ):
-                        if error_ind or error_est:
-                            break
-                        for nombre, valor in enlaces:
-                            texto = _texto_snmp(valor)
-                            if texto:
-                                filas[str(nombre)[len(base) + 1:]] = texto
-                    resultado.append(filas)
-            except Exception:
-                return None
-        return resultado
-
-    # --- presentación -------------------------------------------------------------
-
-    def _fabricante(self, object_id):
-        """El enterprise de sysObjectID: `1.3.6.1.4.1.<enterprise>.…`."""
-        partes = (object_id or '').split('.')
-        if len(partes) > 6 and partes[4] == '4' and partes[5] == '1':
-            return _FABRICANTES.get(partes[6], 'enterprise %s (no reconocido)' % partes[6])
-        return '— (sysObjectID: %s)' % (object_id or 'sin dato')
-
-    def _porcentaje(self, nivel, maximo, unidad):
-        """El nivel como lo publica el equipo, no como uno querría que fuera.
-
-        `prtMarkerSuppliesLevel` NO es un porcentaje: los negativos son centinelas y la
-        unidad puede no ser percent. Se calcula `nivel/maximo` solo cuando hay con qué.
+        Medido: una RICOH MP C2503 lo devolvió todo en ceros estando sin papel. Se avisa
+        para que nadie lea ese cero como "sin novedades".
         """
-        try:
-            n = int(nivel)
-        except (TypeError, ValueError):
-            return '"%s" (no numérico)' % nivel
-        if n < 0:
-            return _CENTINELAS.get(n, 'centinela %d' % n)
-        if unidad == '19':
-            return '%d%%' % n
-        try:
-            m = int(maximo)
-        except (TypeError, ValueError):
-            m = 0
-        if m > 0:
-            return '%s%% (%d/%d)' % (round(n / m * 100, 1), n, m)
-        return '%d %s' % (n, _UNIDADES.get(unidad, unidad or 'sin unidad'))
+        crudo = asyncio.run(snmp.leer_octetos(ip, comunidad, cat.OID_HR_ERROR_STATE, puerto))
+        if crudo is None or not bitmask_sin_informacion(crudo):
+            return
+        self.stdout.write('')
+        self.stdout.write(self.style.WARNING(
+            '   hrPrinterDetectedErrorState viene en 0x00 (ningún bit). En varios equipos '
+            'eso NO significa "sin problemas": mirar el estado del dispositivo, la '
+            'pantalla y las bandejas de arriba.',
+        ))
+
+    # --- utilidades ---------------------------------------------------------------
+
+    def _texto(self, indice, clave) -> str:
+        lectura = indice.get(clave)
+        return lectura.texto if lectura else ''
+
+    def _nivel(self, lectura) -> str:
+        """El nivel como lo publica el equipo, no como uno querría que fuera."""
+        if lectura.medido:
+            return '%g%%' % lectura.valor if lectura.unidad == 'porcentaje' else '%g %s' % (
+                lectura.valor, lectura.unidad,
+            )
+        descripcion = describir_crudo(lectura.crudo)
+        return descripcion or 'sin dato'
 
     def _ok(self, texto):
         self.stdout.write(self.style.SUCCESS('  OK   %s' % texto))
