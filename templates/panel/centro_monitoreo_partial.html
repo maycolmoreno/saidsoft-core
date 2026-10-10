@@ -142,7 +142,7 @@ incidentes es verlo tarde.
     {% for a in criticas %}
     <div class="flex items-center justify-between gap-3 text-sm py-1.5" style="border-top:1px solid var(--border-soft);">
         <div class="min-w-0">
-            <a href="{% url 'panel:monitoreo_detalle' a.estacion.pk %}" class="font-medium hover:underline">{{ a.estacion.codigo }}</a>
+            {% include 'panel/_enlace_estacion.html' with estacion=a.estacion %}
             <span class="text-[var(--text-faint)]">· {{ a.estacion.farmacia.codigo }}</span>
             <div class="text-xs text-[var(--text-dim)] truncate">{{ a.regla.nombre }}</div>
         </div>
@@ -162,7 +162,7 @@ incidentes es verlo tarde.
     {% for a in advertencias %}
     <div class="flex items-center justify-between gap-3 text-sm py-1.5" style="border-top:1px solid var(--border-soft);">
         <div class="min-w-0">
-            <a href="{% url 'panel:monitoreo_detalle' a.estacion.pk %}" class="font-medium hover:underline">{{ a.estacion.codigo }}</a>
+            {% include 'panel/_enlace_estacion.html' with estacion=a.estacion %}
             <div class="text-xs text-[var(--text-dim)] truncate">{{ a.regla.nombre }}</div>
         </div>
         <span class="pill warning shrink-0">hace {{ a.abierta_en|timesince }}</span>
@@ -216,7 +216,7 @@ correo de enlaces.
     {% for s in pos_criticos %}
     <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
         <div class="min-w-0">
-            <a href="{% url 'panel:monitoreo_detalle' s.estacion.pk %}" class="font-medium hover:underline">{{ s.estacion.codigo }}</a>
+            {% include 'panel/_enlace_estacion.html' with estacion=s.estacion %}
             <span class="text-[var(--text-faint)]">· {{ s.get_servicio_display }}</span>
             <div class="mono text-xs text-[var(--text-faint)] truncate">{{ s.endpoint }}</div>
         </div>
@@ -228,7 +228,7 @@ correo de enlaces.
     {% if forloop.first %}<div class="text-xs font-medium text-[var(--text-dim)] mt-3 mb-1">No críticos — la caja sigue vendiendo</div>{% endif %}
     <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
         <div class="min-w-0">
-            <a href="{% url 'panel:monitoreo_detalle' s.estacion.pk %}" class="font-medium hover:underline">{{ s.estacion.codigo }}</a>
+            {% include 'panel/_enlace_estacion.html' with estacion=s.estacion %}
             <span class="text-[var(--text-faint)]">· {{ s.get_servicio_display }}</span>
         </div>
         <span class="pill warning shrink-0">sin responder</span>

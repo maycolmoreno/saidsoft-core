@@ -1,0 +1,23 @@
+{% comment %}
+Enlace al detalle de una estación, con el destino que esa estación realmente tiene.
+
+`/monitoreo/<pk>/` exige `monitorear_recursos=True` (views/monitoreo.py: monitoreo_detalle),
+flag que en producción tienen apenas los servidores — 2 de 10 estaciones. Las listas del
+Centro de Monitoreo NO lo filtran, y no deben hacerlo: una caja POS con una alerta abierta
+o un servicio caído tiene que aparecer en el tablero de triage aunque nadie le mire la CPU.
+Enlazar siempre a la ficha de monitoreo convertía esa fila en un 404 justo en la pantalla
+que la mesa de ayuda deja abierta.
+
+Las que no se monitorean van al listado de estaciones buscado por su código, que es donde
+viven el modal de info y las acciones sobre el equipo.
+
+Requiere `estacion` en el contexto, y que quien lo incluya haya hecho `select_related` de
+la estación: si no, `monitorear_recursos` es una consulta por fila.
+{% endcomment %}
+{% if estacion.monitorear_recursos %}
+<a href="{% url 'panel:monitoreo_detalle' estacion.pk %}" class="font-medium hover:underline">{{ estacion.codigo }}</a>
+{% else %}
+<a href="{% url 'panel:estaciones_lista' %}?q={{ estacion.codigo|urlencode }}"
+   class="font-medium hover:underline"
+   title="Esta estación no tiene monitoreo de recursos activo: se abre en el listado de estaciones.">{{ estacion.codigo }}</a>
+{% endif %}

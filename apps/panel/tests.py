@@ -1,5 +1,6 @@
 import csv
 import json
+import re
 from decimal import Decimal
 import io
 
@@ -5761,6 +5762,55 @@ class CentroMonitoreoTests(TestCase):
         resp = self._datos()
         self.assertEqual(resp.context['r']['alertas_criticas'], 2)
 
+    # --- enlaces de cada fila ---
+    #
+    # El destino de estas filas no es decoracion: es el unico camino desde el triage hasta
+    # la pantalla donde la caida se acciona. Apuntaban siempre a /monitoreo/<pk>/, que
+    # exige `monitorear_recursos`, mientras que las listas de este tablero no lo filtran
+    # —ni deben: una caja POS con un servicio caido tiene que verse— asi que cada fila de
+    # una estacion no monitoreada era un 404. Se reporto sobre /monitoreo/16/.
+
+    def _hrefs_internos(self, resp):
+        return [h for h in re.findall(r'href="([^"]+)"', resp.content.decode()) if h.startswith('/')]
+
+    def test_la_fila_de_una_estacion_sin_monitoreo_NO_enlaza_a_la_ficha_de_monitoreo(self):
+        """El default de `monitorear_recursos` es False: es el caso comun, no el raro."""
+        self.assertFalse(self.estacion_sg.monitorear_recursos)
+
+        hrefs = self._hrefs_internos(self._datos())
+
+        self.assertNotIn(
+            reverse('panel:monitoreo_detalle', args=[self.estacion_sg.pk]), hrefs,
+            'la ficha de monitoreo rechaza esta estacion: enlazarla es mandar a un 404',
+        )
+        self.assertIn(
+            '%s?q=%s' % (reverse('panel:estaciones_lista'), self.estacion_sg.codigo), hrefs,
+        )
+
+    def test_la_fila_de_una_estacion_monitoreada_SI_enlaza_a_su_ficha(self):
+        self.estacion_sg.monitorear_recursos = True
+        self.estacion_sg.save(update_fields=['monitorear_recursos'])
+
+        self.assertIn(
+            reverse('panel:monitoreo_detalle', args=[self.estacion_sg.pk]),
+            self._hrefs_internos(self._datos()),
+        )
+
+    def test_ningun_enlace_del_tablero_termina_en_404(self):
+        """Lo que el caso puntual no cubre: se siguen TODOS los enlaces que el tablero
+        genera, con un usuario que tiene todos los permisos, y ninguno puede faltar.
+
+        Con permisos completos un 403 tampoco es aceptable, pero lo que se afirma es lo
+        que rompio: el destino existe.
+        """
+        admin = User.objects.create_superuser(username='admin_centro', password='x')
+        self.client.force_login(admin)
+        resp = self.client.get(reverse('panel:centro_monitoreo_partial'))
+
+        rotos = [h for h in self._hrefs_internos(resp) if self.client.get(h).status_code == 404]
+
+        self.assertEqual(rotos, [], 'enlaces del Centro de Monitoreo que dan 404')
+
     # --- ventanas de mantenimiento ---
 
     def test_una_ventana_activa_saca_la_alerta_de_criticas_y_se_muestra_aparte(self):
@@ -5868,6 +5918,15 @@ class CentroMonitoreoTests(TestCase):
             self.assertIn(self.client.post(url).status_code, (403, 405))
 
     def test_enlaza_al_detalle_en_vez_de_reemplazarlo(self):
+        """La fila lleva a la pantalla donde la caida se acciona; no la reimplementa aca.
+
+        Se enciende `monitorear_recursos` porque ese es el unico caso en que el destino es
+        la ficha de monitoreo: sin el flag la ficha responde 404 y la fila enlaza al
+        listado de estaciones (ver los tests de enlaces mas arriba).
+        """
+        self.estacion_sg.monitorear_recursos = True
+        self.estacion_sg.save(update_fields=['monitorear_recursos'])
+
         resp = self._datos()
         self.assertContains(resp, reverse('panel:monitoreo_detalle', args=[self.estacion_sg.pk]))
         self.assertContains(resp, reverse('panel:enlaces_farmacias_lista'))
