@@ -160,9 +160,20 @@ def sondear_lote(ids, cadencia=None) -> dict:
         if lecturas is None:
             _registrar_falla(objetivo, ahora)
             resumen['fallados'] += 1
-        else:
+            continue
+        # El guardado también va dentro de un try, y no es simetría decorativa: estaba
+        # AFUERA y un `DataError` de PostgreSQL por un NUL en el texto de un equipo se
+        # escapaba de `sondear_lote` —que promete no lanzar— y tumbaba el lote entero,
+        # incluidos los equipos que se habían leído bien. Un firmware raro no puede dejar
+        # sin lectura a los otros 49 del lote.
+        try:
             resumen['claves'] += guardar_lecturas(objetivo, lecturas, ahora)
             resumen['con_lectura'] += 1
+        except Exception:
+            logger.exception(
+                'Objetivo SNMP %s: se leyó bien pero no se pudo guardar.', objetivo.pk,
+            )
+            resumen['fallados'] += 1
     return resumen
 
 

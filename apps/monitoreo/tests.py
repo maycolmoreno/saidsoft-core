@@ -9513,6 +9513,35 @@ class SondearLoteTests(SondeoSnmpBase):
     def test_un_lote_vacio_no_hace_nada(self):
         self.assertEqual(self._correr([], self._lecturas())['sondeados'], 0)
 
+    def test_un_objetivo_que_no_se_puede_guardar_no_tumba_a_los_otros(self):
+        """El guardado estaba FUERA del try, y un DataError de PostgreSQL por un NUL en el
+        texto de un equipo se escapaba de `sondear_lote` —que promete no lanzar— y se
+        llevaba el lote entero, incluidos los que sí se habían leído bien. Un firmware
+        raro no puede dejar sin lectura a los otros 49 del lote."""
+        from unittest.mock import patch
+
+        from apps.monitoreo.snmp.sondeo import sondear_lote
+
+        objetivos = [self._objetivo(n) for n in range(4)]
+        roto = objetivos[0].pk
+
+        async def lector(ip, comunidad, catalogo, puerto=161, cadencias=None):
+            return self._lecturas()
+
+        original = sondear_lote.__globals__['guardar_lecturas']
+
+        def guardar(objetivo, lecturas, ahora=None):
+            if objetivo.pk == roto:
+                raise RuntimeError('firmware raro')
+            return original(objetivo, lecturas, ahora)
+
+        with patch('apps.monitoreo.snmp.sondeo.leer', new=lector),              patch('apps.monitoreo.snmp.sondeo.guardar_lecturas', new=guardar):
+            resumen = sondear_lote([o.pk for o in objetivos])
+
+        self.assertFalse(resumen['abortado'])
+        self.assertEqual(resumen['con_lectura'], 3)
+        self.assertEqual(resumen['fallados'], 1)
+
 
 @override_settings(BITLOCKER_ENCRYPTION_KEY=CLAVE_FERNET_PRUEBAS, CELERY_TASK_ALWAYS_EAGER=True)
 class RepartirSondeoSnmpTests(SondeoSnmpBase):
