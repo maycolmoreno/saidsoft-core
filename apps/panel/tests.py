@@ -1689,6 +1689,75 @@ class ActivosMultiTenantTests(TestCase):
         self.assertEqual(resp.status_code, 200)
 
 
+class RetornoDeReparacionSegunRolTests(TestCase):
+    """F-02: quien puede ENVIAR a reparacion no siempre puede cerrar el mantenimiento.
+
+    `activo_reparacion_enviar` exige `activos.change_activo` y el cierre exige
+    `mantenimiento.change_mantenimiento`. Bodeguero tiene el primero y ninguno del modulo de
+    Mantenimiento (seed_permisos.py), asi que mandaba el equipo a reparar y el unico boton de
+    vuelta le daba 403: el activo quedaba en 'en_reparacion' sin salida desde su rol.
+
+    El precedente del rol Tecnico se resolvio sumandole los permisos; aca no, porque cerrar
+    implica checklist y firma. La ficha dice quien cierra en vez de ofrecer un boton muerto.
+    """
+
+    def setUp(self):
+        from apps.mantenimiento.models import MantenimientoEquipo
+
+        self.bodeguero = User.objects.create_user(username='bodeguero_f02', password='x')
+        PerfilUsuario.objects.create(usuario=self.bodeguero, acceso_todas_unidades=True)
+        # El set real del rol, de seed_permisos: activos sin nada de mantenimiento.
+        for codename in ('view_activo', 'change_activo'):
+            self.bodeguero.user_permissions.add(
+                Permission.objects.get(content_type__app_label='activos', codename=codename),
+            )
+        self.activo = Activo.objects.create(
+            codigo='CR-DSK-0F02', tipo=Activo.Tipo.DESKTOP, estado=Activo.Estado.EN_REPARACION,
+        )
+        colaborador = Colaborador.objects.create(nombre='Ana F02', cedula='9F02')
+        self.mantenimiento = Mantenimiento.objects.create(
+            cliente=colaborador, descripcion='Pantalla rota', fecha_programada=timezone.now(),
+        )
+        MantenimientoEquipo.objects.create(
+            mantenimiento=self.mantenimiento, equipo=self.activo, es_principal=True,
+        )
+        self.client.force_login(self.bodeguero)
+
+    def _detalle(self):
+        return self.client.get(reverse('panel:activo_detalle', args=[self.activo.pk]))
+
+    def test_sin_permiso_de_mantenimiento_no_se_ofrece_el_cierre(self):
+        resp = self._detalle()
+
+        self.assertNotContains(
+            resp, reverse('panel:mantenimiento_cerrar', args=[self.mantenimiento.pk]),
+            msg_prefix='ese boton da 403 para este rol: ofrecerlo es un callejon sin salida',
+        )
+
+    def test_en_su_lugar_se_dice_quien_cierra(self):
+        """Quitar el boton sin explicar nada deja la ficha muda frente a un activo trabado."""
+        self.assertContains(self._detalle(), 'lo hace quien lo atiende')
+
+    def test_tampoco_se_le_ofrece_el_retorno_directo(self):
+        """El camino legado no cierra el mantenimiento vinculado: lo dejaria abierto sin
+        checklist ni firma. Cambiar el callejon por eso seria cambiarlo por una
+        inconsistencia de datos."""
+        self.assertNotContains(
+            self._detalle(), reverse('panel:activo_reparacion_retorno', args=[self.activo.pk]),
+        )
+
+    def test_con_el_permiso_el_boton_sigue_estando(self):
+        self.bodeguero.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='mantenimiento', codename='change_mantenimiento',
+            ),
+        )
+
+        self.assertContains(
+            self._detalle(), reverse('panel:mantenimiento_cerrar', args=[self.mantenimiento.pk]),
+        )
+
+
 class ActivosVistasPermisoTests(TestCase):
     """AC-1 de la auditoría de gobernanza (22-ago-2026): las 22 vistas de activos.py
     solo pedían sesión iniciada. Cubre que un usuario sin rol quede afuera."""
@@ -2527,7 +2596,16 @@ class ReportesPorClienteTests(TestCase):
         resp = self.client.get(reverse('panel:reporte_mantenimiento_csv'), {'unidad_negocio': self.mia.pk})
         self.assertEqual(resp.status_code, 200)
 
+    def _permitir_resumen_cliente(self):
+        """El permiso que `reporte_cliente_resumen` exige desde el 10-oct-2026."""
+        self.usuario_mia.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='facturacion', codename='view_actividadmensualestacion',
+            ),
+        )
+
     def test_reporte_cliente_resumen_incluye_kpis_de_mantenimiento(self):
+        self._permitir_resumen_cliente()
         colaborador_mia = Colaborador.objects.create(nombre='Ana MIA', cedula='9003', unidad_negocio=self.mia)
         mantenimiento = Mantenimiento.objects.create(
             cliente=colaborador_mia, descripcion='Falla', fecha_programada=timezone.now(),
@@ -2540,6 +2618,31 @@ class ReportesPorClienteTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'Mantenimientos del período')
 
+    def test_reporte_cliente_resumen_requiere_permiso(self):
+        """Era la unica vista de este modulo abierta a cualquier autenticado (F-01).
+
+        Los otros seis reportes ya exigian el permiso de su dominio, asi que el criterio
+        existia y a esta se le habia pasado. `verificar_acceso` no cubria el hueco: acota de
+        que cliente son los datos, no quien tiene derecho al informe — y el informe trae los
+        endpoints facturables del mes, que no salen de ningun otro lado del panel.
+        """
+        resp = self.client.get(reverse('panel:reporte_cliente_resumen'), {'unidad_negocio': self.mia.pk})
+        self.assertEqual(resp.status_code, 403)
+
+        self._permitir_resumen_cliente()
+        resp = self.client.get(reverse('panel:reporte_cliente_resumen'), {'unidad_negocio': self.mia.pk})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_el_indice_no_ofrece_el_resumen_a_quien_no_puede_abrirlo(self):
+        """La pantalla existe para encontrar reportes: ofrecer uno que da 403 es un camino
+        cortado, no una restriccion."""
+        resp = self.client.get(reverse('panel:reportes_index'))
+        self.assertNotContains(resp, reverse('panel:reporte_cliente_resumen'))
+
+        self._permitir_resumen_cliente()
+        resp = self.client.get(reverse('panel:reportes_index'))
+        self.assertContains(resp, reverse('panel:reporte_cliente_resumen'))
+
     def test_reporte_cumplimiento_csv_sin_parametro_no_muestra_todo(self):
         resp = self.client.get(reverse('panel:reporte_cumplimiento_csv'))
         contenido = resp.content.decode('utf-8-sig')
@@ -2550,10 +2653,12 @@ class ReportesPorClienteTests(TestCase):
         # _resolver_unidad_negocio busca dentro del queryset ya escopado a lo visible
         # (get_object_or_404(visibles, ...)) — para un tenant ajeno eso es un 404, no
         # un 403: no confirma que la unidad de negocio exista, simplemente no aparece.
+        self._permitir_resumen_cliente()
         resp = self.client.get(reverse('panel:reporte_cliente_resumen'), {'unidad_negocio': self.sg.pk})
         self.assertEqual(resp.status_code, 404)
 
     def test_reporte_cliente_resumen_propio_no_filtra_datos_ajenos(self):
+        self._permitir_resumen_cliente()
         resp = self.client.get(reverse('panel:reporte_cliente_resumen'), {'unidad_negocio': self.mia.pk})
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, self.mia.codigo)

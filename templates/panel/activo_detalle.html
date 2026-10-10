@@ -169,7 +169,25 @@ trate igual un dato automático que uno tipeado a mano.
         <a href="{% url 'panel:activo_consumible_entregar' activo.pk %}" class="btn secondary">Entregar consumible</a>
     {% elif activo.estado == 'en_reparacion' %}
         {% if mantenimiento_abierto %}
+            {% comment %}El cierre exige `mantenimiento.change_mantenimiento`, que no todos los roles que
+               pueden ENVIAR a reparación tienen: Bodeguero tiene activos.change_activo y ningún
+               permiso de Mantenimiento (seed_permisos.py), así que manda el equipo a reparar y el
+               único botón de vuelta le daba 403 — el activo quedaba en 'en_reparacion' sin salida
+               desde su rol. El precedente de arriba lo resolvió para Técnico sumándole los
+               permisos; acá no se hace lo mismo porque cerrar implica checklist y firma, que es
+               trabajo técnico y no de bodega. Así que se le dice quién cierra, en vez de ofrecerle
+               un botón que no puede usar.
+               NO se ofrece `activo_reparacion_retorno` como alternativa: ese camino es el legado,
+               no cierra el mantenimiento vinculado, y lo dejaría abierto sin checklist ni firma —
+               cambiaría un callejón por una inconsistencia.{% endcomment %}
+            {% if perms.mantenimiento.change_mantenimiento %}
             <a href="{% url 'panel:mantenimiento_cerrar' mantenimiento_abierto.pk %}" class="btn primary">Cerrar mantenimiento y retornar</a>
+            {% else %}
+            <span class="text-sm text-[var(--text-faint)]">
+                El retorno se registra al cerrar el mantenimiento <strong>#{{ mantenimiento_abierto.pk }}</strong>,
+                que incluye checklist y firma: lo hace quien lo atiende.
+            </span>
+            {% endif %}
         {% else %}
             {# Sin mantenimiento vinculado -- caso legado, de antes de que "enviar a reparación" abriera uno automático. #}
             <a href="{% url 'panel:activo_reparacion_retorno' activo.pk %}" class="btn primary">Registrar retorno de reparación</a>
