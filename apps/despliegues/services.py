@@ -246,7 +246,7 @@ def publicar_despliegue_a_estacion(despliegue: Despliegue, estacion) -> bool:
     try:
         mqtt_publish.single(
             f'/saidsof/agente/{estacion.codigo}/despliegue/',
-            payload=json.dumps(_payload(despliegue)),
+            payload=json.dumps(_payload(despliegue, estacion)),
             retain=True,
             hostname=mqtt_conf['HOST'],
             port=mqtt_conf['PORT'],

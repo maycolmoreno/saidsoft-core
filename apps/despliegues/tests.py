@@ -12,10 +12,13 @@ from django.urls import clear_url_caches, resolve
 from apps.catalogo.models import Estacion, Farmacia, Grupo, UnidadNegocio
 from apps.cuentas.models import PerfilUsuario
 
-from apps.catalogo.services import firmar_payload
+from apps.catalogo.services import firmar_payload, secreto_de
 
 from .models import Despliegue, EventoDespliegue, ResultadoDespliegue
-from .services import evaluar_freno_automatico, publicar_despliegue, reintentar_despliegue, verificar_completado
+from .services import (
+    evaluar_freno_automatico, publicar_despliegue, publicar_despliegue_a_estacion, reintentar_despliegue,
+    verificar_completado,
+)
 
 
 class _BaseDespliegueTests(TestCase):
@@ -675,3 +678,59 @@ class BorrarEstacionNoSeLlevaElHistorialTests(TestCase):
 
         otra.delete()
         self.assertEqual(MuestraMetrica.objects.count(), 0)
+
+
+class PublicarDespliegueAUnaEstacionTests(_BaseDespliegueTests):
+    """El camino de UNA estación (`apps.aperturas`), que publica con `single`.
+
+    Toda la batería de despliegues parchea `mqtt_publish.multiple` —el fan-out—, así que
+    este camino no tenía ninguna prueba. El 16-sep-2026 (`8d3ca12`) `_payload` ganó el
+    parámetro `estacion` para firmar con el secreto propio de cada una: se actualizaron
+    las dos llamadas del fan-out y esta quedó con un solo argumento. El `except Exception`
+    de alrededor convertía el `TypeError` en `return False` con el mensaje "No se pudo
+    publicar el despliegue", que se lee como un broker caído y no como un error de código.
+    """
+
+    def test_publica_al_topico_de_la_estacion_con_firma_valida(self):
+        despliegue = self._crear_despliegue()
+        estacion = self._crear_estacion('ML001-A')
+
+        with patch('apps.despliegues.services.mqtt_publish.single') as mock_single:
+            enviado = publicar_despliegue_a_estacion(despliegue, estacion)
+
+        self.assertTrue(enviado)
+        mock_single.assert_called_once()
+        self.assertEqual(mock_single.call_args.args[0], '/saidsof/agente/ML001-A/despliegue/')
+        payload = json.loads(mock_single.call_args.kwargs['payload'])
+        self.assertEqual(payload['firma'], firmar_payload(
+            comando='desplegar', despliegue_id=payload['despliegue_id'], version=payload['version'],
+            url=payload['url'], sha256=payload['sha256'], modo_aplicacion=payload['modo_aplicacion'],
+            ventana_fecha_hora=payload['ventana_fecha_hora'], timestamp=payload['timestamp'],
+        ))
+
+    def test_se_firma_con_el_secreto_propio_de_esa_estacion(self):
+        """Lo que el parámetro `estacion` existe para hacer. Sin él no hay con qué firmar."""
+        despliegue = self._crear_despliegue()
+        estacion = self._crear_estacion('ML001-B', version='agente-prueba-0.21', hmac_propio=True)
+
+        with patch('apps.despliegues.services.mqtt_publish.single') as mock_single:
+            publicar_despliegue_a_estacion(despliegue, estacion)
+
+        payload = json.loads(mock_single.call_args.kwargs['payload'])
+        campos = dict(
+            comando='desplegar', despliegue_id=payload['despliegue_id'], version=payload['version'],
+            url=payload['url'], sha256=payload['sha256'], modo_aplicacion=payload['modo_aplicacion'],
+            ventana_fecha_hora=payload['ventana_fecha_hora'], timestamp=payload['timestamp'],
+        )
+        self.assertNotEqual(payload['firma'], firmar_payload(**campos))
+        self.assertEqual(payload['firma'], firmar_payload(secreto_de(estacion), **campos))
+
+    def test_un_fallo_del_broker_no_registra_el_evento_publicado(self):
+        despliegue = self._crear_despliegue()
+        estacion = self._crear_estacion('ML001-C')
+
+        with patch('apps.despliegues.services.mqtt_publish.single', side_effect=OSError):
+            enviado = publicar_despliegue_a_estacion(despliegue, estacion)
+
+        self.assertFalse(enviado)
+        self.assertFalse(EventoDespliegue.objects.filter(paso=EventoDespliegue.Paso.PUBLICADO).exists())
