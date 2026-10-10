@@ -83,20 +83,25 @@ def objetivos_pendientes(cadencia, ahora=None):
     """
     ahora = ahora or timezone.now()
     minutos = MINUTOS_POR_CADENCIA[cadencia]
+    # El reloj de ESTA cadencia, no el compartido. Con uno solo, la cadencia rapida —que
+    # corre cada 5 minutos— lo refresca permanentemente y la lenta nunca vence: el toner
+    # no se leeria nunca. Lo descubrio la primera lectura real contra una Ricoh.
+    campo = ObjetivoSnmp.campo_de_cadencia(cadencia)
 
     candidatos = (
         ObjetivoSnmp.objects
         .filter(habilitado=True)
         .select_related('perfil', 'activo')
-        .order_by('ultima_lectura')
+        .order_by(campo)
     )
     pendientes = []
     for objetivo in candidatos:
-        if objetivo.ultima_lectura is None:
+        ultimo = getattr(objetivo, campo)
+        if ultimo is None:
             pendientes.append(objetivo)
             continue
         espera = minutos * (1 + objetivo.ciclos_a_saltar)
-        if (ahora - objetivo.ultima_lectura).total_seconds() >= espera * 60:
+        if (ahora - ultimo).total_seconds() >= espera * 60:
             pendientes.append(objetivo)
     return pendientes
 
@@ -158,7 +163,7 @@ def sondear_lote(ids, cadencia=None) -> dict:
     ahora = timezone.now()
     for objetivo, lecturas in resultados:
         if lecturas is None:
-            _registrar_falla(objetivo, ahora)
+            _registrar_falla(objetivo, ahora, cadencia)
             resumen['fallados'] += 1
             continue
         # El guardado también va dentro de un try, y no es simetría decorativa: estaba
@@ -167,7 +172,7 @@ def sondear_lote(ids, cadencia=None) -> dict:
         # incluidos los equipos que se habían leído bien. Un firmware raro no puede dejar
         # sin lectura a los otros 49 del lote.
         try:
-            resumen['claves'] += guardar_lecturas(objetivo, lecturas, ahora)
+            resumen['claves'] += guardar_lecturas(objetivo, lecturas, ahora, cadencia)
             resumen['con_lectura'] += 1
         except Exception:
             logger.exception(
@@ -181,7 +186,7 @@ def sondear_lote(ids, cadencia=None) -> dict:
 _CAMPOS_A_ACTUALIZAR = ('valor', 'valor_crudo', 'unidad', 'texto', 'actualizado_en')
 
 
-def guardar_lecturas(objetivo, lecturas, ahora=None) -> int:
+def guardar_lecturas(objetivo, lecturas, ahora=None, cadencia=None) -> int:
     """Upsert de las lecturas y marca el éxito. Devuelve cuántas claves se escribieron.
 
     **Un solo INSERT con `ON CONFLICT DO UPDATE`, no un `update_or_create` por clave.**
@@ -217,9 +222,13 @@ def guardar_lecturas(objetivo, lecturas, ahora=None) -> int:
                 unique_fields=('objetivo', 'clave'),
                 update_fields=_CAMPOS_A_ACTUALIZAR,
             )
-        ObjetivoSnmp.objects.filter(pk=objetivo.pk).update(
-            ultima_lectura=ahora, ultimo_exito=ahora, fallas_consecutivas=0, ultimo_error='',
-        )
+        campos = {
+            'ultima_lectura': ahora, 'ultimo_exito': ahora,
+            'fallas_consecutivas': 0, 'ultimo_error': '',
+        }
+        if cadencia:
+            campos[ObjetivoSnmp.campo_de_cadencia(cadencia)] = ahora
+        ObjetivoSnmp.objects.filter(pk=objetivo.pk).update(**campos)
     return len(filas)
 
 
@@ -271,7 +280,7 @@ async def _leer_uno(objetivo, cadencias):
         return None
 
 
-def _registrar_falla(objetivo, ahora):
+def _registrar_falla(objetivo, ahora, cadencia=None):
     """Suma una falla y clasifica el motivo. No borra las lecturas que ya estaban.
 
     No borrarlas es deliberado: lo último que se supo del equipo sigue siendo lo último
@@ -283,8 +292,13 @@ def _registrar_falla(objetivo, ahora):
         if not objetivo.perfil.comunidad_cifrada
         else ObjetivoSnmp.Error.TIMEOUT
     )
-    ObjetivoSnmp.objects.filter(pk=objetivo.pk).update(
-        ultima_lectura=ahora,
-        fallas_consecutivas=objetivo.fallas_consecutivas + 1,
-        ultimo_error=codigo,
-    )
+    campos = {
+        'ultima_lectura': ahora,
+        'fallas_consecutivas': objetivo.fallas_consecutivas + 1,
+        'ultimo_error': codigo,
+    }
+    # El reloj de la cadencia se mueve TAMBIEN al fallar: si no, un equipo muerto queda
+    # vencido para siempre y se reintenta en cada ciclo — el backoff no tendria efecto.
+    if cadencia:
+        campos[ObjetivoSnmp.campo_de_cadencia(cadencia)] = ahora
+    ObjetivoSnmp.objects.filter(pk=objetivo.pk).update(**campos)

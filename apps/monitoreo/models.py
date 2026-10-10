@@ -1831,8 +1831,18 @@ class ObjetivoSnmp(models.Model):
     )
 
     ultima_lectura = models.DateTimeField(
-        null=True, blank=True, help_text='Último intento, exitoso o no.',
+        null=True, blank=True,
+        help_text='Último intento de CUALQUIER cadencia, exitoso o no. Es "cuándo supimos '
+                  'algo de este equipo por última vez"; para decidir a quién le toca se '
+                  'usan los tres de abajo.',
     )
+    # Un reloj por cadencia, y no uno solo. Con uno compartido la cadencia RÁPIDA —que
+    # corre cada 5 minutos— lo refresca permanentemente, así que la LENTA (60 min) nunca
+    # vence y **el tóner no se lee nunca**. Lo descubrió la primera lectura real contra
+    # una Ricoh: se guardaron las 10 claves rápidas y ni una de tóner.
+    ultima_lectura_rapida = models.DateTimeField(null=True, blank=True)
+    ultima_lectura_lenta = models.DateTimeField(null=True, blank=True)
+    ultima_lectura_identidad = models.DateTimeField(null=True, blank=True)
     ultimo_exito = models.DateTimeField(
         null=True, blank=True,
         help_text='Vacío = nunca respondió desde que se lo monitorea, que NO es lo mismo '
@@ -1851,10 +1861,15 @@ class ObjetivoSnmp(models.Model):
         verbose_name = 'Objetivo SNMP'
         verbose_name_plural = 'Objetivos SNMP'
         indexes = [
-            # El scheduler pregunta "a quién le toca": los habilitados ordenados por
-            # cuándo se leyeron por última vez. Sin este índice eso es un scan completo
-            # en cada ciclo.
-            models.Index(fields=['habilitado', 'ultima_lectura'], name='objetivo_snmp_pendientes'),
+            # El scheduler pregunta "a quién le toca" por cadencia: los habilitados
+            # ordenados por cuándo se leyó ESA cadencia. Sin estos índices eso es un scan
+            # completo en cada ciclo, y hay tres ciclos distintos.
+            models.Index(fields=['habilitado', 'ultima_lectura_rapida'],
+                         name='objetivo_snmp_pend_rapida'),
+            models.Index(fields=['habilitado', 'ultima_lectura_lenta'],
+                         name='objetivo_snmp_pend_lenta'),
+            models.Index(fields=['habilitado', 'ultima_lectura_identidad'],
+                         name='objetivo_snmp_pend_ident'),
         ]
 
     def __str__(self):
@@ -1866,6 +1881,27 @@ class ObjetivoSnmp(models.Model):
     #: Tope del backoff exponencial, en ciclos. 2^5 = 32 ciclos: con la cadencia lenta de
     #: 60 min, un equipo muerto se reintenta una vez por día en vez de una por hora.
     MAX_CICLOS_DE_ESPERA = 5
+
+    #: Qué columna lleva el reloj de cada cadencia. Un mapa y no un `if`, para que el
+    #: scheduler quede genérico: agregar una cadencia es una entrada acá y una columna.
+    CAMPO_POR_CADENCIA = {
+        'rapida': 'ultima_lectura_rapida',
+        'lenta': 'ultima_lectura_lenta',
+        'identidad': 'ultima_lectura_identidad',
+    }
+
+    @classmethod
+    def campo_de_cadencia(cls, cadencia) -> str:
+        try:
+            return cls.CAMPO_POR_CADENCIA[cadencia]
+        except KeyError:
+            raise ValueError(
+                'Cadencia desconocida "%s". Conocidas: %s.'
+                % (cadencia, ', '.join(sorted(cls.CAMPO_POR_CADENCIA))),
+            )
+
+    def ultimo_sondeo(self, cadencia):
+        return getattr(self, self.campo_de_cadencia(cadencia))
 
     @property
     def caido(self) -> bool:

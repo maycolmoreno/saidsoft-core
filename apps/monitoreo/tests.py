@@ -9298,7 +9298,8 @@ class ElegirObjetivosPendientesTests(SondeoSnmpBase):
         from apps.monitoreo.snmp import Cadencia
         from apps.monitoreo.snmp.sondeo import objetivos_pendientes
 
-        self._objetivo(ultima_lectura=timezone.now())
+        ahora = timezone.now()
+        self._objetivo(ultima_lectura=ahora, ultima_lectura_rapida=ahora)
         self.assertEqual(objetivos_pendientes(Cadencia.RAPIDA), [])
 
     def test_la_cadencia_lenta_espera_mas_que_la_rapida(self):
@@ -9308,9 +9309,74 @@ class ElegirObjetivosPendientesTests(SondeoSnmpBase):
         from apps.monitoreo.snmp import Cadencia
         from apps.monitoreo.snmp.sondeo import objetivos_pendientes
 
-        objetivo = self._objetivo(ultima_lectura=timezone.now() - timedelta(minutes=10))
+        hace_diez = timezone.now() - timedelta(minutes=10)
+        objetivo = self._objetivo(
+            ultima_lectura=hace_diez, ultima_lectura_rapida=hace_diez,
+            ultima_lectura_lenta=hace_diez,
+        )
         self.assertIn(objetivo, objetivos_pendientes(Cadencia.RAPIDA))
         self.assertEqual(objetivos_pendientes(Cadencia.LENTA), [])
+
+    def test_la_cadencia_lenta_vence_aunque_la_rapida_corra_todo_el_tiempo(self):
+        """El bug que encontro la primera lectura real contra la Ricoh: las tres cadencias
+        compartian `ultima_lectura`, y la rapida —cada 5 minutos— la refrescaba
+        permanentemente. La lenta nunca vencia, asi que **el toner no se leia nunca**, que
+        es todo el caso de negocio. Cada cadencia lleva su propio reloj."""
+        from datetime import timedelta
+
+        from apps.monitoreo.models import ObjetivoSnmp
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.snmp.sondeo import objetivos_pendientes
+
+        ahora = timezone.now()
+        objetivo = self._objetivo()
+        # La rapida acaba de correr; la lenta no corre desde hace dos horas.
+        ObjetivoSnmp.objects.filter(pk=objetivo.pk).update(
+            ultima_lectura=ahora,
+            ultima_lectura_rapida=ahora,
+            ultima_lectura_lenta=ahora - timedelta(hours=2),
+        )
+        self.assertEqual(objetivos_pendientes(Cadencia.RAPIDA), [])
+        self.assertIn(objetivo, objetivos_pendientes(Cadencia.LENTA))
+
+    def test_sondear_una_cadencia_no_mueve_el_reloj_de_las_otras(self):
+        from apps.monitoreo.models import ObjetivoSnmp
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.snmp.sondeo import guardar_lecturas
+
+        objetivo = self._objetivo()
+        guardar_lecturas(objetivo, self._lecturas(), cadencia=Cadencia.RAPIDA)
+        objetivo = ObjetivoSnmp.objects.get(pk=objetivo.pk)
+        self.assertIsNotNone(objetivo.ultima_lectura_rapida)
+        self.assertIsNone(objetivo.ultima_lectura_lenta)
+        self.assertIsNone(objetivo.ultima_lectura_identidad)
+
+    def test_una_falla_tambien_mueve_el_reloj_de_su_cadencia(self):
+        """Si no, un equipo muerto queda vencido para siempre y se reintenta en cada
+        ciclo: el backoff no tendria ningun efecto."""
+        from apps.monitoreo.models import ObjetivoSnmp
+        from apps.monitoreo.snmp import Cadencia
+        from apps.monitoreo.snmp.sondeo import objetivos_pendientes, sondear_lote
+        from unittest.mock import patch
+
+        objetivo = self._objetivo()
+
+        async def muerto(*args, **kwargs):
+            return None
+
+        with patch('apps.monitoreo.snmp.sondeo.leer', new=muerto):
+            sondear_lote([objetivo.pk], Cadencia.RAPIDA)
+        self.assertIsNotNone(
+            ObjetivoSnmp.objects.get(pk=objetivo.pk).ultima_lectura_rapida,
+        )
+        self.assertEqual(objetivos_pendientes(Cadencia.RAPIDA), [])
+
+    def test_una_cadencia_que_no_existe_lo_dice(self):
+        from apps.monitoreo.models import ObjetivoSnmp
+
+        with self.assertRaises(ValueError) as ctx:
+            ObjetivoSnmp.campo_de_cadencia('instantanea')
+        self.assertIn('rapida', str(ctx.exception))
 
     def test_un_objetivo_deshabilitado_no_se_sondea(self):
         from apps.monitoreo.snmp import Cadencia
@@ -9328,8 +9394,11 @@ class ElegirObjetivosPendientesTests(SondeoSnmpBase):
         from apps.monitoreo.snmp.sondeo import objetivos_pendientes
 
         hace_diez = timezone.now() - timedelta(minutes=10)
-        sano = self._objetivo(1, ultima_lectura=hace_diez)
-        castigado = self._objetivo(2, ultima_lectura=hace_diez, fallas_consecutivas=4)
+        sano = self._objetivo(1, ultima_lectura=hace_diez, ultima_lectura_rapida=hace_diez)
+        castigado = self._objetivo(
+            2, ultima_lectura=hace_diez, ultima_lectura_rapida=hace_diez,
+            fallas_consecutivas=4,
+        )
 
         pendientes = objetivos_pendientes(Cadencia.RAPIDA)
         self.assertIn(sano, pendientes)
@@ -9530,10 +9599,10 @@ class SondearLoteTests(SondeoSnmpBase):
 
         original = sondear_lote.__globals__['guardar_lecturas']
 
-        def guardar(objetivo, lecturas, ahora=None):
+        def guardar(objetivo, lecturas, ahora=None, cadencia=None):
             if objetivo.pk == roto:
                 raise RuntimeError('firmware raro')
-            return original(objetivo, lecturas, ahora)
+            return original(objetivo, lecturas, ahora, cadencia)
 
         with patch('apps.monitoreo.snmp.sondeo.leer', new=lector),              patch('apps.monitoreo.snmp.sondeo.guardar_lecturas', new=guardar):
             resumen = sondear_lote([o.pk for o in objetivos])
@@ -9571,7 +9640,8 @@ class RepartirSondeoSnmpTests(SondeoSnmpBase):
         from apps.monitoreo.snmp import Cadencia
         from apps.monitoreo.tasks import repartir_sondeo_snmp_task
 
-        self._objetivo(ultima_lectura=timezone.now())
+        ahora = timezone.now()
+        self._objetivo(ultima_lectura=ahora, ultima_lectura_rapida=ahora)
         with patch('apps.monitoreo.tasks.sondear_lote_snmp_task.delay') as encolar:
             repartir_sondeo_snmp_task(Cadencia.RAPIDA)
         encolar.assert_not_called()
