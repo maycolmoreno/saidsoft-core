@@ -22,8 +22,12 @@
         {% if not vista_agrupada %}
         <a href="?{% if solo_activas %}todas=1{% endif %}" class="btn secondary">{% if solo_activas %}Ver todas{% else %}Ver solo activas{% endif %}</a>
         {% endif %}
+        {% if perms.monitoreo.view_ventanamantenimiento %}
         <a href="{% url 'panel:ventanas_mantenimiento_lista' %}" class="btn secondary">Mantenimiento</a>
+        {% endif %}
+        {% if perms.monitoreo.view_reglaalerta %}
         <a href="{% url 'panel:reglas_alerta_lista' %}" class="btn secondary">Reglas</a>
+        {% endif %}
     </div>
 </div>
 
@@ -50,7 +54,14 @@
                 </td>
                 <td class="px-4 py-3 text-right">
                     {% if fila.es_pos_errores %}
+                    {% comment %}
+                    El permiso va anidado, no sumado a la condicion de arriba: la rama
+                    alternativa ofrece "Ver estaciones" con ?regla=, que para una fila de
+                    errores del POS no corresponde. Sin permiso esta celda queda vacia.
+                    {% endcomment %}
+                    {% if perms.monitoreo.view_poserrordetectado %}
                     <a href="{% url 'panel:pos_errores_flota' %}" class="text-xs" style="font-size:12.5px;">Ver por mensaje →</a>
+                    {% endif %}
                     {% else %}
                     <a href="{% url 'panel:alertas_lista' %}?regla={{ fila.regla_id }}" class="text-xs" style="font-size:12.5px;">Ver estaciones →</a>
                     {% endif %}
@@ -95,7 +106,7 @@
                 </td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.abierta_en|date:"d/m H:i" }}</td>
                 <td class="px-4 py-3 text-right space-x-2">
-                    {% if a.estado == 'abierta' %}
+                    {% if perms.monitoreo.change_alerta and a.estado == 'abierta' %}
                     <form method="post" action="{% url 'panel:alerta_reconocer' a.pk %}" class="inline">
                         {% csrf_token %}
                         <button type="submit" class="btn secondary" style="font-size:12px; padding:6px 12px;">Reconocer</button>
@@ -114,7 +125,7 @@
                         <button type="submit" class="btn secondary" style="font-size:12px; padding:6px 12px;">Abrir mantenimiento</button>
                     </form>
                     {% endif %}
-                    {% if a.estado != 'resuelta' %}
+                    {% if perms.monitoreo.change_alerta and a.estado != 'resuelta' %}
                     <form method="post" action="{% url 'panel:alerta_resolver' a.pk %}" class="inline">
                         {% csrf_token %}
                         <button type="submit" class="btn primary" style="background:var(--good); font-size:12px; padding:6px 12px;">Resolver</button>

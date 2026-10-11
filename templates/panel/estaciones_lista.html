@@ -174,7 +174,7 @@ elegido antes. La tarjeta activa queda resaltada y su enlace vuelve a "todas".
                     {% endif %}
                 </td>
                 <td class="px-4 py-3 text-right">
-                    {% if e.estado_aprobacion == 'aprobada' and e.estado_conexion == 'online' %}
+                    {% if perms.catalogo.reiniciar_estacion and e.estado_aprobacion == 'aprobada' and e.estado_conexion == 'online' %}
                     <form method="post" action="{% url 'panel:estacion_reiniciar' e.pk %}"
                           onsubmit="return confirm('¿Reiniciar {{ e.codigo }} ahora? Esto interrumpe cualquier venta en curso en esa caja.');">
                         {% csrf_token %}
