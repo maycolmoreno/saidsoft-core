@@ -353,3 +353,36 @@ def sondear_lote_snmp_task(ids, cadencia=None):
     if resumen['abortado']:
         logger.error('SNMP: lote de %d objetivo(s) abortado sin escribir.', len(ids))
     return resumen
+
+
+# El nombre de la fila vive en `salud`, no aca: ese modulo lo importa un context processor
+# que corre en todas las paginas del panel, y este archivo arrastra `mikrotik` y con el
+# pysnmp. Se reexporta para que quien ya importaba `NOMBRE_BEAT` de las tareas siga
+# funcionando.
+from .salud import NOMBRE_BEAT  # noqa: F401  (reexportado a proposito)
+
+
+@shared_task(name='apps.monitoreo.tasks.latido_beat_task')
+def latido_beat_task():
+    """Latido propio de Celery Beat. Cada minuto (ver CELERY_BEAT_SCHEDULE).
+
+    Beat no deja rastro de si esta disparando: hasta el 10-oct-2026 su salud se INFERIA de
+    que `MuestraRedFarmacia` siguiera creciendo (`verificar_salud._revisar_beat` y la
+    Zona 0 del tablero). La inferencia es razonable y tiene un hueco conocido: esa tabla
+    la escriben DOS rutas —el sondeo SNMP directo y el sondeo via agente— asi que podia
+    seguir creciendo con Beat a medias, y al reves, una red sin farmacias sondeables la
+    dejaba quieta con Beat perfecto.
+
+    Esta tarea cierra el hueco siendo lo mas tonta posible: si Beat la dispara, la fila se
+    mueve; si no, no. No mide nada mas, a proposito — una tarea de salud que hace trabajo
+    es una tarea que puede fallar por el trabajo y no por la salud.
+
+    Ojo con el unico modo de fallo que le queda: esto prueba que Beat ENCOLA y que un
+    worker de Celery CONSUME. Si el worker estuviera caido y Beat vivo, la fila tampoco se
+    moveria. Es la pregunta operativa correcta de todos modos: una tarea que se encola y
+    nadie ejecuta no sirve para nada.
+    """
+    from apps.mqtt_worker.services import registrar_latido_worker
+
+    registrar_latido_worker(NOMBRE_BEAT)
+    return 'Latido de Celery Beat registrado.'

@@ -397,19 +397,30 @@ def validar_destino_unidad_negocio(unidad_negocio, *, farmacias=None, estaciones
         )
 
 
-def marcar_estaciones_offline(*, minutos: int = 5) -> int:
+def marcar_estaciones_offline(*, minutos: int | None = None) -> int:
     """Pasa a OFFLINE las estaciones sin heartbeat reciente (más viejo que `minutos`).
 
     El agente pone la estación ONLINE en cada heartbeat, pero nada la pasa a OFFLINE
     cuando se apaga o pierde la red — esta función cierra ese hueco. La llaman tanto el
     comando manual (`marcar_estaciones_offline`) como la tarea periódica de Celery
     (`apps.catalogo.tasks.marcar_estaciones_offline_task`), para no duplicar la lógica.
+
+    **Este umbral es el de ALERTA, no el de visualización.** Por defecto sale de
+    `apps.monitoreo.umbrales.ALERTA_SIN_LATIDO_UMBRAL_MINUTOS` (5 min) y es más estricto
+    que el que usan las pantallas (`ONLINE_UMBRAL_MINUTOS`, 10 min), a propósito: esta
+    función no pinta nada, abre alertas `sin_heartbeat` vía `evaluar_reglas_sin_heartbeat`,
+    y una alerta que llega tarde no sirve. Los dos valores y el motivo de que sean dos
+    están en `apps.monitoreo.umbrales`.
     """
     from datetime import timedelta
 
     from django.utils import timezone
 
     from apps.catalogo.models import Estacion
+    from apps.monitoreo.umbrales import ALERTA_SIN_LATIDO_UMBRAL_MINUTOS
+
+    if minutos is None:
+        minutos = ALERTA_SIN_LATIDO_UMBRAL_MINUTOS
 
     umbral = timezone.now() - timedelta(minutes=minutos)
     # Se traen los objetos (no un .update() directo) porque evaluar_reglas_sin_heartbeat
@@ -584,13 +595,110 @@ def url_grabaciones_meshcentral(estacion) -> str | None:
     return f"{conf['SERVER_URL']}/login?gotonode={estacion.meshcentral_node_id}"
 
 
-def calcular_matriz_cumplimiento(unidades_negocio, *, umbral_online_minutos=5):
+def estado_flota(unidades_negocio=None):
+    """Cuántas estaciones hay y cuántas están en línea. **Fuente única.**
+
+    Existe porque "estaciones en línea" se calculaba de TRES formas distintas en tres
+    pantallas de la misma aplicación (hallazgo D-01 de docs/auditoria/centro-monitoreo/):
+    5 minutos en el tablero, 10 en el Centro, y el campo `estado_conexion` en el listado.
+    Una estación con el último latido hace 7 minutos aparecía caída, en línea y caída, al
+    mismo tiempo. Ahora las tres leen de acá y el umbral sale de
+    `apps.monitoreo.umbrales.ONLINE_UMBRAL_MINUTOS`.
+
+    Qué cuenta y qué no, y por qué:
+
+    - **Solo APROBADAS.** Una pendiente de aprobación no reporta porque todavía no le
+      toca, y una rechazada no va a reportar nunca. Hasta hoy el tablero las sumaba al
+      denominador: la tarjeta decía "55/66" con 3 pendientes dentro de ese 66, al lado de
+      otra tarjeta que decía "Pendientes: 3" (hallazgo D-02).
+    - **Sin excluir ningún grupo.** El tablero sacaba estos números de
+      `calcular_matriz_cumplimiento`, que excluye el grupo `PENDIENTE` —correcto para un
+      reporte de cumplimiento de versión, porque ese bucket no es un canal real, y
+      equivocado para un KPI que se lee como "la flota": las estaciones de farmacias sin
+      nodo asignado desaparecían del total.
+    - **Administrativas aparte, no escondidas.** Se apagan de noche y el fin de semana;
+      sumadas harían saltar "sin reportar" ~100 todas las noches y el número dejaría de
+      significar "hay un problema". Verlas igual importa: cero de veinte un martes a las
+      10 no es normal. Mismo criterio que ya aplicaba `resumen_operacion`.
+    - **`nunca_reporto` separado de `dejaron_de_reportar`.** No es un matiz: una aprobada
+      que jamás dio señal es una instalación fallida —el técnico se fue y nunca funcionó—
+      y una que reportaba y calló es una caída. Son dos trabajos para dos personas
+      distintas, y el tablero los sumaba en un solo contador titulado "Estaciones que
+      dejaron de reportar" (hallazgo D-08).
+    - **`pausadas` se informa.** Una estación pausada SIGUE LATIENDO por diseño, así que
+      cuenta como en línea en todos los contadores aunque no ejecute nada (hallazgo D-09).
+      No se descuenta —está viva y bajo control, que es lo que el freno de emergencia
+      quiere que se vea— pero se dice cuántas son.
+
+    `unidades_negocio` = iterable de UnidadNegocio, o None para todas. El llamador decide
+    el alcance; esta función no lee la sesión ni el request.
+
+    **Una sola consulta** con agregación condicional: lo mira el tablero, el Centro y el
+    listado, y el Centro se refresca solo cada minuto con varios agentes a la vez.
+    """
+    from datetime import timedelta
+
+    from django.db.models import Count, Q
+    from django.utils import timezone
+
+    from apps.catalogo.models import Estacion, Farmacia
+    from apps.monitoreo.umbrales import ONLINE_UMBRAL_MINUTOS
+
+    limite = timezone.now() - timedelta(minutes=ONLINE_UMBRAL_MINUTOS)
+    estaciones = Estacion.objects.filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+    if unidades_negocio is not None:
+        estaciones = estaciones.filter(farmacia__unidad_negocio__in=unidades_negocio)
+
+    es_admin = Q(farmacia__tipo=Farmacia.Tipo.ADMINISTRATIVO)
+    fresca = Q(ultimo_heartbeat__gte=limite)
+
+    datos = estaciones.aggregate(
+        total_con_admin=Count('pk'),
+        en_linea_con_admin=Count('pk', filter=fresca),
+        admin_total=Count('pk', filter=es_admin),
+        admin_en_linea=Count('pk', filter=es_admin & fresca),
+        nunca_reporto=Count('pk', filter=~es_admin & Q(ultimo_heartbeat__isnull=True)),
+        pausadas=Count('pk', filter=~es_admin & Q(pausado=True)),
+    )
+
+    total = datos['total_con_admin'] - datos['admin_total']
+    en_linea = datos['en_linea_con_admin'] - datos['admin_en_linea']
+    sin_reportar = total - en_linea
+
+    return {
+        'total': total,
+        'en_linea': en_linea,
+        'sin_reportar': sin_reportar,
+        'nunca_reporto': datos['nunca_reporto'],
+        # Lo que queda: reportaba y dejó de hacerlo. Se deriva en vez de contarse aparte
+        # para que las dos cifras no puedan sumar distinto que el total.
+        'dejaron_de_reportar': sin_reportar - datos['nunca_reporto'],
+        'pausadas': datos['pausadas'],
+        'admin_total': datos['admin_total'],
+        'admin_en_linea': datos['admin_en_linea'],
+        'admin_fuera': datos['admin_total'] - datos['admin_en_linea'],
+        # Va en el resultado para que la pantalla pueda DECIR con qué umbral habla, en vez
+        # de que el operador tenga que adivinarlo o leer el código.
+        'umbral_minutos': ONLINE_UMBRAL_MINUTOS,
+    }
+
+
+def calcular_matriz_cumplimiento(unidades_negocio, *, umbral_online_minutos=None):
     """Grupos con cobertura de estaciones/farmacias dentro de `unidades_negocio`, con
     conteos de conformidad de versión, en línea y pendientes de aprobación.
 
     Reusada por el dashboard (`apps.panel.views.dashboard`, con las unidades visibles
     del usuario) y por el reporte por cliente (`apps.panel.views.reportes`, con una
     sola unidad) — misma agregación, distinto alcance.
+
+    **La columna "En línea" no es el KPI de la flota.** Para eso está `estado_flota`, que
+    cuenta solo aprobadas y no excluye ningún grupo. Acá se cuentan todas las estaciones
+    del grupo porque la pregunta es otra —qué versión del POS corre cada canal— y una
+    estación pendiente de aprobación que ya reporta su `version_pos` sí cuenta para eso.
+    Lo que las dos comparten, desde el 10-oct-2026, es el UMBRAL: `umbral_online_minutos`
+    por defecto sale de `apps.monitoreo.umbrales.ONLINE_UMBRAL_MINUTOS`, para que la
+    columna de esta tabla y la tarjeta de arriba no digan "en línea" con dos relojes
+    distintos (antes eran 5 minutos acá y 10 en el Centro, hallazgo D-01).
     """
     from datetime import timedelta
 
@@ -598,7 +706,10 @@ def calcular_matriz_cumplimiento(unidades_negocio, *, umbral_online_minutos=5):
     from django.utils import timezone
 
     from apps.catalogo.models import Estacion, Grupo
+    from apps.monitoreo.umbrales import ONLINE_UMBRAL_MINUTOS
 
+    if umbral_online_minutos is None:
+        umbral_online_minutos = ONLINE_UMBRAL_MINUTOS
     umbral_online = timezone.now() - timedelta(minutes=umbral_online_minutos)
     en_alcance = Q(farmacias__unidad_negocio__in=unidades_negocio)
 

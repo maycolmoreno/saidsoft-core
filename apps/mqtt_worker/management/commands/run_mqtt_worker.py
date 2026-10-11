@@ -63,6 +63,9 @@ class Command(BaseCommand):
         super().__init__(*args, **kwargs)
         self._client = None
         self._ultimo_latido_guardado = None
+        # Mensajes procesados desde que arrancó este proceso. Se reinicia en cada arranque
+        # a propósito: lo que importa es si AVANZA entre dos latidos, no cuánto vale.
+        self._mensajes_procesados = 0
         self._detener = threading.Event()
 
     def handle(self, *args, **options):
@@ -105,7 +108,28 @@ class Command(BaseCommand):
 
     def _latido_periodico(self):
         while not self._detener.wait(LATIDO_INTERVALO_SEGUNDOS):
-            registrar_latido_worker(NOMBRE_WORKER_MQTT)
+            self._latir()
+
+    def _latir(self):
+        """Un latido que dice QUE prueba.
+
+        Hasta el 10-oct-2026 este latido afirmaba "el worker esta sano" cuando lo unico
+        que probaba era que el proceso existia: lo escribe un hilo aparte, sin consultar
+        la conexion al broker ni cuantos mensajes se procesaron. Con EMQX caido,
+        `loop_forever()` reintenta en silencio y el panel seguia en verde (hallazgo D-05
+        de docs/auditoria/centro-monitoreo/).
+
+        `is_connected()` de paho es exactamente la pregunta que faltaba, y es local: no
+        manda un paquete, lee el estado del socket. El contador de mensajes es lo que
+        distingue "conectado" de "procesando" — suscrito y sin recibir nada es un estado
+        real y distinto de los otros dos.
+        """
+        cliente = self._client
+        registrar_latido_worker(
+            NOMBRE_WORKER_MQTT,
+            conectado=bool(cliente is not None and cliente.is_connected()),
+            mensajes_procesados=self._mensajes_procesados,
+        )
 
     def _manejar_apagado(self, signum, frame):
         self.stdout.write(self.style.NOTICE('Señal de apagado recibida, desconectando del broker...'))
@@ -137,7 +161,9 @@ class Command(BaseCommand):
         client.subscribe(TOPICO_SERVICIOS_POS)
         client.subscribe(TOPICO_EVENTOS_SISTEMA)
         client.subscribe(TOPICO_POS_ERRORES)
-        registrar_latido_worker(NOMBRE_WORKER_MQTT)
+        # Aca la conexion es un hecho, no una inferencia: este callback corre porque el
+        # broker acepto la conexion (reason_code 0, comprobado arriba).
+        self._latir()
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
         self.stdout.write(self.style.WARNING(f'[MQTT] Desconectado ({reason_code}), reintentando...'))
@@ -149,10 +175,14 @@ class Command(BaseCommand):
             and (ahora - self._ultimo_latido_guardado).total_seconds() < LATIDO_INTERVALO_SEGUNDOS
         ):
             return
-        registrar_latido_worker(NOMBRE_WORKER_MQTT)
+        self._latir()
         self._ultimo_latido_guardado = ahora
 
     def _on_message(self, client, userdata, msg):
+        # Se cuenta ANTES de intentar procesarlo: el contador mide que el worker esta
+        # recibiendo y trabajando, no que todo haya salido bien. Lo que sale mal tiene su
+        # propia cola (`MensajeMqttFallido`), que el panel ahora tambien muestra.
+        self._mensajes_procesados += 1
         self._registrar_latido_si_corresponde()
 
         try:

@@ -32,7 +32,26 @@ existe — anotado como pendiente en PLAN_MODERNIZACION §10-AK.
             <span class="relleno est-bg-sin_umbral" style="width:{% widthratio r.estaciones_en_linea r.estaciones_total 100 %}%;"></span>
         </div>
         {% endif %}
-        {% if r.estaciones_fuera %}<div class="text-xs text-[var(--warning)] mt-1">{{ r.estaciones_fuera }} sin reportar</div>{% endif %}
+        {% comment %}
+        "Sin reportar" partido en dos: una aprobada que jamás dio señal es una instalación
+        fallida —el técnico se fue y nunca funcionó— y una que reportaba y calló es una
+        caída. Dos trabajos distintos que este contador sumaba en un número (hallazgo D-08
+        de docs/auditoria/centro-monitoreo/).
+
+        El umbral se dice, porque era el problema de fondo: esta pantalla contaba con 10
+        minutos y el tablero con 5, sin que ninguna de las dos dijera cuál usaba
+        (hallazgo D-01). Desde el 10-oct-2026 es el mismo y sale de un solo lugar.
+        {% endcomment %}
+        {% if r.estaciones_fuera %}
+        <div class="text-xs text-[var(--warning)] mt-1">
+            {{ r.estaciones_fuera }} sin reportar
+            <span class="text-[var(--text-faint)]">({{ r.estaciones_nunca_reporto }} nunca · {{ r.estaciones_dejaron_de_reportar }} dejaron)</span>
+        </div>
+        {% endif %}
+        <div class="text-xs text-[var(--text-faint)] mt-1" title="Una estación cuenta como en línea si su último latido llegó dentro de este umbral. Es el mismo en todas las pantallas.">
+            latido de los últimos {{ r.umbral_online_minutos }} min
+            {% if r.estaciones_pausadas %}· <span class="text-[var(--warning)]">{{ r.estaciones_pausadas }} pausada{{ r.estaciones_pausadas|pluralize:"s" }}</span>{% endif %}
+        </div>
         {% comment %}
         Las administrativas van APARTE y no sumadas arriba: se apagan de noche y el fin
         de semana, asi que sumarlas haria saltar "sin reportar" ~100 todas las noches y
@@ -60,6 +79,15 @@ existe — anotado como pendiente en PLAN_MODERNIZACION §10-AK.
             {% if r.alertas_advertencias %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
         </div>
         <div class="text-2xl font-semibold {% if r.alertas_advertencias %}text-[var(--warning)]{% endif %}">{{ r.alertas_advertencias }}</div>
+        {% comment %}
+        Las reconocidas, dichas. Los dos contadores de arriba cuentan solo ABIERTAS —que
+        es lo correcto— pero el tablero sumaba abiertas + reconocidas bajo el rótulo
+        "Alertas abiertas", así que las dos pantallas mostraban cifras distintas para algo
+        que se llamaba igual y ninguna decía qué contaba (hallazgo D-03).
+        {% endcomment %}
+        {% if r.alertas_en_atencion %}
+        <div class="text-xs text-[var(--text-faint)] mt-1">{{ r.alertas_en_atencion }} más en atención</div>
+        {% endif %}
     </div>
     {% comment %}
     Farmacias afectadas va JUNTO a los contadores de síntomas y no en otra pantalla,

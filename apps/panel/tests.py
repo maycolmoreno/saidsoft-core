@@ -2340,6 +2340,489 @@ class DashboardTests(TestCase):
         self.assertTrue(resp.context['worker_mqtt_activo'])
 
 
+class SaludEnLaBarraSuperiorTests(TestCase):
+    """La barra superior dice el estado REAL de la plataforma, en todas las pantallas.
+
+    Hasta el 10-oct-2026 era un texto fijo —"Todos los sistemas operativos"— con un LED
+    verde pintado a mano en `panel/base.html`, para todos los usuarios y sin comprobar
+    nada: se mostraba igual mientras el aviso rojo de "Worker MQTT sin señal" estaba más
+    abajo en la misma pantalla, contradiciéndola (hallazgo D-06 de
+    docs/auditoria/centro-monitoreo/).
+
+    Lo que estas pruebas fijan es lo que hace que se le pueda creer: que el estado se
+    calcule, que no se pinte de verde lo que no se puede comprobar, y que decirlo no
+    cueste una consulta por componente en cada página del panel.
+    """
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_barra', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+            Permission.objects.get(content_type__app_label='monitoreo', codename='view_alerta'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _latido(self, nombre, hace_segundos=1, conectado=None):
+        from apps.mqtt_worker.models import WorkerHeartbeat
+
+        WorkerHeartbeat.objects.update_or_create(
+            nombre=nombre,
+            defaults={
+                'ultimo_latido': timezone.now() - timedelta(seconds=hace_segundos),
+                'conectado': conectado,
+            },
+        )
+
+    def _sano(self):
+        """Todo verificado: los workers latiendo Y conectados, Beat vivo, respaldo reciente.
+
+        `conectado=True` no es un detalle del montaje: desde la Fase D un worker que late
+        sin reportar su conexión al broker queda en ámbar a propósito —"sin verificar"— y
+        eso no es "todo sano". Es el caso de un worker anterior a ese campo, y tiene su
+        propia prueba más abajo.
+        """
+        self._latido('mqtt_worker', conectado=True)
+        self._latido('meshcentral_worker', conectado=True)
+        self._latido('celery_beat')
+        self._latido('respaldo')
+
+    def test_nunca_afirma_que_todo_esta_operativo(self):
+        """La frase vieja no vuelve: afirmaba algo sobre TODO, incluida la flota, que
+        esta barra no mira."""
+        self._sano()
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertNotContains(resp, 'Todos los sistemas operativos')
+
+    def test_con_todo_sano_lo_dice_y_nombra_su_alcance(self):
+        self._sano()
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.context['salud_plataforma']['estado'], 'ok')
+        self.assertContains(resp, 'Plataforma verificada')
+
+    def test_con_el_worker_caido_la_barra_queda_degradada(self):
+        """Es el caso que el texto fijo tapaba: el aviso rojo estaba en la pantalla y la
+        barra seguía diciendo que todo estaba bien."""
+        self._sano()
+        self._latido('mqtt_worker', hace_segundos=600, conectado=True)
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.context['salud_plataforma']['estado'], 'critical')
+        self.assertContains(resp, 'Plataforma degradada')
+        self.assertContains(resp, 'Worker MQTT')
+
+    def test_la_barra_esta_en_todas_las_pantallas_del_panel(self):
+        """No es un adorno del tablero: el valor de este indicador es que esté donde sea
+        que el operador estuviera mirando cuando algo se cayó."""
+        self._sano()
+        self._latido('mqtt_worker', hace_segundos=600, conectado=True)
+        for nombre in ('panel:estaciones_lista', 'panel:alertas_lista', 'panel:notificaciones_lista'):
+            with self.subTest(pantalla=nombre):
+                self.assertContains(self.client.get(reverse(nombre)), 'Plataforma degradada')
+
+    def test_sin_quien_reporte_la_conexion_el_broker_no_se_pinta_de_verde(self):
+        """Un componente que no se puede comprobar va en gris con la palabra "sin
+        verificar": que falte la comprobación es información útil, y pintarlo verde sería
+        afirmar algo que nadie midió.
+
+        No cuenta como problema, porque una barra permanentemente en rojo informa tan poco
+        como una permanentemente en verde.
+        """
+        # Nadie reportó su conexión: es un worker anterior al campo `conectado`.
+        self._latido('mqtt_worker')
+        self._latido('meshcentral_worker')
+        self._latido('celery_beat')
+        self._latido('respaldo')
+
+        resp = self.client.get(reverse('panel:dashboard'))
+        salud = resp.context['salud_plataforma']
+        self.assertContains(resp, 'sin verificar')
+
+        broker = [c for c in salud['componentes'] if c.clave == 'broker_mqtt']
+        self.assertEqual(len(broker), 1)
+        self.assertEqual(broker[0].estado, 'sin_dato')
+        self.assertFalse(broker[0].verificable)
+
+    def test_un_worker_que_late_sin_reportar_conexion_no_dispara_el_aviso_rojo(self):
+        """El aviso afirma que NO se están procesando despliegues ni latidos, y con un
+        worker vivo eso es falso. Pasaría en la ventana de cualquier despliegue, con el
+        worker viejo corriendo y el web ya nuevo."""
+        self._latido('mqtt_worker')  # late, conectado=None
+        self._latido('meshcentral_worker', conectado=True)
+        self._latido('celery_beat')
+        self._latido('respaldo')
+
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertTrue(resp.context['worker_mqtt_activo'])
+        self.assertNotContains(resp, 'Worker MQTT sin señal')
+        # Pero la barra lo dice, en ámbar: se comprobó a medias.
+        self.assertEqual(resp.context['salud_plataforma']['estado'], 'warning')
+
+    def test_un_worker_desconectado_del_broker_si_dispara_el_aviso_rojo(self):
+        """Es el estado que antes se veía en verde: el proceso vive y no llega nada."""
+        self._sano()
+        self._latido('mqtt_worker', conectado=False)
+
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertFalse(resp.context['worker_mqtt_activo'])
+        self.assertContains(resp, 'Worker MQTT sin señal')
+
+    def test_el_estado_no_se_comunica_solo_con_color(self):
+        """Bajo deuteranopía verde y ámbar se acercan. Mismo criterio que
+        `panel/_estado_chip.html`: color, forma Y palabra."""
+        self._sano()
+        self._latido('mqtt_worker', hace_segundos=600, conectado=True)
+        resp = self.client.get(reverse('panel:dashboard'))
+        contenido = resp.content.decode()
+        # La palabra viaja en el HTML, no en una hoja de estilos.
+        self.assertIn('Plataforma degradada', contenido)
+
+    def test_cuesta_una_sola_consulta(self):
+        """Corre en TODAS las páginas del panel, así que el presupuesto es una consulta.
+
+        Se mide el context processor directamente y no la diferencia entre dos cargas de
+        página: esa resta se mueve sola por cosas que no tienen nada que ver con la barra
+        —la sesión se reescribe en unas peticiones y no en otras— y una prueba de
+        rendimiento que falla por azar se acaba borrando.
+
+        Un componente nuevo que necesite su propia consulta hace fallar esto, y eso es
+        exactamente lo que tiene que pasar: la barra se dibuja en cada pantalla.
+        """
+        from django.test import RequestFactory
+
+        from apps.panel.context_processors import salud_plataforma_contexto
+
+        self._sano()
+        peticion = RequestFactory().get('/')
+        peticion.user = self.usuario
+
+        with self.assertNumQueries(1):
+            contexto = salud_plataforma_contexto(peticion)
+
+        self.assertEqual(contexto['salud_plataforma']['estado'], 'ok')
+
+    def test_sin_sesion_no_cuesta_ninguna_consulta(self):
+        """`base.html` solo dibuja la barra para un usuario autenticado: la pantalla de
+        login no debe pagar una consulta por un elemento que no se dibuja."""
+        from django.contrib.auth.models import AnonymousUser
+        from django.test import RequestFactory
+
+        from apps.panel.context_processors import salud_plataforma_contexto
+
+        peticion = RequestFactory().get('/')
+        peticion.user = AnonymousUser()
+
+        with self.assertNumQueries(0):
+            self.assertEqual(salud_plataforma_contexto(peticion), {})
+
+
+class DashboardZonaDeConfianzaTests(TestCase):
+    """La Zona 0 del tablero: qué se comprobó, y de cuándo es el dato.
+
+    El tablero no tenía forma de decir de cuándo era lo que mostraba (hallazgo D-07): un
+    tablero en verde con datos viejos es peor que no tener tablero, y el barrido de
+    enlaces ABORTA completo si falla el 80 % o más —protección correcta— sin escribir
+    nada, así que la pantalla seguía mostrando los últimos estados buenos como si fueran
+    de ahora. Pasó: 4,7 h sin un solo sondeo el 2-oct-2026.
+
+    Las cuatro señales de frescura salen de datos que ya se persistían y que no se veían
+    en ninguna pantalla del panel.
+    """
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_zona0', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def test_sin_ninguna_estacion_el_latido_de_la_flota_no_se_pinta_de_verde(self):
+        """"Nadie reportó nunca" no es lo mismo que "todo al día"."""
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertIsNone(resp.context['ultimo_latido_flota'])
+        self.assertTrue(resp.context['latido_flota_vencido'])
+        self.assertContains(resp, 'ninguna estación reportó todavía')
+
+    def test_muestra_el_ultimo_latido_recibido_de_la_flota(self):
+        """Es la señal más barata que prueba que la cadena agente -> broker -> worker ->
+        base sigue entregando. El latido del worker no lo prueba: lo escribe un hilo
+        propio aunque no llegue un solo mensaje.
+        """
+        grupo = Grupo.objects.create(codigo='TRXZ0')
+        farmacia = Farmacia.objects.create(
+            codigo='ZZ001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        Estacion.objects.create(
+            codigo='ZZ001-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            ultimo_heartbeat=timezone.now(),
+        )
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertIsNotNone(resp.context['ultimo_latido_flota'])
+        self.assertFalse(resp.context['latido_flota_vencido'])
+
+    def test_un_latido_viejo_de_la_flota_queda_marcado_como_vencido(self):
+        grupo = Grupo.objects.create(codigo='TRXZ1')
+        farmacia = Farmacia.objects.create(
+            codigo='ZZ002', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        Estacion.objects.create(
+            codigo='ZZ002-A', farmacia=farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            ultimo_heartbeat=timezone.now() - timedelta(hours=3),
+        )
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertTrue(resp.context['latido_flota_vencido'])
+
+    def test_los_mensajes_mqtt_fallidos_se_ven_en_el_panel(self):
+        """La cola de lo que el worker recibió y NO pudo procesar existía desde que existe
+        el worker y solo se podía mirar desde el admin de Django (hallazgo D-11). Es la
+        prueba directa de "recibe pero no procesa"."""
+        from apps.mqtt_worker.models import MensajeMqttFallido
+
+        MensajeMqttFallido.objects.create(
+            topico='/saidsof/agente/ZZ001-A/heartbeat/', error='Payload no es JSON válido',
+        )
+        MensajeMqttFallido.objects.create(topico='/otro/', error='x', revisado=True)
+
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.context['mqtt_fallidos'], 1)
+        self.assertContains(resp, 'Mensajes MQTT fallidos')
+
+    def test_los_enrolamientos_rechazados_son_alcanzables_desde_el_tablero(self):
+        """La pantalla existe desde el 27-sep-2026 y NINGUNA plantilla la enlazaba: para
+        llegar había que escribir la URL a mano (hallazgo D-10). Es el caso de "se instaló
+        el agente, el técnico se fue, y la estación nunca apareció en el panel"."""
+        from apps.mqtt_worker.models import EnrolamientoRechazado
+
+        EnrolamientoRechazado.objects.create(codigo_recibido='MLO16-A', hostname='CAJA1')
+
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.context['enrolamientos_rechazados'], 1)
+        self.assertContains(resp, reverse('panel:enrolamientos_rechazados_lista'))
+
+    def test_la_frescura_del_sondeo_de_enlaces_se_declara(self):
+        """Sin sondeos, el bloque no puede afirmar que la conectividad esté bien."""
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertTrue(resp.context['sondeo_enlaces_vencido'])
+        self.assertContains(resp, 'ninguna farmacia sondeada')
+
+
+class DashboardJerarquiaTests(TestCase):
+    """Lo urgente va antes que lo que se planifica.
+
+    El orden era: avisos, 5 KPI, matriz de cumplimiento (a todo el ancho), enlaces
+    caídos, alertas, estaciones, despliegues. O sea que lo primero que se leía era el
+    cumplimiento de versión del POS —planificación de despliegues, que cambia de día en
+    día— y una farmacia sin vender quedaba en el tercio inferior (hallazgo U-2).
+    """
+
+    def setUp(self):
+        self.usuario = User.objects.create_user(username='u_jerarquia', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRXJ1', version_objetivo='4.2.1')
+        self.farmacia = Farmacia.objects.create(
+            codigo='JJ001', grupo=self.grupo, unidad_negocio=self.sg, ip_router='10.80.0.1',
+            tipo_enlace='TELCONET',
+        )
+
+    def _posicion(self, contenido, texto):
+        indice = contenido.find(texto)
+        self.assertNotEqual(indice, -1, 'No se encontró %r en la pantalla' % texto)
+        return indice
+
+    def test_la_confianza_en_el_dato_va_antes_que_los_indicadores(self):
+        """Si el dato está viejo, todo lo que sigue se lee con esa salvedad. Verlo después
+        es verlo tarde."""
+        contenido = self.client.get(reverse('panel:dashboard')).content.decode()
+        self.assertLess(
+            self._posicion(contenido, 'Confianza en el dato'),
+            self._posicion(contenido, 'Estaciones en línea'),
+        )
+
+    def test_el_cumplimiento_va_despues_de_las_incidencias(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        EstadoEnlaceFarmacia.objects.create(
+            farmacia=self.farmacia, alcanzable=False, respondio_alguna_vez=True,
+            fallas_consecutivas=3, ultima_verificacion=timezone.now(),
+        )
+        EventoEnlaceFarmacia.objects.create(
+            farmacia=self.farmacia, inicio=timezone.now() - timedelta(hours=2),
+        )
+
+        contenido = self.client.get(reverse('panel:dashboard')).content.decode()
+        self.assertLess(
+            self._posicion(contenido, 'Lo que duele ahora'),
+            self._posicion(contenido, 'Cumplimiento por grupo'),
+        )
+
+    def test_el_cumplimiento_sigue_disponible_pero_plegado_y_diferido(self):
+        """No se quitó nada: se movió al final, cerrado, y se carga al abrirse.
+
+        `<details>` es nativo y accesible con teclado, sin una línea de JavaScript. Lo que
+        la portada ya NO paga son los 5 Count(DISTINCT) de la matriz: el contenido llega
+        cuando alguien la abre (hallazgo R-4).
+        """
+        contenido = self.client.get(reverse('panel:dashboard')).content.decode()
+        self.assertIn('Cumplimiento por grupo', contenido)
+        self.assertIn('<details', contenido)
+        self.assertIn(reverse('panel:dashboard_cumplimiento_partial'), contenido)
+        self.assertNotIn('TRXJ1', contenido, 'la matriz no debería venir en la carga inicial')
+
+        # Y al abrirlo, está completa.
+        abierto = self.client.get(reverse('panel:dashboard_cumplimiento_partial'))
+        self.assertContains(abierto, 'TRXJ1')
+
+    def test_el_tablero_no_ofrece_publicar_software_como_accion_principal(self):
+        """La acción destacada de un tablero de monitoreo no es publicar un despliegue
+        (hallazgo U-9). Sigue existiendo en la pantalla de Despliegues."""
+        contenido = self.client.get(reverse('panel:dashboard')).content.decode()
+        self.assertNotIn('+ Nuevo despliegue', contenido)
+
+    def test_no_repite_el_total_de_estaciones_en_dos_tarjetas(self):
+        """"Estaciones en línea 55/66" y "Total de estaciones 66" eran cinco tarjetas para
+        tres datos (hallazgo U-3)."""
+        contenido = self.client.get(reverse('panel:dashboard')).content.decode()
+        self.assertNotIn('Total de estaciones', contenido)
+
+
+class TableroRefrescoYCostoTests(TestCase):
+    """El tablero se mantiene solo, dice de cuándo es el dato, y cuesta menos que antes.
+
+    Lo que había: una pantalla estática, sin auto-refresco y sin ninguna marca de hora, que
+    además pagaba en cada carga los 5 `Count(DISTINCT)` de la matriz de cumplimiento —la
+    tabla menos urgente de la pantalla— y repetía el mismo filtro dos veces para contar y
+    para listar (hallazgos D-07, R-1 y R-4).
+
+    Estas pruebas fijan el presupuesto. Un `assertNumQueries` que falla al agregar una
+    consulta es molesto a propósito: es la única forma de que el coste de esta pantalla no
+    crezca sin que nadie lo note, y hasta hoy había UNO en todo el archivo.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRXREF', version_objetivo='4.2.1')
+        self.farmacia = Farmacia.objects.create(
+            codigo='RF001', grupo=self.grupo, unidad_negocio=self.sg, ip_router='10.70.0.1',
+            tipo_enlace='TELCONET',
+        )
+        Estacion.objects.create(
+            codigo='RF001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            ultimo_heartbeat=timezone.now(),
+        )
+        self.usuario = User.objects.create_user(username='u_refresco', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def test_el_interior_se_refresca_solo(self):
+        from apps.panel.views.dashboard import SEGUNDOS_REFRESCO_TABLERO
+
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertContains(resp, reverse('panel:dashboard_vivo_partial'))
+        self.assertContains(resp, 'every %ds' % SEGUNDOS_REFRESCO_TABLERO)
+
+    def test_el_polling_no_es_mas_rapido_que_el_backend(self):
+        """Pollear cada 10 s un dato que se recalcula cada 60 mostraría seis veces lo
+        mismo, multiplicado por cada persona que deja la pantalla abierta. Mismo criterio
+        que el Centro, que ya tiene su propia versión de esta prueba."""
+        from apps.panel.views.dashboard import SEGUNDOS_REFRESCO_TABLERO
+
+        self.assertGreaterEqual(SEGUNDOS_REFRESCO_TABLERO, 60)
+
+    def test_dice_la_hora_del_calculo_y_la_de_cada_dato(self):
+        """Son dos relojes distintos y los dos tienen que estar visibles: "calculado" dice
+        cuándo corrió la consulta, y cada fila de la Zona 0 dice cuándo llegó SU dato."""
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertContains(resp, 'Calculado')
+        self.assertIsNotNone(resp.context['calculado_en'])
+        self.assertContains(resp, 'Último latido de la flota')
+
+    def test_avisa_si_un_refresco_falla_en_vez_de_dejar_el_dato_viejo_sin_marca(self):
+        """HTMX, ante un error, deja el contenido anterior tal cual. Sin este aviso el
+        operador sigue mirando datos viejos creyéndolos actuales — el mismo defecto que
+        `fuente_desactualizada` resuelve para los datos y que nadie había resuelto para el
+        transporte."""
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertContains(resp, 'Sin contacto con el servidor')
+        self.assertContains(resp, 'htmx:responseError')
+        self.assertContains(resp, 'htmx:sendError')
+
+    def test_la_carga_inicial_no_paga_la_matriz_de_cumplimiento(self):
+        """Era lo más caro de la pantalla y estaba en la primera posición. Ahora se carga
+        cuando alguien abre el bloque."""
+        self.client.get(reverse('panel:dashboard'))  # calienta sesión y permisos
+
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as consultas:
+            self.client.get(reverse('panel:dashboard'))
+
+        sql = ' '.join(q['sql'] for q in consultas.captured_queries)
+        self.assertNotIn('"grupo"', sql, 'la matriz de cumplimiento se sigue calculando en la portada')
+
+    def test_el_parcial_vivo_cuesta_menos_que_la_pagina_completa(self):
+        """Es el punto del patrón marco + parcial: a un refresco por minuto por persona,
+        mandar la navegación, el CSS y la cabecera cada vez es trabajo puro."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.client.get(reverse('panel:dashboard'))
+        self.client.get(reverse('panel:dashboard_vivo_partial'))
+
+        with CaptureQueriesContext(connection) as completa:
+            self.client.get(reverse('panel:dashboard'))
+        with CaptureQueriesContext(connection) as parcial:
+            self.client.get(reverse('panel:dashboard_vivo_partial'))
+
+        self.assertLessEqual(
+            len(parcial), len(completa),
+            'el refresco no puede costar más que la carga completa',
+        )
+
+    def test_los_dos_parciales_son_de_solo_lectura(self):
+        """Coherente con el Centro y con el bot: una pantalla que se mira de reojo no
+        puede tener una acción destructiva a un clic."""
+        for nombre in ('panel:dashboard_vivo_partial', 'panel:dashboard_cumplimiento_partial'):
+            with self.subTest(parcial=nombre):
+                self.assertIn(self.client.post(reverse(nombre)).status_code, (403, 405))
+
+    def test_el_parcial_no_arrastra_la_navegacion(self):
+        """Si devolviera la página entera, el refresco anidaría el panel dentro de sí
+        mismo cada minuto."""
+        resp = self.client.get(reverse('panel:dashboard_vivo_partial'))
+        contenido = resp.content.decode()
+        self.assertNotIn('<aside class="sidebar"', contenido)
+        self.assertIn('Confianza en el dato', contenido)
+
+    def test_el_parcial_respeta_el_alcance_por_cliente(self):
+        """El refresco pasa por la misma puerta que la página: un parcial que se olvide
+        del scope es una fuga de datos de otro cliente cada 60 segundos."""
+        mia = UnidadNegocio.objects.get(codigo='MIA')
+        otra = Farmacia.objects.create(codigo='RF999', grupo=self.grupo, unidad_negocio=mia)
+        Estacion.objects.create(
+            codigo='RF999-A', farmacia=otra,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+        solo_sg = User.objects.create_user(username='u_refresco_sg', password='x')
+        PerfilUsuario.objects.create(usuario=solo_sg, acceso_todas_unidades=False).unidades_negocio.add(self.sg)
+        self.client.force_login(solo_sg)
+
+        resp = self.client.get(reverse('panel:dashboard_vivo_partial'))
+        self.assertNotContains(resp, 'RF999')
+        self.assertEqual(resp.context['flota']['total'], 1)
+
+    def test_exige_sesion(self):
+        self.client.logout()
+        for nombre in ('panel:dashboard_vivo_partial', 'panel:dashboard_cumplimiento_partial'):
+            with self.subTest(parcial=nombre):
+                resp = self.client.get(reverse(nombre))
+                self.assertEqual(resp.status_code, 302)
+                self.assertIn(reverse('panel:login'), resp['Location'])
+
+
 class DashboardTableroTests(TestCase):
     """Las dos listas del tablero: alertas abiertas y estaciones que no reportan.
 
@@ -2420,7 +2903,16 @@ class DashboardTableroTests(TestCase):
         self.assertEqual(resp.context['total_sin_reportar'], 10)
         self.assertEqual(len(resp.context['sin_reportar']), 6)
 
-    def test_alertas_recientes_no_muestran_las_resueltas_ni_las_de_otro_cliente(self):
+    def test_las_alertas_entran_en_la_cola_sin_las_resueltas_ni_las_de_otro_cliente(self):
+        """Antes esto miraba `context['alertas_recientes']`, la lista por dominio que el
+        tablero tenía al lado de la de enlaces. Desde el 10-oct-2026 las dos se fusionaron
+        en la cola de incidencias, porque una farmacia con el enlace caído aparecía en las
+        dos Y en "estaciones sin reportar" por un único hecho.
+
+        El recorte que se vigila es el mismo de siempre, y es donde está el riesgo: que no
+        se cuele una alerta resuelta ni una de un cliente al que el usuario no tiene
+        acceso.
+        """
         regla = ReglaAlerta.objects.create(
             nombre='CPU sostenida', metrica=Metrica.CPU_CARGA_PCT,
             operador=ReglaAlerta.Operador.GTE, umbral=90, duracion_minutos=5,
@@ -2433,10 +2925,11 @@ class DashboardTableroTests(TestCase):
         Alerta.objects.create(regla=regla, estacion=self.de_otro_cliente, valor_disparador=97)
 
         resp = self.client.get(reverse('panel:dashboard'))
-        alertas = list(resp.context['alertas_recientes'])
-        self.assertEqual(len(alertas), 1)
-        self.assertEqual(alertas[0].estacion.codigo, 'ML900-B')
+        incidencias = list(resp.context['incidencias'])
+        self.assertEqual(len(incidencias), 1)
+        self.assertEqual(incidencias[0].farmacia.codigo, 'ML900')
         self.assertContains(resp, 'CPU sostenida')
+        self.assertNotContains(resp, 'MM900')
 
 
 class SoftwarePanelMultiTenantTests(TestCase):
@@ -7830,14 +8323,20 @@ class TraficoDeEnlaceSoloSiEsFrescoTests(TestCase):
 
 
 class DashboardEnlacesCaidosTests(TestCase):
-    """El bloque de enlaces caídos del dashboard.
+    """Los enlaces caídos en el tablero: ahora dentro de la cola de incidencias.
 
     Hasta el 3-oct-2026 el dashboard no mostraba NINGÚN enlace, pese a que una farmacia
     sin enlace no vende: el técnico abría el tablero, lo veía tranquilo, y la caída estaba
-    a dos pantallas de distancia. Lo que estas pruebas fijan es el recorte, que es donde
-    está el riesgo: que no se cuele una farmacia de otro cliente, ni una dada de baja, ni
-    una que nunca respondió — las mismas tres exclusiones que ya aplican
-    `resumen_operacion` y el Centro de Monitoreo, para que los tres números no discrepen.
+    a dos pantallas de distancia. Desde el 10-oct-2026 las caídas ya no tienen bloque
+    propio: entran en la cola unificada con prioridad 1, porque una farmacia con el enlace
+    caído aparecía además en la lista de alertas y en "estaciones sin reportar", tres
+    bloques para un único hecho.
+
+    Lo que estas pruebas fijan es lo mismo de antes y es donde está el riesgo: el recorte
+    (que no se cuele una farmacia de otro cliente, ni una dada de baja, ni una que nunca
+    respondió — las mismas tres exclusiones que aplican `resumen_operacion`, el Centro y
+    la cola, para que los cuatro números no discrepen) y que el circuito del proveedor
+    siga a la vista, porque es el dato con el que se abre el ticket.
     """
 
     def setUp(self):
@@ -7872,9 +8371,12 @@ class DashboardEnlacesCaidosTests(TestCase):
         return resp
 
     def test_sin_caidas_no_muestra_el_bloque(self):
+        """Un bloque vacío permanente enseña a no mirarlo: la cola solo aparece si hay
+        algo."""
         resp = self._dashboard()
         self.assertEqual(resp.context['total_enlaces_caidos'], 0)
-        self.assertNotContains(resp, 'sin conectividad')
+        self.assertEqual(resp.context['incidencias'], [])
+        self.assertNotContains(resp, 'Lo que duele ahora')
 
     def test_muestra_la_farmacia_el_proveedor_y_el_circuito(self):
         self._caer(self.farmacia)
@@ -7955,7 +8457,7 @@ class DashboardEnlacesCaidosTests(TestCase):
         self._caer(self.farmacia, hace_horas=9)
         self._caer(reciente, hace_horas=1)
 
-        filas = self._dashboard().context['enlaces_caidos']
+        filas = self._dashboard().context['incidencias']
         self.assertEqual([f.farmacia.codigo for f in filas], ['DSH001', 'DSH003'])
 
     def test_acota_a_seis_filas_pero_informa_el_total(self):
@@ -7968,9 +8470,12 @@ class DashboardEnlacesCaidosTests(TestCase):
             self._caer(farmacia)
 
         resp = self._dashboard()
+        # El KPI cuenta TODAS: es el número que decide si hay que actuar.
         self.assertEqual(resp.context['total_enlaces_caidos'], 10)
-        self.assertEqual(len(resp.context['enlaces_caidos']), 6)
-        self.assertContains(resp, 'ver las 10')
+        # La cola acota las filas y dice el total aparte: es un tablero, no un listado.
+        self.assertEqual(resp.context['total_incidencias'], 10)
+        self.assertEqual(len(resp.context['incidencias']), 8)
+        self.assertContains(resp, 'Se muestran 8 de 10')
 
 
 class AlertasListaPaginacionTests(TestCase):

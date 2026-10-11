@@ -469,6 +469,93 @@ infraestructura; tenerlos en SAIDSOFT deja diagnosticar problemas de conectivida
 (o priorizar qué farmacias no tienen enlace de respaldo) sin volver a esa planilla.
 Visibles/filtrables desde `/admin/catalogo/farmacia/`.
 
+## Centro de Operación (`/`) — el tablero
+
+La portada del panel: la primera pantalla que ve cualquiera al entrar. Hasta el
+11-oct-2026 era el tablero más pobre del sistema —sin refresco, sin hora del dato y sin
+forma de decir "no sé"— mientras el Centro de Monitoreo, a un clic de distancia, hacía todo
+eso bien. La auditoría completa está en **`docs/auditoria/centro-monitoreo/`** y el
+resumen del cambio en `PLAN_MODERNIZACION.md` §10-BI.
+
+**El orden responde a cuatro preguntas, en secuencia.** No es estético: antes lo primero
+que se leía era el cumplimiento de versión del POS —planificación de despliegues, que
+cambia de día en día— y una farmacia sin vender quedaba en el tercio inferior.
+
+1. **¿Puedo creerle a esta pantalla?** → *Confianza en el dato* (Zona 0). Una fila por
+   componente con su propio instante, más la frescura de cada fuente. Si algo no se puede
+   comprobar, dice **"sin verificar"** en gris; nunca verde.
+2. **¿Hay algo roto y dónde?** → *Lo que duele ahora*: **una fila por farmacia**, no por
+   síntoma. Antes una farmacia con el enlace caído aparecía en tres bloques de la misma
+   pantalla —el de enlaces, el de alertas y el de estaciones sin reportar— por un único
+   hecho, y no había forma de saber si "27 advertencias" eran 27 sitios o uno con 27
+   síntomas.
+3. **¿Cuál primero?** → el orden de esa cola, por **impacto real** y después por
+   antigüedad: sin enlace (la farmacia no vende) > POS crítico (la caja no cobra) > alerta
+   crítica > POS no crítico > advertencia. Lo decide
+   `apps/monitoreo/incidencias.py`, no la severidad técnica de la regla: que una alerta sea
+   `CRITICAL` significa que alguien configuró un umbral, no que haya impacto confirmado.
+4. **¿Qué será un problema mañana?** → enrolamiento, estaciones calladas, y el
+   cumplimiento al final y plegado.
+
+**Los indicadores dicen con qué umbral hablan.** Era el problema de fondo: "estaciones en
+línea" se calculaba con tres criterios distintos en tres pantallas (5 min, 10 min y el
+campo `estado_conexion`) y ninguna decía cuál usaba, así que no había forma de notar que se
+contradecían. Hoy hay **dos umbrales, con nombre propio**, en `apps/monitoreo/umbrales.py`:
+
+| Umbral | Valor | Para qué |
+|---|---|---|
+| `ONLINE_UMBRAL_MINUTOS` | 10 min | lo que cualquier **pantalla** llama "en línea" |
+| `ALERTA_SIN_LATIDO_UMBRAL_MINUTOS` | 5 min | cuándo se abre la alerta `sin_heartbeat` y se pasa a `OFFLINE` |
+
+Son dos porque responden preguntas distintas: en una pantalla, 5 minutos hacen que una
+estación sana entre y salga de la lista con cada hipo de la red; en una alerta, 10 minutos
+son cinco de retraso en lo único que de verdad despierta a alguien.
+
+**La fuente del estado de la flota es una sola función**, `catalogo.services.estado_flota`,
+que leen el tablero, el Centro y el listado de Estaciones. Cuenta **solo aprobadas**, no
+excluye ningún grupo, separa las administrativas (se apagan de noche: sumadas harían saltar
+"sin reportar" ~100 todas las noches), distingue **"nunca reportó"** (instalación fallida)
+de **"dejaron de reportar"** (caída), e informa cuántas están **pausadas** —siguen latiendo
+por diseño, así que cuentan como en línea—. Lo garantiza
+`apps/catalogo/tests_equivalencia.py`: misma población, tres consumidores, un solo número.
+
+**Se refresca solo cada 60 segundos**, con el mismo criterio que el Centro: es la cadencia
+real más rápida del backend. Un solo endpoint para todas las zonas vivas
+(`dashboard_vivo_partial`) y no uno por zona, para que dos zonas de la misma pantalla no
+muestren momentos distintos. Si un refresco falla, la pantalla lo **dice** —"sin contacto
+con el servidor"— en vez de quedarse mostrando lo anterior como si fuera actual, que es lo
+que HTMX hace si nadie lo maneja.
+
+**El cumplimiento por grupo se carga al abrirse** (`hx-trigger="toggle once"`): son 5
+`Count(DISTINCT)` sobre dos JOIN que se pagaban en cada carga de la portada para una tabla
+que casi nadie estaba leyendo.
+
+**La barra superior dice el estado real de la plataforma**, en todas las pantallas del
+panel. Antes era un texto fijo —"Todos los sistemas operativos"— con un LED pintado en
+verde por CSS, que se mostraba igual mientras el aviso rojo de "Worker MQTT sin señal"
+estaba más abajo en la misma pantalla. Hoy lo calcula `apps/monitoreo/salud.py` en **una
+consulta** (lo fija una prueba, porque corre en cada página) y lo consumen la barra y la
+Zona 0: una sola fuente, así que no pueden contradecirse.
+
+**Qué prueba cada componente de salud**, que es la distinción que faltaba:
+
+| Estado | Qué significa |
+|---|---|
+| Proceso muerto | el latido no llega hace más de `WORKER_MQTT_UMBRAL_SEGUNDOS` |
+| Vivo y **desconectado del broker** | el proceso está perfecto y no llega nada de la flota. **Es el estado que antes se veía en verde**: el latido lo escribe un hilo aparte sin mirar la conexión |
+| Vivo, conectado y procesando | con el contador de mensajes a la vista |
+| Sin verificar | ese worker no sabe responder la pregunta. Gris, nunca verde |
+
+El **broker MQTT** se deduce de la conexión real del worker y no de su API de
+administración: lo que importa no es si el panel de EMQX contesta, sino si el broker acepta
+al worker, y eso ya viaja en cada latido. **Celery Beat** tiene latido propio desde la
+Fase D (`latido_beat_task`); antes se infería de que `MuestraRedFarmacia` siguiera
+creciendo, y esa tabla la escriben dos rutas distintas.
+
+`verificar_salud` lee exactamente lo mismo (`estado_latidos()`) y conserva su contrato de
+código de salida, que es lo que consume el temporizador de systemd y el healthcheck de cada
+contenedor. La consola y la pantalla no pueden discrepar sobre qué es "sano".
+
 ## Centro de Monitoreo (`/centro/`)
 
 La pantalla que la mesa de ayuda deja abierta durante el turno. Consolida en una sola

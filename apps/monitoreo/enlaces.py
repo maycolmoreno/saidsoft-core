@@ -234,11 +234,36 @@ def registrar_sondeo(farmacia, alcanzable: bool, latencia_ms: float | None):
         )
         logger.warning('Enlace CAÍDO en %s (circuito %s)', farmacia.codigo, farmacia.circuito_proveedor or '?')
     elif nuevo_alcanzable and estaba_caida:
-        abierta = EventoEnlaceFarmacia.objects.filter(farmacia=farmacia, fin__isnull=True).order_by('-inicio').first()
-        if abierta is not None:
-            abierta.fin = ahora
-            abierta.save(update_fields=['fin'])
-            logger.info('Enlace RECUPERADO en %s tras %s min', farmacia.codigo, abierta.duracion_minutos)
+        # Se cierran TODAS las caídas abiertas de la farmacia, no solo la más reciente.
+        #
+        # Hasta el 10-oct-2026 esto hacía `.order_by('-inicio').first()`, y la diferencia
+        # importa porque nada impide que haya dos abiertas a la vez: no hay constraint, y
+        # `estaba_caida` es la única cosa que lo evita en la práctica. Si por cualquier
+        # camino quedaba una segunda, la recuperación cerraba una y la otra se volvía un
+        # fantasma: una caída abierta para siempre, en un sitio que responde, que ninguna
+        # pantalla podía hacer desaparecer (hallazgo D-04).
+        #
+        # No se añade el constraint de unicidad que la auditoría proponía: una migración
+        # que lo imponga falla si ya hay duplicados en producción, y resolverlos
+        # automáticamente significaría inventar un `fin` para un evento cuya duración
+        # real nadie sabe. Esto quita la CAUSA de que un fantasma sobreviva —se cierra
+        # con el resto— sin tocar el historial, que es la evidencia de SLA. Para medir si
+        # hay duplicados hoy: `manage.py revisar_caidas_duplicadas`.
+        abiertas = list(
+            EventoEnlaceFarmacia.objects.filter(farmacia=farmacia, fin__isnull=True).order_by('inicio')
+        )
+        if abiertas:
+            EventoEnlaceFarmacia.objects.filter(
+                pk__in=[e.pk for e in abiertas],
+            ).update(fin=ahora)
+            if len(abiertas) > 1:
+                logger.warning(
+                    'Enlace RECUPERADO en %s con %d caídas abiertas a la vez: se cerraron '
+                    'todas. Revisar con revisar_caidas_duplicadas.',
+                    farmacia.codigo, len(abiertas),
+                )
+            abiertas[0].fin = ahora
+            logger.info('Enlace RECUPERADO en %s tras %s min', farmacia.codigo, abiertas[0].duracion_minutos)
     return estado
 
 

@@ -533,6 +533,28 @@ class Estacion(models.Model):
     class Meta:
         db_table = 'estacion'
         ordering = ['codigo']
+        indexes = [
+            # UN índice, y sale de las consultas que existen, no de lo que parezca
+            # razonable — mismo criterio con el que se justificó el índice de `Alerta`.
+            #
+            # El patrón real es "filtrar por estado de aprobación y acotar por último
+            # latido", y aparece en las cuatro consultas más repetidas del sistema:
+            #
+            #   - catalogo.services.estado_flota      la fuente única del KPI de flota:
+            #                                         tablero, Centro y bot de Telegram
+            #   - catalogo.services.marcar_estaciones_offline   CADA 60 SEGUNDOS, siempre
+            #   - panel.views.dashboard               la lista de estaciones calladas
+            #   - panel.views.estaciones              los contadores de las tarjetas
+            #
+            # El orden importa: `estado_aprobacion` primero porque es la igualdad, y
+            # `ultimo_heartbeat` después para que el rango lo aproveche. A ~1.800
+            # estaciones ninguna de estas consultas es dramática, pero la tarea del minuto
+            # la paga indefinidamente y el parque apunta a crecer.
+            models.Index(
+                fields=['estado_aprobacion', 'ultimo_heartbeat'],
+                name='estacion_aprobacion_latido',
+            ),
+        ]
         permissions = [
             ('acceso_remoto_estacion', 'Puede abrir sesiones de acceso remoto (MeshCentral) a estaciones'),
             # Permiso separado a propósito: ver grabaciones de sesión (auditoría de atención al

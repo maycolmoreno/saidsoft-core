@@ -88,6 +88,11 @@ TEMPLATES = [
                 'apps.cuentas.context_processors.unidad_negocio_contexto',
                 'apps.mantenimiento.context_processors.notificaciones_contexto',
                 'apps.panel.context_processors.htmx_contexto',
+                # Estado real de la plataforma en la barra superior. Va acá y no en cada
+                # vista porque la barra se dibuja en TODAS las pantallas del panel: antes
+                # afirmaba "Todos los sistemas operativos" sin comprobar nada. Cuesta una
+                # consulta a una tabla de tres filas, y solo con sesión iniciada.
+                'apps.panel.context_processors.salud_plataforma_contexto',
             ],
         },
     },
@@ -378,6 +383,16 @@ CELERY_BEAT_SCHEDULE = {
     'marcar-estaciones-offline': {
         'task': 'apps.catalogo.tasks.marcar_estaciones_offline_task',
         'schedule': 60.0,  # cada minuto — mismo umbral que el comando manual (5 min sin heartbeat)
+    },
+    # Latido propio de Beat. Hasta el 10-oct-2026 su salud se INFERIA de que
+    # MuestraRedFarmacia siguiera creciendo, y esa tabla la escriben dos rutas distintas:
+    # podia crecer con Beat a medias, y quedarse quieta con Beat perfecto si no habia
+    # ninguna farmacia sondeable. Cada minuto y no cada cinco porque es la tarea mas
+    # barata del schedule (un UPDATE a una fila) y porque el valor de un latido es
+    # detectar rapido que se detuvo.
+    'latido-de-beat': {
+        'task': 'apps.monitoreo.tasks.latido_beat_task',
+        'schedule': 60.0,
     },
     # --- Diarias: crontab y NO un intervalo de 86400 segundos ---
     #

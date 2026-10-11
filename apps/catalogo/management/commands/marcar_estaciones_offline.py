@@ -16,7 +16,10 @@ class Command(BaseCommand):
     help = 'Pasa a OFFLINE las estaciones sin heartbeat reciente.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--minutos', type=int, default=5)
+        # Sin default acá: lo pone `marcar_estaciones_offline` desde
+        # `apps.monitoreo.umbrales.ALERTA_SIN_LATIDO_UMBRAL_MINUTOS`. Repetirlo en este
+        # wrapper era el cuarto lugar donde vivía el número.
+        parser.add_argument('--minutos', type=int, default=None)
 
     def handle(self, *args, **options):
         total = marcar_estaciones_offline(minutos=options['minutos'])

@@ -764,10 +764,27 @@ def manejar_metricas(codigo_estacion: str, payload: dict) -> None:
     registrar_muestra_metricas(estacion=estacion, payload=payload)
 
 
-def registrar_latido_worker(nombre: str) -> None:
-    """Marca que el worker `nombre` sigue vivo y procesando. Ver WorkerHeartbeat."""
+def registrar_latido_worker(nombre: str, *, conectado=None, mensajes_procesados=None) -> None:
+    """Marca que el worker `nombre` sigue vivo. Ver WorkerHeartbeat.
+
+    El docstring de esta función decía "sigue vivo **y procesando**", y era justo lo que no
+    probaba: la escribe un hilo aparte cada 30 s mientras el proceso exista, sin mirar si
+    hay conexión al broker ni si llegó un solo mensaje. Un worker desconectado de EMQX se
+    veía sano en el panel (hallazgo D-05 de docs/auditoria/centro-monitoreo/).
+
+    `conectado` y `mensajes_procesados` son opcionales y por una razón: no todo proceso que
+    late habla con un broker —`registrar_latido respaldo` lo llama desde `backup.sh`— y
+    obligarlos a responder una pregunta que no les aplica haría que el panel mostrara
+    "sin conexión" para algo que nunca tuvo una. Omitidos, el campo queda como estaba:
+    `conectado=None` significa **sin verificar**, que el panel distingue de "no conectado".
+    """
     cerrar_conexiones_viejas()
-    WorkerHeartbeat.objects.update_or_create(nombre=nombre, defaults={'ultimo_latido': timezone.now()})
+    valores = {'ultimo_latido': timezone.now()}
+    if conectado is not None:
+        valores['conectado'] = conectado
+    if mensajes_procesados is not None:
+        valores['mensajes_procesados'] = mensajes_procesados
+    WorkerHeartbeat.objects.update_or_create(nombre=nombre, defaults=valores)
 
 
 def registrar_mensaje_fallido(*, topico: str, payload_crudo: str, error: str) -> None:

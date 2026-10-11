@@ -4869,3 +4869,141 @@ Triage humano de los 94 y autorización para ejecutar pruebas contra PostgreSQL,
 único que puede mover un hallazgo a `Reproducción: SÍ`. **Ninguno de los 93 restantes debe
 corregirse sin esa decisión**, y `BD-11` en particular propone tocar índices mientras su propio informe pide
 medir primero.
+
+---
+
+## §10-BI — La barra que decía "Todos los sistemas operativos" sin comprobar nada (11-oct-2026)
+
+Auditoría completa del tablero (`docs/auditoria/centro-monitoreo/`, 13 archivos) y las
+cuatro fases de corrección que salieron de ella. A diferencia de §10-BH, **esta entrada sí
+cierra trabajo**: el informe está entregado y las cuatro fases están implementadas, con
+pruebas, en esta misma intervención.
+
+### Lo que se encontró
+
+La plataforma ya tenía un centro de monitoreo —`/centro/`, con auto-refresco, marcas de
+frescura y chips accesibles— y **no era la pantalla que se abre al entrar.** El tablero de
+`/` era el que todo el mundo veía y el único sin refresco, sin hora del dato y sin forma de
+decir "no sé". Siete hallazgos de severidad alta, quince en total. Los cuatro que importan:
+
+- **`D-06` La barra superior afirmaba salud que nadie comprobó.** `templates/panel/base.html`
+  tenía un `<div class="sys-status">` con el texto fijo *"Todos los sistemas operativos"* y
+  un LED pintado en verde por CSS, en **todas** las pantallas del panel. Se mostraba igual
+  mientras el aviso rojo de "Worker MQTT sin señal" estaba tres centímetros más abajo, en
+  la misma pantalla, contradiciéndolo. Contradecía además una regla que el proyecto ya
+  había decidido y escrito tres veces (`fuente_desactualizada`, `clasificar`,
+  `_estado_chip.html`): un componente que no se pudo medir no se pinta de verde.
+- **`D-01` "Estaciones en línea" se calculaba de tres formas distintas.** 5 minutos en el
+  tablero (`ONLINE_UMBRAL_MINUTOS`, en una vista), 10 en el Centro
+  (`TOLERANCIA_FRESCURA_MINUTOS['estaciones']`) y el campo `estado_conexion` en el listado.
+  Una estación cuyo último latido fue hace 7 minutos estaba **caída, en línea y caída** en
+  el mismo instante.
+- **`D-02` El KPI más visible contaba una población que no era la flota.** Salía de
+  `calcular_matriz_cumplimiento`, que excluye el grupo `PENDIENTE` —correcto para
+  cumplimiento de versión, porque ese bucket no es un canal real— y no filtra por estado de
+  aprobación. El numerador y el denominador no describían el mismo conjunto, y la tarjeta de
+  al lado contaba aparte las pendientes que ese denominador incluía.
+- **`D-05` El latido del worker MQTT no prueba el servicio.** Lo escribe un hilo aparte cada
+  30 s mientras el proceso exista, sin consultar `client.is_connected()`. Con EMQX caído,
+  `loop_forever()` reintenta en silencio y el panel seguía en verde. El hilo se había
+  agregado para resolver el falso negativo contrario (un worker sano sin tráfico aparecía
+  "sin señal") y abrió este falso positivo.
+
+Y tres bandejas de triage ya persistidas que **no aparecían en ninguna pantalla**:
+`MensajeMqttFallido` (la prueba directa de "recibe pero no procesa", solo visible desde el
+admin de Django), `EnrolamientoRechazado` —cuya vista existe desde el 27-sep-2026 y
+**ninguna plantilla enlazaba**, así que había que escribir la URL a mano— y el estado del
+broker, que no se comprobaba en ningún sitio.
+
+### Lo que se hizo, por fases
+
+**Fase A — la afirmación falsa y la jerarquía.** `apps/monitoreo/salud.py` (nuevo) calcula
+el estado real de la plataforma en **una consulta**, y lo consumen la barra superior (vía
+`apps.panel.context_processors.salud_plataforma_contexto`) y la Zona 0 del tablero: una sola
+fuente, así que la barra no puede decir "verificada" mientras el tablero muestra rojo. Vive
+en `monitoreo` y no en `panel` por el mismo criterio que movió los umbrales el 2-oct-2026
+(§10-AW): el dominio no depende de la presentación. El tablero se reordenó por urgencia —la
+matriz de cumplimiento pasó de la primera posición y todo el ancho al final y plegada— y
+pasó a usar `_estado_chip.html`, que comunica con color, forma **y** palabra.
+
+**Fase B — un concepto, un número.** `catalogo.services.estado_flota()` es la fuente única
+del estado de la flota: solo aprobadas, sin excluir ningún grupo, administrativas aparte,
+`nunca_reporto` separado de `dejaron_de_reportar`, pausadas informadas, y **una sola
+agregación condicional** (cuatro `count()` menos que antes en `resumen_operacion`). Los
+umbrales quedaron **dos, con nombre propio y motivo escrito**, en `apps/monitoreo/umbrales.py`:
+
+| Umbral | Valor | Quién lo usa |
+|---|---|---|
+| `ONLINE_UMBRAL_MINUTOS` | 10 min | cualquier pantalla que diga "en línea" |
+| `ALERTA_SIN_LATIDO_UMBRAL_MINUTOS` | 5 min | `marcar_estaciones_offline` y la alerta `sin_heartbeat` |
+
+No se colapsaron en uno porque responden preguntas distintas: con 5 para todo, una estación
+sana entra y sale de la lista con cada hipo de la red; con 10 para todo, la alerta se abriría
+cinco minutos más tarde que hoy. Decisión del usuario. Además, las alertas se separaron en
+"sin reconocer" y "en atención" (`D-03`), los enlaces caídos pasaron a contarse como
+**farmacias distintas sobre el evento abierto** —una sola fuente para las cuatro pantallas,
+e inmune a un evento duplicado (`D-04`)— y el tablero ganó la **cola unificada de
+incidencias** (`apps/monitoreo/incidencias.py`): una fila por farmacia ordenada por impacto
+real (sin enlace > POS crítico > alerta crítica > POS no crítico > advertencia), que
+reemplaza a los tres bloques en los que una misma farmacia con el enlace caído aparecía por
+un único hecho.
+
+**Fase C — el tablero se mantiene solo y cuesta menos.** Patrón marco + parcial, el mismo
+que el Centro: `dashboard_vivo_partial` se refresca cada 60 s —la cadencia real más rápida
+del backend— y `dashboard_cumplimiento_partial` se carga **la primera vez que alguien abre
+el bloque** (`hx-trigger="toggle once"`), así que los 5 `Count(DISTINCT)` de la matriz ya no
+se pagan en cada carga de la portada. Un solo endpoint para todas las zonas vivas y no uno
+por zona, para que dos zonas de la misma pantalla no puedan mostrar momentos distintos. Y un
+aviso de **"sin contacto con el servidor"**: HTMX, ante un error, deja el contenido anterior
+tal cual, así que sin eso el operador seguía mirando datos viejos creyéndolos actuales.
+
+**Fase D — observabilidad real.** `WorkerHeartbeat` ganó `conectado` y `mensajes_procesados`
+(migración `0003`), y el latido del worker ahora reporta `client.is_connected()`: el panel
+distingue **proceso muerto / vivo y desconectado del broker / vivo, conectado y
+procesando**, y `conectado=None` es "sin verificar", no "mal". El **broker** se deduce de esa
+conexión real y no de su API de administración: lo que importa no es si el panel de EMQX
+contesta, sino si el broker acepta al worker, y eso ya viaja en cada latido —sale gratis y no
+mete una llamada de red en el camino del render. **Celery Beat** dejó de inferirse de que
+`MuestraRedFarmacia` siguiera creciendo (esa tabla la escriben dos rutas, ver §10-AY) y tiene
+latido propio (`latido_beat_task`, cada minuto). `verificar_salud` pasó a leer
+`estado_latidos()` en vez de comparar por su cuenta, conservando su contrato de código de
+salida, que es lo que consume systemd y el healthcheck de cada contenedor.
+
+### Dos cosas que la auditoría recomendaba y NO se hicieron
+
+Las dos aparecen en el informe como propuestas y se descartaron al implementarlas, con
+motivo:
+
+- **El constraint de unicidad en `EventoEnlaceFarmacia`.** Una migración que lo imponga
+  falla si ya hay duplicados en producción, y resolverlos automáticamente significa
+  inventarle un `fin` a un evento cuya duración real nadie midió — en la tabla que es la
+  evidencia para discutir un SLA. Se atacó la **causa** del daño: la recuperación ahora
+  cierra **todas** las caídas abiertas de la farmacia y no solo la más reciente, así que un
+  duplicado ya no puede sobrevivir como un fantasma eterno. Para medir si quedó alguno de
+  antes: `manage.py revisar_caidas_duplicadas`, de solo lectura.
+- **`CACHES` con Redis.** No hay ningún consumidor: `django-axes` usa el handler de base de
+  datos y nada en `apps/` toca el framework de caché. El único candidato era
+  `resumen_operacion`, y se resolvió mejor en la fuente —cuatro consultas menos— que
+  poniéndole una caché a un número cuyo valor es decir la verdad ahora. El día que aparezca
+  un consumidor real, la configuración es de cinco líneas y la dependencia (`redis>=5.0`) ya
+  está.
+
+También se usó `AddIndex` normal y no `AddIndexConcurrently` para el índice nuevo de
+`Estacion`: a decenas de filas hoy y ~1.800 proyectadas, el `CREATE INDEX` son
+milisegundos, y la variante concurrente obliga a una operación exclusiva de PostgreSQL que
+rompería el desarrollo local sobre SQLite.
+
+### Pruebas
+
+Pruebas nuevas en tres archivos, más las que se adaptaron al diseño nuevo conservando lo
+que vigilaban:
+
+| Archivo | Qué fija |
+|---|---|
+| `apps/catalogo/tests_equivalencia.py` | **La prueba de fondo**: misma población, tres consumidores, un solo número. Incluye el caso de la zona gris entre los dos umbrales |
+| `apps/monitoreo/tests_salud.py` | Los cuatro estados de un componente, el broker deducido del worker, el latido de Beat, y que la consola y la pantalla no discrepen |
+| `apps/panel/tests.py` | La barra superior (incluido que **cueste una sola consulta** en cada página), la Zona 0, la jerarquía, el refresco y el coste de cada parcial |
+
+`EquivalenciaIndicadoresTests` es el entregable real de la Fase B, con el mismo patrón y el
+mismo motivo que `EquivalenciaPredicadosEstacionTests`: dos copias del mismo criterio se
+desincronizan, y el síntoma es silencioso.

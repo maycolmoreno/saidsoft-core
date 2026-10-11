@@ -181,8 +181,16 @@ class LatidoPeriodicoTests(TestCase):
             cmd._detener.set()
             hilo.join(timeout=1)
 
-        mock_registrar.assert_called_with(NOMBRE_WORKER_MQTT)
         self.assertGreaterEqual(mock_registrar.call_count, 1)
+        # Desde el 10-oct-2026 el latido no solo dice "sigo vivo": reporta si hay conexión
+        # al broker y cuántos mensajes se procesaron. Sin cliente conectado —que es el caso
+        # de este hilo corriendo suelto— `conectado` es False, y eso es exactamente lo que
+        # tiene que viajar: el proceso vive y el canal no está. Ese estado se veía en verde
+        # hasta que estos dos campos existieron (hallazgo D-05).
+        nombre, kwargs = mock_registrar.call_args[0], mock_registrar.call_args[1]
+        self.assertEqual(nombre, (NOMBRE_WORKER_MQTT,))
+        self.assertIs(kwargs['conectado'], False)
+        self.assertEqual(kwargs['mensajes_procesados'], 0)
 
     def test_sigterm_detiene_el_hilo_de_latido(self):
         cmd = Command()

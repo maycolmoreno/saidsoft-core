@@ -251,7 +251,32 @@
             </select>
         </form>
         {% endif %}
-        <div class="sys-status"><span class="led"></span> Todos los sistemas operativos</div>
+        {% comment %}
+        Estado REAL de la plataforma. Hasta el 10-oct-2026 esto era un texto fijo —"Todos
+        los sistemas operativos"— con un LED verde pintado a mano, en todas las pantallas
+        y sin comprobar nada: se mostraba igual mientras el aviso rojo de "Worker MQTT sin
+        señal" estaba más abajo en la misma pantalla. Ver D-06 en
+        docs/auditoria/centro-monitoreo/.
+
+        Tres detalles que no son decorativos:
+          - El LED lleva la clase del estado, y además va la PALABRA: quitando el color el
+            indicador se sigue leyendo (mismo criterio que panel/_estado_chip.html).
+          - Dice de qué habla ("Plataforma"). El texto viejo afirmaba algo sobre todo,
+            incluida la flota, que esto no mira.
+          - Enlaza a la Zona 0 del tablero, que es donde está el detalle por componente.
+        {% endcomment %}
+        {% if salud_plataforma %}
+        <a href="{% url 'panel:dashboard' %}#salud" class="sys-status est-{{ salud_plataforma.estado }}"
+           title="{% for c in salud_plataforma.componentes %}{{ c.etiqueta }}: {{ c.detalle }}&#10;{% endfor %}">
+            <span class="led"></span>
+            <span>{{ salud_plataforma.texto }}</span>
+            {% if salud_plataforma.afectados %}
+            <strong>· {{ salud_plataforma.afectados.0.etiqueta }}{% if salud_plataforma.afectados|length > 1 %} +{{ salud_plataforma.afectados|length|add:"-1" }}{% endif %}</strong>
+            {% else %}
+            <span class="sys-status-cuenta">{{ salud_plataforma.ok }}/{{ salud_plataforma.total_verificables }}{% if salud_plataforma.sin_verificar %} · {{ salud_plataforma.sin_verificar }} sin verificar{% endif %}</span>
+            {% endif %}
+        </a>
+        {% endif %}
         <div class="clockbox">
             <div class="time mono" id="clock">00:00:00</div>
             <div class="date" id="clockdate"></div>

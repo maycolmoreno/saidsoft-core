@@ -1,0 +1,425 @@
+{% comment %}
+El interior del tablero que cambia solo. Lo reemplaza HTMX cada SEGUNDOS_REFRESCO_TABLERO
+(ver apps.panel.views.dashboard) y tambien lo renderiza la carga inicial, con el MISMO
+contexto: una sola funcion lo arma, asi que la pagina de entrada y el refresco no pueden
+mostrar cosas distintas.
+
+La animacion suave de entrada es lo unico que marca "esto se actualizo": sin sonido y sin
+parpadeo, porque la pantalla se deja abierta todo el dia y algo que llama la atencion cada
+minuto se vuelve ruido. Mismo criterio que el Centro de Monitoreo.
+{% endcomment %}
+<div class="tablero-fade">
+
+{% comment %}
+=== ZONA 0 · CONFIANZA EN EL DATO ================================================
+
+Por qué va primero y por qué es permanente: un tablero en verde con datos viejos es peor
+que no tener tablero, y hasta ahora esta pantalla no tenía forma de decir de cuándo era lo
+que mostraba. Los avisos de worker y respaldo (abajo) aparecen solo cuando hay que actuar y
+llevan el runbook; esta franja está siempre y dice qué se comprobó y cuándo.
+
+La regla que la gobierna: **ningún componente sin mecanismo de comprobación se pinta de
+verde.** El broker MQTT aparece en gris con la palabra "sin verificar" en vez de omitirse,
+porque que falte esa comprobación es información útil — no un detalle a esconder.
+{% endcomment %}
+<div id="salud" class="card p-4 mb-4">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-sm font-medium">Confianza en el dato</h2>
+        <span class="text-xs text-[var(--text-faint)]">
+            lo que se comprobó, y de cuándo es
+        </span>
+    </div>
+
+    <div class="grid gap-x-6 gap-y-2 md:grid-cols-2">
+        {% comment %} Salud de los procesos: una fila por componente, con su propio instante. {% endcomment %}
+        {% for c in salud.componentes %}
+        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
+            <div class="min-w-0 flex items-center gap-2">
+                {% include "panel/_estado_chip.html" with estado=c.estado solo_icono=True %}
+                <span class="font-medium">{{ c.etiqueta }}</span>
+            </div>
+            <span class="text-xs text-[var(--text-faint)] text-right flex-none">{{ c.detalle }}</span>
+        </div>
+        {% endfor %}
+
+        {% comment %}
+        Frescura de los datos. Distinta de la salud de los procesos y por eso va aparte: un
+        worker vivo no prueba que la cadena esté entregando —el latido lo escribe un hilo
+        propio sin mirar la conexión al broker— y estas cuatro señales son lo más barato
+        que sí lo prueba. Las cuatro salen de datos que ya se persistían y que no se veían
+        en ninguna pantalla.
+        {% endcomment %}
+        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
+            <div class="min-w-0 flex items-center gap-2">
+                {% if ultimo_latido_flota and not latido_flota_vencido %}
+                    {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+                {% elif ultimo_latido_flota %}
+                    {% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}
+                {% else %}
+                    {% include "panel/_estado_chip.html" with estado="sin_dato" solo_icono=True %}
+                {% endif %}
+                <span class="font-medium">Último latido de la flota</span>
+            </div>
+            <span class="text-xs text-[var(--text-faint)] text-right flex-none">
+                {% if ultimo_latido_flota %}hace {{ ultimo_latido_flota|timesince }}{% else %}ninguna estación reportó todavía{% endif %}
+            </span>
+        </div>
+
+        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
+            <div class="min-w-0 flex items-center gap-2">
+                {% if sondeo_enlaces_vencido %}
+                    {% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}
+                {% else %}
+                    {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+                {% endif %}
+                <span class="font-medium">Sondeo de enlaces</span>
+            </div>
+            <span class="text-xs text-[var(--text-faint)] text-right flex-none">
+                {% if ultimo_sondeo_enlaces %}hace {{ ultimo_sondeo_enlaces|timesince }}{% else %}ninguna farmacia sondeada{% endif %}
+            </span>
+        </div>
+
+        {% comment %}
+        "Tareas periódicas" ya no vive acá: desde la Fase D Celery Beat deja latido propio
+        y aparece arriba, con el resto de los componentes, en vez de inferirse de que una
+        tabla de muestras siga creciendo. Lo que queda acá es la otra pregunta, que antes
+        iba mezclada con esa: si el sondeo de red está PRODUCIENDO datos.
+        {% endcomment %}
+        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
+            <div class="min-w-0 flex items-center gap-2">
+                {% if beat_vencido %}
+                    {% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}
+                {% else %}
+                    {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+                {% endif %}
+                <span class="font-medium">Sondeo de red
+                    <span class="text-xs font-normal text-[var(--text-faint)]" title="Ancho de banda por farmacia. Lo escriben dos rutas: el sondeo SNMP directo y el sondeo vía agente.">(ancho de banda)</span>
+                </span>
+            </div>
+            <span class="text-xs text-[var(--text-faint)] text-right flex-none">
+                {% if ultima_muestra_red %}última muestra hace {{ ultima_muestra_red|timesince }}{% else %}sin muestras todavía{% endif %}
+            </span>
+        </div>
+
+        {% comment %}
+        Mensajes que el worker recibió y no pudo procesar. Hasta hoy solo se veían desde el
+        admin de Django, y son la prueba directa de "recibe pero no procesa" — el estado que
+        el latido del worker no puede distinguir.
+        {% endcomment %}
+        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
+            <div class="min-w-0 flex items-center gap-2">
+                {% if mqtt_fallidos %}
+                    {% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}
+                {% else %}
+                    {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+                {% endif %}
+                <span class="font-medium">Mensajes MQTT fallidos</span>
+            </div>
+            <span class="text-xs text-[var(--text-faint)] text-right flex-none">
+                {{ mqtt_fallidos }} sin revisar
+            </span>
+        </div>
+    </div>
+</div>
+
+{% comment %}
+Avisos que exigen ACCIÓN, con su runbook. No duplican la Zona 0: allá se dice el estado,
+acá qué hacer. Por eso aparecen solo cuando hay algo que hacer.
+{% endcomment %}
+{% if not worker_mqtt_activo %}
+<div class="block mb-2 rounded-md alert sev-critical">
+    <strong>Worker MQTT sin señal.</strong>
+    {% if worker_mqtt_ultimo_latido %}Último latido: {{ worker_mqtt_ultimo_latido|date:"d/m/Y H:i:s" }} — {% else %}Nunca reportó un latido — {% endif %}
+    despliegues, heartbeats y scripts no se están procesando. Revisar el proceso <code>run_mqtt_worker</code>.
+</div>
+{% endif %}
+
+{% if not respaldo_al_dia %}
+<div class="block mb-2 rounded-md alert sev-critical">
+    <strong>Sin respaldo al día.</strong>
+    {% if respaldo_ultimo %}
+        El último se completó el {{ respaldo_ultimo|date:"d/m/Y H:i" }}
+        (hace {{ respaldo_horas|floatformat:0 }} h).
+    {% else %}
+        No hay ningún respaldo registrado todavía.
+    {% endif %}
+    Revisar <code>systemctl status saidsoft-respaldo.timer</code> en el servidor.
+</div>
+{% endif %}
+
+{% comment %}
+=== ZONA 1 · LO QUE DUELE AHORA ==================================================
+
+Una fila por FARMACIA, no por síntoma. Reemplaza a las dos listas por dominio que había
+—"alertas abiertas más recientes" y "enlaces caídos"— porque una farmacia con el enlace
+caído aparecía en las dos Y en "estaciones sin reportar": tres bloques de la misma
+pantalla para un único hecho, y ninguna forma de saber si "27 advertencias" eran 27 sitios
+o uno con 27 síntomas.
+
+El orden es por IMPACTO y después por antigüedad, no por severidad técnica: sin enlace
+(la farmacia no vende) > POS crítico (la caja no puede cobrar) > alerta crítica >
+POS no crítico > advertencia. Ver apps/monitoreo/incidencias.py para por qué ese orden.
+
+Solo aparece si hay algo. Un bloque vacío permanente enseña a no mirarlo.
+{% endcomment %}
+{% if incidencias %}
+<div class="mb-6">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-sm font-medium">
+            Lo que duele ahora —
+            <span class="text-[var(--critical)]">{{ total_incidencias }} farmacia{{ total_incidencias|pluralize:"s" }} afectada{{ total_incidencias|pluralize:"s" }}</span>
+        </h2>
+        <span class="text-xs text-[var(--text-faint)]">sitios, no síntomas · lo más viejo primero</span>
+    </div>
+    <div class="card" style="overflow:hidden;">
+        {% for i in incidencias %}
+        <div class="flex items-center justify-between gap-3 px-4 py-3" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+            <div class="min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                    {% include "panel/_estado_chip.html" with estado=i.estado %}
+                    <span class="font-medium">{{ i.farmacia.codigo }}</span>
+                    <span class="text-xs text-[var(--text-faint)] truncate">{{ i.farmacia.nombre }}</span>
+                    {% if i.en_atencion %}<span class="pill warning">En atención</span>{% endif %}
+                </div>
+                <div class="text-sm mt-1">
+                    {{ i.titulo }}
+                    <span class="text-xs text-[var(--text-faint)]">· {{ i.detalle }}</span>
+                    {% comment %}
+                    "y 3 síntomas más" y no la lista entera: el detalle completo está en la
+                    pantalla de cada dominio, y acá lo que importa es cuántos frentes tiene
+                    abiertos ese sitio.
+                    {% endcomment %}
+                    {% if i.otros_sintomas %}
+                    <span class="text-xs text-[var(--text-faint)]">· y {{ i.otros_sintomas }} síntoma{{ i.otros_sintomas|pluralize:"s" }} más</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="text-xs text-[var(--text-faint)] text-right flex-none">
+                {% if i.desde %}hace {{ i.desde|timesince }}{% else %}sin fecha{% endif %}
+            </div>
+        </div>
+        {% endfor %}
+        {% if total_incidencias > incidencias|length %}
+        <div class="px-4 py-2 text-xs text-[var(--text-faint)]" style="border-top:1px solid var(--border-soft);">
+            Se muestran {{ incidencias|length }} de {{ total_incidencias }}.
+            <a href="{% url 'panel:centro_monitoreo' %}" class="text-[var(--info)] hover:underline">Ver el Centro de Monitoreo</a>
+            para el detalle por dominio.
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+{% comment %}
+=== ZONA 2 · INDICADORES OPERATIVOS ==============================================
+
+Cuatro tarjetas y no cinco. Se fueron dos:
+  - "Total de estaciones" repetía el denominador de la tarjeta de al lado (U-3).
+  - "Pendientes de aprobación" repetía el aviso que estaba 100 px más arriba; ahora vive
+    en la zona de Enrolamiento, junto a los enrolamientos rechazados, que es el dato con
+    el que se lee.
+
+Las tarjetas que quedan llevan CHIP de estado —color, forma y palabra— y no un `tone-*`
+fijo: antes la de pendientes era ámbar aunque el número fuera 0, y la de estaciones en
+línea verde aunque estuvieran todas caídas. El color decoraba, no informaba (U-4).
+
+Los números son los mismos de antes, con las mismas definiciones. Corregirlas es Fase B.
+{% endcomment %}
+<div class="kpi-strip mb-6">
+    <div class="card kpi">
+        <div class="kpi-top">
+            <div class="kpi-label">Estaciones en línea</div>
+            {% if total_estaciones and total_online < total_estaciones %}
+                {% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}
+            {% elif total_estaciones %}
+                {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+            {% else %}
+                {% include "panel/_estado_chip.html" with estado="sin_dato" solo_icono=True %}
+            {% endif %}
+        </div>
+        <div class="kpi-value num">{{ total_online }}<small>/{{ total_estaciones }}</small></div>
+        {% if total_estaciones %}
+        <div class="medidor" style="height:5px;">
+            <span class="relleno est-bg-sin_umbral" style="width:{% widthratio total_online total_estaciones 100 %}%;"></span>
+        </div>
+        {% endif %}
+        {% comment %}
+        El umbral se DICE. Era el problema de fondo: tres pantallas decían "en línea" con
+        tres relojes distintos (5 min, 10 min y el campo estado_conexion) y ninguna decía
+        cuál usaba, así que no había forma de notar que se contradecían (hallazgo D-01).
+        {% endcomment %}
+        <div class="text-xs text-[var(--text-faint)]" title="Una estación cuenta como en línea si su último latido llegó dentro de este umbral. Es el mismo en todas las pantallas desde el 10-oct-2026.">
+            latido de los últimos {{ flota.umbral_minutos }} min
+            {% if flota.pausadas %}· <span class="est-fg-warning">{{ flota.pausadas }} pausada{{ flota.pausadas|pluralize:"s" }}</span>{% endif %}
+        </div>
+        {% comment %}
+        Administrativas aparte y no sumadas: se apagan de noche y el fin de semana, así que
+        sumarlas haría saltar "sin reportar" ~100 todas las noches y el número dejaría de
+        significar "hay un problema". Verlas igual importa: cero de veinte un martes a las
+        10 no es normal.
+        {% endcomment %}
+        {% if flota.admin_total %}
+        <div class="text-xs text-[var(--text-faint)]" style="border-top:1px solid var(--border-soft); padding-top:6px;"
+             title="PCs administrativas. Se cuentan aparte porque se apagan fuera del horario de oficina.">
+            Administrativas: {{ flota.admin_en_linea }}/{{ flota.admin_total }}
+        </div>
+        {% endif %}
+    </div>
+
+    <a href="{% url 'panel:enlaces_farmacias_lista' %}?estado=caidos" class="card kpi">
+        <div class="kpi-top">
+            <div class="kpi-label">Farmacias sin enlace</div>
+            {% if total_enlaces_caidos %}
+                {% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}
+            {% else %}
+                {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+            {% endif %}
+        </div>
+        <div class="kpi-value num {% if total_enlaces_caidos %}est-fg-critical{% endif %}">{{ total_enlaces_caidos }}</div>
+        <div class="text-xs text-[var(--text-faint)]">una farmacia sin enlace no vende</div>
+    </a>
+
+    {% comment %}
+    DOS cifras y no una. El KPI anterior sumaba abiertas + reconocidas bajo el rótulo
+    "Alertas abiertas", mientras el Centro contaba solo las abiertas: los dos tableros
+    mostraban números distintos para algo que se llamaba igual, y ninguno decía qué
+    contaba (hallazgo D-03). Una reconocida no está resuelta, pero tiene a alguien encima.
+    {% endcomment %}
+    <a href="{% url 'panel:alertas_lista' %}" class="card kpi">
+        <div class="kpi-top">
+            <div class="kpi-label">Alertas sin reconocer</div>
+            {% if alertas_sin_reconocer %}
+                {% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}
+            {% else %}
+                {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+            {% endif %}
+        </div>
+        <div class="kpi-value num {% if alertas_sin_reconocer %}est-fg-critical{% endif %}">{{ alertas_sin_reconocer }}</div>
+        <div class="text-xs text-[var(--text-faint)]">
+            {% if alertas_en_atencion %}{{ alertas_en_atencion }} más en atención{% else %}nadie atendiendo pendientes{% endif %}
+        </div>
+    </a>
+
+    {% comment %}
+    "Sin reportar" partido en dos, que es la corrección de fondo: una aprobada que jamás
+    dio señal es una INSTALACIÓN FALLIDA —el técnico se fue y nunca funcionó— y una que
+    reportaba y calló es una CAÍDA. Dos trabajos, dos personas, dos números (hallazgo
+    D-08). El contador los sumaba bajo el título "Estaciones que dejaron de reportar".
+    {% endcomment %}
+    <div class="card kpi">
+        <div class="kpi-top">
+            <div class="kpi-label">Estaciones sin reportar</div>
+            {% if total_sin_reportar %}
+                {% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}
+            {% else %}
+                {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+            {% endif %}
+        </div>
+        <div class="kpi-value num {% if total_sin_reportar %}est-fg-warning{% endif %}">{{ total_sin_reportar }}</div>
+        <div class="text-xs text-[var(--text-faint)]">
+            {{ flota.nunca_reporto }} nunca reportó · {{ flota.dejaron_de_reportar }} dejaron de hacerlo
+        </div>
+    </div>
+</div>
+{% comment %}
+=== ZONA 5 . ESTACIONES, POR QUE CALLAN ==========================================
+
+Lo que queda del par de listas por dominio que habia aca: las alertas y los enlaces se
+fueron a la cola unificada de arriba, y esta lista se queda porque responde una pregunta
+que la cola no responde -- QUE equipo esta callado, con su codigo, para ir a buscarlo.
+
+Las que NUNCA reportaron van primero y con su propia etiqueta: no es una caida, es una
+instalacion que nunca funciono. El contador de arriba las separa en dos numeros.
+
+Excluye las administrativas, igual que el contador: se apagan de noche, y sumarlas haria
+saltar esta lista ~100 todas las noches. Su estado se ve en la tarjeta de la flota.
+{% endcomment %}
+<div class="mb-6">
+    <div>
+        <div class="flex items-baseline justify-between mb-3">
+            <h2 class="text-sm font-medium uppercase tracking-wide text-[var(--text-faint)]">
+                Estaciones sin reportar
+                <span class="font-normal normal-case tracking-normal text-[var(--text-faint)]">
+                    — {{ flota.nunca_reporto }} nunca reportó (instalación fallida) ·
+                    {{ flota.dejaron_de_reportar }} dejaron de hacerlo (caída)
+                </span>
+            </h2>
+            {% if total_sin_reportar > 6 %}
+            <a href="{% url 'panel:estaciones_lista' %}" class="text-xs text-[var(--info)] hover:underline">ver las {{ total_sin_reportar }}</a>
+            {% endif %}
+        </div>
+        <div class="card" style="overflow:hidden;">
+            {% for e in sin_reportar %}
+            <button type="button" class="w-full text-left flex items-center justify-between gap-3 px-4 py-3 hover:bg-[var(--overlay-hover)]"
+                    hx-get="{% url 'panel:estacion_info_modal' e.pk %}" hx-target="#modal-info-content" hx-swap="innerHTML"
+                    onclick="document.getElementById('modal-info').showModal()"
+                    style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <div class="min-w-0">
+                    <div class="font-medium truncate">{{ e.codigo }}</div>
+                    <div class="text-xs text-[var(--text-faint)] mt-1">{{ e.farmacia.codigo }} · {{ e.farmacia.nombre }}</div>
+                </div>
+                <div class="text-xs text-right flex-none">
+                    {% if e.ultimo_heartbeat %}
+                        <span class="text-[var(--text-dim)]">hace {{ e.ultimo_heartbeat|timesince }}</span>
+                    {% else %}
+                        {# Aprobada y sin un solo latido: no es una caída, es una instalación que nunca funcionó. #}
+                        <span class="pill critical">nunca reportó</span>
+                    {% endif %}
+                </div>
+            </button>
+            {% empty %}
+            {% include "panel/_estado_vacio.html" with titulo="Todas las estaciones aprobadas están reportando" pista="Ninguna estación aprobada pasó el umbral de latido sin dar señal." ignorar_filtros=1 %}
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+{% comment %}
+=== ZONA 5 · ENROLAMIENTO ========================================================
+
+Las dos caras del mismo trabajo, juntas por primera vez. Los enrolamientos rechazados son
+agentes que intentaron enrolarse con un código cuyo sitio no existe: la pantalla que los
+lista existe desde el 27-sep-2026 y NINGUNA plantilla la enlazaba, así que para llegar
+había que escribir la URL a mano (hallazgo D-10). Es justo el caso de "se instaló el
+agente, el técnico se fue, y la estación nunca apareció en el panel".
+{% endcomment %}
+{% if total_pendientes or enrolamientos_rechazados %}
+<div class="card p-4 mb-6">
+    <h2 class="text-sm font-medium mb-3">Enrolamiento</h2>
+    <div class="grid gap-x-6 gap-y-2 md:grid-cols-2">
+        <a href="{% url 'panel:estaciones_lista' %}" class="flex items-center justify-between gap-3 text-sm py-1 hover:bg-[var(--overlay-hover)] rounded-md px-2 -mx-2">
+            <div class="flex items-center gap-2">
+                {% if total_pendientes %}
+                    {% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}
+                {% else %}
+                    {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+                {% endif %}
+                <span>Esperando aprobación</span>
+            </div>
+            <span class="num font-semibold">{{ total_pendientes }}</span>
+        </a>
+        <a href="{% url 'panel:enrolamientos_rechazados_lista' %}" class="flex items-center justify-between gap-3 text-sm py-1 hover:bg-[var(--overlay-hover)] rounded-md px-2 -mx-2">
+            <div class="flex items-center gap-2">
+                {% if enrolamientos_rechazados %}
+                    {% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}
+                {% else %}
+                    {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+                {% endif %}
+                <span>Rechazados <span class="text-xs text-[var(--text-faint)]">— código sin sitio</span></span>
+            </div>
+            <span class="num font-semibold">{{ enrolamientos_rechazados }}</span>
+        </a>
+    </div>
+</div>
+{% endif %}
+
+
+<div class="text-xs text-[var(--text-faint)] mt-4 text-right">
+    {% comment %}
+    Las DOS horas, juntas y distintas. "Calculado" es cuando corrio la consulta; la hora de
+    cada dato vive en su fila de la Zona 0. El tablero no tenia ninguna de las dos, asi que
+    una pantalla abierta desde las 8:00 mostraba las 8:00 y no lo decia (hallazgo D-07).
+    {% endcomment %}
+    Calculado {{ calculado_en|date:"H:i:s" }} · se actualiza solo cada {{ segundos_refresco }} s
+</div>
+</div>

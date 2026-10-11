@@ -1,0 +1,100 @@
+{% comment %}
+Zona 6: cumplimiento por grupo y despliegues en curso.
+
+Se carga la primera vez que alguien ABRE el bloque, no en cada carga del tablero: son 5
+Count(DISTINCT) sobre dos JOIN que se pagaban en la portada —y en cada F5— para una tabla
+que ocupaba la primera posición y que casi nadie estaba leyendo (hallazgos U-2 y R-4).
+
+Sin `<details>` acá dentro: el plegado lo pone el marco (`dashboard.html`), y anidar dos
+dejaría el contenido cerrado dentro de un bloque ya abierto.
+{% endcomment %}
+<div class="px-4 pb-4">
+    <h3 class="text-xs font-medium uppercase tracking-wide text-[var(--text-faint)] mb-2">
+        Cumplimiento por grupo
+        <span class="font-normal normal-case tracking-normal">— versión del POS por canal</span>
+    </h3>
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-3 py-2">Grupo</th>
+                <th class="text-left px-3 py-2">Versión objetivo</th>
+                <th class="text-left px-3 py-2">Farmacias</th>
+                <th class="text-left px-3 py-2">Estaciones</th>
+                <th class="text-left px-3 py-2">En línea</th>
+                <th class="text-left px-3 py-2">Conformidad</th>
+                <th class="text-left px-3 py-2">Pendientes</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for g in grupos %}
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-3 py-2 font-medium">{{ g.codigo }}</td>
+                <td class="px-3 py-2 text-[var(--text-dim)]">{{ g.version_objetivo|default:"—" }}</td>
+                <td class="px-3 py-2 text-[var(--text-dim)]">{{ g.total_farmacias }}</td>
+                <td class="px-3 py-2 text-[var(--text-dim)]">{{ g.total_estaciones }}</td>
+                <td class="px-3 py-2 text-[var(--text-dim)]">{{ g.online }} / {{ g.total_estaciones }}</td>
+                <td class="px-3 py-2">
+                    {% if g.pct_conforme is not None %}
+                    <div class="rank-row" style="max-width:160px;">
+                        <span class="track"><span class="fill" style="width:{{ g.pct_conforme }}%; background:{% if g.pct_conforme == 100 %}var(--good){% elif g.pct_conforme >= 50 %}var(--warning){% else %}var(--critical){% endif %};"></span></span>
+                        <span class="val">{{ g.pct_conforme }}%</span>
+                    </div>
+                    {% else %}
+                    <span class="text-xs text-[var(--text-faint)]">sin estaciones</span>
+                    {% endif %}
+                </td>
+                <td class="px-3 py-2">
+                    {% if g.pendientes %}
+                        <span class="pill warning">{{ g.pendientes }}</span>
+                    {% else %}
+                        <span class="text-[var(--text-faint)]">0</span>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="7">
+                {% include "panel/_estado_vacio.html" with titulo="Sin grupos registrados todavía" pista="Los grupos son los anillos por los que avanza un despliegue." %}
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <h3 class="text-xs font-medium uppercase tracking-wide text-[var(--text-faint)] mt-5 mb-2">
+        Despliegues en curso
+        <span class="font-normal normal-case tracking-normal">— {{ despliegues_activos|length }}</span>
+    </h3>
+    {% comment %}
+    Progreso y errores. Antes esta fila mostraba versión y estado y nada más, así que no
+    había forma de ver desde el tablero que un despliegue estuviera FALLANDO (hallazgo
+    D-13). El porcentaje no se inventa: es el mismo criterio de
+    `apps.panel.progreso.resumen_de_progreso` —`APLICADO` cuenta como terminado, `ERROR` y
+    `ROLLBACK` como falla— anotado en la misma consulta del listado.
+
+    Los que tienen errores van primero: es lo único de este bloque que puede exigir una
+    decisión ahora mismo.
+    {% endcomment %}
+    {% for d in despliegues_activos %}
+    <a href="{% url 'panel:despliegue_detalle' d.pk %}" class="flex items-center justify-between gap-3 px-3 py-2 hover:bg-[var(--overlay-hover)] rounded-md" style="border-top:1px solid var(--border-soft);">
+        <div class="min-w-0">
+            <span class="font-medium">v{{ d.version }}</span>
+            <span class="text-[var(--text-faint)] text-sm ml-2">{{ d.get_destino_tipo_display }}</span>
+            <div class="text-xs text-[var(--text-faint)] mt-1">
+                {% if d.total_resultados %}
+                    {{ d.aplicados }}/{{ d.total_resultados }} aplicadas
+                    {% if d.con_error %}· <span class="est-fg-critical">{{ d.con_error }} con error</span>{% endif %}
+                {% else %}
+                    todavía no se publicó a ninguna estación
+                {% endif %}
+            </div>
+        </div>
+        <div class="flex items-center gap-2 flex-none">
+            {% if d.con_error %}{% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}{% endif %}
+            <span class="pill {% if d.estado == 'pausado' %}critical{% else %}info{% endif %}">
+                {{ d.get_estado_display }}
+            </span>
+        </div>
+    </a>
+    {% empty %}
+        {% include "panel/_estado_vacio.html" with titulo="No hay despliegues en curso" ignorar_filtros=1 %}
+    {% endfor %}
+</div>

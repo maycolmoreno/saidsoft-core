@@ -19,6 +19,12 @@ urlpatterns = [
     path('cuenta/mfa/desactivar/', views.mfa_desactivar, name='mfa_desactivar'),
 
     path('', views.dashboard, name='dashboard'),
+    # El interior que se refresca solo, y la Zona 6 que se carga al abrirse. Dos parciales
+    # y no uno: lo vivo cuesta poco y se pide cada minuto; el cumplimiento es lo caro de la
+    # pantalla y no cambia cada minuto (ver apps.panel.views.dashboard).
+    path('vivo/', views.dashboard_vivo_partial, name='dashboard_vivo_partial'),
+    path('cumplimiento-tablero/', views.dashboard_cumplimiento_partial,
+         name='dashboard_cumplimiento_partial'),
     path('unidad-negocio/activar/', views.unidad_negocio_activar, name='unidad_negocio_activar'),
 
     path('estaciones/', views.estaciones_lista, name='estaciones_lista'),

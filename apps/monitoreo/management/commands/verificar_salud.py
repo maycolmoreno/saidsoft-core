@@ -118,22 +118,45 @@ class Command(BaseCommand):
             revisar('base de datos', False, 'no responde: %s' % exc)
 
     def _revisar_latidos(self, revisar):
+        """Los latidos, leídos del MISMO lugar que el panel.
+
+        Hasta el 10-oct-2026 esta función comparaba por su cuenta: leía los umbrales de
+        `apps.monitoreo.umbrales` —bien— pero la comparación era una segunda
+        implementación, y el panel tenía la suya. El síntoma de eso es silencioso: la
+        consola dice "OK mqtt_worker" y la pantalla lo pinta en rojo, y no hay forma de
+        saber cuál de las dos miente.
+
+        Ahora las dos leen `apps.monitoreo.salud.estado_latidos()`, que además distingue
+        lo que esta función nunca pudo: proceso vivo, conectado al broker y procesando.
+        El CONTRATO de este comando no cambia —mismos nombres de componente, mismo código
+        de salida— porque es lo que consume un temporizador de systemd y el healthcheck
+        de cada contenedor.
+        """
+        from apps.monitoreo.salud import estado_latidos
+
         ahora = timezone.now()
         latidos = {h.nombre: h.ultimo_latido for h in WorkerHeartbeat.objects.all()}
 
-        for nombre, umbral_segundos in (
-            (NOMBRE_WORKER_MQTT, WORKER_MQTT_UMBRAL_SEGUNDOS),
-            (NOMBRE_WORKER_MESHCENTRAL, WORKER_MQTT_UMBRAL_SEGUNDOS),
-        ):
-            ultimo = latidos.get(nombre)
-            if ultimo is None:
-                revisar(nombre, False, 'nunca registró un latido')
+        for componente in estado_latidos():
+            # El respaldo se revisa abajo, con su propio criterio: "nunca corrió" no es un
+            # problema para este comando (una instalación nueva no tiene respaldo) y sí es
+            # una advertencia en la pantalla. La diferencia es deliberada y está explicada
+            # en los dos lados.
+            if componente.clave == NOMBRE_RESPALDO:
                 continue
-            atraso = (ahora - ultimo).total_seconds()
-            revisar(
-                nombre, atraso <= umbral_segundos,
-                'último latido hace %.0f s (umbral %d s)' % (atraso, umbral_segundos),
-            )
+            # **Solo `critical` cuenta como problema acá.** La pantalla distingue tres
+            # grados; el código de salida de este comando es binario y lo consume un
+            # temporizador que manda correo, así que tiene que significar "andá a mirar
+            # esto ahora".
+            #
+            # Un componente en ámbar no lo es. Los dos casos que lo producen son
+            # "todavía no se pudo comprobar" —un worker anterior al campo `conectado`, o
+            # un Beat que aún no registró su primer latido— y marcarlos rojo haría que el
+            # temporizador avise todas las noches por algo que nadie va a arreglar esa
+            # noche. Peor: en la ventana de un despliegue, con el worker viejo todavía
+            # corriendo y el web ya nuevo, el comando empezaría a fallar sin que nada esté
+            # roto. La pantalla sí lo muestra en ámbar, que es donde ese matiz sirve.
+            revisar(componente.clave, componente.estado != 'critical', componente.detalle)
 
         ultimo = latidos.get(NOMBRE_RESPALDO)
         if ultimo is None:

@@ -23,6 +23,7 @@ from .models import (
     Alerta, CanalNotificacion, EstadoDispositivo, EventoMonitoreo, Metrica, MuestraMetrica, MuestraRedFarmacia,
     ConfiguracionMonitoreo, MuestraServicioPos, PosErrorDetectado, ReglaAlerta, VentanaMantenimiento,
 )
+from .umbrales import ONLINE_UMBRAL_MINUTOS
 
 logger = logging.getLogger(__name__)
 
@@ -1401,7 +1402,10 @@ def evaluar_regla_servicio_pos(estacion, estado) -> None:
 TOLERANCIA_FRESCURA_MINUTOS = {
     'enlaces': 6,           # sondear-enlaces-farmacias, cada 2 min
     'red_farmacias': 15,    # sondear-red-farmacias-via-agente, cada 5 min
-    'estaciones': 10,       # heartbeat del agente (~30 s) + marcar-estaciones-offline (60 s)
+    # No es un 10 escrito acá: es EL umbral de "en línea", que desde el 10-oct-2026 vive
+    # en un solo lugar. Este diccionario tenía su propia copia y era uno de los tres
+    # criterios que se contradecían entre pantallas (hallazgo D-01).
+    'estaciones': ONLINE_UMBRAL_MINUTOS,
     'servicios_pos': 30,    # lo reporta el agente en su propio bucle, no una tarea de Beat
 }
 
@@ -1431,34 +1435,24 @@ def resumen_operacion(unidades=None) -> dict:
     """
     from datetime import timedelta
 
-    from apps.catalogo.models import Estacion, Farmacia
-
     from .models import (
-        Alerta, EstadoEnlaceFarmacia, EstadoRedActivo, EstadoServicioPos,
+        Alerta, EstadoRedActivo, EstadoServicioPos, EventoEnlaceFarmacia,
         MuestraRedFarmacia, ReglaAlerta,
     )
 
     ahora = timezone.now()
 
-    estaciones = _por_unidad(
-        Estacion.objects.filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA),
-        unidades, 'farmacia__unidad_negocio',
-    )
-    total_estaciones = estaciones.count()
-    frescas = estaciones.filter(
-        ultimo_heartbeat__gte=ahora - timedelta(minutes=TOLERANCIA_FRESCURA_MINUTOS['estaciones']),
-    )
-    en_linea = frescas.count()
+    # Las estaciones salen de `estado_flota`, que es la fuente única desde el
+    # 10-oct-2026: el mismo numero que muestran el tablero y el listado, con el mismo
+    # umbral. Antes este bloque hacia cuatro `count()` con su propia copia del criterio y
+    # el tablero tenia otra distinta (hallazgo D-01).
+    #
+    # Son CUATRO consultas menos, no una mas: `estado_flota` resuelve todo con una sola
+    # agregacion condicional. Importa porque esta funcion la llama el Centro cada minuto
+    # por cada agente que deja la pantalla abierta.
+    from apps.catalogo.services import estado_flota
 
-    # Las PCs administrativas se apagan de noche y el fin de semana. Sumadas al mismo
-    # contador que las farmacias, harian que "estaciones fuera" saltara ~100 todas las
-    # noches y el numero dejaria de significar "hay un problema" -- que es el unico
-    # motivo por el que alguien lo mira. Se cuentan aparte, no se esconden.
-    administrativas = estaciones.filter(farmacia__tipo=Farmacia.Tipo.ADMINISTRATIVO)
-    total_admin = administrativas.count()
-    admin_en_linea = administrativas.filter(
-        ultimo_heartbeat__gte=ahora - timedelta(minutes=TOLERANCIA_FRESCURA_MINUTOS['estaciones']),
-    ).count()
+    flota = estado_flota(unidades)
 
     abiertas = _por_unidad(
         Alerta.objects.filter(estado=Alerta.Estado.ABIERTA),
@@ -1466,6 +1460,16 @@ def resumen_operacion(unidades=None) -> dict:
     )
     criticas = abiertas.filter(regla__severidad=ReglaAlerta.Severidad.CRITICAL).count()
     advertencias = abiertas.filter(regla__severidad=ReglaAlerta.Severidad.WARNING).count()
+
+    # Reconocidas: alguien las está atendiendo, siguen sin resolverse. Se cuentan APARTE y
+    # no dentro de `criticas`/`advertencias`, que es lo que esta función ya hacía bien.
+    # Lo que no estaba era el número: el tablero sumaba abiertas + reconocidas en un solo
+    # KPI llamado "Alertas abiertas", así que los dos tableros mostraban cifras distintas
+    # para algo que se llamaba igual, y ninguno decía qué contaba (hallazgo D-03).
+    en_atencion = _por_unidad(
+        Alerta.objects.filter(estado=Alerta.Estado.RECONOCIDA),
+        unidades, 'estacion__farmacia__unidad_negocio',
+    ).count()
 
     # Se excluye lo que NUNCA respondió: no es una caída sino configuración pendiente, y
     # contarlo como incidente infla el tablero con algo que nadie va a resolver hoy.
@@ -1477,13 +1481,30 @@ def resumen_operacion(unidades=None) -> dict:
     # `farmacias_afectadas`, más abajo, lo reusa. Contar dos veces la misma condición con
     # dos consultas escritas aparte es como se llega a dos números que se contradicen en
     # la misma pantalla.
+    # **La fuente es el EVENTO abierto, no `EstadoEnlaceFarmacia`.** Hasta el 10-oct-2026
+    # este contador leía el estado y las LISTAS de las tres pantallas leían el evento
+    # (hallazgo D-04). `registrar_sondeo` mantiene los dos coherentes, así que en
+    # operación normal coincidían; lo que faltaba era la garantía: no hay constraint que
+    # impida dos eventos abiertos por farmacia, y la recuperación cierra solo el más
+    # reciente. Un evento huérfano abierto habría quedado contado por una pantalla y no
+    # por la otra, para siempre.
+    #
+    # Se cuenta `farmacia` DISTINCT y no filas: el KPI dice "farmacias sin enlace", que es
+    # la pregunta operativa, y así el número es inmune a ese posible duplicado.
+    #
+    # Las tres exclusiones son las mismas que ya aplicaban las tres listas:
+    #   - `fin__isnull=True`   -> solo las caídas todavía abiertas.
+    #   - `farmacia__activa`   -> una dada de baja deja de sondearse y su estado queda
+    #                             congelado; nada lo puede recuperar (GP063, 2-oct-2026).
+    #   - `respondio_alguna_vez=False` excluido -> nunca respondió es configuración
+    #                             pendiente, no una caída.
     enlaces = _por_unidad(
-        EstadoEnlaceFarmacia.objects.filter(
-            alcanzable=False, respondio_alguna_vez=True, farmacia__activa=True,
-        ),
+        EventoEnlaceFarmacia.objects
+        .filter(fin__isnull=True, farmacia__activa=True)
+        .exclude(farmacia__estado_enlace__respondio_alguna_vez=False),
         unidades, 'farmacia__unidad_negocio',
     )
-    enlaces_caidos = enlaces.count()
+    enlaces_caidos = enlaces.values('farmacia_id').distinct().count()
 
     servicios = _por_unidad(
         EstadoServicioPos.objects.filter(disponible=False, ultima_respuesta__isnull=False),
@@ -1544,16 +1565,30 @@ def resumen_operacion(unidades=None) -> dict:
 
     return {
         # `estaciones_*` son las de OPERACION (farmacias y tiendas): es el numero que
-        # mira la mesa de ayuda para saber si hay algo roto.
-        'estaciones_total': total_estaciones - total_admin,
-        'estaciones_en_linea': en_linea - admin_en_linea,
-        'estaciones_fuera': (total_estaciones - total_admin) - (en_linea - admin_en_linea),
+        # mira la mesa de ayuda para saber si hay algo roto. Salen de `estado_flota`, que
+        # es la misma fuente que lee el tablero: los dos dicen el mismo numero o falla
+        # `EquivalenciaIndicadoresTests`.
+        'estaciones_total': flota['total'],
+        'estaciones_en_linea': flota['en_linea'],
+        'estaciones_fuera': flota['sin_reportar'],
+        # Las dos mitades de "sin reportar", que no son el mismo problema: una aprobada
+        # que jamas dio senal es una instalacion fallida; una que reportaba y callo es una
+        # caida (hallazgo D-08).
+        'estaciones_nunca_reporto': flota['nunca_reporto'],
+        'estaciones_dejaron_de_reportar': flota['dejaron_de_reportar'],
+        # Pausadas: siguen latiendo por diseno, asi que estan dentro de `en_linea`. Se
+        # informan para que "52 en linea" no oculte que 4 estan frenadas (hallazgo D-09).
+        'estaciones_pausadas': flota['pausadas'],
         # Administrativas aparte, con su propio contexto: "8 de 20" de noche es normal.
-        'admin_total': total_admin,
-        'admin_en_linea': admin_en_linea,
-        'admin_fuera': total_admin - admin_en_linea,
+        'admin_total': flota['admin_total'],
+        'admin_en_linea': flota['admin_en_linea'],
+        'admin_fuera': flota['admin_fuera'],
+        # Con que umbral se calculo todo lo de arriba. La pantalla lo DICE en vez de que
+        # el operador tenga que adivinarlo.
+        'umbral_online_minutos': flota['umbral_minutos'],
         'alertas_criticas': criticas,
         'alertas_advertencias': advertencias,
+        'alertas_en_atencion': en_atencion,
         'farmacias_afectadas': farmacias_afectadas,
         'enlaces_caidos': enlaces_caidos,
         'pos_criticos': pos_criticos,

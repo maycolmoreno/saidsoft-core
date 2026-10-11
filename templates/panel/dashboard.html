@@ -1,267 +1,111 @@
 {% extends "panel/base.html" %}
-{% block title %}Dashboard · SAIDSOFT{% endblock %}
+{% block title %}Centro de Operación · SAIDSOFT{% endblock %}
+{% comment %}
+Orden de las zonas. Hasta el 10-oct-2026 era: avisos, 5 KPI, matriz de cumplimiento (a
+todo el ancho), enlaces caídos, alertas, estaciones, despliegues. O sea: lo primero que se
+leía era el cumplimiento de versión del POS —un dato de planificación, que cambia de día en
+día— y una farmacia sin vender quedaba en el tercio inferior (hallazgo U-2 de
+docs/auditoria/centro-monitoreo/).
+
+El orden responde a cuatro preguntas, en secuencia:
+  0. ¿Puedo creerle a esta pantalla?      -> Zona 0, salud y frescura
+  1. ¿Hay algo roto y dónde?              -> enlaces caídos, alertas
+  2. ¿Cuál primero?                       -> el orden dentro de cada bloque
+  3. ¿Qué será un problema mañana?        -> enrolamiento, cumplimiento, despliegues
+
+Lo que esta fase NO hace: cambiar ningún número. Las definiciones de los indicadores son
+las de antes, con sus mismos umbrales y sus mismos recortes — corregirlas es la Fase B del
+plan, y mezclar las dos cosas haría imposible saber qué causó qué.
+{% endcomment %}
 {% block content %}
-<div class="flex items-center justify-between mb-2">
-    <h1 class="text-xl font-semibold">Vista general de operación</h1>
-    <a href="{% url 'panel:despliegue_crear' %}" class="btn primary">+ Nuevo despliegue</a>
-</div>
-
-{% if not worker_mqtt_activo %}
-<div class="block mb-2 rounded-md alert sev-critical">
-    <strong>Worker MQTT sin señal.</strong>
-    {% if worker_mqtt_ultimo_latido %}Último latido: {{ worker_mqtt_ultimo_latido|date:"d/m/Y H:i:s" }} — {% else %}Nunca reportó un latido — {% endif %}
-    despliegues, heartbeats y scripts no se están procesando. Revisar el proceso <code>run_mqtt_worker</code>.
-</div>
-{% endif %}
-
-{% comment %} El panel vigila la flota; esta franja lo hace vigilarse a sí mismo. El 6 y el
-   7-sep-2026 no hubo respaldo (el NUC estuvo apagado el fin de semana) y nadie se
-   enteró en dos días. Va arriba de los KPI a propósito: si el respaldo falta, es la
-   primera cosa que hay que leer. {% endcomment %}
-{% if not respaldo_al_dia %}
-<div class="block mb-2 rounded-md alert sev-critical">
-    <strong>Sin respaldo al día.</strong>
-    {% if respaldo_ultimo %}
-        El último se completó el {{ respaldo_ultimo|date:"d/m/Y H:i" }}
-        (hace {{ respaldo_horas|floatformat:0 }} h).
-    {% else %}
-        No hay ningún respaldo registrado todavía.
-    {% endif %}
-    Revisar <code>systemctl status saidsoft-respaldo.timer</code> en el servidor.
-</div>
-{% endif %}
-
-{% if total_pendientes %}
-<a href="{% url 'panel:estaciones_lista' %}" class="block mb-6 rounded-md alert sev-warning">
-    <strong>{{ total_pendientes }}</strong> estación(es) esperando aprobación de enrolamiento.
-</a>
-{% else %}
-<div class="mb-2"></div>
-{% endif %}
-
-<div class="kpi-strip mb-8">
-    <div class="card kpi tone-good">
-        <div class="kpi-top">
-            <div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.3"/><rect x="3" y="14" width="18" height="6" rx="1.3"/><circle cx="7" cy="7" r=".8" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r=".8" fill="currentColor" stroke="none"/></svg></div>
-        </div>
-        <div class="kpi-label">Estaciones en línea</div>
-        <div class="kpi-value num">{{ total_online }}<small>/{{ total_estaciones }}</small></div>
-    </div>
-    <div class="card kpi tone-info">
-        <div class="kpi-top">
-            <div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg></div>
-        </div>
-        <div class="kpi-label">Total de estaciones</div>
-        <div class="kpi-value num">{{ total_estaciones }}</div>
-    </div>
-    <div class="card kpi tone-warning">
-        <div class="kpi-top">
-            <div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
-        </div>
-        <div class="kpi-label">Pendientes de aprobación</div>
-        <div class="kpi-value num">{{ total_pendientes }}</div>
-    </div>
-    <div class="card kpi tone-accent">
-        <div class="kpi-top">
-            <div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg></div>
-        </div>
-        <div class="kpi-label">Despliegues activos</div>
-        <div class="kpi-value num">{{ despliegues_activos|length }}</div>
-    </div>
-    <a href="{% url 'panel:alertas_lista' %}" class="card kpi {% if total_alertas_abiertas %}tone-critical{% else %}tone-good{% endif %}">
-        <div class="kpi-top">
-            <div class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div>
-        </div>
-        <div class="kpi-label">Alertas abiertas</div>
-        <div class="kpi-value num">{{ total_alertas_abiertas }}</div>
+<div class="flex items-center justify-between mb-3">
+    <h1 class="text-xl font-semibold">Centro de Operación</h1>
+    {% comment %}
+    El botón de "+ Nuevo despliegue" vivía acá, como única acción primaria de la pantalla.
+    La acción destacada de un tablero de monitoreo no es publicar software (U-9): se movió
+    a la pantalla de Despliegues, que es donde ya estaba de todos modos.
+    {% endcomment %}
+    <a href="{% url 'panel:centro_monitoreo' %}" class="text-xs text-[var(--info)] hover:underline">
+        Centro de Monitoreo · detalle en vivo →
     </a>
-</div>
-
-<h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Matriz de cumplimiento por grupo</h2>
-<div class="card mb-8" style="overflow:hidden;">
-    <table class="w-full text-sm">
-        <thead style="background:var(--panel);">
-            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
-                <th class="text-left px-4 py-3">Grupo</th>
-                <th class="text-left px-4 py-3">Versión objetivo</th>
-                <th class="text-left px-4 py-3">Farmacias</th>
-                <th class="text-left px-4 py-3">Estaciones</th>
-                <th class="text-left px-4 py-3">En línea</th>
-                <th class="text-left px-4 py-3">Conformidad</th>
-                <th class="text-left px-4 py-3">Pendientes</th>
-            </tr>
-        </thead>
-        <tbody>
-        {% for g in grupos %}
-            <tr style="border-top:1px solid var(--border-soft);">
-                <td class="px-4 py-3 font-medium">{{ g.codigo }}</td>
-                <td class="px-4 py-3 text-[var(--text-dim)]">{{ g.version_objetivo|default:"—" }}</td>
-                <td class="px-4 py-3 text-[var(--text-dim)]">{{ g.total_farmacias }}</td>
-                <td class="px-4 py-3 text-[var(--text-dim)]">{{ g.total_estaciones }}</td>
-                <td class="px-4 py-3 text-[var(--text-dim)]">{{ g.online }} / {{ g.total_estaciones }}</td>
-                <td class="px-4 py-3">
-                    {% if g.pct_conforme is not None %}
-                    <div class="rank-row" style="max-width:160px;">
-                        <span class="track"><span class="fill" style="width:{{ g.pct_conforme }}%; background:{% if g.pct_conforme == 100 %}var(--good){% elif g.pct_conforme >= 50 %}var(--warning){% else %}var(--critical){% endif %};"></span></span>
-                        <span class="val">{{ g.pct_conforme }}%</span>
-                    </div>
-                    {% else %}
-                    <span class="text-xs text-[var(--text-faint)]">sin estaciones</span>
-                    {% endif %}
-                </td>
-                <td class="px-4 py-3">
-                    {% if g.pendientes %}
-                        <span class="pill warning">{{ g.pendientes }}</span>
-                    {% else %}
-                        <span class="text-[var(--text-faint)]">0</span>
-                    {% endif %}
-                </td>
-            </tr>
-        {% empty %}
-            <tr><td colspan="7">
-                {% include "panel/_estado_vacio.html" with titulo="Sin grupos registrados todavía" pista="Los grupos son los anillos por los que avanza un despliegue." %}
-            </td></tr>
-        {% endfor %}
-        </tbody>
-    </table>
 </div>
 
 {% comment %}
-Enlaces caídos. Va ARRIBA de las alertas y las estaciones, y a todo el ancho, porque es
-el fallo de mayor impacto: una farmacia sin enlace no vende. Hasta el 3-oct-2026 el
-dashboard no mostraba ninguno y la caída estaba a dos pantallas de distancia.
+El interior vivo se renderiza de entrada y despues se reemplaza solo. `hx-trigger` no
+lleva `load`: el contenido ya viene en la respuesta, asi que pedirlo otra vez al cargar
+seria repetir la misma consulta un segundo despues.
 
-No repite el bloque del Centro de Monitoreo: allá se agrupan por proveedor, que es como
-se abre el reclamo; acá es una lista plana por antigüedad, que es como se decide a qué ir
-primero. Cada fila lleva al listado de enlaces, igual que las alertas llevan al de
-alertas — el dashboard no abre modales.
+`hx-sync="this:replace"` evita que dos refrescos se pisen si el servidor tarda mas que el
+intervalo.
 {% endcomment %}
-{% if enlaces_caidos %}
-<div class="mb-8">
-    <div class="flex items-baseline justify-between mb-3">
-        <h2 class="text-sm font-medium uppercase tracking-wide text-[var(--text-faint)]">
-            Enlaces caídos — {{ total_enlaces_caidos }} farmacia{{ total_enlaces_caidos|pluralize:"s" }} sin conectividad
-        </h2>
-        {% if total_enlaces_caidos > 6 %}
-        <a href="{% url 'panel:enlaces_farmacias_lista' %}?estado=caidos" class="text-xs text-[var(--info)] hover:underline">ver las {{ total_enlaces_caidos }}</a>
-        {% endif %}
-    </div>
-    <div class="card" style="overflow:hidden;">
-        {% for e in enlaces_caidos %}
-        <a href="{% url 'panel:enlaces_farmacias_lista' %}?estado=caidos" class="flex items-center justify-between gap-3 px-4 py-3 hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
-            <div class="min-w-0">
-                <div class="flex items-center gap-2">
-                    <span class="pill critical">Caído</span>
-                    <span class="font-medium truncate">{{ e.farmacia.codigo }}</span>
-                    <span class="text-xs text-[var(--text-faint)] truncate">{{ e.farmacia.nombre }}</span>
-                </div>
-                {% comment %}
-                El circuito sale de la copia del EVENTO si la tiene, y si no de la
-                farmacia viva. No es indecisión: son dos datos con propósitos distintos.
-
-                `EventoEnlaceFarmacia.circuito_proveedor` es una copia tomada al momento
-                de la caída, para que el evento siga sirviendo si la farmacia cambia de
-                circuito después. Pero una caída abierta ANTES de que el circuito se
-                cargara en la farmacia tiene esa copia vacía — y eso dejó de ser
-                hipotético el 3-oct-2026, cuando se importaron 702 circuitos de golpe
-                desde el Excel de operaciones. Sin el respaldo, el técnico leería
-                "circuito sin cargar" con el dato ya disponible a un clic.
-
-                El proveedor ya se resuelve así: `nombre_proveedor(evento.farmacia)` lee
-                la farmacia viva, no el evento.
-                {% endcomment %}
-                {% firstof e.circuito_proveedor e.farmacia.circuito_proveedor as circuito %}
-                <div class="text-xs text-[var(--text-faint)] mt-1">
-                    {{ e.proveedor }}
-                    {% if circuito %}· <span class="mono">{{ circuito }}</span>{% else %}· <span class="text-[var(--text-faint)]">circuito sin cargar</span>{% endif %}
-                    · <span class="mono">{{ e.farmacia.ip_router }}</span>
-                </div>
-            </div>
-            <div class="text-xs text-[var(--text-faint)] text-right flex-none">
-                hace {{ e.inicio|timesince }}
-            </div>
-        </a>
-        {% endfor %}
-    </div>
-</div>
-{% endif %}
-
-<div class="grid gap-4 lg:grid-cols-2 mb-8">
-    <div>
-        <div class="flex items-baseline justify-between mb-3">
-            <h2 class="text-sm font-medium uppercase tracking-wide text-[var(--text-faint)]">Alertas abiertas más recientes</h2>
-            {% if total_alertas_abiertas > 6 %}
-            <a href="{% url 'panel:alertas_lista' %}" class="text-xs text-[var(--info)] hover:underline">ver las {{ total_alertas_abiertas }}</a>
-            {% endif %}
-        </div>
-        <div class="card" style="overflow:hidden;">
-            {% for a in alertas_recientes %}
-            <a href="{% url 'panel:alertas_lista' %}" class="flex items-center justify-between gap-3 px-4 py-3 hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
-                <div class="min-w-0">
-                    <div class="flex items-center gap-2">
-                        <span class="pill {% if a.regla.severidad == 'critical' %}critical{% else %}warning{% endif %}">{{ a.regla.get_severidad_display }}</span>
-                        <span class="font-medium truncate">{{ a.regla.nombre }}</span>
-                    </div>
-                    <div class="text-xs text-[var(--text-faint)] mt-1">{{ a.estacion.codigo }} · {{ a.estacion.farmacia.codigo }}</div>
-                </div>
-                <div class="text-xs text-[var(--text-faint)] text-right flex-none">
-                    hace {{ a.abierta_en|timesince }}
-                    {% if a.estado == 'reconocida' %}<div class="mt-1"><span class="pill warning">Reconocida</span></div>{% endif %}
-                </div>
-            </a>
-            {% empty %}
-            {% include "panel/_estado_vacio.html" with titulo="Sin alertas abiertas" pista="Ninguna regla se está sosteniendo ahora mismo." ignorar_filtros=1 %}
-            {% endfor %}
-        </div>
-    </div>
-
-    <div>
-        <div class="flex items-baseline justify-between mb-3">
-            <h2 class="text-sm font-medium uppercase tracking-wide text-[var(--text-faint)]">Estaciones que dejaron de reportar</h2>
-            {% if total_sin_reportar > 6 %}
-            <a href="{% url 'panel:estaciones_lista' %}" class="text-xs text-[var(--info)] hover:underline">ver las {{ total_sin_reportar }}</a>
-            {% endif %}
-        </div>
-        <div class="card" style="overflow:hidden;">
-            {% for e in sin_reportar %}
-            <button type="button" class="w-full text-left flex items-center justify-between gap-3 px-4 py-3 hover:bg-[var(--overlay-hover)]"
-                    hx-get="{% url 'panel:estacion_info_modal' e.pk %}" hx-target="#modal-info-content" hx-swap="innerHTML"
-                    onclick="document.getElementById('modal-info').showModal()"
-                    style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
-                <div class="min-w-0">
-                    <div class="font-medium truncate">{{ e.codigo }}</div>
-                    <div class="text-xs text-[var(--text-faint)] mt-1">{{ e.farmacia.codigo }} · {{ e.farmacia.nombre }}</div>
-                </div>
-                <div class="text-xs text-right flex-none">
-                    {% if e.ultimo_heartbeat %}
-                        <span class="text-[var(--text-dim)]">hace {{ e.ultimo_heartbeat|timesince }}</span>
-                    {% else %}
-                        {# Aprobada y sin un solo latido: no es una caída, es una instalación que nunca funcionó. #}
-                        <span class="pill critical">nunca reportó</span>
-                    {% endif %}
-                </div>
-            </button>
-            {% empty %}
-            {% include "panel/_estado_vacio.html" with titulo="Todas las estaciones aprobadas están reportando" pista="Ninguna estación aprobada pasó el umbral de latido sin dar señal." ignorar_filtros=1 %}
-            {% endfor %}
-        </div>
-    </div>
+<div id="tablero-vivo"
+     hx-get="{% url 'panel:dashboard_vivo_partial' %}"
+     hx-trigger="every {{ segundos_refresco }}s"
+     hx-sync="this:replace"
+     hx-swap="innerHTML">
+{% include "panel/dashboard_vivo_partial.html" %}
 </div>
 
-<h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Despliegues en curso</h2>
-<div class="card" style="overflow:hidden;">
-    {% for d in despliegues_activos %}
-    <a href="{% url 'panel:despliegue_detalle' d.pk %}" class="flex items-center justify-between px-4 py-3 hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
-        <div>
-            <span class="font-medium">v{{ d.version }}</span>
-            <span class="text-[var(--text-faint)] text-sm ml-2">{{ d.get_destino_tipo_display }}</span>
-        </div>
-        <span class="pill {% if d.estado == 'pausado' %}critical{% else %}info{% endif %}">
-            {{ d.get_estado_display }}
-        </span>
-    </a>
-    {% empty %}
-        {% include "panel/_estado_vacio.html" with titulo="No hay despliegues en curso" ignorar_filtros=1 %}
-    {% endfor %}
+{% comment %}
+=== ZONA 6 . CUMPLIMIENTO Y DESPLIEGUES ==========================================
+
+Al final y plegado. Ocupaba la primera posicion del cuerpo y todo el ancho, por delante de
+los enlaces caidos: es planificacion de despliegues, no una incidencia (U-2). Sigue
+disponible y completo, a un clic.
+
+Y se carga SOLO al abrirse (`hx-trigger="toggle once"`): lo caro de esta pantalla no se
+paga mientras nadie lo mire. `<details>` es nativo, accesible con teclado y sin una linea
+de JavaScript.
+{% endcomment %}
+<details class="card" id="zona-cumplimiento"
+         hx-get="{% url 'panel:dashboard_cumplimiento_partial' %}"
+         hx-trigger="toggle once"
+         hx-target="#cumplimiento-contenido"
+         hx-swap="innerHTML">
+    <summary class="px-4 py-3 cursor-pointer text-sm font-medium">
+        Cumplimiento por grupo y despliegues en curso
+        <span class="text-xs font-normal text-[var(--text-faint)]">— se carga al abrir</span>
+    </summary>
+    <div id="cumplimiento-contenido" class="text-sm text-[var(--text-faint)] px-4 py-3">
+        Cargando…
+    </div>
+</details>
+
+{% comment %}
+Aviso de fallo de refresco. Sin esto, si una peticion se cae HTMX deja el contenido
+anterior SIN NINGUNA MARCA y el operador sigue mirando datos viejos creyendolos actuales
+— el mismo defecto que `fuente_desactualizada` resuelve para los datos y que nadie habia
+resuelto para el transporte.
+
+Se escucha en `document` y no con atributos por elemento para que valga para los dos
+parciales y para cualquier zona que se agregue despues.
+{% endcomment %}
+<div id="tablero-sin-contacto" class="alert sev-warning mt-4" hidden>
+    <strong>Sin contacto con el servidor.</strong>
+    Lo que se ve es de <span id="tablero-sin-contacto-hora"></span> y puede haber cambiado.
 </div>
+<script>
+(function(){
+    var aviso = document.getElementById('tablero-sin-contacto');
+    var hora = document.getElementById('tablero-sin-contacto-hora');
+    if (!aviso || !hora) { return; }
+
+    function fallo(){
+        /* La hora que se muestra es la del ultimo dato BUENO, no la del fallo: lo que el
+           operador necesita saber es de cuando es lo que esta leyendo. */
+        if (aviso.hidden) {
+            hora.textContent = new Date().toLocaleTimeString('es-EC');
+            aviso.hidden = false;
+        }
+    }
+    document.body.addEventListener('htmx:responseError', fallo);
+    document.body.addEventListener('htmx:sendError', fallo);
+    document.body.addEventListener('htmx:timeout', fallo);
+    /* Un refresco que vuelve a funcionar lo retira: si quedara pegado, el aviso se
+       convertiria en el mismo ruido permanente que la barra que decia "todo operativo". */
+    document.body.addEventListener('htmx:afterOnLoad', function(e){
+        if (e.detail && e.detail.xhr && e.detail.xhr.status === 200) { aviso.hidden = true; }
+    });
+})();
+</script>
 {% endblock %}

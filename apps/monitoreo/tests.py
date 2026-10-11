@@ -2981,16 +2981,21 @@ class VerificarSaludTests(TestCase):
         from apps.monitoreo.management.commands import verificar_salud as cmd
         from apps.monitoreo.umbrales import RESPALDO_UMBRAL_HORAS, WORKER_MQTT_UMBRAL_SEGUNDOS
 
-        # `import_module` y no `from apps.panel.views import dashboard`: ese paquete hace
-        # `from .dashboard import dashboard` en su __init__, asi que el nombre resuelve a
-        # la VISTA y tapa al modulo. El atajo obvio daba
-        # "'function' object has no attribute WORKER_MQTT_UMBRAL_SEGUNDOS".
-        dashboard = import_module('apps.panel.views.dashboard')
+        # Desde el 10-oct-2026 el panel ya no COMPARA contra los umbrales: la comparacion
+        # tambien vive en el dominio (`apps.monitoreo.salud`), que es de donde leen tanto
+        # la barra superior como la Zona 0 del tablero. Asi que el modulo a vigilar es
+        # ese y no la vista -- antes se miraba `apps.panel.views.dashboard`, que importaba
+        # los dos umbrales para decidir el color de la pantalla.
+        #
+        # `import_module` por costumbre del archivo: el paquete `apps.panel.views` hace
+        # `from .dashboard import dashboard` en su __init__, asi que ese nombre resuelve a
+        # la VISTA y tapa al modulo.
+        salud = import_module('apps.monitoreo.salud')
 
         self.assertEqual(cmd.WORKER_MQTT_UMBRAL_SEGUNDOS, WORKER_MQTT_UMBRAL_SEGUNDOS)
         self.assertEqual(cmd.RESPALDO_UMBRAL_HORAS, RESPALDO_UMBRAL_HORAS)
-        self.assertEqual(dashboard.WORKER_MQTT_UMBRAL_SEGUNDOS, WORKER_MQTT_UMBRAL_SEGUNDOS)
-        self.assertEqual(dashboard.RESPALDO_UMBRAL_HORAS, RESPALDO_UMBRAL_HORAS)
+        self.assertEqual(salud.WORKER_MQTT_UMBRAL_SEGUNDOS, WORKER_MQTT_UMBRAL_SEGUNDOS)
+        self.assertEqual(salud.RESPALDO_UMBRAL_HORAS, RESPALDO_UMBRAL_HORAS)
 
         # Que coincidan hoy no alcanza: tienen que venir del MISMO lugar, o el dia que
         # alguien ajuste uno la otra se queda con el viejo y las dos afirman cosas
@@ -3013,6 +3018,12 @@ class VerificarSaludTests(TestCase):
                 'El comando volvio a importar de apps.panel: %r' % linea,
             )
 
+        fuente_salud = (raiz / 'apps' / 'monitoreo' / 'salud.py').read_text(encoding='utf-8')
+        self.assertIn('from apps.monitoreo.umbrales import', fuente_salud)
+
+        # La vista sigue leyendo de `umbrales` lo que necesita para CONSULTAR (el umbral
+        # de "en linea"), y eso esta bien: lo que ya no hace es comparar latidos para
+        # decidir si la plataforma esta sana, que es lo que se movio a `salud`.
         fuente_panel = (raiz / 'apps' / 'panel' / 'views' / 'dashboard.py').read_text(encoding='utf-8')
         self.assertIn('from apps.monitoreo.umbrales import', fuente_panel)
 
@@ -7952,11 +7963,26 @@ class FarmaciasAfectadasTests(TestCase):
         return resumen_operacion(unidades if unidades is not None else [self.sg])['farmacias_afectadas']
 
     def _caer_enlace(self, farmacia):
-        from apps.monitoreo.models import EstadoEnlaceFarmacia
+        """Deja la farmacia caída como la deja un sondeo real: estado Y evento abierto.
+
+        Las dos filas van juntas porque `registrar_sondeo` siempre escribe las dos — pone
+        `alcanzable=False` y crea el `EventoEnlaceFarmacia` en el mismo paso—, así que un
+        estado caído sin evento abierto no es un dato que el sistema produzca.
+
+        Importa desde el 10-oct-2026: `resumen_operacion` cuenta los enlaces caídos sobre
+        el EVENTO abierto y no sobre el estado, para tener una sola fuente con las listas
+        de las tres pantallas (hallazgo D-04 de docs/auditoria/centro-monitoreo/). Este
+        helper creaba solo el estado, así que las farmacias caídas dejaban de contarse.
+        """
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
 
         EstadoEnlaceFarmacia.objects.update_or_create(
             farmacia=farmacia,
             defaults={'alcanzable': False, 'respondio_alguna_vez': True},
+        )
+        EventoEnlaceFarmacia.objects.get_or_create(
+            farmacia=farmacia, fin__isnull=True,
+            defaults={'inicio': timezone.now() - timedelta(minutes=30)},
         )
 
     def test_sin_problemas_es_cero(self):

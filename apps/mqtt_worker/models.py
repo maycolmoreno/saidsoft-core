@@ -9,9 +9,33 @@ class WorkerHeartbeat(models.Model):
     Fila única por `nombre`: el dashboard la usa para mostrar si el worker sigue
     activo sin tener que inferirlo indirectamente por estaciones que empiezan a
     reportarse offline (señal indirecta y tardía).
+
+    **`ultimo_latido` prueba que el PROCESO vive, y nada más.** Lo escribe un hilo aparte
+    (`run_mqtt_worker._latido_periodico`) cada 30 s mientras el proceso exista, así que un
+    worker desconectado del broker —o conectado y sin procesar un solo mensaje— se veía
+    perfectamente sano en el panel. Ese hilo se agregó para resolver el falso negativo
+    contrario (un worker sano sin tráfico aparecía "sin señal" a los 90 s) y abrió este
+    falso positivo. Los dos campos de abajo son lo que cierra la diferencia; ver el
+    hallazgo D-05 en docs/auditoria/centro-monitoreo/.
     """
     nombre = models.CharField(max_length=50, unique=True)
     ultimo_latido = models.DateTimeField()
+    conectado = models.BooleanField(
+        null=True, blank=True,
+        help_text='Si el worker estaba conectado a su broker la última vez que latió. '
+                  'null = ese worker no sabe responder la pregunta (los procesos que no '
+                  'hablan con un broker, como el respaldo, y cualquier versión anterior '
+                  'a este campo). null NO es "no conectado": es "sin verificar", y el '
+                  'panel lo muestra así en vez de pintarlo de verde.',
+    )
+    mensajes_procesados = models.PositiveBigIntegerField(
+        default=0,
+        help_text='Mensajes que este worker procesó desde que arrancó. Es lo que '
+                  'distingue "conectado" de "procesando": si no se mueve mientras hay '
+                  'estaciones en línea, el worker está suscrito y no está recibiendo. Se '
+                  'reinicia en cada arranque a propósito — lo que importa es si AVANZA, '
+                  'no cuánto vale.',
+    )
 
     class Meta:
         db_table = 'worker_heartbeat'
