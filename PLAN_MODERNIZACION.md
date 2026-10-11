@@ -4870,6 +4870,19 @@ Triage humano de los 94 y autorización para ejecutar pruebas contra PostgreSQL,
 corregirse sin esa decisión**, y `BD-11` en particular propone tocar índices mientras su propio informe pide
 medir primero.
 
+**El triage de los 12 ALTO está hecho — `docs/auditoria/fase5-triage.md` (11-oct-2026).**
+Cada uno se releyó sobre `d19bf38`, siete commits después de la línea base de la Fase 4:
+**11 siguen vigentes** con la línea verificada, y el único corregido es `BUG-01`. Lo que
+agrega sobre la Fase 4 es la vigencia, qué hace falta para reproducir cada uno —**siete se
+reproducen en local**, sin broker ni producción— y un orden con su motivo. Primero
+`RIESGO-06` (los catálogos de servicios POS y de eventos son los dos únicos mensajes que el
+agente obedece sin verificar firma, van retenidos, y dirigen su actividad de red contra
+destinos que vienen en el propio mensaje: es el único de los once que convierte una
+credencial filtrada en control de la flota); después `INV-01` (el único que un operador
+sufre hoy: un 500 que congela un activo en el admin). Los cinco `INV-*` van al final porque
+hay 22 activos cargados y este es el momento más barato en que van a poder arreglarse, no
+porque sean menores. **Los 81 MEDIO/BAJO siguen sin triar.**
+
 ---
 
 ## §10-BI — La barra que decía "Todos los sistemas operativos" sin comprobar nada (11-oct-2026)
