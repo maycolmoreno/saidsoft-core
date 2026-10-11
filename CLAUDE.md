@@ -7,7 +7,7 @@ panel HTMX, app móvil Flutter, multi-cliente por `UnidadNegocio`). Tres unidade
 negocio: SG (393 farmacias), MIA (305), 7DIAS (2).
 
 **El estado real en una línea: la plataforma está construida; el despliegue no.**
-15 apps Django, 2.119 pruebas, 701 farmacias modeladas — y **66 equipos con agente
+15 apps Django, 2.413 pruebas, 701 farmacias modeladas — y **66 equipos con agente
 instalado de ~1.800 estimados**. El cuello de botella dejó de ser el código.
 
 Los tres números se corrigieron el 5-oct-2026 contra la base de producción (decía
@@ -252,3 +252,12 @@ repetir.
 - `python manage.py check`
 - `python manage.py makemigrations --check --dry-run` (sin drift de migraciones)
 - `python manage.py test` (suite completa; el venv está en `.venv/`)
+
+**Sin `--parallel`**, igual que el CI (11-oct-2026). Con TimescaleDB el clonado de la base
+de pruebas falla: el *Background Worker Scheduler* de la extensión mantiene una sesión
+abierta en `test_bd_saidsof`, y `CREATE DATABASE ... TEMPLATE` sobre una base con sesiones
+activas aborta con "source database is being accessed by other users". La suite secuencial
+tarda ~17 min por las cuatro apps grandes; es el precio del motor correcto.
+Conviene también `--noinput`: si una corrida anterior quedó a medias, la base de pruebas
+sobrevive y Django se queda esperando un "yes" por teclado que en una sesión sin stdin
+nunca llega.
