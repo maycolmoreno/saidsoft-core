@@ -1246,6 +1246,14 @@ class AlertasAgrupadasTests(TestCase):
         self.assertContains(resp, f'?regla={self.regla.pk}')
 
     def test_regla_pos_errores_linkea_al_rollup_por_mensaje(self):
+        # El rollup por mensaje exige su propio permiso (`pos_errores_flota`), que no viene con
+        # view_alerta: desde que la celda lo respeta, sin esto el enlace no se renderiza — que
+        # es justo lo que F-07 vino a arreglar.
+        self.usuario.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='monitoreo', codename='view_poserrordetectado',
+            ),
+        )
         regla_pos = ReglaAlerta.objects.create(
             nombre='Errores del POS', metrica=Metrica.POS_ERRORES, umbral=1, creado_por=self.usuario,
         )
@@ -5875,12 +5883,19 @@ class CentroMonitoreoTests(TestCase):
     # —ni deben: una caja POS con un servicio caido tiene que verse— asi que cada fila de
     # una estacion no monitoreada era un 404. Se reporto sobre /monitoreo/16/.
 
+    def _permitir(self, app_label, codename, usuario=None):
+        (usuario or self.mesa).user_permissions.add(
+            Permission.objects.get(content_type__app_label=app_label, codename=codename),
+        )
+
     def _hrefs_internos(self, resp):
         return [h for h in re.findall(r'href="([^"]+)"', resp.content.decode()) if h.startswith('/')]
 
     def test_la_fila_de_una_estacion_sin_monitoreo_NO_enlaza_a_la_ficha_de_monitoreo(self):
         """El default de `monitorear_recursos` es False: es el caso comun, no el raro."""
         self.assertFalse(self.estacion_sg.monitorear_recursos)
+        # El listado de estaciones exige su propio permiso, que el rol de triage no trae.
+        self._permitir('catalogo', 'view_estacion')
 
         hrefs = self._hrefs_internos(self._datos())
 
@@ -5895,11 +5910,31 @@ class CentroMonitoreoTests(TestCase):
     def test_la_fila_de_una_estacion_monitoreada_SI_enlaza_a_su_ficha(self):
         self.estacion_sg.monitorear_recursos = True
         self.estacion_sg.save(update_fields=['monitorear_recursos'])
+        self._permitir('monitoreo', 'view_muestrametrica')
 
         self.assertIn(
             reverse('panel:monitoreo_detalle', args=[self.estacion_sg.pk]),
             self._hrefs_internos(self._datos()),
         )
+
+    def test_el_triage_puro_ve_el_codigo_sin_enlaces_que_no_puede_abrir(self):
+        """F-08: la puerta de esta pantalla es `monitoreo.view_alerta`, y sus enlaces van a
+        pantallas con OTROS permisos — la ficha de recursos, el listado de estaciones, los
+        enlaces de farmacias. Para un rol de triage puro los tres respondian 403.
+
+        Lo que no cambia es el dato: el codigo de la estacion sigue a la vista, porque dice
+        QUE equipo esta en problemas y eso es para lo que se mira el tablero.
+        """
+        self.estacion_sg.monitorear_recursos = True
+        self.estacion_sg.save(update_fields=['monitorear_recursos'])
+
+        resp = self._datos()
+        hrefs = self._hrefs_internos(resp)
+
+        self.assertContains(resp, 'ML940-A')
+        self.assertNotIn(reverse('panel:monitoreo_detalle', args=[self.estacion_sg.pk]), hrefs)
+        self.assertNotIn(reverse('panel:estaciones_lista'), [h.split('?')[0] for h in hrefs])
+        self.assertNotIn(reverse('panel:enlaces_farmacias_lista'), hrefs)
 
     def test_ningun_enlace_del_tablero_termina_en_404(self):
         """Lo que el caso puntual no cubre: se siguen TODOS los enlaces que el tablero
@@ -6031,6 +6066,9 @@ class CentroMonitoreoTests(TestCase):
         """
         self.estacion_sg.monitorear_recursos = True
         self.estacion_sg.save(update_fields=['monitorear_recursos'])
+        # Los dos destinos piden permisos que esta pantalla no exige (ver los tests de abajo).
+        self._permitir('monitoreo', 'view_muestrametrica')
+        self._permitir('monitoreo', 'view_estadoenlacefarmacia')
 
         resp = self._datos()
         self.assertContains(resp, reverse('panel:monitoreo_detalle', args=[self.estacion_sg.pk]))

@@ -1,23 +1,32 @@
 {% comment %}
-Enlace al detalle de una estación, con el destino que esa estación realmente tiene.
+Enlace al detalle de una estación, con el destino que esa estación realmente tiene y que
+quien mira realmente puede abrir. Decide por dos cosas distintas, y las dos hacen falta:
 
-`/monitoreo/<pk>/` exige `monitorear_recursos=True` (views/monitoreo.py: monitoreo_detalle),
-flag que en producción tienen apenas los servidores — 2 de 10 estaciones. Las listas del
-Centro de Monitoreo NO lo filtran, y no deben hacerlo: una caja POS con una alerta abierta
-o un servicio caído tiene que aparecer en el tablero de triage aunque nadie le mire la CPU.
-Enlazar siempre a la ficha de monitoreo convertía esa fila en un 404 justo en la pantalla
-que la mesa de ayuda deja abierta.
+1. `monitorear_recursos`. `/monitoreo/<pk>/` exige ese flag (views/monitoreo.py:
+   monitoreo_detalle), que en producción tienen apenas los servidores — 2 de 10 estaciones.
+   Las listas del Centro de Monitoreo NO lo filtran, y no deben: una caja POS con una alerta
+   abierta o un servicio caído tiene que aparecer en el tablero de triage aunque nadie le
+   mire la CPU. Enlazar siempre a la ficha convertía esa fila en un 404 justo en la pantalla
+   que la mesa de ayuda deja abierta.
 
-Las que no se monitorean van al listado de estaciones buscado por su código, que es donde
-viven el modal de info y las acciones sobre el equipo.
+2. El permiso. Las dos pantallas de destino piden permisos que la pantalla de origen no
+   exige: la ficha pide `monitoreo.view_muestrametrica` y el listado `catalogo.view_estacion`,
+   mientras el Centro entra con `monitoreo.view_alerta`. Para un rol de triage puro, los dos
+   enlaces respondían 403.
+
+Sin ninguno de los dos destinos abiertos se muestra el código sin enlace: el dato sigue
+sirviendo —dice QUÉ equipo está en problemas— y es el mismo criterio que ya usa la tarjeta
+de cierres en conflicto de centro_monitoreo_partial.html.
 
 Requiere `estacion` en el contexto, y que quien lo incluya haya hecho `select_related` de
 la estación: si no, `monitorear_recursos` es una consulta por fila.
 {% endcomment %}
-{% if estacion.monitorear_recursos %}
+{% if estacion.monitorear_recursos and perms.monitoreo.view_muestrametrica %}
 <a href="{% url 'panel:monitoreo_detalle' estacion.pk %}" class="font-medium hover:underline">{{ estacion.codigo }}</a>
-{% else %}
+{% elif perms.catalogo.view_estacion %}
 <a href="{% url 'panel:estaciones_lista' %}?q={{ estacion.codigo|urlencode }}"
    class="font-medium hover:underline"
-   title="Esta estación no tiene monitoreo de recursos activo: se abre en el listado de estaciones.">{{ estacion.codigo }}</a>
+   title="{% if estacion.monitorear_recursos %}Se abre en el listado de estaciones.{% else %}Esta estación no tiene monitoreo de recursos activo: se abre en el listado de estaciones.{% endif %}">{{ estacion.codigo }}</a>
+{% else %}
+<span class="font-medium">{{ estacion.codigo }}</span>
 {% endif %}
