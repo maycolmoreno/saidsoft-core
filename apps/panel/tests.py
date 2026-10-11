@@ -2905,6 +2905,40 @@ class VisitaTecnicaPanelTests(TestCase):
     def test_lista_responde_200(self):
         self.assertEqual(self.client.get(reverse('panel:visita_tecnica_lista')).status_code, 200)
 
+    def test_el_conteo_de_mantenimientos_no_cuesta_una_consulta_por_fila(self):
+        """F-15: la columna salia de `{{ v.mantenimientos_generados.count }}`, que sobre un
+        manager inverso emite un SELECT COUNT(*) por acceso — 25 consultas extra por carga con
+        la paginacion, y otras 25 por cada cambio de pagina.
+
+        Se afirma lo que importa y no un numero exacto: que el costo NO crezca con las filas.
+        Un numero fijo se rompe con cualquier consulta que se agregue a la pantalla por otro
+        motivo, y entonces el test deja de hablar del N+1.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from apps.mantenimiento.models import VisitaTecnica
+
+        def crear(n):
+            for i in range(n):
+                VisitaTecnica.objects.create(
+                    farmacia=self.farmacia, tecnico=self.usuario,
+                    fecha_planificada=date(2026, 9, 15), motivo='relevamiento %d' % i,
+                )
+
+        crear(1)
+        with CaptureQueriesContext(connection) as con_una:
+            self.client.get(reverse('panel:visita_tecnica_lista'))
+
+        crear(9)
+        with CaptureQueriesContext(connection) as con_diez:
+            self.client.get(reverse('panel:visita_tecnica_lista'))
+
+        self.assertEqual(
+            len(con_diez.captured_queries), len(con_una.captured_queries),
+            'el costo de la pantalla crece con las filas: volvio el N+1',
+        )
+
     def test_crear_planifica_la_visita(self):
         resp = self.client.post(reverse('panel:visita_tecnica_crear'), {
             'farmacia': self.farmacia.pk,
@@ -7294,6 +7328,57 @@ class ReenviarViaticoObservadoTests(TestCase):
         self.assertEqual(resp.status_code, 403)
 
 
+class MarcarNotificacionLeidaTests(TestCase):
+    """F-13: la vista escribia en la base con cualquier metodo.
+
+    El filtro por dueno (`get_object_or_404(..., usuario=request.user)`) aisla bien: cada uno
+    marca solo lo suyo. Lo que faltaba es que la URL no aceptara GET — un prefetch del
+    navegador o una imagen apuntada a esa ruta marcaba la notificacion como leida. La
+    plantilla ya mandaba POST con token, asi que el arreglo no cambia ninguna interaccion.
+    """
+
+    def setUp(self):
+        from apps.mantenimiento.models import Notificacion
+
+        self.usuario = User.objects.create_user(username='u_notif_405', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.aviso = Notificacion.objects.create(usuario=self.usuario, mensaje='Revisa esto')
+        self.client.force_login(self.usuario)
+
+    def _url(self):
+        return reverse('panel:notificacion_marcar_leida', args=[self.aviso.pk])
+
+    def test_un_get_no_la_marca(self):
+        resp = self.client.get(self._url())
+
+        self.assertEqual(resp.status_code, 405)
+        self.aviso.refresh_from_db()
+        self.assertFalse(self.aviso.leida)
+
+    def test_el_post_sigue_funcionando(self):
+        """El arreglo no puede romper el unico camino que la pantalla usa."""
+        resp = self.client.post(self._url())
+
+        self.assertEqual(resp.status_code, 302)
+        self.aviso.refresh_from_db()
+        self.assertTrue(self.aviso.leida)
+
+    def test_no_se_puede_marcar_la_de_otro(self):
+        """Ya funcionaba; se afirma para que el filtro por dueno no se caiga sin que nada
+        falle al reordenar los decoradores."""
+        from apps.mantenimiento.models import Notificacion
+
+        otro = User.objects.create_user(username='u_notif_ajeno', password='x')
+        PerfilUsuario.objects.create(usuario=otro, acceso_todas_unidades=True)
+        ajena = Notificacion.objects.create(usuario=otro, mensaje='No es tuya')
+
+        resp = self.client.post(reverse('panel:notificacion_marcar_leida', args=[ajena.pk]))
+
+        self.assertEqual(resp.status_code, 404)
+        ajena.refresh_from_db()
+        self.assertFalse(ajena.leida)
+
+
 class NotificarCierreDeMantenimientoTests(TestCase):
     """Quien abre un mantenimiento se entera de que se cerró.
 
@@ -7433,6 +7518,27 @@ class AbrirMantenimientoDesdeLaAlertaTests(TestCase):
         self.assertIsNotNone(m)
         # La descripción que arma la función original menciona la alerta.
         self.assertIn(f'#{self.alerta.pk}', m.descripcion)
+
+    def test_quien_abre_el_mantenimiento_no_termina_en_un_403(self):
+        """F-14: abrir pide `add_mantenimiento` y la ficha pide `view_mantenimiento`, dos
+        codenames que nada en el codigo garantiza juntos — `self.operador` tiene el primero y
+        no el segundo, como el rol real al que esta pantalla apunta.
+
+        Redirigia a la ficha, asi que la accion se ejecutaba y el usuario recibia un 403 en
+        vez de la confirmacion: el mantenimiento quedaba creado y el mensaje de exito se
+        perdia con el error. Se verifica el final del redirect, no el 302.
+        """
+        from apps.mantenimiento.models import Mantenimiento
+
+        self._vincular_equipo()
+        self.assertFalse(self.operador.has_perm('mantenimiento.view_mantenimiento'))
+        self.client.force_login(self.operador)
+
+        resp = self.client.post(self._url(), follow=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(Mantenimiento.objects.count(), 1)
+        self.assertContains(resp, 'abierto desde la alerta')
 
     def test_queda_a_nombre_de_quien_lo_apreto(self):
         """Es lo único que se le agregó a la función: antes siempre era `usuario=None`."""

@@ -201,6 +201,13 @@ def alerta_abrir_mantenimiento(request, pk):
         usuario=request.user, accion='alerta.abrir_mantenimiento', objeto=alerta, request=request,
     )
     messages.success(request, f'Mantenimiento #{mantenimiento.pk} abierto desde la alerta.')
+    # Abrir el mantenimiento pide `add_mantenimiento` y la ficha pide `view_mantenimiento`:
+    # dos codenames que nada en el codigo garantiza juntos. Para quien tenga el primero y no
+    # el segundo, mandarlo a la ficha era un 403 DESPUES de que la accion ya se ejecuto — el
+    # mantenimiento quedaba creado y el usuario sin saberlo, porque el 403 se come el mensaje
+    # de exito. Los otros dos caminos de esta vista ya vuelven al listado por otros motivos.
+    if not request.user.has_perm('mantenimiento.view_mantenimiento'):
+        return redirect('panel:alertas_lista')
     return redirect('panel:mantenimiento_detalle', pk=mantenimiento.pk)
 
 @login_required

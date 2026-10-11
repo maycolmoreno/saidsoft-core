@@ -82,8 +82,15 @@ def visita_tecnica_lista(request):
     -- una tabla que en producción está vacía, así que no mostraba nada -- y que
     además no dejaba ningún rastro de si la visita se hizo.
     """
+    # El Count va anotado y no resuelto en la plantilla: `{{ v.mantenimientos_generados.count }}`
+    # sobre un manager inverso emite un SELECT COUNT(*) por fila, o sea 25 consultas extra por
+    # carga con la paginacion de abajo, y otras 25 en cada cambio de pagina. Mismo patron que
+    # `n_activos` unas lineas mas arriba. Los campos del buscador son FK directas y campos
+    # locales, asi que el join no multiplica filas y el conteo no se infla.
     visitas = scope_opcional_por_unidad_negocio_activa(
-        VisitaTecnica.objects.select_related('farmacia', 'tecnico'), request, 'farmacia__unidad_negocio',
+        VisitaTecnica.objects.select_related('farmacia', 'tecnico')
+        .annotate(n_mantenimientos=Count('mantenimientos_generados')),
+        request, 'farmacia__unidad_negocio',
     )
     estado = request.GET.get('estado')
     if estado:

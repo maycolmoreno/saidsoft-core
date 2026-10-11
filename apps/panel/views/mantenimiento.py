@@ -492,6 +492,11 @@ def notificaciones_lista(request):
 
 
 @login_required
+# `require_POST` y no solo el filtro por dueño: el filtro aisla bien —cada uno marca lo
+# suyo— pero sin esto la escritura ocurria con cualquier metodo, asi que un GET desde una
+# imagen o el prefetch del navegador marcaba notificaciones como leidas. La plantilla ya
+# manda POST con token; lo que faltaba era que la URL no aceptara otra cosa.
+@require_POST
 def notificacion_marcar_leida(request, pk):
     notificacion = get_object_or_404(Notificacion, pk=pk, usuario=request.user)
     notificacion.leida = True
