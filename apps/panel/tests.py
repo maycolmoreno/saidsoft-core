@@ -3311,10 +3311,35 @@ class ViaticosPanelTests(TestCase):
         self.assertEqual(resp.status_code, 200)  # vuelve al formulario con errores
         self.assertFalse(ReporteViatico.objects.filter(fecha=date(2026, 9, 12)).exists())
 
+    def test_el_buscador_de_farmacias_no_se_sirve_a_quien_no_puede_cargar(self):
+        """F-17: el parcial pedia `view_reporteviatico` y sus dos marcos `add_`.
+
+        No es un subconjunto: son dos codenames independientes y un grupo puede dar uno sin
+        el otro, asi que fallaba en los dos sentidos. En este —el de la fuga— alguien con
+        solo `view_` podia pedirlo por URL y sacar codigo, nombre y ubicacion de hasta 100
+        farmacias sin tener acceso a ningun formulario donde ese widget viva.
+        """
+        solo_lectura = self._usuario('viat_solo_view', True, 'view_reporteviatico')
+        self.client.force_login(solo_lectura)
+
+        resp = self.client.get(
+            reverse('panel:viaticos_farmacias_partial'), {'buscar_farmacia': 'ML006'},
+        )
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn('ML006', resp.content.decode())
+
     def test_buscar_farmacias_exige_termino(self):
         """Sin término no se devuelven 700 opciones: es lo que dejaba la pantalla
-        inusable en el alta de mantenimiento."""
-        self.client.force_login(self.coordinador)
+        inusable en el alta de mantenimiento.
+
+        Lo pide el técnico y no el coordinador: este parcial repuebla el buscador del
+        formulario de carga, que solo se sirve en `viatico_crear` y `viatico_editar`
+        (`add_reporteviatico`). El coordinador tiene view/change y ninguna pantalla donde ese
+        widget aparezca — antes el test lo usaba porque alcanzaba para un 200, no porque
+        represente el flujo.
+        """
+        self._tecnico_logueado('tecnico_busca_v')
         vacio = self.client.get(reverse('panel:viaticos_farmacias_partial')).content.decode()
         self.assertNotIn('ML006', vacio)
         con_termino = self.client.get(

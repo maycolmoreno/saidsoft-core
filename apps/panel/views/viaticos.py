@@ -179,7 +179,16 @@ def viatico_editar(request, pk):
     })
 
 @login_required
-@permission_required('viaticos.view_reporteviatico', raise_exception=True)
+# `add_` y no `view_`: el mismo permiso que sus dos únicos marcos, `viatico_crear` y
+# `viatico_editar`. Pedía `view_reporteviatico`, que no es un subconjunto de `add_` —son dos
+# codenames independientes y un grupo puede dar uno sin el otro—, así que fallaba en los dos
+# sentidos: alguien con `view_` y sin `add_` podía pedir este parcial por URL y sacar código,
+# nombre y ubicación de hasta 100 farmacias sin tener acceso a ningún formulario donde ese
+# widget viva; y un técnico con `add_` y sin `view_` recibía 403 en el buscador de su propio
+# formulario de carga, que quedaba sin opciones.
+#
+# De los nueve pares marco/parcial del panel, era el único con decoradores distintos.
+@permission_required('viaticos.add_reporteviatico', raise_exception=True)
 def viaticos_farmacias_partial(request):
     """Repuebla las <option> de `farmacia_visitada` a partir de una búsqueda.
 
