@@ -215,6 +215,11 @@ def mantenimiento_detalle(request, pk):
 
 @login_required
 @permission_required('mantenimiento.change_mantenimiento', raise_exception=True)
+# Mismo caso que `notificacion_marcar_leida`: la plantilla ya manda POST con token
+# (mantenimiento_detalle.html:103) y la URL aceptaba GET igual, asi que la escritura ocurria
+# con cualquier metodo. Era la otra de las dos vistas mutantes del panel sin esta guarda; el
+# resto de este archivo ya la tiene.
+@require_POST
 def mantenimiento_iniciar(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
     verificar_acceso(request.user, mantenimiento.unidad_negocio)

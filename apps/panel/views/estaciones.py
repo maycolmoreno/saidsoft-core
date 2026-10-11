@@ -166,11 +166,13 @@ def estaciones_lista(request):
 @login_required
 @permission_required('catalogo.view_estacion', raise_exception=True)
 def estaciones_pendientes_partial(request, aviso=''):
-    pendientes = scope_por_unidad_negocio(
+    # `_activa` como su marco: sin eso, con un cliente fijado el aviso contaba las pendientes
+    # de TODOS mientras la tabla mostraba uno (ver AvisoDePendientesSigueAlClienteActivoTests).
+    pendientes = scope_por_unidad_negocio_activa(
         Estacion.objects.select_related('farmacia', 'farmacia__grupo').filter(
             estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
         ),
-        request.user, 'farmacia__unidad_negocio',
+        request, 'farmacia__unidad_negocio',
     ).order_by('codigo')
     # `aviso` se renderiza dentro del propio partial: las vistas de abajo devuelven
     # este HTML por HTMX (sin recargar la página), así que un messages.error() no se

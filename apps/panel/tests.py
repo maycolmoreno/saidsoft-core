@@ -595,6 +595,69 @@ class RedFarmaciasListaTests(TestCase):
         self.assertNotContains(resp, 'MAM01')
 
 
+class AvisoDePendientesSigueAlClienteActivoTests(TestCase):
+    """F-12: el aviso amarillo de /estaciones/ ignoraba el selector de cliente.
+
+    Su marco (`estaciones_lista`) acota con `scope_por_unidad_negocio_activa` y el parcial
+    usaba `scope_por_unidad_negocio` a secas, asi que con un cliente fijado la tabla mostraba
+    uno y el aviso de arriba contaba y listaba las pendientes de todos: dos conjuntos
+    distintos en la misma pantalla.
+
+    No se confunde con los contadores de las tarjetas, que son globales respecto de los
+    FILTROS de la URL pero se calculan sobre `base`, que ya paso por `_activa`.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX912')
+        self.pendiente_sg = Estacion.objects.create(
+            codigo='ML912-A', estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
+            farmacia=Farmacia.objects.create(codigo='ML912', grupo=grupo, unidad_negocio=self.sg),
+        )
+        self.pendiente_mia = Estacion.objects.create(
+            codigo='MM912-A', estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
+            farmacia=Farmacia.objects.create(codigo='MM912', grupo=grupo, unidad_negocio=self.mia),
+        )
+        self.usuario = User.objects.create_user(username='u_pend_912', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        )
+        self.client.force_login(self.usuario)
+
+    def _fijar_cliente(self, unidad):
+        from apps.cuentas.services import SESSION_KEY_UNIDAD_ACTIVA
+
+        sesion = self.client.session
+        sesion[SESSION_KEY_UNIDAD_ACTIVA] = unidad.pk
+        sesion.save()
+
+    def test_sin_cliente_fijado_se_ven_las_pendientes_de_todos(self):
+        resp = self.client.get(reverse('panel:estaciones_pendientes_partial'))
+
+        self.assertContains(resp, 'ML912-A')
+        self.assertContains(resp, 'MM912-A')
+
+    def test_con_un_cliente_fijado_el_aviso_solo_cuenta_las_de_ese_cliente(self):
+        self._fijar_cliente(self.sg)
+
+        resp = self.client.get(reverse('panel:estaciones_pendientes_partial'))
+
+        self.assertContains(resp, 'ML912-A')
+        self.assertNotContains(resp, 'MM912-A')
+
+    def test_la_pantalla_completa_no_se_contradice_a_si_misma(self):
+        """Lo que el usuario ve: el aviso y la tabla, en la misma respuesta, hablando del
+        mismo conjunto."""
+        self._fijar_cliente(self.mia)
+
+        resp = self.client.get(reverse('panel:estaciones_lista'))
+
+        self.assertContains(resp, 'MM912-A')
+        self.assertNotContains(resp, 'ML912-A')
+
+
 class EstacionMesaDeAyudaVsSoporteTecnicoTests(TestCase):
     """Los cuatro permisos que separan mesa de ayuda (diagnóstico) de soporte técnico
     (acciones de riesgo): consultar_info/aprobar/reiniciar/escanear_actualizaciones.
@@ -7377,6 +7440,58 @@ class MarcarNotificacionLeidaTests(TestCase):
         self.assertEqual(resp.status_code, 404)
         ajena.refresh_from_db()
         self.assertFalse(ajena.leida)
+
+
+class IniciarMantenimientoExigePostTests(TestCase):
+    """F-03: la otra vista mutante del panel que escribia con cualquier metodo.
+
+    Igual que `notificacion_marcar_leida`: la plantilla ya mandaba POST con token
+    (mantenimiento_detalle.html:103), asi que el `require_POST` no cambia ninguna
+    interaccion — solo cierra la via que nadie usaba y cualquiera podia disparar.
+    """
+
+    def setUp(self):
+        from apps.mantenimiento.models import Mantenimiento
+
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        colaborador = Colaborador.objects.create(nombre='Ana F03', cedula='9F03', unidad_negocio=sg)
+        self.mantenimiento = Mantenimiento.objects.create(
+            cliente=colaborador, descripcion='Pantalla', fecha_programada=timezone.now(),
+        )
+        self.usuario = User.objects.create_user(username='u_mant_405', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.usuario.user_permissions.add(
+            Permission.objects.get(
+                content_type__app_label='mantenimiento', codename='change_mantenimiento',
+            ),
+        )
+        self.client.force_login(self.usuario)
+
+    def test_un_get_no_lo_inicia(self):
+        from apps.mantenimiento.models import Mantenimiento
+
+        resp = self.client.get(
+            reverse('panel:mantenimiento_iniciar', args=[self.mantenimiento.pk]),
+        )
+
+        self.assertEqual(resp.status_code, 405)
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(
+            self.mantenimiento.estado_interno, Mantenimiento.EstadoInterno.PENDIENTE,
+        )
+
+    def test_el_post_sigue_iniciandolo(self):
+        from apps.mantenimiento.models import Mantenimiento
+
+        resp = self.client.post(
+            reverse('panel:mantenimiento_iniciar', args=[self.mantenimiento.pk]),
+        )
+
+        self.assertEqual(resp.status_code, 302)
+        self.mantenimiento.refresh_from_db()
+        self.assertEqual(
+            self.mantenimiento.estado_interno, Mantenimiento.EstadoInterno.EN_PROCESO,
+        )
 
 
 class NotificarCierreDeMantenimientoTests(TestCase):
