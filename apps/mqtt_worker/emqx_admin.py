@@ -169,6 +169,49 @@ def reaplicar_acl_estacion(estacion) -> bool:
         return False
 
 
+def consultar_credencial_estacion(estacion) -> dict | None:
+    """¿Existe en EMQX la credencial propia de `estacion`? `{'usuario': bool, 'acl': bool}`.
+
+    Solo lectura: dos `GET`, ninguna escritura. Devuelve `None` si `EMQX_ADMIN_CONFIG` no está
+    configurado (igual convenio que el alta y la baja) y `{'usuario': None, ...}` para un
+    estado que EMQX no dejó claro —ni 200 ni 404—, que no es lo mismo que "no existe".
+
+    Existe para poder **confirmar lo que `deploy/emqx-narrow-acl-agente.sh` pide confirmar**
+    antes de correrse: que ninguna estación dependa todavía de la credencial compartida. Ese
+    script solo puede mirar las conexiones activas del broker y lo dice él mismo — *"una
+    estación offline no aparece aquí aunque siga configurada con la credencial compartida"*—,
+    así que la confirmación quedaba a ojo y el script sin correr. Esto pregunta por estación,
+    esté encendida o apagada.
+    """
+    config = _config()
+    if config is None:
+        return None
+    url_base, api_key, api_secret = config
+
+    username = estacion.codigo
+    try:
+        usuario = _peticion(
+            'GET', url_base, api_key, api_secret,
+            f'/authentication/password_based:built_in_database/users/{username}',
+        )
+        acl = _peticion(
+            'GET', url_base, api_key, api_secret,
+            f'/authorization/sources/built_in_database/rules/users/{username}',
+        )
+    except Exception:
+        logger.exception('EMQX: error consultando la credencial de %s', username)
+        return {'usuario': None, 'acl': None}
+
+    def interpretar(status):
+        if status == 200:
+            return True
+        if status == 404:
+            return False
+        return None  # EMQX respondió algo que no permite concluir
+
+    return {'usuario': interpretar(usuario), 'acl': interpretar(acl)}
+
+
 def revocar_credencial_estacion(estacion) -> bool:
     """Da de baja en EMQX el usuario de `estacion` y sus reglas de ACL.
 

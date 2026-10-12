@@ -1971,10 +1971,18 @@ le da a cada estación su propia credencial MQTT, con ACL restringida a sus prop
   seed_scripts_migracion_mqtt` crea el script (biblioteca) que fuerza ese re-enrolamiento
   (borra `identidad.json` y reinicia el servicio) para correrlo contra las estaciones que ya
   se confirmó que migraron.
-- **`deploy/emqx-narrow-acl-agente.sh`** (nuevo, con confirmación manual): angosta la ACL de
+- **`deploy/emqx-narrow-acl-agente.sh`** (con confirmación manual): angosta la ACL de
   la credencial compartida a solo enrolamiento — correrlo **solo** cuando se confirmó que
   toda la flota ya tiene su propia credencial (corta el tráfico de cualquier estación que
   todavía dependa de la compartida).
+
+  **Cómo confirmarlo** (12-oct-2026): `python manage.py revisar_credenciales_mqtt`, de solo
+  lectura, pregunta a EMQX por cada estación —encendida o apagada— y da un veredicto binario.
+  Antes de que existiera, lo único disponible era el snapshot de conexiones activas que
+  imprime el propio script, y ese no alcanza: una estación apagada no aparece ahí aunque siga
+  configurada con la credencial compartida, y acá los equipos se apagan al cerrar la
+  farmacia. Por eso el script llevaba semanas escrito y sin correr. Para migrar las que
+  falten, `seed_scripts_migracion_mqtt` crea el script de re-enrolamiento forzado.
 
 ### La baja de la credencial (desde el 11-oct-2026)
 

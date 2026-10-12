@@ -1,3 +1,4 @@
+import io
 import json
 import threading
 import urllib.error
@@ -8,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from cryptography.fernet import Fernet
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.db import connection
 from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
@@ -561,6 +563,136 @@ class CredencialDelBrokerSeDaDeBajaTests(TestCase):
 
         aprovisionar.assert_not_called()
         self.assertIsNone(resp['mqtt_username'])
+
+
+class RevisarCredencialesMqttTests(TestCase):
+    """`revisar_credenciales_mqtt`: qué estaciones dependen todavía de la credencial compartida.
+
+    Existe para poder confirmar lo que `deploy/emqx-narrow-acl-agente.sh` pide confirmar antes
+    de correrse. Ese script lleva semanas escrito y sin correr porque su primera línea exige
+    saber que toda la flota migró, y lo único que podía mirar eran las conexiones activas — él
+    mismo advierte que *"una estación offline no aparece aquí aunque siga configurada con la
+    credencial compartida"*, y en esta flota los equipos se apagan al cerrar la farmacia.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.config = {'URL': 'http://emqx:18083/api/v5', 'API_KEY': 'k', 'API_SECRET': 's'}
+
+    def _estacion(self, codigo, **extra):
+        datos = {
+            'codigo': codigo, 'farmacia': self.farmacia,
+            'estado_aprobacion': Estacion.EstadoAprobacion.APROBADA,
+        }
+        datos.update(extra)
+        return Estacion.objects.create(**datos)
+
+    def _correr(self, *args, status_por_ruta=None):
+        """`status_por_ruta`: función que recibe la ruta y devuelve el status que simula EMQX."""
+        salida, err = io.StringIO(), io.StringIO()
+        with self.settings(EMQX_ADMIN_CONFIG=self.config):
+            with patch('apps.mqtt_worker.emqx_admin._peticion') as peticion:
+                peticion.side_effect = lambda m, u, k, s, ruta, cuerpo=None: status_por_ruta(ruta)
+                call_command('revisar_credenciales_mqtt', *args, stdout=salida, stderr=err)
+        return salida.getvalue(), err.getvalue()
+
+    def test_con_todas_migradas_dice_que_el_script_se_puede_correr(self):
+        self._estacion('ML001-A')
+        self._estacion('ML001-B')
+
+        salida, err = self._correr(status_por_ruta=lambda ruta: 200)
+
+        self.assertIn('ninguna estación depende de la credencial compartida', salida)
+        self.assertIn('con credencial propia en EMQX : 2', salida)
+        self.assertEqual(err, '')
+
+    def test_una_sola_sin_credencial_propia_frena_el_veredicto(self):
+        """Correr el angostamiento con una estación dependiente la deja muda: el veredicto
+        tiene que ser un NO, no un porcentaje."""
+        self._estacion('ML001-A')
+        self._estacion('ML001-B')
+
+        def status(ruta):
+            return 404 if ruta.endswith('ML001-B') else 200
+
+        salida, err = self._correr(status_por_ruta=status)
+
+        self.assertIn('NO correr', err)
+        self.assertIn('ML001-B', err)
+        self.assertNotIn('ML001-A', err.split('quedarían mudas')[-1].split('\n')[1])
+
+    def test_dice_cuantas_de_las_dependientes_estan_conectadas_ahora(self):
+        """No es lo mismo una dependiente apagada que una operando: en la segunda el corte se
+        nota al instante."""
+        self._estacion('ML001-A', estado_conexion=Estacion.EstadoConexion.ONLINE)
+
+        _, err = self._correr(status_por_ruta=lambda ruta: 404)
+
+        self.assertIn('1 están conectadas ahora mismo', err)
+
+    def test_un_usuario_sin_reglas_de_acl_se_avisa_aparte(self):
+        """Autentica y EMQX le deniega todo en silencio: el síntoma es una estación que
+        conecta y no reporta, sin error en ningún log."""
+        self._estacion('ML001-A')
+
+        def status(ruta):
+            return 404 if 'authorization' in ruta else 200
+
+        salida, _ = self._correr(status_por_ruta=status)
+
+        self.assertIn('SIN reglas de ACL', salida)
+        self.assertIn('reaplicar_acls_mqtt', salida)
+
+    def test_si_emqx_responde_cualquier_cosa_el_veredicto_es_no_concluyente(self):
+        """Un 500 no es un 404: tratarlo como "no tiene credencial" llevaría a migrar
+        estaciones que ya estaban bien, y tratarlo como 200 a angostar a ciegas."""
+        self._estacion('ML001-A')
+
+        salida, err = self._correr(status_por_ruta=lambda ruta: 500)
+
+        self.assertIn('no concluyente', err)
+        self.assertNotIn('ninguna estación depende', salida)
+
+    def test_sin_emqx_configurado_lo_dice_sin_fingir_un_veredicto(self):
+        self._estacion('ML001-A')
+
+        salida, err = io.StringIO(), io.StringIO()
+        with self.settings(EMQX_ADMIN_CONFIG={}):
+            call_command('revisar_credenciales_mqtt', stdout=salida, stderr=err)
+
+        self.assertIn('no usa credenciales por estación', err.getvalue())
+        self.assertNotIn('VEREDICTO: ninguna', salida.getvalue())
+
+    def test_por_defecto_solo_mira_las_aprobadas(self):
+        """Son las que el angostamiento dejaría mudas: una pendiente ya tiene sus datos
+        descartados por los manejadores."""
+        self._estacion('ML001-A')
+        self._estacion('ML001-Z', estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE)
+
+        salida, _ = self._correr(status_por_ruta=lambda ruta: 200)
+
+        self.assertIn('Revisadas 1 estación(es)', salida)
+
+    def test_con_todas_incluye_las_pendientes(self):
+        self._estacion('ML001-A')
+        self._estacion('ML001-Z', estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE)
+
+        salida, _ = self._correr('--todas', status_por_ruta=lambda ruta: 200)
+
+        self.assertIn('Revisadas 2 estación(es)', salida)
+
+    def test_es_de_solo_lectura(self):
+        """Lo que hace seguro correrlo contra producción sin pensarlo dos veces."""
+        self._estacion('ML001-A')
+
+        with self.settings(EMQX_ADMIN_CONFIG=self.config):
+            with patch('apps.mqtt_worker.emqx_admin._peticion', return_value=200) as peticion:
+                call_command('revisar_credenciales_mqtt', stdout=io.StringIO())
+
+        metodos = {llamada.args[0] for llamada in peticion.call_args_list}
+        self.assertEqual(metodos, {'GET'})
 
 
 class TrustOnFirstUseSoloEnElPrimerContactoTests(TestCase):

@@ -10,9 +10,21 @@
 # (apps/scripts/management/commands/seed_scripts_migracion_mqtt.py) con el agente nuevo
 # ya instalado.
 #
-# Cómo confirmar que es seguro correrlo: en el panel, ninguna estación debería seguir
-# conectándose con el client_id "agente-*" bajo el usuario MQTT_USERNAME_AGENTE — EMQX
-# expone las sesiones activas por usuario en GET /api/v5/clients?username=<agente>.
+# Cómo confirmar que es seguro correrlo (12-oct-2026): hay un comando que lo responde
+# estación por estación, encendida o apagada, y es de solo lectura:
+#
+#     docker compose --env-file .env exec -T web python manage.py revisar_credenciales_mqtt
+#
+# Su veredicto es binario a propósito —una sola estación dependiente queda muda— y para
+# migrar las que falten está `seed_scripts_migracion_mqtt`, que crea el script de
+# re-enrolamiento forzado.
+#
+# El snapshot de conexiones activas que imprime este script más abajo NO alcanza, y por eso
+# se agregó ese comando: una estación offline no aparece ahí aunque siga configurada con la
+# credencial compartida, y en esta flota los equipos se apagan al cerrar la farmacia. El
+# snapshot sigue siendo útil para la otra mitad que el comando no puede ver: cuántos equipos
+# están AHORA conectados con la credencial compartida, es decir cuántos todavía la usan en su
+# config.txt aunque ya tengan usuario propio en EMQX.
 #
 # Uso: sh deploy/emqx-narrow-acl-agente.sh
 set -e

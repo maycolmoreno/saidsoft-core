@@ -5604,3 +5604,58 @@ Repetir por tandas y confirmar entre una y otra con la columna de versión del p
 latido). Mientras queden estaciones en 0.32, `RIESGO-06` y `A-6` están cerrados en el servidor
 pero no en esos equipos: los agentes viejos siguen aceptando un catálogo sin firma, y el freno
 que no depende del rollout es `deploy/emqx-narrow-acl-agente.sh`.
+
+---
+
+## §10-BQ — La verificación que faltaba para poder angostar la ACL (12-oct-2026)
+
+`deploy/emqx-narrow-acl-agente.sh` está escrito desde hace semanas y sin correr. No por falta
+de tiempo: su primera línea dice **"NO CORRER hasta confirmar que TODA la flota ya migró a
+una credencial MQTT propia"**, y no había forma de confirmarlo.
+
+El script intenta ayudar imprimiendo las conexiones activas del broker, pero él mismo aclara
+el límite: *"esto es solo un snapshot de conexiones activas en este momento, no confirma que
+todas las estaciones ya migraron — una estación offline no aparece aquí aunque siga
+configurada con la credencial compartida"*. Con equipos que se apagan al cerrar la farmacia,
+ese snapshot no alcanza nunca. La condición era inverificable, así que el script no se corría,
+y mientras no se corre **la credencial compartida mantiene ACL sobre `/saidsof/#`** — que es
+el agujero del que cuelgan varias cosas: el freno de `RIESGO-06` que no depende del rollout
+del agente, la rotación de `MQTT_PASSWORD_AGENTE` y el paquete del instalador completo
+(§10-Z).
+
+### `revisar_credenciales_mqtt`
+
+Pregunta a EMQX **por estación, esté encendida o apagada**, con dos `GET` y ninguna escritura:
+¿existe su usuario propio? ¿tiene reglas de ACL? Molde de `revisar_caidas_duplicadas` —un
+comando de revisión que informa y no toca nada—, y la consulta nueva vive en
+`emqx_admin.consultar_credencial_estacion`, junto al alta y la baja, no en un módulo aparte.
+
+**El veredicto es binario a propósito.** Una sola estación dependiente queda muda al angostar,
+así que un "95% migrado" no es una respuesta útil: o se puede correr o no. Si hay dependientes
+las lista, y dice cuántas de ellas están **conectadas ahora mismo**, porque no es lo mismo una
+apagada que una operando. Para migrarlas ya existe `seed_scripts_migracion_mqtt`.
+
+Tres distinciones que el comando no mezcla:
+
+- **404 no es 500.** Un 404 significa "no tiene credencial"; un 500 significa "no sé". Tratar
+  el segundo como el primero mandaría a migrar estaciones que ya estaban bien; tratarlo como
+  un 200 llevaría a angostar a ciegas. Cuando EMQX no responde con claridad, el veredicto es
+  **no concluyente** y el comando lo dice.
+- **Usuario sin ACL** se avisa aparte: autentica y EMQX le deniega todo **en silencio**, así
+  que el síntoma es una estación que conecta y no reporta, sin error en ningún log.
+  `reaplicar_acls_mqtt --aplicar` lo arregla sin rotar contraseñas.
+- **Lo que el comando NO puede ver**, y queda escrito en su docstring: qué credencial está
+  escrita en el `config.txt` de cada equipo. Una estación puede tener usuario propio en EMQX y
+  seguir conectándose con la compartida si nunca aplicó la nueva. Esa mitad sí la ve el
+  snapshot del script, así que las dos verificaciones son complementarias y ninguna sobra.
+
+La cabecera del script y la sección del README ahora apuntan a este comando en vez de a la
+verificación que el propio script admitía insuficiente.
+
+10 pruebas nuevas. Sin migración.
+
+**Lo que motivó buscarlo:** al revisar qué faltaba, la medición del 12-oct mostró que las **66
+estaciones tienen `hmac_propio_confirmado`**, y ese secreto se entrega en el mismo
+re-enrolamiento que la credencial MQTT propia. Es un indicio fuerte de que las dos estaciones
+que `CLAUDE.md` daba por pendientes (`MC001-B`, `MC001-C`) ya migraron — pero un indicio no es
+una confirmación, y esto es lo que permite tenerla.
