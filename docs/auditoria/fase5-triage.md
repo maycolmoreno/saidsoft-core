@@ -15,8 +15,9 @@ Ninguno fue tocado por accidente por el trabajo de estos días.
 
 ## Estado al cierre del 11-oct-2026
 
-**Siete de los 12 ALTO están cerrados** —uno antes del triage, cuatro el día del triage y
-dos el 12-oct— y **5 siguen abiertos**. De los 94 hallazgos de la Fase 4 quedan **87**.
+**Diez de los 12 ALTO están cerrados** —uno antes del triage, cuatro el día del triage y
+cinco el 12-oct— y **2 siguen abiertos**: `INV-07`, que necesita mirar dos equipos físicos, y
+`C-1`, que viaja con la tanda de la app móvil. De los 94 hallazgos de la Fase 4 quedan **84**.
 
 Cerrados además, fuera de los 94: el **trust-on-first-use** (§10-BÑ) y el **angostamiento de
 la ACL de la credencial compartida** (§10-BQ), que llevaba desde septiembre esperando una
@@ -32,7 +33,10 @@ verificación que nadie podía hacer.
 | `A-6` | **CERRADO** en el código; en la flota, las mismas **14 de 66** del agente 0.33 | §8 · §10-BM |
 | `A-2` | **CERRADO** — el paquete de apertura ya no escribe el HMAC compartido | §10-BR |
 | `C-1` | abierto — conviene que entre con la tanda de la app móvil | §3 |
-| `INV-02`, `INV-04`, `INV-05`, `INV-07` | abiertos — al final por oportunidad, no por gravedad | §3 |
+| `INV-02` | **CERRADO** — ya no roba el vínculo ni elige al azar entre series duplicadas | §10-BS |
+| `INV-04` | **CERRADO** — la tarea diaria resincroniza la farmacia desde la estación | §10-BS |
+| `INV-05` | **CERRADO** — las tres rutas heredan la unidad; 3 filas viejas se corrigen con un comando | §10-BS |
+| `INV-07` | abierto — necesita mirar la etiqueta física de dos equipos | §9 |
 
 **Las dos cosas que hay que hacer para que lo cerrado llegue a la flota:** compilar y
 distribuir el **agente 0.33** (lleva `RIESGO-06` y `A-6`; se actualiza solo por MQTT, lo

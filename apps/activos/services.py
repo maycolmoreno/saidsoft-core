@@ -81,6 +81,30 @@ def generar_codigo_activo(tipo: str) -> str:
     return f'{prefijo}{max(numeros, default=0) + 1:04d}'
 
 
+def _unidad_de_la_farmacia(farmacia):
+    """La unidad de negocio que le corresponde a un activo por estar en `farmacia`.
+
+    Un equipo instalado en una farmacia pertenece al cliente dueño de esa farmacia, y
+    `registrar_ingreso` ya lo hacía bien desde el alta. Lo que faltaba (`INV-05` de la
+    auditoría por agentes) es que las otras tres rutas que ubican un activo en una farmacia
+    —reubicación manual, vinculación automática por serie y alta masiva desde el RMM— hacían
+    lo mismo con la farmacia y **no** con la unidad: guardaban `update_fields` sin
+    `unidad_negocio`, así que el activo se quedaba con la que tenía, típicamente NULL.
+
+    **El nulo no es neutro.** `apps.cuentas.services.usuario_puede_ver(user, None)` devuelve
+    True siempre y el scope "opcional" trata el nulo como recurso compartido, así que un
+    equipo en una farmacia de MIA con unidad nula queda visible —y asignable, reubicable,
+    dable de baja— por un usuario de SG. Y al mismo tiempo desaparece del bloque "sin sondeo"
+    del Centro de Monitoreo, que filtra con un `IN` estricto: el mismo activo se ve en el
+    listado y no se ve en el tablero.
+
+    `farmacia=None` devuelve None a propósito: un activo que sale de toda farmacia (a bodega,
+    a oficinas) vuelve a no tener dueño por ubicación, y el único lugar donde eso se decide
+    es acá.
+    """
+    return farmacia.unidad_negocio_id if farmacia is not None else None
+
+
 @transaction.atomic
 def registrar_ingreso(*, tipo, marca, modelo, numero_serie, fecha_compra,
                        vencimiento_garantia, orden_compra, usuario, bodega=None,
@@ -244,10 +268,24 @@ def registrar_ubicacion_farmacia(*, activo, farmacia, usuario):
             'sola, no se puede cambiar a mano.',
         )
     activo.farmacia = farmacia
-    activo.save(update_fields=['farmacia'])
+    campos = ['farmacia']
+    # `unidad_negocio` viaja con la farmacia (`INV-05`). Hasta el 12-oct-2026 esta ruta
+    # guardaba solo `farmacia`, así que un equipo que llegaba a una farmacia de MIA por acá
+    # se quedaba con la unidad que tenía —típicamente NULL— y el nulo NO es neutro:
+    # `usuario_puede_ver(user, None)` devuelve True siempre, así que el activo quedaba
+    # visible, asignable, reubicable y dable de baja por un usuario de otro cliente. Medido
+    # el 12-oct en producción: tres activos en esa situación, dos de MIA y uno de 7DIAS.
+    unidad = _unidad_de_la_farmacia(farmacia)
+    if unidad is not activo.unidad_negocio_id and unidad != activo.unidad_negocio_id:
+        activo.unidad_negocio_id = unidad
+        campos.append('unidad_negocio')
+    activo.save(update_fields=campos)
     EventoActivo.objects.create(
         activo=activo, tipo_evento=EventoActivo.TipoEvento.UBICACION_ACTUALIZADA, usuario=usuario,
-        detalle={'farmacia': farmacia.codigo if farmacia else None},
+        detalle={
+            'farmacia': farmacia.codigo if farmacia else None,
+            'unidad_negocio': farmacia.unidad_negocio.codigo if farmacia else None,
+        },
     )
 
 
@@ -672,9 +710,75 @@ def vincular_activos_por_numero_serie() -> int:
             # no depender de que alguien lo cargue a mano para equipos que sí tienen RMM.
             candidatos[0].estacion = estacion
             candidatos[0].farmacia = estacion.farmacia
-            candidatos[0].save(update_fields=['estacion', 'farmacia'])
+            # Y la unidad de negocio con ella (`INV-05`): hasta el 12-oct-2026 esta ruta
+            # escribía la farmacia y dejaba la unidad como estaba, típicamente NULL, que es
+            # "visible para todos los clientes" — ver `_unidad_de_la_farmacia`.
+            candidatos[0].unidad_negocio_id = _unidad_de_la_farmacia(estacion.farmacia)
+            candidatos[0].save(update_fields=['estacion', 'farmacia', 'unidad_negocio'])
             vinculados += 1
     return vinculados
+
+
+@transaction.atomic
+def resincronizar_farmacia_de_vinculados(*, aplicar=True):
+    """Pone `Activo.farmacia` al día con `Estacion.farmacia` en los activos ya vinculados.
+
+    `INV-04` de la auditoría por agentes: `registrar_ubicacion_farmacia` se niega a cambiar la
+    farmacia a mano con el argumento de que *"se sincroniza sola desde la Estación"*, y esa
+    sincronización **no existía**. El único escritor era la vinculación inicial, que por
+    diseño solo mira estaciones sin activo (`activo_vinculado__isnull=True`): una estación ya
+    vinculada no se volvía a evaluar nunca. Un equipo trasladado de local quedaba inventariado
+    donde ya no estaba, sin ninguna vía para corregirlo salvo el admin de Django.
+
+    Aguas abajo eso no era cosmético: `objetivos_de_ping` le manda a sondear la IP a la
+    estación equivocada, el cruce ARP lo busca en la farmacia equivocada, y
+    `activos_movidos_sin_registro` solo lo detecta si además cambió de unidad de negocio.
+
+    **Por qué resincronizar y no permitir la edición manual**, que era la otra opción que
+    planteaba el informe: para un activo con estación vinculada, la estación ya es la fuente
+    de verdad por regla de dominio —es lo mismo que `Activo.ip_efectiva` decidió para la IP— y
+    habilitar la mano crearía dos fuentes para el mismo dato. Con esto, el mensaje de
+    `registrar_ubicacion_farmacia` deja de ser una promesa y pasa a ser cierto.
+
+    Arrastra también `unidad_negocio` (`INV-05`): si el equipo se mudó a la farmacia de otro
+    cliente, el dueño cambia con él. Deja `EventoActivo` por activo movido, porque un cambio
+    de ubicación que nadie pidió tiene que poder explicarse después.
+
+    Devuelve `(movidos, detalle)`; con `aplicar=False` solo informa.
+    """
+    from apps.catalogo.models import Estacion
+
+    desincronizados = (
+        Activo.objects
+        .filter(estacion__isnull=False)
+        .exclude(farmacia_id=F('estacion__farmacia_id'))
+        .select_related('estacion__farmacia', 'farmacia')
+    )
+
+    detalle, movidos = [], 0
+    for activo in desincronizados:
+        destino = activo.estacion.farmacia
+        detalle.append(
+            f'{activo.codigo}: {activo.farmacia.codigo if activo.farmacia else "(sin farmacia)"} '
+            f'-> {destino.codigo} (según {activo.estacion.codigo})',
+        )
+        if not aplicar:
+            continue
+        origen = activo.farmacia.codigo if activo.farmacia else None
+        activo.farmacia = destino
+        activo.unidad_negocio_id = _unidad_de_la_farmacia(destino)
+        activo.save(update_fields=['farmacia', 'unidad_negocio'])
+        EventoActivo.objects.create(
+            activo=activo, tipo_evento=EventoActivo.TipoEvento.UBICACION_ACTUALIZADA, usuario=None,
+            detalle={
+                'farmacia': destino.codigo, 'farmacia_anterior': origen,
+                'unidad_negocio': destino.unidad_negocio.codigo,
+                'motivo': 'resincronizado desde la estación vinculada (INV-04)',
+                'estacion': activo.estacion.codigo,
+            },
+        )
+        movidos += 1
+    return movidos, detalle
 
 
 def activos_dados_de_baja_pero_conectados():
@@ -783,14 +887,53 @@ def crear_activos_desde_estaciones(*, usuario, tipo=Activo.Tipo.DESKTOP, aplicar
             )
             continue
 
-        existente = Activo.objects.filter(numero_serie__iexact=serie).first()
-        if existente is not None:
+        # `INV-02`: la guarda es la misma que `vincular_activos_por_numero_serie` (unos 120
+        # renglones más arriba) y acá faltaba, con dos consecuencias distintas:
+        #
+        #   - sin `estacion__isnull=True`, un activo que YA tenía otra estación vinculada se
+        #     la quedaba esta: el vínculo no se duplicaba, se **robaba**, y la estación
+        #     anterior quedaba sin activo sin que nada lo dijera;
+        #   - con `.first()` sobre un queryset de más de uno, la elección entre dos activos
+        #     que comparten serie era arbitraria. Y hay series compartidas de verdad: medido
+        #     el 12-oct-2026, `BB3VJD3` está en un desktop y en un laptop (`INV-07`).
+        #
+        # Que sean dos razones importa para el arreglo: exigir `len == 1` cubre la segunda, y
+        # filtrar por estación libre cubre la primera. Las dos hacen falta.
+        candidatos = list(
+            Activo.objects.filter(numero_serie__iexact=serie, estacion__isnull=True),
+        )
+        if len(candidatos) > 1:
+            resumen['serie_ambigua'] = resumen.get('serie_ambigua', 0) + 1
+            resumen['detalle'].append(
+                f'{estacion.codigo}: {len(candidatos)} activos sin estación comparten la serie '
+                f'"{serie}" ({", ".join(a.codigo for a in candidatos)}). Se omite — elegir uno '
+                'sería al azar; hay que resolver la serie duplicada primero.',
+            )
+            continue
+        ya_vinculado = (
+            Activo.objects.filter(numero_serie__iexact=serie)
+            .exclude(estacion__isnull=True).exclude(estacion=estacion).first()
+        )
+        if not candidatos and ya_vinculado is not None:
+            resumen['serie_de_otra_estacion'] = resumen.get('serie_de_otra_estacion', 0) + 1
+            resumen['detalle'].append(
+                f'{estacion.codigo}: la serie "{serie}" ya es de {ya_vinculado.codigo}, vinculado '
+                f'a {ya_vinculado.estacion.codigo}. Se omite — antes esto le robaba el vínculo.',
+            )
+            continue
+        if candidatos:
             # Ya estaba en ITAM cargado a mano: se vincula, no se duplica.
+            existente = candidatos[0]
             resumen['vinculados'] += 1
             resumen['detalle'].append(f'{estacion.codigo}: vincula con {existente.codigo} (serie ya en ITAM)')
             if aplicar:
                 existente.estacion = estacion
-                existente.save(update_fields=['estacion'])
+                existente.farmacia = estacion.farmacia
+                # Farmacia y unidad viajan con el vínculo, igual que en la función hermana
+                # (`INV-04` e `INV-05`): antes esta rama guardaba solo `estacion`, así que el
+                # activo quedaba inventariado en otra farmacia y con unidad NULL.
+                existente.unidad_negocio_id = _unidad_de_la_farmacia(estacion.farmacia)
+                existente.save(update_fields=['estacion', 'farmacia', 'unidad_negocio'])
             continue
 
         resumen['creados'] += 1

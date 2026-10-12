@@ -5764,3 +5764,89 @@ Dicho de otro modo: el angostamiento de ayer convirtió a `A-2` en un hallazgo m
 este commit se queda solo con lo que seguía siendo grave.
 
 4 pruebas nuevas; 39 de `apps.aperturas` en verde. Sin migración.
+
+---
+
+## §10-BS — Tres rutas que escribían la mitad del dato (12-oct-2026)
+
+`INV-02`, `INV-04` e `INV-05` de la auditoría por agentes. Van juntos porque son el mismo
+puñado de líneas, el mismo error de fondo —escribir una mitad del dato y dejar la otra como
+estaba— y el informe ya los agrupaba en su "Tema 4, integridad del inventario". Quedan 2 ALTO
+abiertos: `INV-07` y `C-1`.
+
+### Lo que la medición cambió del plan
+
+Antes de tocar nada, las consultas de verificación de las fichas, contra producción:
+
+| | Resultado |
+|---|---|
+| `INV-04` — activos con farmacia distinta a la de su estación | **0** |
+| `INV-05` — activos en una farmacia con unidad nula o distinta | **3** |
+
+`INV-04` es un defecto **latente**: real, pero que todavía no le pasó a nadie. `INV-05` es
+**daño ocurriendo**: `CR-DSK-0001` y `CR-DSK-0002` en farmacias de MIA y `CR-TEL-0001` en una
+de 7DIAS, los tres con `unidad_negocio` vacía, los tres asignados. (`CR-DSK-0002` es además la
+mitad del duplicado de serie de `INV-07`: el mismo activo acumula dos de los hallazgos.)
+
+### `INV-05` — el nulo no es neutro
+
+`registrar_ingreso` heredaba la unidad de la farmacia desde el alta y lo decía en un comentario
+("heredarlo acá es lo que hace que el aislamiento por tenant signifique algo"). Las otras tres
+rutas que ubican un activo en una farmacia hacían lo mismo con la farmacia y **no** con la
+unidad: `update_fields` sin `unidad_negocio`, así que el activo se quedaba con la que tenía,
+típicamente `NULL`.
+
+Y `NULL` no es "sin dato": `usuario_puede_ver(user, None)` devuelve **True siempre**, así que
+un equipo en la farmacia de un cliente queda visible, asignable, reubicable y dable de baja
+por un usuario de otro. Al mismo tiempo desaparece del bloque "sin sondeo" del Centro de
+Monitoreo, que filtra con un `IN` estricto. **El mismo activo se ve en el listado y no se ve en
+el tablero**, y las dos cosas son correctas según su propio filtro.
+
+Ahora las tres rutas heredan vía `_unidad_de_la_farmacia`, que es un solo lugar y con el motivo
+escrito. `farmacia=None` devuelve `None` a propósito: un activo que sale a bodega u oficinas
+vuelve a no tener dueño por ubicación.
+
+Y el campo recibió el `help_text` que no tenía —era el único FK de tenant del modelo sin uno,
+que es parte de por qué nadie sabía qué significaba el vacío—. Migración `activos/0029`, solo
+metadatos.
+
+### `INV-02` — el vínculo no se duplicaba: se robaba
+
+`crear_activos_desde_estaciones` buscaba con `filter(numero_serie__iexact=serie).first()`,
+mientras su función hermana a 120 renglones hacía lo correcto. Faltaban **dos** guardas, y cada
+una cubre un caso distinto:
+
+- sin `estacion__isnull=True`, un activo que **ya tenía otra estación** se la quedaba esta: la
+  estación anterior quedaba sin activo y nada lo decía;
+- con `.first()` sobre más de un candidato, la elección entre dos activos que comparten serie
+  era **arbitraria**. Y hay series compartidas de verdad: `BB3VJD3`, medido el mismo día.
+
+Las dos hacen falta, así que están las dos, y cada caso ahora se **informa** en el resumen
+(`serie_de_otra_estacion`, `serie_ambigua`) en vez de resolverse en silencio. Un cruce que no
+puede decidir bien tiene que decir que no decidió.
+
+### `INV-04` — la sincronización que el mensaje prometía
+
+`registrar_ubicacion_farmacia` se negaba a cambiar la farmacia a mano con el argumento de que
+*"se sincroniza sola desde la Estación"*, y **esa sincronización no existía**: el único escritor
+era la vinculación inicial, que por diseño solo mira estaciones sin activo. Un equipo trasladado
+quedaba inventariado donde ya no estaba, con `objetivos_de_ping` sondeando la IP en la farmacia
+equivocada.
+
+**Se resolvió resincronizando, no habilitando la mano** —era la otra opción del informe— porque
+para un activo con estación vinculada la estación ya es la fuente de verdad por regla de
+dominio; es la misma decisión que `Activo.ip_efectiva` tomó para la IP, y habilitar la edición
+crearía dos fuentes del mismo dato. `resincronizar_farmacia_de_vinculados` corre en la tarea
+diaria que ya hacía el cruce por serie, arrastra la unidad con la farmacia y deja `EventoActivo`
+con de dónde venía: un cambio de ubicación que nadie pidió tiene que poder explicarse después.
+
+### Las tres filas que ya estaban mal
+
+El arreglo del código evita nuevos casos y no toca los viejos, así que
+`corregir_unidad_negocio_activos` completa las unidades vacías de los activos que están en una
+farmacia. Simula por defecto. **El caso de la unidad DISTINTA se informa y no se pisa sin
+`--forzar`**: puede ser el defecto o puede ser alguien que la puso a propósito, y reemplazar un
+dato dudoso por otro en silencio no es una corrección. El vacío sí se completa directo, porque
+vacío no es una decisión.
+
+13 pruebas nuevas; 229 de `apps.activos` en verde. Una migración de solo metadatos.

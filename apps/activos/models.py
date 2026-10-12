@@ -485,6 +485,12 @@ class Activo(models.Model):
     )
     unidad_negocio = models.ForeignKey(
         UnidadNegocio, on_delete=models.PROTECT, null=True, blank=True, related_name='activos',
+        help_text='Cliente dueño del equipo. Sale de la farmacia donde está y se mantiene al día '
+                  'con ella: lo heredan el alta, la reubicación, la vinculación por serie y el '
+                  'alta masiva desde el RMM. VACÍO significa "compartido, visible para todos los '
+                  'clientes" — no es neutro, así que un equipo que está en la farmacia de un '
+                  'cliente no debería tenerlo vacío (ver apps.activos.services.'
+                  '_unidad_de_la_farmacia, INV-05 de la auditoría por agentes).',
     )
     estado = models.CharField(max_length=15, choices=Estado.choices, default=Estado.EN_BODEGA)
     estado_fisico_actual = models.CharField(max_length=10, choices=EstadoFisico.choices, blank=True)

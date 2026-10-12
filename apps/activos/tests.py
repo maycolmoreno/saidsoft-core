@@ -1992,6 +1992,229 @@ class AdminAltaDeActivoTests(TestCase):
         self.assertEqual(activo.modelo, 'cambiado')
 
 
+class IntegridadDelInventarioTests(TestCase):
+    """`INV-02`, `INV-04` e `INV-05`: las tres rutas que ubican un activo en una farmacia.
+
+    Van juntas porque son el mismo puñado de líneas y el mismo error de fondo —escribir una
+    mitad del dato y dejar la otra como estaba—, y porque el informe las agrupa en su "Tema 4,
+    integridad del inventario".
+
+    Medido en producción el 12-oct-2026 antes de arreglarlas: `INV-04` **0 casos** (defecto
+    latente), `INV-05` **3 casos reales** (dos activos en farmacias de MIA y uno de 7DIAS, los
+    tres con unidad vacía, visibles para cualquier cliente).
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.de_sg = Farmacia.objects.create(codigo='ML100', grupo=grupo, unidad_negocio=self.sg)
+        self.de_mia = Farmacia.objects.create(codigo='MAM10', grupo=grupo, unidad_negocio=self.mia)
+        self.usuario = User.objects.create_user(username='u_integridad', password='x')
+
+    def _activo(self, **extra):
+        from apps.activos.services import generar_codigo_activo
+
+        datos = {
+            'codigo': generar_codigo_activo(Activo.Tipo.DESKTOP), 'tipo': Activo.Tipo.DESKTOP,
+        }
+        datos.update(extra)
+        return Activo.objects.create(**datos)
+
+    def _estacion(self, codigo, farmacia, serie=''):
+        return Estacion.objects.create(
+            codigo=codigo, farmacia=farmacia, numero_serie=serie,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    # --- INV-05: la unidad de negocio viaja con la farmacia -------------------------------
+
+    def test_reubicar_a_una_farmacia_hereda_su_unidad_de_negocio(self):
+        """El nulo no es neutro: `usuario_puede_ver(user, None)` devuelve True siempre, así
+        que un equipo en una farmacia de MIA con unidad vacía queda accionable por SG."""
+        from apps.activos.services import registrar_ubicacion_farmacia
+
+        activo = self._activo()
+        self.assertIsNone(activo.unidad_negocio_id)
+
+        registrar_ubicacion_farmacia(activo=activo, farmacia=self.de_mia, usuario=self.usuario)
+
+        activo.refresh_from_db()
+        self.assertEqual(activo.unidad_negocio, self.mia)
+
+    def test_sacarlo_de_toda_farmacia_le_quita_el_dueno_por_ubicacion(self):
+        """`farmacia=None` es volver a bodega u oficinas: ahí la unidad vacía es legítima y el
+        activo no queda atado al cliente de donde estuvo."""
+        from apps.activos.services import registrar_ubicacion_farmacia
+
+        activo = self._activo(farmacia=self.de_mia, unidad_negocio=self.mia)
+
+        registrar_ubicacion_farmacia(activo=activo, farmacia=None, usuario=self.usuario)
+
+        activo.refresh_from_db()
+        self.assertIsNone(activo.unidad_negocio_id)
+
+    def test_vincular_por_serie_tambien_hereda_la_unidad(self):
+        from apps.activos.services import vincular_activos_por_numero_serie
+
+        self._activo(numero_serie='SN-MIA-1')
+        self._estacion('MAM10-A', self.de_mia, serie='SN-MIA-1')
+
+        vincular_activos_por_numero_serie()
+
+        activo = Activo.objects.get(numero_serie='SN-MIA-1')
+        self.assertEqual(activo.unidad_negocio, self.mia)
+        self.assertEqual(activo.farmacia, self.de_mia)
+
+    # --- INV-02: la guarda que le faltaba al alta masiva ----------------------------------
+
+    def test_el_alta_masiva_no_le_roba_el_vinculo_a_otra_estacion(self):
+        """Sin `estacion__isnull=True` el vínculo no se duplicaba: se robaba, y la estación
+        anterior quedaba sin activo sin que nada lo dijera."""
+        primera = self._estacion('ML100-A', self.de_sg, serie='SN-ROBO')
+        activo = self._activo(numero_serie='SN-ROBO', estacion=primera, farmacia=self.de_sg)
+        segunda = self._estacion('MAM10-B', self.de_mia, serie='SN-ROBO')
+
+        resumen = crear_activos_desde_estaciones(usuario=self.usuario, aplicar=True)
+
+        activo.refresh_from_db()
+        self.assertEqual(activo.estacion, primera)
+        self.assertEqual(resumen.get('serie_de_otra_estacion'), 1)
+        self.assertFalse(Activo.objects.filter(estacion=segunda).exists())
+
+    def test_con_dos_activos_que_comparten_serie_no_elige_al_azar(self):
+        """Hay series compartidas de verdad: `BB3VJD3` está en un desktop y un laptop
+        (medido el 12-oct). `.first()` sobre dos candidatos era una moneda al aire."""
+        self._activo(numero_serie='BB3VJD3')
+        self._activo(numero_serie='BB3VJD3', tipo=Activo.Tipo.LAPTOP)
+        self._estacion('ML100-C', self.de_sg, serie='BB3VJD3')
+
+        resumen = crear_activos_desde_estaciones(usuario=self.usuario, aplicar=True)
+
+        self.assertEqual(resumen.get('serie_ambigua'), 1)
+        self.assertFalse(Activo.objects.filter(estacion__isnull=False).exists())
+
+    def test_el_vinculo_legitimo_sigue_funcionando_y_arrastra_farmacia_y_unidad(self):
+        """Lo que NO cambió: un activo sin estación con serie única se sigue vinculando. Antes
+        esa rama guardaba solo `estacion`, así que el activo quedaba en otra farmacia y con
+        unidad vacía (`INV-04` e `INV-05`)."""
+        activo = self._activo(numero_serie='SN-OK', farmacia=self.de_sg)
+        self._estacion('MAM10-D', self.de_mia, serie='SN-OK')
+
+        resumen = crear_activos_desde_estaciones(usuario=self.usuario, aplicar=True)
+
+        activo.refresh_from_db()
+        self.assertEqual(resumen['vinculados'], 1)
+        self.assertEqual(activo.farmacia, self.de_mia)
+        self.assertEqual(activo.unidad_negocio, self.mia)
+
+    # --- INV-04: la sincronización que el mensaje prometía y no existía -------------------
+
+    def test_resincroniza_la_farmacia_cuando_la_estacion_se_muda(self):
+        """`registrar_ubicacion_farmacia` se niega a cambiarla a mano diciendo que "se
+        sincroniza sola desde la Estación", y esa sincronización no existía: el único escritor
+        era la vinculación inicial, que solo mira estaciones sin activo."""
+        from apps.activos.services import resincronizar_farmacia_de_vinculados
+
+        estacion = self._estacion('ML100-E', self.de_sg, serie='SN-MUDA')
+        activo = self._activo(numero_serie='SN-MUDA', estacion=estacion,
+                              farmacia=self.de_sg, unidad_negocio=self.sg)
+
+        estacion.farmacia = self.de_mia
+        estacion.save(update_fields=['farmacia'])
+        movidos, _ = resincronizar_farmacia_de_vinculados()
+
+        activo.refresh_from_db()
+        self.assertEqual(movidos, 1)
+        self.assertEqual(activo.farmacia, self.de_mia)
+        self.assertEqual(activo.unidad_negocio, self.mia)
+
+    def test_la_resincronizacion_deja_rastro_de_donde_venia(self):
+        """Un cambio de ubicación que nadie pidió tiene que poder explicarse después."""
+        from apps.activos.services import resincronizar_farmacia_de_vinculados
+
+        estacion = self._estacion('ML100-F', self.de_sg, serie='SN-RASTRO')
+        activo = self._activo(numero_serie='SN-RASTRO', estacion=estacion, farmacia=self.de_sg)
+        estacion.farmacia = self.de_mia
+        estacion.save(update_fields=['farmacia'])
+
+        resincronizar_farmacia_de_vinculados()
+
+        evento = activo.eventos.filter(
+            tipo_evento=EventoActivo.TipoEvento.UBICACION_ACTUALIZADA,
+        ).latest('timestamp', 'pk')
+        self.assertEqual(evento.detalle['farmacia_anterior'], 'ML100')
+        self.assertEqual(evento.detalle['farmacia'], 'MAM10')
+        self.assertIn('INV-04', evento.detalle['motivo'])
+
+    def test_no_toca_a_los_que_ya_estan_en_su_sitio(self):
+        """Idempotente: corre todos los días en la tarea diaria."""
+        from apps.activos.services import resincronizar_farmacia_de_vinculados
+
+        estacion = self._estacion('ML100-G', self.de_sg, serie='SN-QUIETO')
+        self._activo(numero_serie='SN-QUIETO', estacion=estacion, farmacia=self.de_sg)
+
+        movidos, detalle = resincronizar_farmacia_de_vinculados()
+
+        self.assertEqual(movidos, 0)
+        self.assertEqual(detalle, [])
+
+    def test_la_tarea_diaria_hace_las_dos_cosas(self):
+        """Vincular los nuevos y resincronizar los ya vinculados: la segunda mitad faltaba."""
+        from apps.activos.tasks import vincular_activos_por_serie_task
+
+        estacion = self._estacion('ML100-H', self.de_sg, serie='SN-TAREA')
+        activo = self._activo(numero_serie='SN-TAREA', estacion=estacion, farmacia=self.de_sg)
+        estacion.farmacia = self.de_mia
+        estacion.save(update_fields=['farmacia'])
+
+        resultado = vincular_activos_por_serie_task()
+
+        activo.refresh_from_db()
+        self.assertEqual(activo.farmacia, self.de_mia)
+        self.assertIn('resincronizado', resultado)
+
+    # --- el comando para las filas que ya quedaron mal ------------------------------------
+
+    def test_el_comando_completa_las_unidades_vacias_y_simula_por_defecto(self):
+        activo = self._activo(farmacia=self.de_mia)
+
+        salida = io.StringIO()
+        call_command('corregir_unidad_negocio_activos', stdout=salida)
+        activo.refresh_from_db()
+        self.assertIsNone(activo.unidad_negocio_id)
+        self.assertIn('SIMULACI', salida.getvalue())
+
+        call_command('corregir_unidad_negocio_activos', '--aplicar', stdout=io.StringIO())
+        activo.refresh_from_db()
+        self.assertEqual(activo.unidad_negocio, self.mia)
+
+    def test_el_comando_no_pisa_una_unidad_distinta_sin_forzar(self):
+        """Una unidad distinta puede ser el defecto de INV-05 o alguien que la puso a
+        propósito. Pisarla en silencio sería cambiar un dato dudoso por otro."""
+        activo = self._activo(farmacia=self.de_mia, unidad_negocio=self.sg)
+
+        salida = io.StringIO()
+        call_command('corregir_unidad_negocio_activos', '--aplicar', stdout=salida)
+
+        activo.refresh_from_db()
+        self.assertEqual(activo.unidad_negocio, self.sg)
+        self.assertIn('SE DEJA COMO ESTÁ', salida.getvalue())
+
+        call_command('corregir_unidad_negocio_activos', '--aplicar', '--forzar', stdout=io.StringIO())
+        activo.refresh_from_db()
+        self.assertEqual(activo.unidad_negocio, self.mia)
+
+    def test_el_comando_no_toca_activos_sin_farmacia(self):
+        """En bodega u oficinas la unidad vacía es legítima."""
+        activo = self._activo()
+
+        call_command('corregir_unidad_negocio_activos', '--aplicar', '--forzar', stdout=io.StringIO())
+
+        activo.refresh_from_db()
+        self.assertIsNone(activo.unidad_negocio_id)
+
+
 class AdminEdicionConEstacionVinculadaTests(TestCase):
     """Editar por el admin un activo que tiene estación vinculada Y una IP/MAC cargadas de
     antes (`INV-01` de la auditoría por agentes, §10-BH).
