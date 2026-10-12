@@ -5398,3 +5398,59 @@ medición dice es que en esta flota no lo mueve.
 - `deploy/desplegar.sh` verifica **diez** servicios y `telegram_bot` no está en la lista, y su
   comentario habla de cinco imágenes cuando hoy son seis (las construye todas porque `build`
   va sin argumento). Si el bot quedara caído, el script diría "Todo aplicado" igual.
+
+---
+
+## §10-BÑ — Cerrar el trust-on-first-use mientras todavía es gratis (11-oct-2026)
+
+La otra mitad del hueco de `B-2`, y la primera consecuencia directa de haber medido (§10-BN).
+
+Una estación con `hardware_id` vacío aceptaba el primero que llegara. El TOFU existe por una
+razón buena —una estación creada sin agente, a mano en el admin o por un importador, no tiene
+otra identidad con qué comparar su primer enrolamiento— pero cubría de paso un caso que no es
+el mismo: **una estación que ya estuvo en uso** y tiene el campo vacío porque se enroló antes
+de que el mecanismo existiera. Para esa, fijar el primero que llegue significa que cualquiera
+que acierte su código —y los códigos son predecibles, `ML001-A`— se queda con su identidad y
+puede pedir su token cuando quiera. `A-6` (§10-BM) era la otra mitad: quitó el valor
+compartido y conocido del agente; esto quita la ventana para plantar uno nuevo.
+
+**La regla: el TOFU vale solo en el primer contacto real**, y "ya estuvo en uso" se decide por
+el latido. El latido viaja con el token, así que haber reportado uno prueba que hubo un agente
+enrolado de verdad. Una estación sin identidad que nunca latió sigue fijando la primera que
+llega, igual que antes.
+
+### Por qué ahora y no antes
+
+**Porque la medición dijo que no afecta a nadie.** Las 66 estaciones de la flota tienen
+`hardware_id` fijado (consulta C de `docs/auditoria-fase5-verificacion.sql`, corrida el
+11-oct-2026), así que hoy este camino no se usa y el cambio no puede dejar muda a ninguna.
+Es una ventana: con una sola estación vieja sin identidad en el medio, el mismo endurecimiento
+la habría bloqueado, y habría hecho falta el camino en el panel que §10-BN daba por necesario
+antes de medir.
+
+Esta entrada existe tanto por el arreglo como por el orden: **medir primero convirtió un
+cambio "que necesita un plan" en uno de quince líneas.**
+
+### La salida, si alguna vez bloquea a una estación legítima
+
+No es borrar el campo —eso vuelve al mismo estado— sino **escribirle el `hardware_id`
+correcto desde el admin**, que ya es editable ahí, leído del log del propio agente. Desde ahí
+el camino es el normal (coincidencia) y la estación vuelve sola. Así la identidad la declara
+una persona que fue a ver el equipo, que es exactamente lo que el TOFU no puede garantizar.
+
+### Y el rechazo no es invisible
+
+Va a la bandeja `EnrolamientoRechazado` del panel, no solo al log del worker. El agente
+reintenta en cada reconexión, así que sin eso la estación quedaría muda y lo único que lo
+explica viviría en un log que nadie mira — el síntoma exacto por el que esa bandeja se creó el
+27-sep-2026. El modelo ya tenía el campo `motivo` preparado; `_registrar_enrolamiento_rechazado`
+ahora lo acepta y, en los reintentos, lo actualiza al último (la fila es por código+hostname,
+así que el mismo equipo puede volver rechazado por otra razón y la bandeja tiene que decir
+cuál fue la última).
+
+7 pruebas nuevas, incluidas las dos que fijan lo que NO cambió: el TOFU legítimo de una
+estación sin agente todavía, y el alta de una estación nueva. Sin migración.
+
+**Lo que sigue sin cubrir:** el rechazo por `hardware_id` distinto —el caso de suplantación
+más claro— sigue yendo solo al log, igual que antes de esta entrada. Pasarlo a la bandeja es
+el mismo patrón y queda anotado.

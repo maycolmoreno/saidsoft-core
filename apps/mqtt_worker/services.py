@@ -28,8 +28,14 @@ def _farmacia_desde_codigo_estacion(codigo_estacion: str) -> Farmacia | None:
     return Farmacia.objects.filter(codigo=codigo_farmacia).first()
 
 
-def _registrar_enrolamiento_rechazado(codigo: str, payload: dict) -> None:
+def _registrar_enrolamiento_rechazado(codigo: str, payload: dict, motivo: str = '') -> None:
     """Deja el intento fallido en la bandeja de triage del panel.
+
+    `motivo` vacío deja el default del modelo ("Sitio no encontrado para el código"), que es
+    el caso con el que nació esta bandeja. Se puede pasar otro: el modelo ya tenía el campo
+    preparado para eso y la razón de ser de la bandeja no es el motivo, es que un rechazo
+    que solo vive en el log del worker **es invisible** — se instala el agente, el técnico se
+    va, y la estación nunca aparece en el panel sin que nadie sepa por qué.
 
     NUNCA lanza: esto corre dentro del worker MQTT, que es monohilo y es el unico oido
     de la plataforma. Que falle registrar un rechazo no puede tumbar la ingesta de todo
@@ -48,14 +54,22 @@ def _registrar_enrolamiento_rechazado(codigo: str, payload: dict) -> None:
         hostname = (payload.get('hostname') or '')[:120]
         fila, creada = EnrolamientoRechazado.objects.get_or_create(
             codigo_recibido=codigo[:100], hostname=hostname,
+            defaults={'motivo': motivo[:200]} if motivo else {},
         )
         if not creada:
-            EnrolamientoRechazado.objects.filter(pk=fila.pk).update(
-                intentos=F('intentos') + 1, ultimo_intento=timezone.now(),
+            campos = {
+                'intentos': F('intentos') + 1, 'ultimo_intento': timezone.now(),
                 # Vuelve a la bandeja: si alguien lo marco revisado y el equipo sigue
                 # insistiendo, es que no se resolvio.
-                revisado=False,
-            )
+                'revisado': False,
+            }
+            # El motivo se actualiza al ultimo: la clave de la fila es (codigo, hostname),
+            # asi que el mismo equipo puede volver rechazado por otra razon —le cargaron la
+            # farmacia y ahora falla por la identidad de hardware— y la bandeja tiene que
+            # decir por que lo rechazaron la ULTIMA vez, no la primera.
+            if motivo:
+                campos['motivo'] = motivo[:200]
+            EnrolamientoRechazado.objects.filter(pk=fila.pk).update(**campos)
     except Exception:
         logger.exception('No se pudo registrar el enrolamiento rechazado de %s', codigo)
 
@@ -182,8 +196,50 @@ def manejar_enrolamiento(payload: dict) -> dict:
         if estacion.estado_aprobacion == Estacion.EstadoAprobacion.RECHAZADA:
             logger.warning('Re-enrolamiento de %s rechazado: la estación está RECHAZADA en el panel.', codigo)
             return {'aceptado': False, 'motivo': 'estacion rechazada, requiere reaprobacion manual en el panel'}
-        # Trust-on-first-use: si nunca se guardó un hardware_id (estación creada antes de
-        # este mecanismo), se fija el primero que llegue.
+        # Trust-on-first-use, pero SOLO en el primer contacto de verdad.
+        #
+        # El TOFU existe para las estaciones creadas sin agente —a mano en el admin, o por
+        # el importador— que esperan su primera instalación: ahí el primer hardware_id que
+        # llega ES la identidad, no hay otra con qué compararla. Lo que se cierra acá es el
+        # otro caso, que parecía el mismo: una estación que **ya estuvo en uso** y tiene el
+        # campo vacío porque se enroló antes de que el mecanismo existiera. Para esa, fijar
+        # el primero que llegue significa que cualquiera que conozca su código —y los
+        # códigos son predecibles, `ML001-A`— se queda con su identidad y después puede
+        # pedir su token cuando quiera. Era la otra mitad del hueco de `B-2`, y `A-6` (el
+        # `hardware_id` que caía a una constante compartida) era la primera.
+        #
+        # "Ya estuvo en uso" = reportó al menos un latido. El latido viaja con el token, así
+        # que haberlo reportado prueba que hubo un agente enrolado de verdad.
+        #
+        # **Se endureció ahora porque la medición del 11-oct-2026 dijo que no afecta a
+        # nadie**: las 66 estaciones de la flota tienen `hardware_id` fijado, así que hoy
+        # este camino no se usa (consulta C de `docs/auditoria-fase5-verificacion.sql`).
+        # Mientras ese número sea cero el cambio es gratis; con estaciones viejas sin
+        # identidad en el medio, el mismo cambio dejaría alguna muda.
+        #
+        # La salida, si alguna vez bloquea a una estación legítima, no es borrar el campo:
+        # es ESCRIBIRLE el `hardware_id` correcto desde el admin (es editable ahí), leído
+        # del log del propio agente. Así la identidad la declara una persona que fue a ver
+        # el equipo, que es exactamente lo que el TOFU no puede garantizar.
+        if not estacion.hardware_id and estacion.ultimo_heartbeat is not None:
+            logger.warning(
+                'Re-enrolamiento de %s rechazado: no tiene hardware_id guardado y ya estuvo '
+                'en uso (último latido %s). Hay que escribirle el hardware_id en el admin.',
+                codigo, estacion.ultimo_heartbeat,
+            )
+            # A la bandeja del panel y no solo al log: el agente reintenta en cada
+            # reconexión, así que sin esto la estación queda muda y lo único que lo explica
+            # vive en el log del worker. Es el mismo motivo por el que la bandeja existe.
+            _registrar_enrolamiento_rechazado(
+                codigo, payload,
+                motivo='Sin identidad de hardware guardada y ya estuvo en uso: cargar el '
+                       'hardware_id en el admin antes de re-enrolar.',
+            )
+            return {
+                'aceptado': False,
+                'motivo': 'la estacion no tiene identidad de hardware guardada y ya estuvo en uso: '
+                          'hay que cargarla a mano en el panel antes de re-enrolar',
+            }
         campos = []
         if not estacion.hardware_id and hardware_id:
             estacion.hardware_id = hardware_id

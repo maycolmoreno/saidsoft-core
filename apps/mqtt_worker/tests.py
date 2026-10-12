@@ -563,6 +563,120 @@ class CredencialDelBrokerSeDaDeBajaTests(TestCase):
         self.assertIsNone(resp['mqtt_username'])
 
 
+class TrustOnFirstUseSoloEnElPrimerContactoTests(TestCase):
+    """El TOFU se aplica al primer contacto real, no a una estación que ya estuvo en uso.
+
+    Era la otra mitad del hueco de `B-2` (`A-6` era la primera): una estación con
+    `hardware_id` vacío aceptaba el primero que llegara, y los códigos de estación son
+    predecibles (`ML001-A`). Quien adivinara el código se quedaba con la identidad de esa
+    estación y después podía pedir su token cuando quisiera.
+
+    Se endureció el 11-oct-2026 **porque la medición dijo que no afectaba a nadie**: las 66
+    estaciones de la flota tienen identidad fijada (consulta C de
+    `docs/auditoria-fase5-verificacion.sql`). Mientras ese número sea cero el cambio es
+    gratis; con estaciones viejas sin identidad en el medio, dejaría alguna muda.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+
+    def test_una_estacion_sin_agente_todavia_si_fija_el_primero_que_llega(self):
+        """El caso que el TOFU existe para cubrir: alguien creó la estación en el admin o la
+        trajo un importador, y su primera instalación es este enrolamiento. No hay otra
+        identidad con qué compararla."""
+        Estacion.objects.create(codigo='ML001-A', farmacia=self.farmacia)
+
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW-PRIMERO'})
+
+        self.assertTrue(resp['aceptado'])
+        self.assertEqual(Estacion.objects.get(codigo='ML001-A').hardware_id, 'HW-PRIMERO')
+
+    def test_una_estacion_que_ya_latio_no_acepta_una_identidad_nueva(self):
+        """El hueco: se enroló antes de que el mecanismo existiera, así que tiene el campo
+        vacío pero YA estuvo en uso. Fijar el primero que llegue sería regalar su identidad
+        a quien acierte el código."""
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, ultimo_heartbeat=timezone.now(),
+        )
+
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW-DE-UN-TERCERO'})
+
+        self.assertFalse(resp['aceptado'])
+        self.assertEqual(Estacion.objects.get(codigo='ML001-A').hardware_id, '')
+        self.assertNotIn('token', resp)
+
+    def test_el_motivo_dice_que_hay_que_cargarla_a_mano(self):
+        """Un rechazo que no dice cómo salir del rechazo deja la estación muda y a quien la
+        instaló sin pista. La salida NO es borrar el campo —eso vuelve al mismo estado— sino
+        escribirle el hardware_id correcto en el admin."""
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, ultimo_heartbeat=timezone.now(),
+        )
+
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW-X'})
+
+        self.assertIn('a mano', resp['motivo'])
+        self.assertIn('panel', resp['motivo'])
+
+    def test_el_rechazo_queda_en_la_bandeja_del_panel_y_no_solo_en_el_log(self):
+        """El agente reintenta en cada reconexión, así que sin esto la estación queda muda y
+        lo único que lo explica vive en el log del worker. Es exactamente el síntoma por el
+        que `EnrolamientoRechazado` existe: se instala el agente, el técnico se va, y nadie
+        sabe por qué la estación no aparece."""
+        from apps.mqtt_worker.models import EnrolamientoRechazado
+
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, ultimo_heartbeat=timezone.now(),
+        )
+
+        manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW-X', 'hostname': 'PC-CAJA-1'})
+
+        fila = EnrolamientoRechazado.objects.get(codigo_recibido='ML001-A')
+        self.assertEqual(fila.hostname, 'PC-CAJA-1')
+        self.assertIn('identidad de hardware', fila.motivo)
+        self.assertIn('admin', fila.motivo)
+
+    def test_los_reintentos_se_cuentan_en_vez_de_llenar_la_bandeja(self):
+        """Mismo criterio que el rechazo por farmacia inexistente: el agente reintenta solo,
+        así que una fila por intento dejaría la bandeja inservible para lo único que sirve,
+        que es mirarla."""
+        from apps.mqtt_worker.models import EnrolamientoRechazado
+
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, ultimo_heartbeat=timezone.now(),
+        )
+
+        for _ in range(3):
+            manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW-X', 'hostname': 'PC-CAJA-1'})
+
+        self.assertEqual(EnrolamientoRechazado.objects.filter(codigo_recibido='ML001-A').count(), 1)
+        self.assertEqual(EnrolamientoRechazado.objects.get(codigo_recibido='ML001-A').intentos, 3)
+
+    def test_con_la_identidad_ya_cargada_a_mano_el_reenrolamiento_pasa(self):
+        """La vía de recuperación completa: una persona fue a ver el equipo, leyó su
+        hardware_id del log del agente y lo escribió en el admin. Desde ahí el camino es el
+        normal —coincidencia— y la estación vuelve sola."""
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, ultimo_heartbeat=timezone.now(),
+            hardware_id='HW-CARGADO-A-MANO',
+        )
+
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW-CARGADO-A-MANO'})
+
+        self.assertTrue(resp['aceptado'])
+        self.assertEqual(resp['token'], Estacion.objects.get(codigo='ML001-A').token_enrolamiento)
+
+    def test_una_estacion_nueva_sigue_entrando_con_su_identidad(self):
+        """El camino de alta no se toca: una estación que no existe se crea con el
+        hardware_id que trae el payload, igual que antes."""
+        resp = manejar_enrolamiento({'codigo': 'ML001-B', 'hardware_id': 'HW-NUEVA'})
+
+        self.assertTrue(resp['aceptado'])
+        self.assertEqual(Estacion.objects.get(codigo='ML001-B').hardware_id, 'HW-NUEVA')
+
+
 class ReenrolamientoNoExpulsaAEstacionVivaTests(TestCase):
     """`B-2`: el re-enrolamiento rotaba la credencial como efecto colateral de responder.
 
