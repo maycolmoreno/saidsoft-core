@@ -5532,3 +5532,75 @@ dos comandos existan dentro de la imagen, cargar el `.exe` 0.33 y correr el roll
 pero no en los equipos: **63 estaciones corren 0.32, dos 0.29 y una 0.31** (medido el
 11-oct-2026), así que el rollout también va a arrastrar a las tres rezagadas, que con el
 mensaje retenido lo reciben al encender.
+
+---
+
+## §10-BP — El rollout del agente 0.33, a mitad de camino y por qué se detuvo (12-oct-2026)
+
+**Estado: 14 de 66 estaciones en `agente-prueba-0.33`.** El resto queda para una ventana fuera
+del horario de atención, a mano. Esta entrada existe para poder retomarlo sin reconstruir nada.
+
+### Lo que se hizo
+
+1. Backend desplegado (`14860ef`), con los dos comandos nuevos dentro de la imagen.
+2. **Los dos catálogos republicados**, ahora firmados. Un agente anterior a 0.33 los sigue
+   aceptando —para eso se dejó la compatibilidad—, así que esto no espera al rollout.
+3. `.exe` copiado al servidor y cargado con `cargar_version_agente --usuario romo --aplicar`.
+   El sha256 se verificó tres veces: en la máquina de build, tras el `scp` en el servidor
+   (`sha256sum`) y contra el que calculó el modelo al guardar. Los tres coinciden
+   (`fdf799a2c0c5…`).
+4. **Canario de 3 estaciones vivas** (`GSD02-ADM`, `ML007-ADM`, `MS002-ADM`): aplicaron en
+   ~2 minutos y volvieron a reportar. Se comprobó además que siguen trabajando y no solo
+   latiendo: las tres tienen muestras de servicios POS en la última hora, igual que las 40
+   que seguían en 0.32.
+5. Primera tanda de 15: **11 de las 12 vivas aplicaron**; 3 estaban apagadas desde días y la
+   recibirán al encender.
+
+### Por qué se detuvo, y el error que lo precedió
+
+**Se lanzó la tanda creyendo que las farmacias estaban cerradas, y estaban abiertas.** La hora
+se dedujo de un `ls -l` que mostraba `00:19` —de cuando se copió el `.exe`— y entre eso y la
+tanda pasaron horas de sesión. Los tres relojes del servidor (host, `web`, `db`) dicen lo
+mismo, así que la comprobación correcta era trivial y se hizo tarde: eran las **10:01** hora
+local.
+
+No hubo daño: el agente nunca fue parte del circuito de venta y el swap reinicia su propio
+servicio, no el POS. Lo que sí consume el rollout es **enlace de farmacia en horario de
+atención**: 19 MB por estación.
+
+**La lección operativa: el rollout del agente va fuera del horario de atención.** Con 66
+estaciones son ~1,25 GB, y lo que importa no es el total sino que cada farmacia baja 19 MB por
+cada estación que tiene, por su propio enlace, mientras atiende.
+
+### `GSD11-A`: la que no aplicó
+
+Recibió la orden, está **sana** —online, latido fresco, `pausado=false`,
+`desfase_reloj_segundos=0`, identidad de hardware presente— y sigue en 0.32. **No quedó sin
+agente**, que era el riesgo real del swap. La causa más probable es congestión: doce equipos
+bajando 19 MB a la vez, en horario de operación. No hace falta hacer nada especial con ella:
+el comando la va a incluir sola en la próxima pasada, porque sigue reportando 0.32.
+
+Vale anotar que esto es exactamente lo que el escalonamiento existe para encontrar, y lo
+encontró con 15 estaciones en vez de con 66.
+
+### Lo que haría más barato el próximo rollout
+
+**`enviar_actualizacion_agente` no usa el caché de farmacia.** `despliegues/services.py:90` y
+`software/services.py:68` mandan `usar_cache` en su payload; la actualización del agente, no.
+Con 66 estaciones en **38 farmacias**, que cada estación baje el ejecutable del central en vez
+de la primera de su farmacia cuesta ~42% de tráfico de más —y mucho más en los sitios con tres
+o cuatro estaciones, que es justo donde el enlace duele—. El mecanismo ya existe y está
+probado para los otros dos tipos de paquete. Queda anotado, no hecho.
+
+### Cómo retomarlo
+
+```sh
+cd ~/Documentos/Said/saidsoft-core/deploy
+docker compose --env-file .env exec -T web python manage.py actualizar_agente_flota            # simula
+docker compose --env-file .env exec -T web python manage.py actualizar_agente_flota --limite 15 --aplicar
+```
+
+Repetir por tandas y confirmar entre una y otra con la columna de versión del panel (sale del
+latido). Mientras queden estaciones en 0.32, `RIESGO-06` y `A-6` están cerrados en el servidor
+pero no en esos equipos: los agentes viejos siguen aceptando un catálogo sin firma, y el freno
+que no depende del rollout es `deploy/emqx-narrow-acl-agente.sh`.

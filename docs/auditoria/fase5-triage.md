@@ -22,10 +22,10 @@ triage— y **7 siguen abiertos**. De los 94 hallazgos de la Fase 4 quedan **89*
 |---|---|---|
 | `BUG-01` | **CERRADO** antes del triage, en `ecc9e70` | §10-BH |
 | `INV-01` | **CERRADO** — reproducido primero, el primer `Reproducción: SÍ` de la auditoría | §5 · §10-BJ |
-| `RIESGO-06` | **CERRADO en el código.** Falta el agente 0.33 corriendo en la flota | §6 · §10-BK |
+| `RIESGO-06` | **CERRADO** en el código, el servidor y los catálogos del broker. En la flota: **14 de 66** estaciones con el agente 0.33 (§10-BP) | §6 · §10-BK |
 | `B-1` | **CERRADO** | §7 · §10-BL |
 | `B-2` | **CERRADO el daño** (la expulsión del broker). El hueco de trust-on-first-use resultó **teórico**: 0 estaciones sin identidad — ver §9 | §7 · §10-BL |
-| `A-6` | **CERRADO** — viaja en el mismo agente 0.33 que `RIESGO-06` | §8 · §10-BM |
+| `A-6` | **CERRADO** en el código; en la flota, las mismas **14 de 66** del agente 0.33 | §8 · §10-BM |
 | `A-2` | abierto | §3 |
 | `C-1` | abierto — conviene que entre con la tanda de la app móvil | §3 |
 | `INV-02`, `INV-04`, `INV-05`, `INV-07` | abiertos — al final por oportunidad, no por gravedad | §3 |

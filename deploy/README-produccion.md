@@ -616,6 +616,17 @@ No hay que ir equipo por equipo —eso es la app movil, no este agente—:
 4. `manejar_heartbeat` limpia el retenido de cada estacion en cuanto confirma la version, asi
    que no hace falta limpiarlo a mano.
 
+> **El rollout va FUERA del horario de atencion** (12-oct-2026). Cada estacion baja 19 MB
+> del central por su propio enlace, y las farmacias con tres o cuatro estaciones los bajan
+> una vez por cada una. No es que rompa la venta —el agente nunca fue parte de ese circuito y
+> el swap reinicia su propio servicio— es que consume el enlace de la farmacia mientras
+> atiende. Y en tandas de ~15, confirmando entre una y otra con la columna de version del
+> panel: la primera tanda real dejo una estacion sin aplicar por congestion, y con 66 de golpe
+> eso no se habria visto.
+>
+> Comprobar la hora ANTES, que es trivial y la primera vez se hizo tarde:
+> `ssh ... 'date +%FT%T%z'`.
+
 **El freno que no depende de este rollout** es `deploy/emqx-narrow-acl-agente.sh`: con la ACL
 angosta ninguna estacion puede publicar en los topicos de catalogo. Sigue esperando que las 2
 estaciones apagadas migren a credencial propia.
