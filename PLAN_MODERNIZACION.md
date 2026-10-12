@@ -5454,3 +5454,81 @@ estación sin agente todavía, y el alta de una estación nueva. Sin migración.
 **Lo que sigue sin cubrir:** el rechazo por `hardware_id` distinto —el caso de suplantación
 más claro— sigue yendo solo al log, igual que antes de esta entrada. Pasarlo a la bandeja es
 el mismo patrón y queda anotado.
+
+---
+
+## §10-BO — El rollout del agente eran 66 clics, y por eso no se hacía (11-oct-2026)
+
+Para cerrar `RIESGO-06` y `A-6` en la flota hace falta que el agente **0.33** corra en los 66
+equipos. Al ir a hacerlo apareció que la plataforma sabe actualizar **una** estación y no una
+flota: el único disparo era el botón del panel (`/estaciones/<pk>/agente/actualizar/`), uno por
+estación. Con 66 son 66 clics, y con ~1.800 proyectadas el camino no existe.
+
+**`actualizar_agente_flota`**, modelado sobre `pausar_flota` —mismo problema, mismo molde, y
+el argumento ya estaba escrito ahí: una acción masiva que publica por MQTT y toca una fila por
+estación no cabe en un request HTTP—. Simula por defecto y exige `--aplicar`, como todos los
+comandos que escriben en masa en este repo. Acepta `--unidad`, `--estaciones` y `--agente`
+(no `--version`: `BaseCommand` la reserva para imprimir la versión de Django, el mismo choque
+que `armar_paquete_agente` ya había documentado).
+
+**`--limite`, y es la razón de que esto no sea un `for` sobre la vista.** El agente se
+actualiza reemplazando su propio ejecutable, así que un build malo no deja una estación con la
+versión vieja: la deja **sin agente**, y recuperarla es ir al equipo. El comando permite
+canario —tres estaciones, confirmar que reportan la versión nueva en su latido, después el
+resto— y **avisa solo** cuando se lo va a correr sobre más de cinco sin límite. No lo prohíbe:
+un rollout urgente puede justificarse, pero no por olvido.
+
+**No exige que la estación esté en línea, a diferencia del botón.** La orden va retenida y
+EMQX la entrega apenas cada estación reconecta, que es exactamente para lo que el retenido
+está ahí (`enviar_actualizacion_agente` lo dice en su docstring). El botón exige ONLINE porque
+responde en un modal y necesita decir algo inmediato; un rollout no, y las farmacias apagan
+los equipos al cerrar. El resumen separa cuántas lo reciben ahora y cuántas al encender.
+
+A las que ya reportan la versión no se les republica: les haría reemplazar el ejecutable por
+el mismo. Y no registra eventos de auditoría, por el mismo criterio que `pausar_flota` —el
+rastro de una acción masiva es la salida del comando y los latidos que la confirman; el botón
+del panel sí audita, porque ahí hay una persona y una estación concretas.
+
+### El build 0.33, hecho
+
+Compilado con `agente-prueba/build.ps1` (PyInstaller, `--clean`): `dist\Saidsoft.Agente.exe`,
+19 MB. Verificado que el ejecutable lleva de verdad los cambios: su `--help` incluye
+`--hardware-id`, que es la opción nueva de `A-6`. El único aviso del build
+(`Hidden import "mx.DateTime" not found`) viene de psycopg2 y es inocuo.
+
+9 pruebas nuevas. Documentado en `README.md`, sección "Desplegar una versión nueva del agente
+(rollout)", junto a la del freno de emergencia.
+
+### Y el paso que quedaba fuera de la línea de comandos
+
+Al intentar hacer el rollout completo apareció el último eslabón manual: `VersionAgente.ejecutable`
+es un `FileField` y la única vía para cargarlo era **Admin → Versiones de agente**. Con eso, el
+despliegue de una versión quedaba partido en dos —todo por SSH menos un formulario web—, que es
+exactamente lo que impide escribirlo en un runbook o automatizarlo.
+
+**`cargar_version_agente`** cierra ese lado. El admin sigue sirviendo; lo que el comando agrega,
+además de poder correrse sin interfaz gráfica, son dos validaciones que el formulario no hace:
+
+- **Que el archivo sea un ejecutable de Windows de verdad** (los bytes `MZ` del encabezado PE).
+  No es paranoia de formato: el agente se actualiza **reemplazando su propio ejecutable**, así
+  que cargar un `.zip`, el `.py` o un `.exe` a medio escribir no da ningún error visible — deja
+  a la estación sin agente, y recuperarla es ir al equipo.
+- **Que no se cargue otro binario con una versión ya usada.** Si el sha256 difiere del de la
+  versión existente, significa que se recompiló sin subir `VERSION_AGENTE_PRUEBA` y la flota no
+  tiene forma de distinguir los dos builds; el comando lo dice y no carga nada.
+
+**La versión no se escribe a mano: sale de `agente-prueba/agente_prueba.py`**, que es de donde
+la tomó el build. Es el criterio que `publicar_apk` ya había fijado con `pubspec.yaml`, y por el
+mismo motivo: escribirla aparte garantiza que algún día no coincidan, y una `VersionAgente`
+etiquetada con una versión que no es la del binario hace que el panel diga que el rollout no
+avanzó cuando avanzó, o al revés. `--usuario` es obligatorio y no tiene default: `creado_por`
+queda en el historial, y atribuirlo a quien no lo hizo lo vuelve inútil.
+
+8 pruebas nuevas.
+
+**Lo que falta para cerrar `RIESGO-06` y `A-6` de verdad:** desplegar el backend para que los
+dos comandos existan dentro de la imagen, cargar el `.exe` 0.33 y correr el rollout con
+`--limite 3`. Hasta entonces los dos hallazgos están cerrados en el código y en el servidor,
+pero no en los equipos: **63 estaciones corren 0.32, dos 0.29 y una 0.31** (medido el
+11-oct-2026), así que el rollout también va a arrastrar a las tres rezagadas, que con el
+mensaje retenido lo reciben al encender.

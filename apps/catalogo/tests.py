@@ -2683,6 +2683,265 @@ class FrenoDeEmergenciaTests(TestCase):
         self.assertIsNone(self.estacion.pausa_confirmada_en)
 
 
+class CargarVersionAgenteTests(TestCase):
+    """Cargar un build del agente sin pasar por el admin web (`cargar_version_agente`).
+
+    El rollout tenía un solo paso que no se podía hacer por línea de comandos:
+    `VersionAgente.ejecutable` es un `FileField` y la única vía era Admin → Versiones de
+    agente. Eso dejaba el despliegue de una versión partido en dos —todo por SSH menos un
+    formulario web—, que es justamente lo que impide automatizarlo o escribirlo en un
+    runbook.
+    """
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.autor = User.objects.create_user(username='u_carga', password='x')
+        self.destino = Path(tempfile.mkdtemp())
+
+    def _exe(self, nombre='Saidsoft.Agente.exe', contenido=b'MZ' + b'\x00' * 2048):
+        ruta = self.destino / nombre
+        ruta.write_bytes(contenido)
+        return str(ruta)
+
+    def test_simula_por_defecto(self):
+        salida = io.StringIO()
+        call_command('cargar_version_agente', self._exe(), '--usuario', 'u_carga', stdout=salida)
+
+        self.assertIn('SIMULACI', salida.getvalue())
+        self.assertFalse(VersionAgente.objects.exists())
+
+    def test_con_aplicar_carga_la_version_que_dice_el_fuente_del_agente(self):
+        """La versión no se escribe a mano: sale de `agente_prueba.py`, que es de donde la
+        tomó el build. Mismo criterio que `publicar_apk` con `pubspec.yaml`."""
+        from django.conf import settings
+
+        from apps.catalogo.management.commands.cargar_version_agente import leer_version_del_fuente
+
+        esperada = leer_version_del_fuente(Path(settings.BASE_DIR))
+
+        call_command(
+            'cargar_version_agente', self._exe(), '--usuario', 'u_carga', '--aplicar',
+            stdout=io.StringIO(),
+        )
+
+        cargada = VersionAgente.objects.get()
+        self.assertEqual(cargada.version, esperada)
+        self.assertEqual(cargada.creado_por, self.autor)
+        self.assertEqual(len(cargada.sha256), 64)
+
+    def test_rechaza_un_archivo_que_no_es_un_ejecutable_de_windows(self):
+        """El agente reemplaza su propio ejecutable con esto: cargar un zip o el .py no da un
+        error visible, deja a la estación sin agente."""
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError) as ctx:
+            call_command(
+                'cargar_version_agente', self._exe(contenido=b'PK\x03\x04datos'),
+                '--usuario', 'u_carga', '--aplicar', stdout=io.StringIO(),
+            )
+
+        self.assertIn('MZ', str(ctx.exception))
+        self.assertFalse(VersionAgente.objects.exists())
+
+    def test_rechaza_un_usuario_que_no_existe(self):
+        """`creado_por` queda en el historial: atribuirlo a quien no lo hizo lo vuelve
+        inútil, así que el comando no inventa un autor por defecto."""
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command(
+                'cargar_version_agente', self._exe(), '--usuario', 'nadie', '--aplicar',
+                stdout=io.StringIO(),
+            )
+
+    def test_rechaza_un_archivo_inexistente(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command(
+                'cargar_version_agente', str(self.destino / 'no-existe.exe'),
+                '--usuario', 'u_carga', stdout=io.StringIO(),
+            )
+
+    def test_si_la_version_ya_esta_cargada_con_el_mismo_binario_no_hace_nada(self):
+        call_command(
+            'cargar_version_agente', self._exe(), '--usuario', 'u_carga', '--aplicar',
+            stdout=io.StringIO(),
+        )
+
+        err = io.StringIO()
+        call_command(
+            'cargar_version_agente', self._exe(), '--usuario', 'u_carga', '--aplicar',
+            stdout=io.StringIO(), stderr=err,
+        )
+
+        self.assertIn('MISMO binario', err.getvalue())
+        self.assertEqual(VersionAgente.objects.count(), 1)
+
+    def test_si_la_version_ya_esta_pero_el_binario_cambio_avisa_que_suba_la_version(self):
+        """El caso peligroso: se recompiló sin tocar `VERSION_AGENTE_PRUEBA`, así que hay dos
+        builds distintos con la misma etiqueta y la flota no puede distinguirlos."""
+        call_command(
+            'cargar_version_agente', self._exe(), '--usuario', 'u_carga', '--aplicar',
+            stdout=io.StringIO(),
+        )
+
+        otro = self._exe(nombre='otro.exe', contenido=b'MZ' + b'\x01' * 4096)
+        err = io.StringIO()
+        call_command(
+            'cargar_version_agente', otro, '--usuario', 'u_carga', '--aplicar',
+            stdout=io.StringIO(), stderr=err,
+        )
+
+        self.assertIn('OTRO binario', err.getvalue())
+        self.assertIn('subí el número de versión', err.getvalue().lower())
+        self.assertEqual(VersionAgente.objects.count(), 1)
+
+    def test_el_sha256_guardado_lo_calcula_el_modelo_y_coincide_con_el_archivo(self):
+        """El agente nunca confía en un hash que le llegue por otro lado (SEC-1): lo calcula
+        el modelo al guardar. Si no coincidiera con el del archivo, algo se corrompió en el
+        camino y publicar esa versión rompería la flota."""
+        import hashlib
+
+        ruta = self._exe()
+        esperado = hashlib.sha256(Path(ruta).read_bytes()).hexdigest()
+
+        salida = io.StringIO()
+        call_command(
+            'cargar_version_agente', ruta, '--usuario', 'u_carga', '--aplicar', stdout=salida,
+        )
+
+        self.assertEqual(VersionAgente.objects.get().sha256, esperado)
+        self.assertIn('coincide', salida.getvalue())
+
+
+class ActualizarAgenteFlotaTests(TestCase):
+    """Rollout del agente a muchas estaciones (`actualizar_agente_flota`).
+
+    El botón del panel actualiza UNA estación y está bien para eso; una versión nueva son
+    66 estaciones hoy y ~1.800 proyectadas, y con el botón son 66 clics que nadie da. Mismo
+    molde y mismo argumento que `pausar_flota`.
+    """
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.autor = User.objects.create_user(username='u_rollout', password='x')
+        self.version = VersionAgente.objects.create(
+            version='agente-prueba-0.33',
+            ejecutable=SimpleUploadedFile('Saidsoft.Agente.exe', b'binario-de-prueba'),
+            creado_por=self.autor,
+        )
+
+    def _estacion(self, codigo, **extra):
+        datos = {
+            'codigo': codigo, 'farmacia': self.farmacia,
+            'estado_aprobacion': Estacion.EstadoAprobacion.APROBADA,
+            'hardware_id': f'HW-{codigo}',
+        }
+        datos.update(extra)
+        return Estacion.objects.create(**datos)
+
+    def test_simula_por_defecto(self):
+        self._estacion('ML001-A', version_agente='agente-prueba-0.32')
+
+        salida = io.StringIO()
+        with patch('apps.catalogo.services._publicar_mqtt') as publicar:
+            call_command('actualizar_agente_flota', stdout=salida)
+
+        publicar.assert_not_called()
+        self.assertIn('SIMULACI', salida.getvalue())
+
+    def test_con_aplicar_publica_a_las_desactualizadas(self):
+        self._estacion('ML001-A', version_agente='agente-prueba-0.32')
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            call_command('actualizar_agente_flota', '--aplicar', stdout=io.StringIO())
+
+        self.assertTrue(publicar.called)
+
+    def test_no_le_republica_a_la_que_ya_reporta_esa_version(self):
+        """Republicarle el retenido la haría reemplazar su ejecutable por el mismo, y
+        ensucia el resumen de lo que de verdad se movió."""
+        self._estacion('ML001-A', version_agente='agente-prueba-0.33')
+
+        salida = io.StringIO()
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            call_command('actualizar_agente_flota', '--aplicar', stdout=salida)
+
+        publicar.assert_not_called()
+        self.assertIn('1 ya la reportan', salida.getvalue())
+
+    def test_el_limite_permite_hacer_canario(self):
+        """Lo que hace que esto importe: el agente se reemplaza a sí mismo, así que un build
+        malo no deja una versión vieja, deja la estación SIN agente."""
+        for sufijo in 'ABCDE':
+            self._estacion(f'ML001-{sufijo}', version_agente='agente-prueba-0.32')
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            call_command('actualizar_agente_flota', '--limite', '2', '--aplicar', stdout=io.StringIO())
+
+        self.assertEqual(publicar.call_count, 2)
+
+    def test_sin_limite_y_con_muchas_avisa_del_riesgo(self):
+        for sufijo in 'ABCDEFG':
+            self._estacion(f'ML001-{sufijo}', version_agente='agente-prueba-0.32')
+
+        salida = io.StringIO()
+        with patch('apps.catalogo.services._publicar_mqtt'):
+            call_command('actualizar_agente_flota', stdout=salida)
+
+        texto = salida.getvalue()
+        self.assertIn('--limite 3', texto)
+        self.assertIn('SIN agente', texto)
+
+    def test_alcanza_a_las_apagadas_porque_el_mensaje_va_retenido(self):
+        """A diferencia del botón del panel, que exige ONLINE: las farmacias apagan los
+        equipos al cerrar, así que "todas encendidas a la vez" no pasa nunca, y el retenido
+        existe precisamente para eso."""
+        self._estacion('ML001-A', version_agente='agente-prueba-0.32', ultimo_heartbeat=None)
+
+        salida = io.StringIO()
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            call_command('actualizar_agente_flota', '--aplicar', stdout=salida)
+
+        self.assertTrue(publicar.called)
+        self.assertTrue(publicar.call_args.kwargs.get('retain'))
+        self.assertIn('al encender', salida.getvalue())
+
+    def test_no_toca_las_que_no_estan_aprobadas(self):
+        self._estacion(
+            'ML001-A', version_agente='agente-prueba-0.32',
+            estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
+        )
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            call_command('actualizar_agente_flota', '--aplicar', stdout=io.StringIO())
+
+        publicar.assert_not_called()
+
+    def test_sin_version_cargada_lo_dice_en_vez_de_fallar(self):
+        VersionAgente.objects.all().delete()
+        self._estacion('ML001-A')
+
+        err = io.StringIO()
+        call_command('actualizar_agente_flota', '--aplicar', stderr=err)
+
+        self.assertIn('No hay ninguna VersionAgente', err.getvalue())
+
+    def test_una_version_que_no_existe_lista_las_cargadas(self):
+        self._estacion('ML001-A')
+
+        err = io.StringIO()
+        call_command('actualizar_agente_flota', '--agente', 'agente-prueba-9.99', stderr=err)
+
+        self.assertIn('agente-prueba-0.33', err.getvalue())
+
+
 class ElAgentePausadoSigueLatiendoTests(TestCase):
     """El contrato del freno, del lado del agente, leído del propio código fuente.
 

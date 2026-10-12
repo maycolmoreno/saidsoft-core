@@ -1898,6 +1898,58 @@ instalador sigue dando de alta equipos que arrancan sin pausar. Bloquea las alta
 **incluido el camino cero-touch**, pero nunca un re-enrolamiento: una estación que perdió
 su `identidad.json` tiene ahí su único camino de vuelta.
 
+## Desplegar una versión nueva del agente (rollout)
+
+El agente se actualiza **solo**, por MQTT: el servidor publica la orden y cada estación
+descarga el ejecutable, lo verifica por sha256, reemplaza el suyo y reinicia el servicio. No
+hay que ir equipo por equipo — eso es la app móvil, no este agente.
+
+Los tres pasos, y el único manual es el primero:
+
+```sh
+# 1. Compilar (en Windows, con el venv del proyecto). Produce dist\Saidsoft.Agente.exe
+cd agente-prueba
+.\build.ps1
+
+# 2. Cargarlo como VersionAgente. Por linea de comandos:
+python manage.py cargar_version_agente agente-prueba/dist/Saidsoft.Agente.exe --usuario <vos>
+python manage.py cargar_version_agente agente-prueba/dist/Saidsoft.Agente.exe --usuario <vos> --aplicar
+#    (o por el admin: Admin -> Versiones de agente -> Agregar)
+#    La version NO se escribe a mano: sale de agente_prueba.py, que es de donde la tomo
+#    el build. El sha256 lo calcula el modelo al guardar; el agente nunca confia en uno
+#    que le llegue por otro lado (SEC-1).
+
+# 3. Publicar la orden. SIMULA por defecto.
+python manage.py actualizar_agente_flota                        # a quién le llegaría
+python manage.py actualizar_agente_flota --limite 3 --aplicar   # canario: tres primero
+python manage.py actualizar_agente_flota --aplicar              # el resto
+```
+
+**Empezar siempre con `--limite`.** El agente se reemplaza a sí mismo, así que un build malo
+no deja una estación con la versión vieja: la deja **sin agente**, y recuperarla es ir al
+equipo (queda un `.bak` junto al ejecutable para revertir a mano). Tres estaciones, confirmar
+que reportan la versión nueva en su latido, y después el resto. El comando avisa si lo vas a
+correr sobre más de cinco sin límite.
+
+**Por qué `cargar_version_agente` y no solo el admin.** El admin sigue estando y sirve; lo
+que no servía era tener el rollout partido en dos, todo por SSH menos un formulario web —eso
+es lo que impide escribirlo en un runbook o automatizarlo—. El comando valida además dos
+cosas que el formulario no: que el archivo sea un **ejecutable de Windows** de verdad (los
+bytes `MZ`; cargar un zip o el `.py` dejaría a la estación sin agente, porque el agente
+reemplaza su propio ejecutable con esto) y que no estés cargando **otro binario con una
+versión ya usada**, que dejaría a la flota sin forma de distinguir los dos builds.
+
+**Por qué un comando y no el botón del panel.** El botón existe
+(`/estaciones/<pk>/agente/actualizar/`) y está bien para una estación, pero una versión nueva
+son 66 estaciones hoy y ~1.800 proyectadas: con el botón son 66 clics que nadie da. Mismo
+argumento y mismo molde que `pausar_flota`.
+
+**La orden va retenida**, así que el comando —a diferencia del botón— no exige que la estación
+esté en línea: las farmacias apagan los equipos al cerrar, y EMQX le entrega el mensaje a cada
+una apenas reconecta. Publicar no es aplicar: lo confirma la columna de versión del agente en
+el panel, que sale del latido. `manejar_heartbeat` limpia el retenido en cuanto una estación
+confirma la versión, para que una reconexión futura no la haga actualizarse de nuevo.
+
 > La única estación a la que el re-enrolamiento sí le dice no es la que está **RECHAZADA**
 > en el panel, desde el 11-oct-2026 (`B-1`, §10-BL). No es el freno de emergencia actuando:
 > es que el rechazo es una decisión humana y antes el re-enrolamiento no la miraba, así que
