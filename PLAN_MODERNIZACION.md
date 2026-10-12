@@ -5850,3 +5850,64 @@ dato dudoso por otro en silencio no es una corrección. El vacío sí se complet
 vacío no es una decisión.
 
 13 pruebas nuevas; 229 de `apps.activos` en verde. Una migración de solo metadatos.
+
+---
+
+## §10-BT — Los dos pendientes anotados: uno cerrado, el otro descartado por medición (12-oct-2026)
+
+Las dos cosas que habían quedado "anotadas, no hechas" en §10-BL y §10-BP. Una se cerró; la
+otra resultó no servir para nada todavía, y el motivo es el interesante.
+
+### Cerrado: el rechazo por `hardware_id` distinto ya no es invisible
+
+De los tres rechazos de re-enrolamiento, dos iban a la bandeja `EnrolamientoRechazado` del
+panel y **este seguía solo en el log del worker** — justamente el más importante de ver: los
+otros dos describen una estación mal configurada, y este describe **a alguien pidiendo el token
+de una estación que no es la suya**.
+
+Es el mismo sitio donde vivía el rechazo por farmacia inexistente hasta que esa bandeja se creó
+el 27-sep-2026, y se creó porque nadie miraba el log. El `hostname` que queda en la fila es el
+del **solicitante**, no el de la estación legítima: es lo que permite ir a buscar la máquina que
+lo intentó. Registrar el intento no es aceptarlo —hay una prueba de que la identidad registrada
+no se pisa—.
+
+### Descartado: `usar_cache` en la actualización del agente
+
+§10-BP anotó que `enviar_actualizacion_agente` no manda `usar_cache` —que
+`despliegues/services.py:90` y `software/services.py:68` sí mandan— y estimó **~42% de tráfico
+evitable** en el rollout, con 66 estaciones repartidas en 38 farmacias.
+
+**Esa estimación era incorrecta en la práctica, y la medición lo mostró:**
+
+```
+estaciones marcadas como cache | 0
+farmacias con cache            | 0
+```
+
+**No hay ninguna estación marcada como caché de farmacia.** Sin `cache_url_base`, el agente cae
+al central igual, así que mandar el flag no ahorraría un solo byte. Y el arreglo completo
+tampoco es solo servidor: el agente **tiene** el mecanismo (`_descargar(url, usar_cache=...)`,
+que es lo que usan despliegues y software) pero su propia actualización llama a `_descargar`
+sin el flag, así que haría falta además un agente nuevo —0.34— con el rollout de 0.33 a mitad
+de camino.
+
+Es el mismo criterio con el que §10-BI descartó `CACHES` con Redis: **una optimización sin
+consumidor no es una optimización.** Para que esto sirva hace falta antes decidir y marcar
+qué estación es caché en cada farmacia, que es una decisión operativa y no una línea de código.
+
+Queda anotado así, con el número medido en vez de la estimación: si algún día se marcan cachés,
+el cambio son dos líneas —una en el servidor y una en el agente— y el ahorro recién entonces
+existe.
+
+### Y un hallazgo que salió de medir
+
+El mecanismo de caché de farmacia **está construido de los dos lados** —servidor, agente,
+`DESPLIEGUE_USAR_CACHE`, `es_cache_farmacia`, `cache_url_base`, `puerto_cache`— y **no hay una
+sola estación usándolo**. Así que los despliegues de POS y de software, que sí mandan el flag,
+tampoco lo aprovechan: las 66 estaciones bajan cada paquete del central.
+
+Es otra instancia del riesgo que `CLAUDE.md` nombra como el real del proyecto: *se construye
+más rápido de lo que se pone en uso*. No es un defecto de código —el mecanismo funciona— es
+capacidad instalada esperando una decisión de dos minutos en el admin.
+
+3 pruebas nuevas; 159 de `apps.mqtt_worker` en verde. Sin migración.

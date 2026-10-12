@@ -752,6 +752,37 @@ class TrustOnFirstUseSoloEnElPrimerContactoTests(TestCase):
         self.assertIn('a mano', resp['motivo'])
         self.assertIn('panel', resp['motivo'])
 
+    def test_el_rechazo_por_hardware_distinto_tambien_va_a_la_bandeja(self):
+        """De los tres rechazos de re-enrolamiento este es el más importante de ver: los otros
+        dos describen una estación mal configurada, y este describe a alguien pidiendo el
+        token de una estación que no es la suya. Hasta el 12-oct-2026 vivía solo en el log."""
+        from apps.mqtt_worker.models import EnrolamientoRechazado
+
+        Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, hardware_id='HW-LEGITIMO',
+        )
+
+        resp = manejar_enrolamiento({
+            'codigo': 'ML001-A', 'hardware_id': 'HW-DEL-ATACANTE', 'hostname': 'PC-AJENA',
+        })
+
+        self.assertFalse(resp['aceptado'])
+        fila = EnrolamientoRechazado.objects.get(codigo_recibido='ML001-A')
+        # El hostname es el del SOLICITANTE: es lo que permite ir a buscar la máquina.
+        self.assertEqual(fila.hostname, 'PC-AJENA')
+        self.assertIn('Identidad de hardware distinta', fila.motivo)
+
+    def test_el_hardware_distinto_no_pisa_la_identidad_registrada(self):
+        """Lo que no cambió: registrar el intento no es aceptarlo."""
+        estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, hardware_id='HW-LEGITIMO',
+        )
+
+        manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW-DEL-ATACANTE'})
+
+        estacion.refresh_from_db()
+        self.assertEqual(estacion.hardware_id, 'HW-LEGITIMO')
+
     def test_el_rechazo_queda_en_la_bandeja_del_panel_y_no_solo_en_el_log(self):
         """El agente reintenta en cada reconexión, así que sin esto la estación queda muda y
         lo único que lo explica vive en el log del worker. Es exactamente el síntoma por el

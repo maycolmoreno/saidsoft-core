@@ -198,6 +198,20 @@ def manejar_enrolamiento(payload: dict) -> dict:
             logger.warning(
                 'Re-enrolamiento rechazado por hardware_id distinto para %s (posible suplantación)', codigo,
             )
+            # A la bandeja del panel, no solo al log (12-oct-2026). De los tres rechazos de
+            # re-enrolamiento este es **el más importante de ver**: los otros dos describen
+            # una estación mal configurada, y este describe a alguien pidiendo el token de una
+            # estación que no es la suya. Vivía únicamente en el log del worker, que es el
+            # mismo sitio donde vivía el rechazo por farmacia inexistente hasta que se creó
+            # esta bandeja el 27-sep-2026 —y ese se creó porque nadie lo miraba—.
+            #
+            # El hostname que queda en la fila es el del SOLICITANTE, no el de la estación
+            # legítima: es lo que permite ir a buscar la máquina que lo intentó.
+            _registrar_enrolamiento_rechazado(
+                codigo, payload,
+                motivo='Identidad de hardware distinta a la registrada: alguien pidió el token de '
+                       'esta estación desde otro equipo, o la estación cambió de hardware.',
+            )
             return {'aceptado': False, 'motivo': 'hardware no coincide, requiere reaprobación manual en el panel'}
         # Una estación rechazada no vuelve sola: el rechazo es una decisión humana y el
         # re-enrolamiento no la miraba, así que devolvía token, credencial MQTT recién
