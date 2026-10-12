@@ -1992,6 +1992,130 @@ class AdminAltaDeActivoTests(TestCase):
         self.assertEqual(activo.modelo, 'cambiado')
 
 
+class AdminEdicionConEstacionVinculadaTests(TestCase):
+    """Editar por el admin un activo que tiene estación vinculada Y una IP/MAC cargadas de
+    antes (`INV-01` de la auditoría por agentes, §10-BH).
+
+    La fila que lo dispara no es rara: la produce el flujo normal. Se inventaría la
+    impresora con la IP de la planilla, después se le instala el agente, y el Beat de las
+    04:00 la vincula por serie (`vincular_activos_por_numero_serie`) con
+    `save(update_fields=...)`, que no pasa por `full_clean()`. El propio docstring de
+    `Activo.clean()` dice que esa fila tiene que poder guardarse igual.
+
+    Lo que pasaba: `get_readonly_fields` saca `ip` y `mac` del formulario cuando hay
+    estación, Django los pone en el `exclude` del ModelForm, y `Model.full_clean()` NO
+    filtra por `exclude` los errores que devuelve `Model.clean()`. `BaseForm.add_error`
+    recibía entonces un error dirigido a un campo que no existe en el form y lanzaba
+    `ValueError: 'ActivoForm' has no field named 'ip'` — un 500, no un error de
+    formulario, en el único lugar del sistema donde se edita un activo existente.
+
+    Mismo molde que `AdminAltaDeActivoTests`, y por el mismo motivo: una página que abre
+    no prueba que guardar funcione.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(
+            username='u_admin_inv01', password='x' * 16, email='a@b.c',
+        )
+        self.client.force_login(self.admin)
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX900')
+        self.farmacia = Farmacia.objects.create(codigo='ML900', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML900-A', farmacia=self.farmacia, ip_lan='10.20.30.40',
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+    def _activo_heredado(self, **extra):
+        """Un activo con IP/MAC a mano al que DESPUÉS se le vincula la estación, igual que
+        lo hace el Beat: con `update_fields`, sin `full_clean()`."""
+        activo = Activo.objects.create(
+            codigo=generar_codigo_activo(Activo.Tipo.IMPRESORA), tipo=Activo.Tipo.IMPRESORA,
+            farmacia=self.farmacia, unidad_negocio=self.sg, modelo='L3250', **extra,
+        )
+        activo.estacion = self.estacion
+        activo.save(update_fields=['estacion'])
+        return activo
+
+    def _guardar(self, activo, **extra):
+        datos = {
+            'tipo': activo.tipo,
+            'estado': activo.estado,
+            'unidad_negocio': self.sg.pk,
+            'farmacia': self.farmacia.pk,
+            'estacion': self.estacion.pk,
+            'modelo': 'corregido',
+            'eventos-TOTAL_FORMS': '0',
+            'eventos-INITIAL_FORMS': '0',
+        }
+        datos.update(extra)
+        return self.client.post(f'/admin/activos/activo/{activo.pk}/change/', datos)
+
+    def test_se_puede_corregir_el_modelo_de_un_activo_con_ip_heredada(self):
+        """El caso de INV-01. Antes: ValueError → 500, y el activo quedaba congelado."""
+        activo = self._activo_heredado(ip='10.20.30.99')
+
+        respuesta = self._guardar(activo)
+
+        self.assertEqual(respuesta.status_code, 302)
+        activo.refresh_from_db()
+        self.assertEqual(activo.modelo, 'corregido')
+
+    def test_tambien_con_la_mac_heredada(self):
+        """`clean()` dirigía el error a `ip` incluso cuando el dato cargado era la MAC, así
+        que el 500 salía igual y además señalaba el campo equivocado."""
+        activo = self._activo_heredado(mac='AA:BB:CC:DD:EE:FF')
+
+        respuesta = self._guardar(activo)
+
+        self.assertEqual(respuesta.status_code, 302)
+        activo.refresh_from_db()
+        self.assertEqual(activo.modelo, 'corregido')
+
+    def test_la_ip_heredada_no_se_borra_al_guardar(self):
+        """Dejar guardar no significa limpiar el dato: `ip_efectiva` ya resuelve el conflicto
+        a favor de la estación, y borrar la IP manual sería perder lo único que dice qué
+        había cargado la planilla."""
+        activo = self._activo_heredado(ip='10.20.30.99')
+
+        self._guardar(activo)
+
+        activo.refresh_from_db()
+        self.assertEqual(activo.ip, '10.20.30.99')
+        self.assertEqual(activo.ip_efectiva, ('10.20.30.40', 'agente'))
+
+    def test_cargar_una_ip_a_mano_con_estacion_vinculada_sigue_prohibido(self):
+        """La regla que `clean()` existe para defender no se toca: lo que se evita es que
+        una persona CARGUE el dato cuando ya hay una fuente automática. Acá `ip` sí está en
+        el formulario —el activo no tenía estación al abrirlo—, así que el error se puede
+        mostrar en su campo."""
+        activo = Activo.objects.create(
+            codigo=generar_codigo_activo(Activo.Tipo.IMPRESORA), tipo=Activo.Tipo.IMPRESORA,
+            farmacia=self.farmacia, unidad_negocio=self.sg, modelo='L3250',
+        )
+
+        respuesta = self._guardar(activo, ip='10.20.30.99')
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertIn('ip', respuesta.context['adminform'].form.errors)
+        activo.refresh_from_db()
+        self.assertEqual(activo.modelo, 'L3250')
+
+    def test_cambiar_la_ip_heredada_por_otra_sigue_prohibido(self):
+        """El borde entre las dos pruebas de arriba: que la fila pueda guardarse no habilita
+        a EDITAR la IP a mano. Si el valor que llega es distinto del que está en base, es una
+        edición y se rechaza."""
+        from django.core.exceptions import ValidationError
+
+        activo = self._activo_heredado(ip='10.20.30.99')
+
+        with self.assertRaises(ValidationError) as ctx:
+            activo.ip = '10.20.30.77'
+            activo.full_clean()
+
+        self.assertIn('ip', ctx.exception.error_dict)
+
+
 class ComandosSimulanPorDefectoTests(TestCase):
     """CLAUDE.md: "los comandos que escriben en masa simulan por defecto y exigen
     --aplicar".

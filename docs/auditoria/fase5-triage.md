@@ -10,8 +10,12 @@ Fase 4 es: (1) si el hallazgo **sigue vigente** hoy, con la línea exacta; (2) q
 para reproducirlo —y cuáles se pueden reproducir **en local**, sin tocar producción ni el
 broker—; (3) un **orden** con el motivo, que es lo que §10-BH dejó pedido.
 
-De los 12 ALTO, **11 siguen vigentes** y 1 ya está corregido (`BUG-01`, en `ecc9e70`).
+De los 12 ALTO, **11 seguían vigentes** y 1 ya estaba corregido (`BUG-01`, en `ecc9e70`).
 Ninguno fue tocado por accidente por el trabajo de estos días.
+
+**`INV-01` se reprodujo y se corrigió el mismo día** — es el primer hallazgo de la auditoría
+por agentes que pasa por `Reproducción: SÍ` antes de arreglarse, y el §5 cuenta cómo.
+Quedan **10 ALTO abiertos**.
 
 ---
 
@@ -25,7 +29,7 @@ Ninguno fue tocado por accidente por el trabajo de estos días.
 | `A-6` | **SÍ** | `agente_prueba.py:135` — `return 'SIN-MACHINEGUID-DE-PRUEBA'` en el `except` | Nada: la constante está a la vista |
 | `A-2` | **SÍ** | `aperturas/management/commands/generar_paquete_apertura.py:106` — `hmac_secret=settings.COMANDO_HMAC_SECRET` | Prueba local del comando |
 | `C-1` ≡ `RIESGO-11` | **SÍ** | `mantenimiento/api_views.py:75` filtra por `(usuario, origen_id)` · `models.py:803-806` el constraint es el mismo par · `sincronizador.dart:91` manda `origen_id = accion.id` | **Prueba local**, sin teléfono |
-| `INV-01` | **SÍ** | `activos/models.py:607-612` (`clean` lanza con clave `ip`) · `admin.py:213-215` (`ip`/`mac` a readonly si hay estación) | **Prueba local**: POST al admin sobre esa fila |
+| `INV-01` | **CORREGIDO** | `activos/models.py:592-640` · `admin.py:213-215` | **Reproducido y cerrado** — ver §5 |
 | `INV-02` ≡ `HALLAZGO-19` | **SÍ** | `activos/services.py:788` — `filter(numero_serie__iexact=serie).first()`, sin `estacion__isnull=True` y sin orden, contra la guarda correcta de `:669-676` | **Prueba local** |
 | `INV-04` | **SÍ** | `activos/services.py:674` escribe `farmacia` al vincular y nada la resincroniza después | **Prueba local** |
 | `INV-05` | **SÍ** | `activos/services.py:153-154` — la herencia de `unidad_negocio` ocurre solo en `registrar_ingreso` | **Prueba local** |
@@ -169,6 +173,61 @@ momento más barato en que van a poder arreglarse.
   que propone tocar índices y cuyo propio informe pide medir antes.
 - **`INV-07` y `L-1` comparten una consulta de producción** que nadie corrió todavía. Vale
   juntarlas en una sola pasada de solo lectura cuando haya acceso.
+
+---
+
+## 5. `INV-01`, cerrado el 11-oct-2026
+
+Entrada del plan: **§10-BJ**.
+
+**Reproducido primero, y eso es la novedad.** Cinco pruebas nuevas en
+`apps/activos/tests.py` (`AdminEdicionConEstacionVinculadaTests`), tres de ellas en rojo
+antes de tocar el modelo, con exactamente el error que la ficha predijo por lectura:
+
+```
+ValueError: 'ActivoForm' has no field named 'ip'.
+```
+
+Es el primer hallazgo de la Fase 4 que llega a `Reproducción: SÍ`. La ficha había
+reconstruido el mecanismo entero —`get_readonly_fields` → `exclude` del ModelForm →
+`Model.full_clean()` que no filtra los errores de `Model.clean()` → `add_error` sobre un
+campo ausente— sin ejecutar nada, y acertó en todo.
+
+**El arreglo fue hacer lo que el docstring ya decía.** `Activo.clean()` prometía *"lo que se
+evita es que una persona los EDITE cuando ya hay una fuente automática, no que la fila
+exista"*, y rechazaba por el estado de la fila. Ahora compara contra lo que hay en base:
+
+- un dato **heredado** (ya estaba antes de esta edición) deja guardar — `ip_efectiva` ya
+  resuelve cuál de las dos fuentes manda, así que no hay ambigüedad que proteger;
+- un dato **introducido o cambiado** en esta edición se rechaza, igual que antes;
+- y cada error va al campo que la persona tocó —`ip` a `ip`, `mac` a `mac`—, que por
+  construcción es uno que sí está en el formulario. Antes el error iba siempre a `ip`,
+  incluso cuando el dato cargado era la MAC: además del 500, señalaba el campo equivocado.
+
+No se borra la IP manual al guardar, y hay una prueba que lo fija: es el único rastro de lo
+que decía la planilla, y `ip_efectiva` ya la relega sola.
+
+**Lo que NO se hizo:** la opción (b) de la ficha —dirigir el error a `NON_FIELD_ERRORS`
+cuando el campo no está en el formulario— se descartó. Es un parche sobre el síntoma: deja
+la regla rechazando por estado y solo cambia dónde aparece el error, así que el activo
+seguiría sin poder editarse, ahora con un mensaje arriba en vez de un 500. Con la opción (a)
+el 500 es imposible por construcción: un error dirigido a `ip` solo se emite si `ip` cambió,
+y solo puede cambiar si está en el formulario.
+
+**Alcance:** 216 pruebas de `apps.activos` en verde, incluidas las 9 de `TopologiaActivoTests`
+que defienden la regla original. Sin migración: `clean()` no es un constraint.
+
+**Queda pendiente la consulta de verificación de la ficha**, que dice cuántos activos hay hoy
+en ese estado —cada uno era un equipo congelado— y que conviene correr en la misma pasada de
+solo lectura que `L-1` e `INV-07`:
+
+```sql
+SELECT a.id, a.codigo, e.codigo AS estacion, a.ip, a.mac
+FROM activo a
+JOIN estacion e ON e.id = a.estacion_id
+WHERE a.estacion_id IS NOT NULL
+  AND (a.ip IS NOT NULL OR a.mac <> '');
+```
 
 ---
 

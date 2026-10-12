@@ -4883,6 +4883,9 @@ sufre hoy: un 500 que congela un activo en el admin). Los cinco `INV-*` van al f
 hay 22 activos cargados y este es el momento más barato en que van a poder arreglarse, no
 porque sean menores. **Los 81 MEDIO/BAJO siguen sin triar.**
 
+**`INV-01` ya está corregido — §10-BJ**, reproducido antes de arreglarlo. Quedan **10 ALTO
+abiertos** de los 12, y 91 hallazgos de los 94.
+
 ---
 
 ## §10-BI — La barra que decía "Todos los sistemas operativos" sin comprobar nada (11-oct-2026)
@@ -5020,3 +5023,79 @@ que vigilaban:
 `EquivalenciaIndicadoresTests` es el entregable real de la Fase B, con el mismo patrón y el
 mismo motivo que `EquivalenciaPredicadosEstacionTests`: dos copias del mismo criterio se
 desincronizan, y el síntoma es silencioso.
+
+---
+
+## §10-BJ — El primer hallazgo de la auditoría por agentes, reproducido antes de arreglarlo (11-oct-2026)
+
+Triage de los 12 hallazgos ALTO de §10-BH y corrección del primero.
+Documento: **`docs/auditoria/fase5-triage.md`**.
+
+### El triage
+
+Los 12 se releyeron sobre `d19bf38`, siete commits después de la línea base de la Fase 4.
+**11 seguían vigentes** con la línea verificada; el único cerrado era `BUG-01`. Lo que el
+triage agrega sobre la Fase 4 son tres cosas que la Fase 4 no podía dar: la vigencia, qué
+hace falta para reproducir cada uno y un orden con su motivo.
+
+El dato que más cambió el plan de trabajo: **siete de los once se reproducen en local**, sin
+broker y sin producción. §10-BH daba a entender que todo esperaba acceso al broker, y no era
+así.
+
+El orden no es por severidad —los 12 son ALTO— sino por daño de hoy sobre costo de
+arreglarlo. Primero `RIESGO-06` (los catálogos de servicios POS y de eventos de Windows son
+los dos únicos mensajes dirigidos al agente que viajan sin firma, van retenidos y dirigen su
+actividad de red contra destinos que vienen en el propio mensaje: el único de los once que
+convierte una credencial filtrada en control de la flota). Segundo `INV-01`, el único que un
+operador podía estar sufriendo hoy. Los cinco `INV-*` restantes quedan al final por
+oportunidad y no por gravedad: con 22 activos cargados contra 701 farmacias, el daño actual
+es casi nulo y este es el momento más barato en que van a poder arreglarse.
+
+### `INV-01`: el 500 que congelaba un activo
+
+`Activo.clean()` prohibía IP/MAC a mano junto con una estación vinculada, y su propio
+docstring aclaraba que lo que se evita es que una persona las **edite**, no que la fila
+exista. El código hacía lo contrario: rechazaba por el estado de la fila. Como
+`ActivoAdmin.get_readonly_fields` manda `ip` y `mac` a readonly justamente cuando hay
+estación, Django las pone en el `exclude` del ModelForm, `Model.full_clean()` **no** filtra
+por `exclude` los errores que devuelve `Model.clean()`, y `BaseForm.add_error` recibía un
+error dirigido a un campo inexistente:
+
+```
+ValueError: 'ActivoForm' has no field named 'ip'.
+```
+
+Un 500, no un error de formulario, en el **único lugar del sistema donde se edita un activo
+existente** (`admin.py:184-186`). El equipo quedaba sin poder corregirle el modelo, la
+categoría, el código SAP ni la garantía, y el síntoma —"no puedo guardar este equipo"— no
+apuntaba a la causa.
+
+**La fila que lo dispara la produce el flujo normal:** se inventaría la impresora con la IP
+de la planilla, se le instala el agente, y el Beat de las 04:00 la vincula por serie con
+`save(update_fields=...)`, que no pasa por `full_clean()`. No hacía falta ningún dato mal
+cargado.
+
+**Reproducido primero.** Tres de las cinco pruebas nuevas
+(`AdminEdicionConEstacionVinculadaTests`) fallaron con exactamente ese `ValueError` antes de
+tocar el modelo. Es el primer hallazgo de la Fase 4 que llega a `Reproducción: SÍ`, y la
+ficha había reconstruido el mecanismo completo sin ejecutar nada.
+
+**El arreglo** es hacer lo que el docstring prometía: comparar contra lo que hay en base y
+rechazar solo lo que la edición introduce o cambia. Un dato heredado se deja guardar
+—`ip_efectiva` ya resuelve cuál de las dos fuentes manda— y cada error va al campo que la
+persona tocó, que por construcción está en el formulario. Antes el error iba siempre a `ip`
+aunque el dato cargado fuera la MAC: además del 500, señalaba el campo equivocado.
+
+Se descartó la otra opción que proponía la ficha (dirigir el error a `NON_FIELD_ERRORS`
+cuando el campo no está en el formulario): deja la regla rechazando por estado y solo cambia
+dónde se ve el error, así que el activo seguiría sin poder editarse. Con la comparación
+contra base, el 500 es imposible por construcción.
+
+Sin migración: `clean()` es validación de formulario, no un constraint. 216 pruebas de
+`apps.activos` en verde, incluidas las 9 de `TopologiaActivoTests` que defienden la regla
+original.
+
+**Queda abierto:** la consulta de verificación de la ficha —cuántos activos hay hoy en ese
+estado, es decir cuántos equipos estaban congelados— que conviene correr en la misma pasada
+de solo lectura que `L-1` del informe del tablero e `INV-07`. Y los **10 ALTO restantes**,
+más los 81 MEDIO/BAJO sin triar.

@@ -597,6 +597,21 @@ class Activo(models.Model):
         alguien vincula la estación después de haber cargado la IP a mano). Lo que se
         evita es que una persona los EDITE cuando ya hay una fuente automática, no que
         la fila exista.
+
+        Esa última frase estaba escrita acá desde el principio y el código hacía lo
+        contrario: rechazaba por el ESTADO de la fila, sin mirar si la edición tocaba esos
+        campos (`INV-01` de la auditoría por agentes). Como el admin manda `ip` y `mac` a
+        readonly justamente cuando hay estación, el error salía dirigido a un campo que no
+        estaba en el formulario y `BaseForm.add_error` lo convertía en
+        `ValueError: 'ActivoForm' has no field named 'ip'` — un 500 que dejaba el activo
+        sin poder editarse en el único lugar del sistema donde se editan. Y la fila que lo
+        disparaba la produce el flujo normal: planilla con IP → se instala el agente → el
+        Beat de las 04:00 vincula por serie con `update_fields`, sin pasar por acá.
+
+        Ahora se compara contra lo que hay en base: se rechaza lo que esta edición
+        introduce o cambia. Un dato heredado se deja guardar —`ip_efectiva` ya resuelve
+        cuál de los dos manda— y cada error va al campo que la persona tocó, que por
+        construcción es uno que sí está en el formulario.
         """
         super().clean()
         if self.slot and not self.farmacia_id:
@@ -604,12 +619,23 @@ class Activo(models.Model):
                 'slot': 'El slot dice qué puesto ocupa el equipo DENTRO de una farmacia, '
                         'así que no significa nada sin una farmacia asignada.',
             })
-        if self.estacion_id and (self.ip or self.mac):
-            raise ValidationError({
-                'ip': 'Este activo tiene la estación %s vinculada: su IP y MAC las reporta el '
-                      'agente. Cargarlas a mano crearía una segunda versión del mismo dato.'
-                      % self.estacion.codigo,
-            })
+        if not (self.estacion_id and (self.ip or self.mac)):
+            return
+
+        # Una consulta extra solo en el camino de validación de un activo que ya tiene los
+        # dos datos; `clean()` corre en formularios, no en la ingesta del agente.
+        previos = Activo.objects.filter(pk=self.pk).values('ip', 'mac').first() if self.pk else None
+        aviso = (
+            'Este activo tiene la estación %s vinculada: su %%s la reporta el agente. '
+            'Cargarla a mano crearía una segunda versión del mismo dato.' % self.estacion.codigo
+        )
+        errores = {}
+        if self.ip and (previos is None or self.ip != previos['ip']):
+            errores['ip'] = aviso % 'IP'
+        if self.mac and (previos is None or self.mac != previos['mac']):
+            errores['mac'] = aviso % 'MAC'
+        if errores:
+            raise ValidationError(errores)
 
 
 class EventoActivo(models.Model):
