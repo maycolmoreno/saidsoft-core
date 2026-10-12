@@ -464,6 +464,193 @@ class ManejarEnrolamientoTests(TestCase):
         self.assertEqual(primero['hmac_secret'], segundo['hmac_secret'])
 
 
+class CredencialDelBrokerSeDaDeBajaTests(TestCase):
+    """`B-1` de la auditoría por agentes: rechazar o borrar una estación tiene que cortar
+    su acceso AL BROKER, no solo marcar la fila.
+
+    Hasta el 11-oct-2026 `emqx_admin` solo sabía dar de alta: no existía ninguna función
+    de baja. El rechazo frenaba la ingesta —los manejadores descartan los datos de una
+    estación no aprobada— pero la credencial seguía autenticando, con ACL sobre sus
+    tópicos y sobre los dos catálogos globales. Es exactamente la separación entre
+    aplicación y broker que este módulo vino a cerrar.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=self.grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, hardware_id='HW1',
+        )
+        self.config = {'URL': 'http://emqx:18083/api/v5', 'API_KEY': 'k', 'API_SECRET': 's'}
+
+    def test_borra_la_acl_y_el_usuario_en_ese_orden(self):
+        """La ACL primero. Al revés quedaría, entre las dos llamadas, un usuario sin
+        reglas —que EMQX deja conectar— y si la segunda falla, una ACL huérfana que se
+        volvería a aplicar si alguien recrea el usuario con el mismo código."""
+        from apps.mqtt_worker.emqx_admin import revocar_credencial_estacion
+
+        with self.settings(EMQX_ADMIN_CONFIG=self.config):
+            with patch('apps.mqtt_worker.emqx_admin._peticion', return_value=204) as peticion:
+                self.assertTrue(revocar_credencial_estacion(self.estacion))
+
+        rutas = [llamada.args[4] for llamada in peticion.call_args_list]
+        metodos = {llamada.args[0] for llamada in peticion.call_args_list}
+        self.assertEqual(metodos, {'DELETE'})
+        self.assertEqual(rutas, [
+            '/authorization/sources/built_in_database/rules/users/ML001-A',
+            '/authentication/password_based:built_in_database/users/ML001-A',
+        ])
+
+    def test_un_404_cuenta_como_revocada(self):
+        """La baja se llama al rechazar y al borrar, y una estación que todavía usa la
+        credencial compartida no tiene usuario propio. "No existe" es el estado que se
+        buscaba, no un error que haya que reportar."""
+        from apps.mqtt_worker.emqx_admin import revocar_credencial_estacion
+
+        with self.settings(EMQX_ADMIN_CONFIG=self.config):
+            with patch('apps.mqtt_worker.emqx_admin._peticion', return_value=404):
+                self.assertTrue(revocar_credencial_estacion(self.estacion))
+
+    def test_si_el_usuario_no_se_pudo_borrar_lo_dice(self):
+        """Devolver True acá sería lo peor: el panel diría "rechazada" y la estación
+        seguiría conectada."""
+        from apps.mqtt_worker.emqx_admin import revocar_credencial_estacion
+
+        with self.settings(EMQX_ADMIN_CONFIG=self.config):
+            with patch('apps.mqtt_worker.emqx_admin._peticion', return_value=500):
+                self.assertFalse(revocar_credencial_estacion(self.estacion))
+
+    def test_sin_emqx_admin_configurado_devuelve_none_y_no_toca_la_red(self):
+        """`None` y no `False`: sin `EMQX_ADMIN_CONFIG` esta instalación no tiene
+        credenciales por estación, así que no hay nada que revocar. La diferencia la usa
+        el panel para no avisar de un fallo que no ocurrió."""
+        from apps.mqtt_worker.emqx_admin import revocar_credencial_estacion
+
+        with self.settings(EMQX_ADMIN_CONFIG={}):
+            with patch('apps.mqtt_worker.emqx_admin._peticion') as peticion:
+                self.assertIsNone(revocar_credencial_estacion(self.estacion))
+        peticion.assert_not_called()
+
+    def test_una_estacion_rechazada_no_puede_reenrolarse(self):
+        """El rechazo es una decisión humana y el re-enrolamiento no la miraba: devolvía
+        token, credencial recién rotada y secreto HMAC a una estación que alguien acababa
+        de sacar del sistema."""
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.RECHAZADA
+        self.estacion.save(update_fields=['estado_aprobacion'])
+
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+
+        self.assertFalse(resp['aceptado'])
+        self.assertNotIn('token', resp)
+        self.assertNotIn('hmac_secret', resp)
+
+    def test_a_una_rechazada_no_se_le_aprovisiona_credencial_por_ningun_camino(self):
+        """La guarda está en `_respuesta_aceptado` y no solo en el camino de
+        re-enrolamiento, porque a esa función se llega por tres caminos distintos."""
+        from apps.mqtt_worker.services import _respuesta_aceptado
+
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.RECHAZADA
+        self.estacion.save(update_fields=['estado_aprobacion'])
+
+        with patch(
+            'apps.mqtt_worker.services.aprovisionar_credencial_estacion',
+            return_value=('ML001-A', 'pass'),
+        ) as aprovisionar:
+            resp = _respuesta_aceptado(self.estacion)
+
+        aprovisionar.assert_not_called()
+        self.assertIsNone(resp['mqtt_username'])
+
+
+class ReenrolamientoNoExpulsaAEstacionVivaTests(TestCase):
+    """`B-2`: el re-enrolamiento rotaba la credencial como efecto colateral de responder.
+
+    El tópico de enrolamiento es global y no lleva el código en la ruta, así que cualquier
+    estación con credencial propia puede publicar una solicitud por el código de otra. La
+    respuesta no la puede leer —la ACL solo deja suscribirse al tópico propio—, pero la
+    rotación igual ocurría: un bucle sobre los códigos de la cadena expulsaba del broker a
+    toda la flota, y cada estación quedaba afuera hasta re-enrolarse sola.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=self.grupo, unidad_negocio=self.sg)
+
+    def _estacion(self, **extra):
+        return Estacion.objects.create(
+            codigo='ML001-A', farmacia=self.farmacia, hardware_id='HW1',
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, **extra,
+        )
+
+    def test_con_latido_fresco_no_se_rota_la_credencial(self):
+        self._estacion(ultimo_heartbeat=timezone.now())
+
+        with patch(
+            'apps.mqtt_worker.services.aprovisionar_credencial_estacion',
+            return_value=('ML001-A', 'password-nuevo'),
+        ) as aprovisionar:
+            resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+
+        aprovisionar.assert_not_called()
+        self.assertTrue(resp['aceptado'])
+        self.assertIsNone(resp['mqtt_username'])
+
+    def test_la_autorreparacion_del_secreto_hmac_sigue_funcionando_con_la_estacion_viva(self):
+        """El re-enrolamiento legítimo de una estación VIVA existe y es este: el agente
+        tiene token pero no su secreto propio y se re-enrola para pedirlo (`_on_connect`,
+        puesto tras el incidente del 16-sep-2026 que dejó mudas a dos estaciones). Por eso
+        no se niega el re-enrolamiento: solo se deja de rotar la credencial, que es lo que
+        hacía daño. Lo que ese camino viene a buscar se sigue entregando."""
+        estacion = self._estacion(ultimo_heartbeat=timezone.now())
+
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+
+        self.assertEqual(resp['hmac_secret'], estacion.hmac_secret)
+        self.assertEqual(resp['token'], estacion.token_enrolamiento)
+
+    def test_sin_latido_reciente_si_se_rota(self):
+        """Una estación que perdió su `identidad.json` no puede latir —el latido va con el
+        token—, así que este es el caso real de pérdida y necesita credencial nueva."""
+        from apps.monitoreo.umbrales import ONLINE_UMBRAL_MINUTOS
+
+        self._estacion(
+            ultimo_heartbeat=timezone.now() - timedelta(minutes=ONLINE_UMBRAL_MINUTOS + 1),
+        )
+
+        with patch(
+            'apps.mqtt_worker.services.aprovisionar_credencial_estacion',
+            return_value=('ML001-A', 'password-nuevo'),
+        ) as aprovisionar:
+            resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+
+        aprovisionar.assert_called_once()
+        self.assertEqual(resp['mqtt_password'], 'password-nuevo')
+
+    def test_una_estacion_que_nunca_latio_si_se_rota(self):
+        """`ultimo_heartbeat` en null es el estado de una estación recién creada: no está
+        viva, así que el camino normal de entrega de credencial no se toca."""
+        self._estacion()
+
+        with patch(
+            'apps.mqtt_worker.services.aprovisionar_credencial_estacion',
+            return_value=('ML001-A', 'password-nuevo'),
+        ) as aprovisionar:
+            manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': 'HW1'})
+
+        aprovisionar.assert_called_once()
+
+    def test_el_umbral_de_vida_es_el_mismo_que_usa_todo_el_sistema(self):
+        """No se inventa un umbral propio: el proyecto ya pagó tener tres criterios de
+        "en línea" en tres lugares (hallazgo D-01 del informe del tablero)."""
+        import inspect
+
+        from apps.mqtt_worker import services
+
+        self.assertIn('ONLINE_UMBRAL_MINUTOS', inspect.getsource(services._tiene_latido_fresco))
+
+
 class IngestaSinCargasDiferidasTests(TestCase):
     """El latido y las métricas no pueden cargar `farmacia` ni `unidad_negocio` aparte.
 

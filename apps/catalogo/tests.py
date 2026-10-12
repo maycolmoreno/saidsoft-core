@@ -463,6 +463,78 @@ class EstacionAdminMonitoreoEnLoteTests(TestCase):
         )
 
 
+class BorrarEstacionDaDeBajaSuCredencialTests(TestCase):
+    """Borrar una `Estacion` por el admin tiene que revocar su credencial en EMQX
+    (`B-1` de la auditoría por agentes).
+
+    Antes la fila se iba y el usuario quedaba huérfano en el broker **para siempre**: una
+    credencial que autentica, con ACL sobre los tópicos de una estación que ya no existe y
+    sobre los dos catálogos globales, y que nada en el sistema vuelve a nombrar. El admin
+    es hoy la única vía que borra estaciones; el enganche está acá y no en una señal
+    `post_delete` por el criterio que ya dejó escrito `FarmaciaAdmin.save_model`.
+    """
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.admin_user = User.objects.create_superuser(username='admin_del', email='a@a.com', password='x')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(
+            codigo='ML001', grupo=grupo, unidad_negocio=UnidadNegocio.objects.get(codigo='SG'),
+        )
+        self.e1 = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+        self.e2 = Estacion.objects.create(codigo='ML001-B', farmacia=farmacia)
+        self.client.force_login(self.admin_user)
+
+    def test_borrar_una_revoca_su_credencial(self):
+        from django.urls import reverse
+
+        url = reverse('admin:catalogo_estacion_delete', args=[self.e1.pk])
+        with patch('apps.mqtt_worker.emqx_admin.revocar_credencial_estacion', return_value=True) as revocar:
+            self.client.post(url, {'post': 'yes'})
+
+        self.assertEqual(revocar.call_args.args[0].codigo, 'ML001-A')
+        self.assertFalse(Estacion.objects.filter(pk=self.e1.pk).exists())
+
+    def test_borrar_en_lote_revoca_la_de_cada_una(self):
+        from django.urls import reverse
+
+        with patch('apps.mqtt_worker.emqx_admin.revocar_credencial_estacion', return_value=True) as revocar:
+            self.client.post(reverse('admin:catalogo_estacion_changelist'), {
+                'action': 'delete_selected', '_selected_action': [self.e1.pk, self.e2.pk], 'post': 'yes',
+            })
+
+        revocados = sorted(llamada.args[0].codigo for llamada in revocar.call_args_list)
+        self.assertEqual(revocados, ['ML001-A', 'ML001-B'])
+        self.assertFalse(Estacion.objects.filter(pk__in=[self.e1.pk, self.e2.pk]).exists())
+
+    def test_si_la_revocacion_falla_lo_avisa_y_borra_igual(self):
+        """El borrado no se aborta —la fila ya no sirve de nada— pero sin el aviso queda
+        una credencial viva sin dueño en la BD y nadie sabría que hay que ir a EMQX."""
+        from django.urls import reverse
+
+        url = reverse('admin:catalogo_estacion_delete', args=[self.e1.pk])
+        with patch('apps.mqtt_worker.emqx_admin.revocar_credencial_estacion', return_value=False):
+            resp = self.client.post(url, {'post': 'yes'}, follow=True)
+
+        self.assertContains(resp, 'No se pudo revocar en EMQX')
+        self.assertContains(resp, 'ML001-A')
+        self.assertFalse(Estacion.objects.filter(pk=self.e1.pk).exists())
+
+    def test_el_borrado_queda_auditado(self):
+        from django.urls import reverse
+
+        from apps.auditoria.models import EventoAuditoria
+
+        url = reverse('admin:catalogo_estacion_delete', args=[self.e1.pk])
+        with patch('apps.mqtt_worker.emqx_admin.revocar_credencial_estacion', return_value=True):
+            self.client.post(url, {'post': 'yes'})
+
+        self.assertTrue(
+            EventoAuditoria.objects.filter(accion='estacion.borrar', objeto_repr='ML001-A').exists(),
+        )
+
+
 class ImportarRedFarmaciasXlsxTests(TestCase):
     """Wrapper sobre importar_farmacias_desde_csv que lee directo del Excel real de
     red (dos hojas, FARMAMIA y SAN GREGORIO, con columnas distintas entre sí)."""

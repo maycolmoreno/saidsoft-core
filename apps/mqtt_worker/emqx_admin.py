@@ -169,6 +169,66 @@ def reaplicar_acl_estacion(estacion) -> bool:
         return False
 
 
+def revocar_credencial_estacion(estacion) -> bool:
+    """Da de baja en EMQX el usuario de `estacion` y sus reglas de ACL.
+
+    La contracara que faltaba de `aprovisionar_credencial_estacion` (`B-1` de la auditoría
+    por agentes). Sin esto, rechazar una estación en el panel la frenaba solo a nivel de
+    aplicación —los manejadores descartan los datos de una estación que no está
+    APROBADA— pero la credencial seguía autenticando contra el broker, que es justo la
+    separación que este módulo vino a cerrar. Lo mismo al borrar una `Estacion`: el
+    usuario quedaba huérfano en EMQX para siempre.
+
+    Tres resultados, no dos, porque "no se pudo" y "no había nada que dar de baja" piden
+    mensajes distintos en el panel:
+
+    - `True`: al terminar la credencial ya no existe en EMQX. Incluye el 404, porque la
+      baja es idempotente a propósito: se llama al rechazar y al borrar, y una estación que
+      todavía usa la credencial compartida no tiene usuario propio.
+    - `False`: EMQX respondió algo que no deja claro que se haya borrado. **Sigue
+      autenticando** y hay que reintentar o ir a mano.
+    - `None`: no aplica, porque `EMQX_ADMIN_CONFIG` no está configurado — entonces en esta
+      instalación no hay credenciales por estación y no hay nada que revocar. Mismo
+      convenio que `aprovisionar_credencial_estacion`, que devuelve None en ese caso.
+
+    No lanza, por el mismo motivo que el alta: que EMQX no responda no puede hacer fallar
+    un rechazo en el panel.
+    """
+    config = _config()
+    if config is None:
+        return None
+    url_base, api_key, api_secret = config
+
+    username = estacion.codigo
+    try:
+        # Primero la ACL y después el usuario. En el orden inverso quedaría, entre las dos
+        # llamadas, un usuario sin reglas —que EMQX deja conectar pero sin permisos— y si
+        # la segunda falla, una ACL huérfana que volvería a aplicarse si alguien recrea el
+        # usuario con el mismo código. Así, si falla la segunda, lo que queda es una
+        # credencial sin permisos: inofensiva.
+        acl = _peticion(
+            'DELETE', url_base, api_key, api_secret,
+            f'/authorization/sources/built_in_database/rules/users/{username}',
+        )
+        usuario = _peticion(
+            'DELETE', url_base, api_key, api_secret,
+            f'/authentication/password_based:built_in_database/users/{username}',
+        )
+    except Exception:
+        logger.exception('EMQX: error revocando la credencial MQTT de %s', username)
+        return False
+
+    ok = usuario in (200, 204, 404) and acl in (200, 204, 404)
+    if ok:
+        logger.info('EMQX: credencial MQTT de %s revocada (usuario %s, acl %s).', username, usuario, acl)
+    else:
+        logger.warning(
+            'EMQX: no se pudo revocar la credencial de %s (usuario HTTP %s, acl HTTP %s) — '
+            'sigue autenticando contra el broker.', username, usuario, acl,
+        )
+    return ok
+
+
 def aprovisionar_credencial_estacion(estacion) -> tuple[str, str] | None:
     """Crea/rota en EMQX una credencial MQTT propia de `estacion`, con ACL restringida
     a sus propios tópicos. Devuelve (username, password) en texto plano — no se persiste

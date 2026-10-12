@@ -4883,8 +4883,25 @@ sufre hoy: un 500 que congela un activo en el admin). Los cinco `INV-*` van al f
 hay 22 activos cargados y este es el momento más barato en que van a poder arreglarse, no
 porque sean menores. **Los 81 MEDIO/BAJO siguen sin triar.**
 
-**`INV-01` ya está corregido — §10-BJ**, reproducido antes de arreglarlo. Quedan **10 ALTO
-abiertos** de los 12, y 91 hallazgos de los 94.
+### Estado de los 94, al cierre del 11-oct-2026
+
+**Cerrados: 4 de los 12 ALTO.** `BUG-01` (`ecc9e70`, antes del triage), `INV-01` (§10-BJ,
+el primer hallazgo que se reprodujo antes de corregirse), `RIESGO-06` (§10-BK, cerrado en el
+código: falta el agente 0.33 corriendo en la flota) y `B-1` + `B-2` (§10-BL, con el hueco de
+trust-on-first-use todavía abierto en `B-2`).
+
+**Abiertos: 8 ALTO** —`A-6`, `A-2`, `C-1`, `INV-02`, `INV-04`, `INV-05`, `INV-07` y la mitad
+de `B-2`— más los **81 MEDIO/BAJO sin triar**. Quedan 90 hallazgos de los 94.
+
+La tabla con el estado de cada uno y lo que falta para cada arreglo está en
+`docs/auditoria/fase5-triage.md`, que es el documento vivo de esta fase: **se actualiza en
+el mismo turno en que se cierra un hallazgo**, no después.
+
+**Las cuatro consultas de solo lectura que estas correcciones dejaron pendientes conviene
+correrlas juntas**, porque ninguna cambia nada y las cuatro necesitan producción: cuántos
+activos estaban congelados (`INV-01`), si hay números de serie duplicados (`INV-07`),
+cuántas estaciones tienen `hardware_id` vacío (`B-2`) y cuántas entraron al denominador del
+KPI de flota al dejar de excluir el grupo `PENDIENTE` (`L-1`, del informe del tablero).
 
 ---
 
@@ -5100,9 +5117,6 @@ estado, es decir cuántos equipos estaban congelados— que conviene correr en l
 de solo lectura que `L-1` del informe del tablero e `INV-07`. Y los **10 ALTO restantes**,
 más los 81 MEDIO/BAJO sin triar.
 
-**`RIESGO-06`, el primero del orden, se corrigió el mismo día — §10-BK.** Quedan 9 ALTO
-abiertos.
-
 ---
 
 ## §10-BK — Los dos mensajes que el agente obedecía sin verificar firma (11-oct-2026)
@@ -5176,6 +5190,99 @@ el paquete del instalador completo.
 7 pruebas nuevas (`CatalogoFirmadoTests`), 835 de `apps.monitoreo` + `apps.mqtt_worker` en
 verde, sin migración. Del lado del agente no hay suite —es un script aparte—, así que las
 pruebas reconstruyen la firma igual que él, el método que ya usa `apps/despliegues/tests.py`.
+
+---
+
+---
+
+## §10-BL — Rechazar una estación no le quitaba nada (11-oct-2026)
+
+`B-1` y `B-2` de la auditoría por agentes, los dos siguientes del orden de §10-BJ. Van
+juntos porque viven en las mismas dos funciones y porque el arreglo de uno abre el del otro.
+Detalle en `docs/auditoria/fase5-triage.md` §7.
+
+### `B-1` — la baja que no existía
+
+`emqx_admin` sabía dar de alta y no dar de baja: no había ninguna función que revocara. El
+efecto era que **rechazar una estación en el panel no le quitaba el acceso al broker**. Los
+manejadores descartan los datos de una estación que no está APROBADA, así que el rechazo
+funcionaba a nivel de aplicación y no de broker — justo la separación que `emqx_admin` vino
+a cerrar. La estación rechazada conservaba usuario MQTT válido con ACL sobre
+`/saidsof/agente/{codigo}/#` y sobre los dos catálogos globales, y **cada reintento de
+enrolamiento le entregaba una contraseña nueva**. Borrar la fila era peor: el usuario
+quedaba huérfano en EMQX para siempre.
+
+Tres cambios, todos del lado del servidor:
+
+- `revocar_credencial_estacion(estacion)`: `DELETE` sobre las dos rutas que `_peticion` ya
+  sabía hablar —la ACL primero y el usuario después, porque al revés queda, entre las dos
+  llamadas, un usuario sin reglas que EMQX deja conectar—. Devuelve **tres** valores y no
+  dos: `True` revocada (el 404 cuenta, la baja es idempotente), `False` EMQX no confirmó y
+  **sigue autenticando**, `None` no aplica porque esta instalación no usa credenciales por
+  estación. La diferencia entre `False` y `None` es lo que permite al panel no avisar de un
+  fallo que no ocurrió.
+- `catalogo.services.rechazar_estacion` es ahora **una sola operación de dominio**: marca la
+  fila y revoca. No quedó partido entre vista y servicio a propósito —un rechazo que no
+  revoca es exactamente el defecto que había, y dos llamadas que alguien pueda hacer a
+  medias es cómo volvería—. El reparto lo forzó además una prueba del propio repo:
+  `DivisionDeVistasTests` tiene un techo de 550 líneas por módulo de vistas y
+  `estaciones.py` estaba a cinco de ese techo, así que poner la lógica en la vista lo
+  pasaba. La prueba dice "la respuesta es dividirlo, no subir el límite" y acá la respuesta
+  correcta era la tercera: la lógica no iba en la vista, iba en el servicio, que es lo que
+  `CLAUDE.md` ya pedía.
+- `estacion_rechazar` revoca y **lo dice en pantalla si no pudo**. El aviso va en el partial
+  porque la vista responde por HTMX: un `messages.error` no se vería hasta la próxima
+  navegación completa. Y la auditoría ahora guarda `credencial_mqtt_revocada`, que es la
+  parte que puede fallar.
+- `EstacionAdmin.delete_model` / `delete_queryset` revocan antes de borrar, y avisan si no
+  pudieron: el borrado no se aborta —la fila ya no sirve— pero sin el aviso queda una
+  credencial viva sin dueño en la BD. Va en el admin y **no en una señal `post_delete`**,
+  siguiendo el criterio que ya dejó escrito `FarmaciaAdmin.save_model`: este proyecto no usa
+  señales en ninguna app, y esconder un efecto así hace mucho más difícil entender después
+  por qué una credencial dejó de funcionar.
+- Y `_respuesta_aceptado` no aprovisiona a una estación `RECHAZADA`, además de que
+  `manejar_enrolamiento` le niega el re-enrolamiento. La guarda está en los dos lugares
+  porque a `_respuesta_aceptado` se llega por tres caminos distintos.
+
+### `B-2` — la rotación que expulsaba a la víctima
+
+El tópico de enrolamiento es global y no lleva el código en la ruta, así que cualquier
+estación con credencial propia puede publicar una solicitud **por el código de otra**. Leer
+la respuesta no puede —la ACL solo deja suscribirse al tópico propio—, pero no hacía falta:
+responder **rotaba la contraseña de la víctima** como efecto colateral, así que un bucle
+sobre los códigos de la cadena expulsaba del broker a toda la flota.
+
+**Lo que se hizo: no rotar la credencial cuando la estación tiene latido fresco.** Una
+estación que late tiene su `identidad.json` y su credencial, y no necesita una nueva. El
+umbral es `ONLINE_UMBRAL_MINUTOS`, el mismo criterio de "en línea" que usa todo el sistema
+desde §10-BI — no se inventa uno nuevo, que es lo que causó el hallazgo D-01.
+
+**Por qué no se negó el re-enrolamiento, que es lo que recomendaba la ficha.** Al revisar el
+agente aparecieron dos cosas que lo descartan:
+
+1. **El re-enrolamiento legítimo de una estación VIVA existe.** Es el de `_on_connect`
+   cuando el agente tiene token pero no su secreto HMAC propio, puesto deliberadamente tras
+   el incidente del 16-sep-2026 que dejó mudas a ML014-B y ML016-A. Negarlo habría roto esa
+   auto-reparación. Con la no-rotación sigue funcionando: lo que ese camino viene a buscar
+   es `hmac_secret`, que se entrega siempre.
+2. **El agente solo pide enrolarse en `_on_connect` y no reintenta.** Un rechazo lo habría
+   dejado mudo hasta la próxima reconexión al broker, que pueden ser horas.
+
+Por eso la asimetría de costos manda: si el criterio se equivoca y la estación está viva
+pero de verdad perdió su credencial, no rotar la deja usando la que tiene y lo reintenta
+cuando el latido envejezca. Negar la habría callado.
+
+### Lo que queda abierto
+
+El hueco de **trust-on-first-use sigue ahí**: una estación con `hardware_id` vacío —las
+creadas antes de que existiera el mecanismo— puede ser suplantada por quien acierte su
+código, y si está apagada, la rotación forzada todavía la expulsa (la no-rotación solo
+protege a las vivas). Para dimensionarlo hace falta una consulta de solo lectura: cuántas
+estaciones tienen hoy `hardware_id` vacío. Va en la misma pasada que `L-1`, `INV-07` y la de
+`INV-01`. `A-6` —el `hardware_id` que cae a una constante compartida en el agente— es la
+otra mitad de ese hueco y es el siguiente del orden.
+
+16 pruebas nuevas en tres apps. Sin migración.
 
 ---
 

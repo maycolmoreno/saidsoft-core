@@ -81,7 +81,27 @@ def _cache_url_base_para(estacion) -> str | None:
     return f'http://{cache.ip_lan}:{cache.puerto_cache}/'
 
 
-def _respuesta_aceptado(estacion, payload_version: str = '') -> dict:
+def _tiene_latido_fresco(estacion) -> bool:
+    """¿La estación está viva ahora mismo, según el único criterio de "en línea" del
+    sistema (`ONLINE_UMBRAL_MINUTOS`)?
+
+    Se usa para decidir si un re-enrolamiento debe rotar la credencial MQTT (`B-2`). No se
+    inventa un umbral propio: el proyecto ya pagó tener tres criterios de en-línea en tres
+    lugares (hallazgo D-01), y acá la pregunta es exactamente la misma que en las
+    pantallas.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.monitoreo.umbrales import ONLINE_UMBRAL_MINUTOS
+
+    if estacion.ultimo_heartbeat is None:
+        return False
+    return estacion.ultimo_heartbeat >= timezone.now() - timedelta(minutes=ONLINE_UMBRAL_MINUTOS)
+
+
+def _respuesta_aceptado(estacion, payload_version: str = '', *, rotar_credencial: bool = True) -> dict:
     # Credencial MQTT propia de la estación (aislamiento a nivel de broker, no solo de
     # aplicación) — None si EMQX_ADMIN_CONFIG no está configurado o la llamada a EMQX
     # falla; el agente sigue funcionando con la credencial compartida en ese caso (ver
@@ -104,7 +124,14 @@ def _respuesta_aceptado(estacion, payload_version: str = '') -> dict:
             estacion.hmac_propio_confirmado = True
             estacion.save(update_fields=['hmac_propio_confirmado'])
 
-    credencial_mqtt = aprovisionar_credencial_estacion(estacion)
+    # Una estación RECHAZADA no recibe credencial, y esta guarda está acá —y no solo en
+    # `manejar_enrolamiento`— porque a esta función se llega por tres caminos distintos
+    # (`B-1`). Aprovisionar era, literalmente, premiar con una credencial recién rotada a
+    # la estación que alguien acababa de rechazar en el panel.
+    rechazada = estacion.estado_aprobacion == Estacion.EstadoAprobacion.RECHAZADA
+    credencial_mqtt = (
+        aprovisionar_credencial_estacion(estacion) if rotar_credencial and not rechazada else None
+    )
     mqtt_username, mqtt_password = credencial_mqtt if credencial_mqtt else (None, None)
     # Secreto HMAC propio de la estación, por el mismo canal que la credencial MQTT. Un
     # agente que no lo entienda lo ignora y sigue con el compartido de su config.txt; el
@@ -148,6 +175,13 @@ def manejar_enrolamiento(payload: dict) -> dict:
                 'Re-enrolamiento rechazado por hardware_id distinto para %s (posible suplantación)', codigo,
             )
             return {'aceptado': False, 'motivo': 'hardware no coincide, requiere reaprobación manual en el panel'}
+        # Una estación rechazada no vuelve sola: el rechazo es una decisión humana y el
+        # re-enrolamiento no la miraba, así que devolvía token, credencial MQTT recién
+        # rotada y secreto HMAC a una estación que alguien había sacado del sistema
+        # (`B-1`). Para que vuelva hay que aprobarla de nuevo en el panel.
+        if estacion.estado_aprobacion == Estacion.EstadoAprobacion.RECHAZADA:
+            logger.warning('Re-enrolamiento de %s rechazado: la estación está RECHAZADA en el panel.', codigo)
+            return {'aceptado': False, 'motivo': 'estacion rechazada, requiere reaprobacion manual en el panel'}
         # Trust-on-first-use: si nunca se guardó un hardware_id (estación creada antes de
         # este mecanismo), se fija el primero que llegue.
         campos = []
@@ -159,7 +193,36 @@ def manejar_enrolamiento(payload: dict) -> dict:
             campos.append('hostname')
         if campos:
             estacion.save(update_fields=campos)
-        return _respuesta_aceptado(estacion, payload.get('version_agente', ''))
+        # `rotar_credencial` cuando la estación NO está dando señales de vida (`B-2`).
+        #
+        # El tópico de enrolamiento es global y no lleva el código en la ruta, así que
+        # cualquier estación con credencial propia puede publicar una solicitud por el
+        # código de otra. Lo que hacía daño no era leer la respuesta —eso ya lo frena la
+        # ACL, que solo deja suscribirse al tópico propio— sino que responder ROTABA la
+        # contraseña de la víctima como efecto colateral: un bucle sobre los códigos de la
+        # cadena expulsaba del broker a toda la flota, y cada estación quedaba afuera hasta
+        # re-enrolarse sola.
+        #
+        # Una estación que late tiene su `identidad.json` y su credencial: no necesita una
+        # nueva. El re-enrolamiento legítimo de una estación VIVA existe y es otro —el de
+        # `_on_connect` cuando tiene token pero no su secreto HMAC propio, puesto tras el
+        # incidente del 16-sep-2026— y ese sigue funcionando igual, porque lo que ese
+        # camino viene a buscar es `hmac_secret`, que se entrega siempre.
+        #
+        # Se eligió no rotar en vez de negar el re-enrolamiento por lo que pasa cuando el
+        # criterio se equivoca: si la estación está viva pero de verdad perdió su
+        # credencial, no rotar la deja usando la que tiene y lo reintenta cuando el latido
+        # envejezca; negarle el enrolamiento la dejaría muda hasta la próxima reconexión al
+        # broker, porque el agente solo pide enrolarse en `_on_connect` y no reintenta.
+        viva = _tiene_latido_fresco(estacion)
+        if viva:
+            logger.info(
+                'Re-enrolamiento de %s sin rotar credencial: tiene latido fresco, así que ya '
+                'tiene la suya (ver B-2).', codigo,
+            )
+        return _respuesta_aceptado(
+            estacion, payload.get('version_agente', ''), rotar_credencial=not viva,
+        )
 
     # Interruptor global, la otra mitad del freno de emergencia. Va DESPUES del
     # re-enrolamiento y ANTES del token de apertura, y las dos cosas son deliberadas:

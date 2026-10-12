@@ -311,6 +311,33 @@ def limpiar_actualizacion_pendiente(estacion) -> bool:
     return _publicar_mqtt(_topico_actualizar_agente(estacion), '', retain=True)
 
 
+def rechazar_estacion(estacion) -> bool | None:
+    """Marca `estacion` como RECHAZADA y le quita el acceso al broker.
+
+    Devuelve lo que devolvió la revocación en EMQX, que tiene **tres** valores y no dos
+    (ver `apps.mqtt_worker.emqx_admin.revocar_credencial_estacion`): `True` revocada,
+    `False` EMQX no confirmó y la estación **sigue autenticando**, `None` esta instalación
+    no usa credenciales por estación y no había nada que revocar. Quien llama decide qué
+    mostrar; lo que no puede es tratar `None` como un fallo.
+
+    **Las dos mitades van juntas acá y no en la vista** porque son una sola operación de
+    dominio: hasta el 11-oct-2026 el rechazo escribía `estado_aprobacion` y nada más, así
+    que la estación rechazada conservaba su credencial MQTT con ACL sobre sus tópicos y
+    sobre los dos catálogos globales, y cada reintento de enrolamiento le entregaba una
+    contraseña nueva (`B-1` de la auditoría por agentes, §10-BL). Un rechazo que no revoca
+    es exactamente el defecto que había; separarlos otra vez en dos llamadas que alguien
+    pueda hacer a medias es cómo volvería.
+
+    El evento de auditoría lo registra quien llama, que es el que tiene el `request` y el
+    usuario — mismo reparto que el resto del panel.
+    """
+    from apps.mqtt_worker.emqx_admin import revocar_credencial_estacion
+
+    estacion.estado_aprobacion = estacion.EstadoAprobacion.RECHAZADA
+    estacion.save(update_fields=['estado_aprobacion'])
+    return revocar_credencial_estacion(estacion)
+
+
 def enviar_pausa(estacion, *, pausado: bool) -> bool:
     """Publica el freno de emergencia de `estacion`: `pausado=True` la detiene,
     `pausado=False` la reanuda.
