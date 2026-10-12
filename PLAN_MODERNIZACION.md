@@ -5719,3 +5719,48 @@ de diseño, no de configuración:
 
 Queda anotado con esa precisión en el código, en `CLAUDE.md` y acá: el agujero grande se
 cerró, el que queda es la ventana del re-enrolamiento y es más chica, pero no es cero.
+
+---
+
+## §10-BR — El paquete de apertura seguía escribiendo el secreto de toda la flota (12-oct-2026)
+
+`A-2` de la auditoría por agentes, el tercero del orden del triage.
+
+`generar_paquete_apertura` escribía `ComandoHmacSecret` con el valor compartido de la flota en
+el `config.txt` de cada estación nueva. Ese secreto es el que permite **fabricar un
+`ejecutar_script` válido para cualquiera de las 700 farmacias**, y es exactamente lo que hubo
+que rotar en el incidente §10-Z, cuando un paquete quedó publicado bajo `/media/` sin
+autenticación.
+
+**Lo llamativo no es el defecto: es que el arreglo ya existía y este comando no se enteró.**
+Su propio docstring decía que resolverlo *"pide HMAC por estación, que es un cambio aparte"*
+— y ese cambio estaba hecho desde §10-Z: cada estación recibe su `hmac_secret` propio en la
+respuesta de enrolamiento desde el agente **0.21**. El comando se quedó con la frase y con el
+comportamiento viejo.
+
+### El criterio, copiado de donde ya estaba resuelto
+
+No se vacía el campo sin más: lo decide **la versión del binario que se va a instalar**, igual
+que en `armar_paquete_agente`, porque con un agente anterior a 0.21 dejarlo vacío produce el
+peor resultado posible —la instalación sale bien y la estación **descarta todos los comandos
+en silencio**, sin nada visible en el panel—. Tres caminos, los tres con prueba:
+
+- Última `VersionAgente` ≥ 0.21 → campo **vacío**, y lo dice en la salida.
+- Última `VersionAgente` < 0.21 → escribe el compartido y **avisa** por qué.
+- **Ninguna `VersionAgente` cargada** → escribe el compartido, avisa, y explica cómo dejar de
+  necesitarlo (`cargar_version_agente`). Sin saber qué binario se instalará, equivocarse hacia
+  "vacío" deja la estación muda para los comandos; se elige el lado del error que se nota.
+
+### `MqttPassword` sí se sigue escribiendo, y ahora pesa menos
+
+No es un olvido: sin ella un equipo nuevo no llega al broker para enrolarse, y no hay otra
+vía. Lo que cambió es cuánto cuesta si el paquete se filtra: desde que se corrió
+`deploy/emqx-narrow-acl-agente.sh` (§10-BQ), esa credencial **ya no puede leer el tráfico de
+la flota** — solo publicar en el tópico de enrolamiento y oír respuestas. Lo que todavía
+permite es escuchar respuestas de enrolamiento ajenas, que es la ventana anotada en §10-BQ y
+el motivo por el que el paquete del instalador completo sigue necesitando una decisión.
+
+Dicho de otro modo: el angostamiento de ayer convirtió a `A-2` en un hallazgo más chico, y
+este commit se queda solo con lo que seguía siendo grave.
+
+4 pruebas nuevas; 39 de `apps.aperturas` en verde. Sin migración.

@@ -4,6 +4,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -532,6 +533,73 @@ class GenerarPaqueteAperturaTests(TestCase):
             self.assertEqual(
                 self.apertura.tokens.get().token_hash, hashear_token(token_escrito),
             )
+
+    def _version_agente(self, version):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from apps.catalogo.models import VersionAgente
+
+        return VersionAgente.objects.create(
+            version=version,
+            ejecutable=SimpleUploadedFile('Saidsoft.Agente.exe', b'MZ' + b'\x00' * 64),
+            creado_por=self.root,
+        )
+
+    def _config_escrito(self, destino):
+        return (Path(destino) / 'ML099-ADM' / 'config.txt').read_text(encoding='utf-8')
+
+    def test_no_escribe_el_hmac_compartido_si_el_agente_recibe_el_propio(self):
+        """`A-2`: el `ComandoHmacSecret` de toda la flota es el secreto con el que se puede
+        fabricar un `ejecutar_script` válido para cualquiera de las 700 farmacias. Desde el
+        agente 0.21 cada estación recibe el suyo en el enrolamiento (§10-Z), y este comando
+        se había quedado escribiendo el compartido."""
+        self._version_agente('agente-prueba-0.33')
+
+        with tempfile.TemporaryDirectory() as destino:
+            salida = self._correr('--farmacia', 'ML099', '--destino', destino, '--aplicar')
+            contenido = self._config_escrito(destino)
+
+        self.assertIn('ComandoHmacSecret=\n', contenido)
+        self.assertNotIn(settings.COMANDO_HMAC_SECRET, contenido)
+        self.assertIn('ComandoHmacSecret va VACÍO', salida)
+
+    def test_con_un_agente_anterior_a_021_lo_sigue_escribiendo_y_avisa(self):
+        """Dejar el campo vacío con un binario viejo produce el peor resultado posible: la
+        instalación sale bien y la estación descarta todos los comandos en silencio. Es el
+        mismo criterio que ya usaba `armar_paquete_agente`."""
+        self._version_agente('agente-prueba-0.20')
+
+        with tempfile.TemporaryDirectory() as destino:
+            salida = self._correr('--farmacia', 'ML099', '--destino', destino, '--aplicar')
+            contenido = self._config_escrito(destino)
+
+        self.assertIn(f'ComandoHmacSecret={settings.COMANDO_HMAC_SECRET}', contenido)
+        self.assertIn('anterior a', salida)
+        self.assertIn('COMPARTIDO', salida)
+
+    def test_sin_ninguna_version_cargada_elige_el_lado_seguro_y_lo_dice(self):
+        """Sin saber qué binario se va a instalar, equivocarse hacia "vacío" deja la estación
+        muda para los comandos sin que nada falle. Se escribe el compartido y se explica cómo
+        dejar de necesitarlo."""
+        with tempfile.TemporaryDirectory() as destino:
+            salida = self._correr('--farmacia', 'ML099', '--destino', destino, '--aplicar')
+            contenido = self._config_escrito(destino)
+
+        self.assertIn(f'ComandoHmacSecret={settings.COMANDO_HMAC_SECRET}', contenido)
+        self.assertIn('No hay ninguna VersionAgente cargada', salida)
+        self.assertIn('cargar_version_agente', salida)
+
+    def test_la_contrasena_mqtt_sigue_yendo_porque_es_el_bootstrap(self):
+        """No es un olvido: sin ella el equipo nuevo no llega al broker para enrolarse. Lo que
+        cambió es cuánto pesa si se filtra, desde que la ACL de esa credencial quedó limitada
+        al enrolamiento (§10-BQ)."""
+        self._version_agente('agente-prueba-0.33')
+
+        with tempfile.TemporaryDirectory() as destino:
+            self._correr('--farmacia', 'ML099', '--destino', destino, '--aplicar')
+            contenido = self._config_escrito(destino)
+
+        self.assertIn(f'MqttPassword={settings.MQTT_CONFIG["PASSWORD"]}', contenido)
 
     def test_se_niega_a_escribir_dentro_de_media_root(self):
         """§10-Z: el paquete anterior quedó publicado bajo /media/, servido sin auth y con

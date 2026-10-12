@@ -15,8 +15,12 @@ Ninguno fue tocado por accidente por el trabajo de estos días.
 
 ## Estado al cierre del 11-oct-2026
 
-**Cinco de los 12 ALTO están cerrados** —uno antes del triage y cuatro el mismo día que el
-triage— y **7 siguen abiertos**. De los 94 hallazgos de la Fase 4 quedan **89**.
+**Siete de los 12 ALTO están cerrados** —uno antes del triage, cuatro el día del triage y
+dos el 12-oct— y **5 siguen abiertos**. De los 94 hallazgos de la Fase 4 quedan **87**.
+
+Cerrados además, fuera de los 94: el **trust-on-first-use** (§10-BÑ) y el **angostamiento de
+la ACL de la credencial compartida** (§10-BQ), que llevaba desde septiembre esperando una
+verificación que nadie podía hacer.
 
 | ID | Estado | Dónde está documentado |
 |---|---|---|
@@ -26,7 +30,7 @@ triage— y **7 siguen abiertos**. De los 94 hallazgos de la Fase 4 quedan **89*
 | `B-1` | **CERRADO** | §7 · §10-BL |
 | `B-2` | **CERRADO el daño** (la expulsión del broker). El hueco de trust-on-first-use resultó **teórico**: 0 estaciones sin identidad — ver §9 | §7 · §10-BL |
 | `A-6` | **CERRADO** en el código; en la flota, las mismas **14 de 66** del agente 0.33 | §8 · §10-BM |
-| `A-2` | abierto | §3 |
+| `A-2` | **CERRADO** — el paquete de apertura ya no escribe el HMAC compartido | §10-BR |
 | `C-1` | abierto — conviene que entre con la tanda de la app móvil | §3 |
 | `INV-02`, `INV-04`, `INV-05`, `INV-07` | abiertos — al final por oportunidad, no por gravedad | §3 |
 
@@ -60,7 +64,7 @@ a mano o necesita un camino en el panel.
 | `B-1` ≡ `RIESGO-07` | **CORREGIDO** | `emqx_admin.py` (`revocar_credencial_estacion`) · `catalogo/services.py` (`rechazar_estacion`) · `catalogo/admin.py` | **Cerrado** — ver §7 |
 | `B-2` | **CORREGIDO en el daño**, hueco de TOFU abierto | `emqx_admin.py:124` · `mqtt_worker/services.py` (`_tiene_latido_fresco`) | **Cerrado para estaciones vivas** — ver §7 |
 | `A-6` | **CORREGIDO** | `agente_prueba.py` (`leer_machine_guid`) | **Cerrado en el código**; viaja en el agente 0.33 con `RIESGO-06` — ver §8 |
-| `A-2` | **SÍ** | `aperturas/management/commands/generar_paquete_apertura.py:106` — `hmac_secret=settings.COMANDO_HMAC_SECRET` | Prueba local del comando |
+| `A-2` | **CORREGIDO** | `generar_paquete_apertura` (`_hmac_secret_para_el_config`) | **Cerrado** — ver §10-BR |
 | `C-1` ≡ `RIESGO-11` | **SÍ** | `mantenimiento/api_views.py:75` filtra por `(usuario, origen_id)` · `models.py:803-806` el constraint es el mismo par · `sincronizador.dart:91` manda `origen_id = accion.id` | **Prueba local**, sin teléfono |
 | `INV-01` | **CORREGIDO** | `activos/models.py:592-640` · `admin.py:213-215` | **Reproducido y cerrado** — ver §5 |
 | `INV-02` ≡ `HALLAZGO-19` | **SÍ** | `activos/services.py:788` — `filter(numero_serie__iexact=serie).first()`, sin `estacion__isnull=True` y sin orden, contra la guarda correcta de `:669-676` | **Prueba local** |
