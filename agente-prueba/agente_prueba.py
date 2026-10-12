@@ -56,7 +56,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.32'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.33'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -976,11 +976,56 @@ class AgentePrueba:
     # maquina. Traer todo y filtrar del lado del servidor serian cientos de miles de
     # filas mensuales que nadie lee.
 
+    def _catalogo_verificado(self, tipo_mensaje: str, comando: str, payload: dict):
+        """Contenido del catalogo si la firma es valida; None si no lo es.
+
+        Los dos catalogos (servicios del POS y eventos de Windows) eran los UNICOS
+        mensajes dirigidos al agente que se aplicaban sin verificar firma, y lo que un
+        catalogo decide es contra que host hace `urlopen`, `connect` o `ping` este agente
+        —y el resultado vuelve publicado—. Quien alcanzara el topico tenia la red de la
+        farmacia a mano desde afuera. Firmados desde el servidor 0.22 (RIESGO-06).
+
+        Se verifica contra el string de la clave `catalogo` TAL COMO LLEGO, sin
+        re-serializarlo: por eso el servidor manda el contenido serializado y no un
+        objeto (ver `envolver_firmado` en apps/monitoreo/servicios_pos.py).
+
+        Y se lee de ese string, no de las claves de primer nivel: vienen duplicadas para
+        los agentes viejos, y si leyeramos de ahi alcanzaria con reenviar una firma
+        legitima acompanada de unas claves cambiadas.
+
+        `verificar_ventana=False` como en los otros retenidos: el mensaje puede estar
+        guardado en el broker dias hasta que la estacion encienda.
+        """
+        if not payload.get('firma'):
+            # Servidor anterior al catalogo firmado. Se acepta para no quedarse con la
+            # lista vieja durante el despliegue, pero queda dicho en el log: es el unico
+            # mensaje que este agente obedece sin verificar.
+            logging.warning(
+                '%s sin firma — se aplica por compatibilidad con el servidor anterior.', tipo_mensaje,
+            )
+            return payload
+        if not self._firma_valida(
+            tipo_mensaje, payload, verificar_ventana=False,
+            comando=comando, catalogo=payload.get('catalogo', ''),
+            timestamp=payload.get('timestamp'),
+        ):
+            return None
+        try:
+            return json.loads(payload['catalogo'])
+        except (TypeError, json.JSONDecodeError):
+            logging.error('%s con firma valida pero contenido ilegible — se ignora.', tipo_mensaje)
+            return None
+
     def _aplicar_catalogo_eventos(self, payload: dict):
         """Guarda que eventos vigilar. Se persiste en `identidad.json` para que sobreviva
         a un reinicio: el mensaje es retenido y llegaria igual al reconectar, pero entre
         el arranque y esa reconexion habria un ciclo mirando la lista vieja."""
-        eventos = payload.get('eventos') or []
+        contenido = self._catalogo_verificado(
+            'catalogo de eventos de Windows', 'catalogo_eventos_sistema', payload,
+        )
+        if contenido is None:
+            return
+        eventos = contenido.get('eventos') or []
         self.identidad['catalogo_eventos_sistema'] = eventos
         self._guardar_identidad()
         logging.info('Catalogo de eventos de Windows recibido: %d vigilado(s).', len(eventos))
@@ -1210,10 +1255,15 @@ class AgentePrueba:
         mensaje es retenido, asi que igual llegaria al reconectar, pero entre el arranque
         y esa reconexion habria un ciclo chequeando la lista vieja.
         """
+        contenido = self._catalogo_verificado(
+            'catalogo de servicios del POS', 'catalogo_servicios_pos', payload,
+        )
+        if contenido is None:
+            return
         catalogo = {
-            'servicios': payload.get('servicios') or [],
-            'criticidad': payload.get('criticidad') or {},
-            'desactivados': payload.get('desactivados') or [],
+            'servicios': contenido.get('servicios') or [],
+            'criticidad': contenido.get('criticidad') or {},
+            'desactivados': contenido.get('desactivados') or [],
         }
         self.identidad['catalogo_servicios_pos'] = catalogo
         self._guardar_identidad()

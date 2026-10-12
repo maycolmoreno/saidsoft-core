@@ -6636,6 +6636,147 @@ class CatalogoServiciosPosPublicacionTests(TestCase):
         publicar.assert_called_once()
 
 
+class CatalogoFirmadoTests(TestCase):
+    """Los dos catálogos viajan firmados (`RIESGO-06` de la auditoría por agentes).
+
+    Eran los dos únicos mensajes dirigidos al agente sin firma HMAC, y el agente los
+    aplicaba directo. Lo que un catálogo decide es contra qué host hace `urlopen`,
+    `connect` o `ping` cada agente, con el resultado publicado de vuelta: quien alcanzara
+    el tópico —hoy, cualquiera con la credencial MQTT compartida, que sigue con ACL
+    `/saidsof/#`— tenía la red interna de las 701 farmacias a mano y un oráculo para
+    leerla. Retenido y persistido en el `identidad.json` del agente, así que sobrevivía
+    al reinicio del servicio.
+
+    Estas pruebas reconstruyen la firma igual que lo hace el agente, que es el mismo
+    patrón de `apps/despliegues/tests.py` para los tópicos de difusión.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.models import EventoSistemaVigilado, ServicioPosMonitoreado
+
+        ServicioPosMonitoreado.objects.create(
+            clave='balanza', nombre='Balanza', tipo=ServicioPosMonitoreado.Tipo.PING,
+            origen=ServicioPosMonitoreado.Origen.CATALOGO, destino='192.168.102.201',
+        )
+        # `get_or_create`: el catálogo de eventos viene sembrado por migración de datos,
+        # así que `System/Ntfs/55` ya existe y un `create` choca contra su unique.
+        EventoSistemaVigilado.objects.get_or_create(
+            log='System', proveedor='Ntfs', identificador=55,
+            defaults={'nombre': 'Corrupción NTFS', 'activo': True},
+        )
+
+    def _publicado(self, publicar):
+        import json
+
+        return json.loads(publicar.call_args.args[1])
+
+    def test_el_catalogo_de_servicios_viaja_firmado_y_la_firma_es_la_que_el_agente_reconstruye(self):
+        from apps.catalogo.services import firmar_payload
+        from apps.monitoreo.servicios_pos import publicar_catalogo_servicios_pos
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            publicar_catalogo_servicios_pos()
+
+        cuerpo = self._publicado(publicar)
+        self.assertEqual(
+            cuerpo['firma'],
+            firmar_payload(
+                None, comando='catalogo_servicios_pos',
+                catalogo=cuerpo['catalogo'], timestamp=cuerpo['timestamp'],
+            ),
+        )
+
+    def test_el_catalogo_de_eventos_tambien(self):
+        from apps.catalogo.services import firmar_payload
+        from apps.monitoreo.servicios_pos import publicar_catalogo_eventos_sistema
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            publicar_catalogo_eventos_sistema()
+
+        cuerpo = self._publicado(publicar)
+        self.assertEqual(
+            cuerpo['firma'],
+            firmar_payload(
+                None, comando='catalogo_eventos_sistema',
+                catalogo=cuerpo['catalogo'], timestamp=cuerpo['timestamp'],
+            ),
+        )
+
+    def test_la_firma_de_un_catalogo_no_sirve_para_el_otro(self):
+        """Los dos tópicos llevan la misma ACL, así que sin el `comando` dentro de la
+        firma un catálogo de servicios válido se podría reenviar por el tópico de eventos
+        y el agente lo aceptaría."""
+        from apps.catalogo.services import firmar_payload
+        from apps.monitoreo.servicios_pos import publicar_catalogo_servicios_pos
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            publicar_catalogo_servicios_pos()
+
+        cuerpo = self._publicado(publicar)
+        self.assertNotEqual(
+            cuerpo['firma'],
+            firmar_payload(
+                None, comando='catalogo_eventos_sistema',
+                catalogo=cuerpo['catalogo'], timestamp=cuerpo['timestamp'],
+            ),
+        )
+
+    def test_tocar_el_destino_de_un_servicio_invalida_la_firma(self):
+        """El ataque concreto: cambiar el `destino` por un host interno para que los 66
+        agentes lo chequeen y reporten si responde."""
+        import json
+
+        from apps.catalogo.services import firmar_payload
+        from apps.monitoreo.servicios_pos import publicar_catalogo_servicios_pos
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            publicar_catalogo_servicios_pos()
+
+        cuerpo = self._publicado(publicar)
+        contenido = json.loads(cuerpo['catalogo'])
+        contenido['servicios'][0]['destino'] = '10.111.6.20'
+        alterado = json.dumps(contenido, separators=(',', ':'), sort_keys=True)
+
+        self.assertNotEqual(
+            cuerpo['firma'],
+            firmar_payload(
+                None, comando='catalogo_servicios_pos',
+                catalogo=alterado, timestamp=cuerpo['timestamp'],
+            ),
+        )
+
+    def test_lo_firmado_dice_lo_mismo_que_las_claves_que_leen_los_agentes_viejos(self):
+        """Las claves de primer nivel siguen viajando duplicadas para los agentes
+        anteriores a 0.33. Si el sobre firmado y esas claves pudieran discrepar, el
+        arreglo habría creado dos versiones del catálogo —y el agente nuevo lee SOLO del
+        sobre, así que la discrepancia sería invisible hasta que alguien la buscara."""
+        import json
+
+        from apps.monitoreo.servicios_pos import publicar_catalogo_servicios_pos
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            publicar_catalogo_servicios_pos()
+
+        cuerpo = self._publicado(publicar)
+        firmado = json.loads(cuerpo['catalogo'])
+        for clave in ('servicios', 'criticidad', 'desactivados'):
+            self.assertEqual(firmado[clave], cuerpo[clave])
+
+    def test_el_destino_sigue_llegando_a_la_flota(self):
+        """La firma no puede haber cambiado lo que el catálogo dice: es la misma garantía
+        que pedía `test_se_publica_retenido_en_el_topico_global`, ahora contra el sobre."""
+        import json
+
+        from apps.monitoreo.servicios_pos import publicar_catalogo_servicios_pos
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            publicar_catalogo_servicios_pos()
+
+        cuerpo = self._publicado(publicar)
+        self.assertIn('192.168.102.201', cuerpo['catalogo'])
+        self.assertTrue(publicar.call_args.kwargs['retain'])
+
+
 class CatalogoServiciosPosValidacionTests(TestCase):
     """El destino se publica a toda la flota y se muestra en el panel: no puede llevar
     credenciales. Es la misma regla que ya tenía EstadoServicioPos.endpoint."""

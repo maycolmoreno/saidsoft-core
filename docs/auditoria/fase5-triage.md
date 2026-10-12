@@ -15,7 +15,8 @@ Ninguno fue tocado por accidente por el trabajo de estos días.
 
 **`INV-01` se reprodujo y se corrigió el mismo día** — es el primer hallazgo de la auditoría
 por agentes que pasa por `Reproducción: SÍ` antes de arreglarse, y el §5 cuenta cómo.
-Quedan **10 ALTO abiertos**.
+**`RIESGO-06`, el primero del orden, está corregido en el código** (§6); se cierra del todo
+cuando el agente 0.33 esté instalado en los 66 equipos. Quedan **9 ALTO abiertos**.
 
 ---
 
@@ -23,7 +24,7 @@ Quedan **10 ALTO abiertos**.
 
 | ID | Vigente | Línea verificada hoy | Qué hace falta para reproducirlo |
 |---|---|---|---|
-| `RIESGO-06` | **SÍ** | `monitoreo/servicios_pos.py:115,164` publican `retain=True` sin firma · `agente_prueba.py:564,566` aplican sin pasar por `_firma_valida` | Prueba local para la firma; el ataque completo necesita el broker |
+| `RIESGO-06` | **CORREGIDO en el código**, pendiente de distribuir el agente | `monitoreo/servicios_pos.py` (`envolver_firmado`) · `agente_prueba.py` (`_catalogo_verificado`) | **Cerrado del lado del servidor** — ver §6 |
 | `B-1` ≡ `RIESGO-07` | **SÍ** | `mqtt_worker/services.py:107` (`aprovisionar_credencial_estacion` dentro de `_respuesta_aceptado`) · `panel/views/estaciones.py:199-205` (`estacion_rechazar` solo escribe el campo) · `emqx_admin.py` no tiene ninguna función de baja | Prueba local con EMQX simulado; la confirmación final, contra el broker |
 | `B-2` | **SÍ** | `emqx_admin.py:124` — `publish` sobre `/saidsof/enrolamiento/solicitar/`, sin código en la ruta | Broker real (publicar con la credencial de una estación por el código de otra) |
 | `A-6` | **SÍ** | `agente_prueba.py:135` — `return 'SIN-MACHINEGUID-DE-PRUEBA'` en el `except` | Nada: la constante está a la vista |
@@ -228,6 +229,61 @@ JOIN estacion e ON e.id = a.estacion_id
 WHERE a.estacion_id IS NOT NULL
   AND (a.ip IS NOT NULL OR a.mac <> '');
 ```
+
+---
+
+## 6. `RIESGO-06`, firmado el 11-oct-2026
+
+Entrada del plan: **§10-BK**.
+
+Los catálogos de servicios del POS y de eventos de Windows eran los **dos únicos** mensajes
+dirigidos al agente que viajaban sin firma HMAC, y el agente los aplicaba sin pasar por
+`_firma_valida`, a diferencia de los otros siete tipos. Lo que un catálogo decide es contra
+qué host hace `urlopen`, `psycopg2.connect` o `ping` cada agente, y el resultado —incluido
+el texto del error— vuelve publicado a `/saidsof/agente/{codigo}/servicios_pos/`. Van
+retenidos y el agente los persiste en `identidad.json`, así que un catálogo envenenado
+alcanzaba a las estaciones apagadas y sobrevivía al reinicio del servicio.
+
+**Lo que se firma es un string, no un objeto.** El contenido viaja serializado en la clave
+`catalogo` y la firma se calcula sobre ese string exacto. No es un detalle de estilo: el
+docstring de `firmar_payload` existe porque el proyecto decidió **no** depender de que
+`json.dumps` en Python y `System.Text.Json` en el agente canonicalicen igual. Firmar el
+objeto habría obligado al agente a re-serializarlo para verificar, que es justamente la
+trampa que ese docstring advierte. El agente verifica contra el string tal como llegó y
+**lee de ahí**, no de las claves de primer nivel: si leyera de las claves, alcanzaría con
+reenviar una firma legítima acompañada de unas claves cambiadas.
+
+El secreto es el **compartido** de la flota, como en los tópicos de difusión de despliegue y
+software, por la razón que ya está escrita en `firmar_payload`: un solo payload que verifican
+muchas estaciones. El `comando` entra en la firma y acá hace un trabajo extra —impedir que
+un catálogo de servicios válido se reenvíe por el tópico de eventos, que lleva la misma
+ACL—, y hay una prueba para eso. El `timestamp` se firma pero no se valida contra ventana
+(`verificar_ventana=False`), igual que `actualizar_agente`: el mensaje puede quedar días en
+el broker.
+
+**La compatibilidad es la parte delicada, y va en el orden que este proyecto ya aprendió:
+firmar primero, exigir después.** Las claves de primer nivel se siguen mandando duplicadas,
+así que un agente anterior a 0.33 entiende el mensaje igual; el 0.33 exige firma válida y
+descarta lo que no la tenga. Un servidor nuevo con agentes viejos no rompe nada, y un agente
+0.33 contra un servidor viejo —sin firma— aplica el catálogo dejando un `WARNING` en su log
+en vez de quedarse con la lista vieja.
+
+**Lo que esto NO cierra todavía.** Mientras haya agentes anteriores a 0.33 en la flota,
+ellos siguen aceptando un catálogo forjado: el arreglo completo es tener el 0.33 corriendo,
+no el commit. La buena noticia es que el agente Windows **se actualiza solo**: se compila el
+ejecutable, se carga una `VersionAgente` con su sha256 y se dispara
+`enviar_actualizacion_agente`, retenida, así que alcanza también a las apagadas. Lo manual
+es el build, no la instalación equipo por equipo (eso es la app móvil).
+
+El freno que no depende de nada de eso es `deploy/emqx-narrow-acl-agente.sh` —con la ACL
+angosta ninguna estación puede publicar en estos dos tópicos—, que a su vez espera a que las
+2 estaciones apagadas migren a credencial propia. Es la misma dependencia que ya bloquea la
+rotación de `MQTT_PASSWORD_AGENTE` y el paquete del instalador completo.
+
+**Alcance:** 7 pruebas nuevas (`CatalogoFirmadoTests`), 835 de `apps.monitoreo` +
+`apps.mqtt_worker` en verde. Sin migración. Del lado del agente no hay suite —es un script
+aparte—, así que las pruebas reconstruyen la firma exactamente como lo hace él, el mismo
+método que usa `apps/despliegues/tests.py` para los tópicos de difusión.
 
 ---
 

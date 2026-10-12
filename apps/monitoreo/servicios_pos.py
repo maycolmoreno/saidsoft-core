@@ -30,11 +30,71 @@ lista vieja unos minutos— y si algún día hace falta saberlo, el agente ya re
 **Ojo con la ACL**: EMQX autoriza por lista explícita y **deniega en silencio**. El
 tópico de acá está en `apps.mqtt_worker.emqx_admin.reglas_acl_estacion`; sin esa regla el
 agente se suscribe, no recibe nada, y nada en ningún log lo dice.
+
+## Los dos catálogos van firmados (desde el 11-oct-2026)
+
+Hasta hoy eran los **dos únicos** mensajes dirigidos al agente que viajaban sin firma HMAC
+—`RIESGO-06` de la auditoría por agentes, §10-BK—, y el agente los aplicaba directo. El
+docstring de arriba justificaba el tópico global y advertía sobre la ACL, pero no sobre
+esto: quien alcanzara el tópico dirigía la actividad de red de toda la flota (`urlopen`,
+`psycopg2.connect`, `ping`) contra destinos que vienen en el propio mensaje, y leía el
+resultado en `/saidsof/agente/{codigo}/servicios_pos/`. Retenido y persistido en el
+`identidad.json` del agente, así que sobrevivía al reinicio.
+
+El secreto es el **compartido** de la flota, no el propio de cada estación: es la misma
+razón que en los tópicos de difusión de despliegue y software, un solo payload que
+verifican muchas estaciones (ver `firmar_payload`).
+
+**Lo que viaja firmado es un string, no un objeto.** El contenido va serializado en la
+clave `catalogo` y la firma se calcula sobre ese string exacto. Es deliberado: firmar un
+objeto obligaría al agente a re-serializarlo igual que Python para verificar, y
+`firmar_payload` existe justamente para no depender de que `json.dumps` y
+`System.Text.Json` canonicalicen igual.
+
+Las claves de primer nivel (`servicios`, `criticidad`, `desactivados`, `eventos`) se siguen
+mandando **duplicadas** para que los agentes anteriores a **0.33** sigan entendiendo el
+mensaje: firmar primero y exigir después, el mismo orden que se usó para el HMAC propio.
+El agente 0.33 lee solo de `catalogo`, que es lo firmado; cuando no quede ninguno anterior
+en la flota, las claves duplicadas se quitan y queda solo el sobre.
+
+Mientras conviven, un agente viejo sigue aceptando un catálogo forjado: el arreglo completo
+es la actualización del agente, y el freno inmediato es
+`deploy/emqx-narrow-acl-agente.sh` —con la ACL angosta ninguna estación puede publicar en
+estos dos tópicos—.
 """
 import json
 import logging
+import time
 
 logger = logging.getLogger(__name__)
+
+
+def envolver_firmado(comando: str, contenido: dict) -> dict:
+    """Agrega al catálogo el sobre firmado: `catalogo` (el contenido serializado),
+    `timestamp` y `firma`.
+
+    `comando` entra a la firma como en todos los demás mensajes, y acá cumple una función
+    extra: impide que un catálogo de servicios válido se reenvíe por el tópico de eventos
+    y viceversa. Los dos tópicos llevan la misma ACL, así que sin eso la firma de uno
+    valdría para el otro.
+
+    El `timestamp` se firma pero el agente **no** lo valida contra una ventana: estos
+    mensajes son retenidos y pueden quedar guardados en el broker días hasta que una
+    estación se prenda, igual que `actualizar_agente` (ver `_firma_valida` en el agente,
+    `verificar_ventana=False`). Va firmado igual para que no se pueda alterar.
+    """
+    from apps.catalogo.services import firmar_payload
+
+    cuerpo = json.dumps(contenido, separators=(',', ':'), sort_keys=True)
+    timestamp = int(time.time())
+    return {
+        # Duplicado a propósito, para los agentes anteriores a 0.22 — ver el docstring
+        # del módulo. El agente nuevo lee SOLO de `catalogo`, que es lo que está firmado.
+        **contenido,
+        'catalogo': cuerpo,
+        'timestamp': timestamp,
+        'firma': firmar_payload(None, comando=comando, catalogo=cuerpo, timestamp=timestamp),
+    }
 
 # Global y no por estación: el catálogo es uno solo para toda la flota (ver el docstring
 # del modelo sobre por qué no hay catálogo por farmacia). Mismo nivel que
@@ -112,7 +172,11 @@ def publicar_catalogo_servicios_pos() -> tuple:
     payload = payload_catalogo()
     cuantos = len(payload['servicios'])
     try:
-        enviado = _publicar_mqtt(TOPICO_CATALOGO, json.dumps(payload), retain=True)
+        enviado = _publicar_mqtt(
+            TOPICO_CATALOGO,
+            json.dumps(envolver_firmado('catalogo_servicios_pos', payload)),
+            retain=True,
+        )
     except Exception:
         logger.exception('No se pudo publicar el catálogo de servicios del POS.')
         return cuantos, False
@@ -162,7 +226,9 @@ def publicar_catalogo_eventos_sistema() -> tuple:
     eventos = catalogo_eventos_para_agentes()
     try:
         enviado = _publicar_mqtt(
-            TOPICO_CATALOGO_EVENTOS, json.dumps({'eventos': eventos}), retain=True,
+            TOPICO_CATALOGO_EVENTOS,
+            json.dumps(envolver_firmado('catalogo_eventos_sistema', {'eventos': eventos})),
+            retain=True,
         )
     except Exception:
         logger.exception('No se pudo publicar el catalogo de eventos de Windows.')

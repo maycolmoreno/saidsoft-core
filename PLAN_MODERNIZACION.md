@@ -5099,3 +5099,80 @@ original.
 estado, es decir cuántos equipos estaban congelados— que conviene correr en la misma pasada
 de solo lectura que `L-1` del informe del tablero e `INV-07`. Y los **10 ALTO restantes**,
 más los 81 MEDIO/BAJO sin triar.
+
+**`RIESGO-06`, el primero del orden, se corrigió el mismo día — §10-BK.** Quedan 9 ALTO
+abiertos.
+
+---
+
+## §10-BK — Los dos mensajes que el agente obedecía sin verificar firma (11-oct-2026)
+
+`RIESGO-06` de la auditoría por agentes, el primero del orden que propuso el triage de
+§10-BJ. Detalle en `docs/auditoria/fase5-triage.md` §6.
+
+Los catálogos de servicios del POS (`/saidsof/catalogo/servicios_pos/`) y de eventos de
+Windows (`/saidsof/catalogo/eventos_sistema/`) eran los **dos únicos** mensajes dirigidos al
+agente que viajaban sin firma HMAC. El agente los aplicaba directo, a diferencia de
+`comando`, `ejecutar_script`, `configurar_nodo_pos`, `pausa`, `actualizar_agente`,
+`despliegue` e `instalar_software`, que sí pasan por `_firma_valida`.
+
+**Por qué importa más que un catálogo de configuración.** Lo que el catálogo decide es
+contra qué host hace `urllib.request.urlopen`, `psycopg2.connect` o `ping` cada agente, y el
+resultado —incluido el texto del error— vuelve publicado al servidor. Quien alcanzara el
+tópico convertía los agentes en un cliente HTTP/PostgreSQL dirigido **dentro de las LAN de
+las farmacias**, con oráculo de lectura. No es ejecución de código (eso sigue protegido por
+la firma de `ejecutar_script`), pero sí reconocimiento interno a escala de cadena. Con tres
+agravantes: el mensaje es **retenido** (alcanza a las estaciones apagadas), el agente lo
+**persiste** en `identidad.json` (sobrevive al reinicio) y es **global** (una publicación,
+toda la flota).
+
+El modelo ya había anticipado la mitad del problema —`ServicioPosMonitoreado.host.help_text`
+dice *"NUNCA credenciales: esto se publica a la flota"*—, así que la exposición del tópico
+estaba contemplada. Lo que faltaba era la autenticidad del emisor.
+
+### Qué se hizo
+
+`envolver_firmado(comando, contenido)` en `apps/monitoreo/servicios_pos.py` agrega el sobre:
+el contenido **serializado** en la clave `catalogo`, un `timestamp` y la `firma`. Del lado
+del agente, `_catalogo_verificado` verifica y recién entonces aplica.
+
+**Se firma un string, no un objeto, y eso es lo único no obvio del cambio.** El docstring de
+`firmar_payload` existe porque el proyecto decidió no depender de que `json.dumps` en Python
+y `System.Text.Json` en el agente canonicalicen igual; firmar el objeto habría obligado al
+agente a re-serializarlo para verificar, que es exactamente esa trampa. El agente verifica
+contra el string tal como llegó y **lee de ahí**: leer de las claves de primer nivel dejaría
+pasar una firma legítima reenviada con otras claves.
+
+Secreto **compartido**, como en los tópicos de difusión de despliegue y software — un solo
+payload que verifican muchas estaciones. El `comando` dentro de la firma impide además que
+el catálogo de un tópico se reenvíe por el otro, que llevan la misma ACL.
+`verificar_ventana=False` como en `actualizar_agente`: el retenido puede quedar días en el
+broker.
+
+### Compatibilidad: firmar primero, exigir después
+
+Las claves de primer nivel siguen viajando duplicadas, así que un agente anterior a **0.33**
+entiende el mensaje igual. El 0.33 exige firma válida y descarta lo que no la tenga; contra
+un servidor viejo que no firme, aplica el catálogo con un `WARNING` en el log en vez de
+quedarse con la lista vieja. Es el mismo orden que se usó para el HMAC propio por estación
+(§10-Z) y por el mismo motivo: al revés deja estaciones incomunicadas a mitad del rollout.
+
+Cuando no quede ningún agente anterior a 0.33 en la flota, las claves duplicadas se quitan y
+queda solo el sobre firmado.
+
+### Lo que NO cierra esto
+
+**Mientras haya agentes viejos, ellos siguen aceptando un catálogo forjado.** El arreglo
+completo es tener el agente 0.33 corriendo en los 66 equipos, no el commit. Eso **no** es
+una instalación equipo por equipo —ese es el problema de la app móvil, no de este agente—:
+se compila el ejecutable, se carga una `VersionAgente` con su sha256 y se dispara
+`enviar_actualizacion_agente`, que va retenida y alcanza también a las estaciones apagadas.
+El paso que sigue siendo manual es el build. El freno que no depende de nada de eso es
+`deploy/emqx-narrow-acl-agente.sh`: con la ACL angosta ninguna estación puede publicar en
+estos dos tópicos. Ese script espera a que las 2 estaciones apagadas migren a credencial
+propia, que es la misma dependencia que ya bloquea la rotación de `MQTT_PASSWORD_AGENTE` y
+el paquete del instalador completo.
+
+7 pruebas nuevas (`CatalogoFirmadoTests`), 835 de `apps.monitoreo` + `apps.mqtt_worker` en
+verde, sin migración. Del lado del agente no hay suite —es un script aparte—, así que las
+pruebas reconstruyen la firma igual que él, el método que ya usa `apps/despliegues/tests.py`.

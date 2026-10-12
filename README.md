@@ -1541,6 +1541,14 @@ python manage.py publicar_catalogo_servicios_pos --aplicar
 nada, sin error en ningún log. Ya está en `apps/mqtt_worker/emqx_admin.py`; en una
 estación aprovisionada antes de este cambio hay que correr `reaplicar_acls_mqtt --aplicar`.
 
+**El catálogo va firmado desde el 11-oct-2026** (§10-BK). Hasta entonces era, junto con el
+de eventos de Windows, uno de los dos únicos mensajes que el agente aplicaba sin verificar
+firma — y lo que el catálogo decide es contra qué host hace `urlopen`, `connect` o `ping`
+cada agente. El contenido viaja serializado en la clave `catalogo` y el agente **0.33**
+verifica la firma sobre ese string antes de aplicarlo. Las claves de primer nivel se siguen
+mandando duplicadas para los agentes anteriores, así que la transición no rompe nada; hasta
+que la flota esté en 0.33, el freno real es `deploy/emqx-narrow-acl-agente.sh`.
+
 ## Eventos de Windows (monitoreo proactivo)
 
 El agente barre el visor de eventos cada 15 minutos y reporta solo lo que está en un
