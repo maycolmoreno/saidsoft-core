@@ -27,7 +27,7 @@ cuando el agente 0.33 esté instalado en los 66 equipos. Quedan **9 ALTO abierto
 | `RIESGO-06` | **CORREGIDO en el código**, pendiente de distribuir el agente | `monitoreo/servicios_pos.py` (`envolver_firmado`) · `agente_prueba.py` (`_catalogo_verificado`) | **Cerrado del lado del servidor** — ver §6 |
 | `B-1` ≡ `RIESGO-07` | **SÍ** | `mqtt_worker/services.py:107` (`aprovisionar_credencial_estacion` dentro de `_respuesta_aceptado`) · `panel/views/estaciones.py:199-205` (`estacion_rechazar` solo escribe el campo) · `emqx_admin.py` no tiene ninguna función de baja | Prueba local con EMQX simulado; la confirmación final, contra el broker |
 | `B-2` | **SÍ** | `emqx_admin.py:124` — `publish` sobre `/saidsof/enrolamiento/solicitar/`, sin código en la ruta | Broker real (publicar con la credencial de una estación por el código de otra) |
-| `A-6` | **SÍ** | `agente_prueba.py:135` — `return 'SIN-MACHINEGUID-DE-PRUEBA'` en el `except` | Nada: la constante está a la vista |
+| `A-6` | **CORREGIDO** | `agente_prueba.py` (`leer_machine_guid`) | **Cerrado en el código**; viaja en el agente 0.33 con `RIESGO-06` — ver §8 |
 | `A-2` | **SÍ** | `aperturas/management/commands/generar_paquete_apertura.py:106` — `hmac_secret=settings.COMANDO_HMAC_SECRET` | Prueba local del comando |
 | `C-1` ≡ `RIESGO-11` | **SÍ** | `mantenimiento/api_views.py:75` filtra por `(usuario, origen_id)` · `models.py:803-806` el constraint es el mismo par · `sincronizador.dart:91` manda `origen_id = accion.id` | **Prueba local**, sin teléfono |
 | `INV-01` | **CORREGIDO** | `activos/models.py:592-640` · `admin.py:213-215` | **Reproducido y cerrado** — ver §5 |
@@ -284,6 +284,37 @@ rotación de `MQTT_PASSWORD_AGENTE` y el paquete del instalador completo.
 `apps.mqtt_worker` en verde. Sin migración. Del lado del agente no hay suite —es un script
 aparte—, así que las pruebas reconstruyen la firma exactamente como lo hace él, el mismo
 método que usa `apps/despliegues/tests.py` para los tópicos de difusión.
+
+---
+
+## 8. `A-6`, cerrado el 11-oct-2026
+
+Entrada del plan: **§10-BM**. Se hizo **junto a `RIESGO-06`, en el mismo agente 0.33**, y no
+en el orden del §3: los dos son del agente, y separarlos obligaba a compilar y rotar el
+ejecutable en los 66 equipos dos veces. Cuando el orden de un triage choca con el costo de
+distribuir, manda el costo de distribuir.
+
+`leer_machine_guid()` caía a una constante de reserva cuando no podía leer el registro, así
+que dos equipos donde la lectura fallara presentaban la **misma** identidad de hardware — y
+esa identidad es la única defensa del servidor contra la suplantación en el re-enrolamiento.
+El valor, además, estaba escrito en el repo.
+
+Ahora devuelve vacío. Las alternativas se descartaron con un motivo cada una: un UUID
+generado y guardado se pierde junto con `identidad.json`, que es el único caso que hay que
+cubrir; y algo derivado del hostname o del número de serie vuelve a ser adivinable por quien
+ya conoce el código de la estación, que es el atacante de `B-2`. Vacío es lo honesto, y el
+servidor ya lo trata del lado seguro: no lo fija como identidad y niega el re-enrolamiento
+de una estación que sí tenía una. Las dos cosas quedaron con prueba, porque son lo que hace
+seguro devolver vacío.
+
+**Un detalle del camino que vale anotar:** la primera versión del arreglo dejó la constante
+nombrada en el docstring que explicaba el defecto, y la prueba que vigila el fuente del
+agente la encontró ahí. Tenía razón: el valor no tiene por qué seguir estando en el repo ni
+como ejemplo. Quedó descrito sin escribirlo.
+
+**Lo que no cierra:** el trust-on-first-use. `A-6` quita el valor compartido y conocido, pero
+una estación con `hardware_id` vacío sigue aceptando el primero que llegue. Cuántas están en
+ese estado es una de las cuatro consultas pendientes.
 
 ---
 

@@ -1091,6 +1091,80 @@ class ImportarCircuitosProveedorTests(TestCase):
         self.assertIn('No reconozco las columnas', str(ctx.exception))
 
 
+class IdentidadDeHardwareDelAgenteTests(TestCase):
+    """El agente no puede inventarse un `hardware_id` compartido (`A-6`).
+
+    `hardware_id` existe para una sola cosa: que un equipo ajeno no pueda pedir el token de
+    una estación existente y suplantarla. La única defensa del servidor es comparar el que
+    llega contra el que se fijó la primera vez (`manejar_enrolamiento`), así que un valor
+    repetido entre equipos la anula. El agente caía a la constante
+    `'SIN-MACHINEGUID-DE-PRUEBA'` cuando no podía leer el registro — un valor igual para
+    todos y, además, escrito en el repo.
+
+    Se lee del archivo del agente y no se importa porque `agente-prueba` no es un paquete
+    (el guion del nombre lo impide), igual que las otras dos pruebas que vigilan ese
+    archivo desde acá.
+    """
+
+    def _fuente_del_agente(self):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        return (Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py').read_text(encoding='utf-8')
+
+    def test_el_agente_no_tiene_un_hardware_id_de_reserva_constante(self):
+        self.assertNotIn('SIN-MACHINEGUID-DE-PRUEBA', self._fuente_del_agente())
+
+    def test_si_no_puede_leer_el_registro_se_enrola_sin_identidad(self):
+        """Vacío es la respuesta honesta —este equipo no sabe identificarse— y el servidor
+        ya lo trata del lado seguro. Cualquier otro valor derivado volvería a ser
+        adivinable."""
+        import re
+
+        fuente = self._fuente_del_agente()
+        cuerpo = re.search(
+            r'def leer_machine_guid.*?(?=\ndef |\n# Codificacion)', fuente, re.DOTALL,
+        )
+        self.assertIsNotNone(cuerpo, 'no se encontró leer_machine_guid en el agente')
+        except_ = cuerpo.group(0).split('except')[-1]
+        self.assertIn("return ''", except_)
+
+
+class ReenrolamientoSinIdentidadDeHardwareTests(TestCase):
+    """La otra mitad de `A-6`, del lado del servidor: qué pasa cuando llega vacío.
+
+    Importa fijarlo porque es el comportamiento que hace seguro devolver `''` en el agente.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+
+    def test_una_estacion_con_identidad_fijada_rechaza_un_reenrolamiento_sin_ella(self):
+        from apps.mqtt_worker.services import manejar_enrolamiento
+
+        Estacion.objects.create(codigo='ML001-A', farmacia=self.farmacia, hardware_id='HW1')
+
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': ''})
+
+        self.assertFalse(resp['aceptado'])
+        self.assertIn('hardware', resp['motivo'])
+
+    def test_no_se_fija_una_identidad_vacia_como_si_fuera_una(self):
+        """Si se guardara `''` como identidad, la estación quedaría con el campo "puesto" y
+        en trust-on-first-use para siempre, sin que nada lo distinga de una real."""
+        from apps.mqtt_worker.services import manejar_enrolamiento
+
+        Estacion.objects.create(codigo='ML001-A', farmacia=self.farmacia)
+
+        resp = manejar_enrolamiento({'codigo': 'ML001-A', 'hardware_id': ''})
+
+        self.assertTrue(resp['aceptado'])
+        self.assertEqual(Estacion.objects.get(codigo='ML001-A').hardware_id, '')
+
+
 class CerrarConexionesViejasTests(TestCase):
     """`close_old_connections()` dentro de un bloque atómico cierra la conexión y deja
     inservible todo lo que siga en ese proceso.

@@ -125,14 +125,34 @@ def _configurar_logging():
 
 def leer_machine_guid() -> str:
     """MachineGuid de Windows — mismo identificador estable que usa el agente real
-    para hardware_id (ver README.md del proyecto principal, sección de enrolamiento)."""
+    para hardware_id (ver README.md del proyecto principal, sección de enrolamiento).
+
+    Devuelve `''` si no se pudo leer, y eso es deliberado (`A-6` de la auditoría por
+    agentes). Antes caía a una constante de reserva escrita en este mismo archivo, que es
+    lo peor posible para este campo: `hardware_id` existe para que un equipo ajeno no pueda
+    pedir el token de una estación y suplantarla, y la única defensa del servidor es
+    comparar el que llega contra el que se fijó la primera vez. Dos equipos donde la
+    lectura fallara compartían el mismo valor y esa comparación pasaba sola — con un valor
+    que, además, está en el repo, así que no es ningún secreto.
+
+    No se reemplaza por otro valor inventado (un UUID generado y guardado no serviría:
+    `identidad.json` es justo lo que se pierde en el caso que hace falta cubrir). Vacío es
+    la respuesta honesta —este equipo no sabe identificarse— y el servidor ya lo trata
+    bien: no lo fija como identidad y niega el re-enrolamiento de una estación que sí tenía
+    uno, que es el lado seguro del error. Para una máquina de desarrollo sin registro de
+    Windows, el escape es `--hardware-id`, explícito y distinto por equipo.
+    """
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Cryptography') as clave:
             return winreg.QueryValueEx(clave, 'MachineGuid')[0]
     except Exception:
-        logging.warning('No se pudo leer MachineGuid del registro, uso un valor fijo de prueba.')
-        return 'SIN-MACHINEGUID-DE-PRUEBA'
+        logging.error(
+            'No se pudo leer MachineGuid del registro: me enrolo SIN identidad de hardware. '
+            'El servidor va a exigir reaprobación manual si esta estación tiene que '
+            're-enrolarse. Para fijarla a mano, usar --hardware-id.',
+        )
+        return ''
 
 
 # Codificacion de la salida de los subprocesos. Un solo lugar, porque equivocarlo no
@@ -526,7 +546,14 @@ class AgentePrueba:
         self.identidad['numero_serie'] = numero_serie
         payload = {
             'codigo': self.args.codigo,
-            'hardware_id': self.identidad.get('hardware_id') or leer_machine_guid(),
+            # El orden importa: lo ya fijado manda sobre todo, para que el re-enrolamiento
+            # presente la MISMA identidad que la primera vez. Después el valor explícito de
+            # `--hardware-id` (una máquina sin registro de Windows) y recién después el
+            # registro. Si ninguno responde queda vacío, y eso es a propósito (`A-6`, ver
+            # `leer_machine_guid`): mejor sin identidad que con una compartida.
+            'hardware_id': (
+                self.identidad.get('hardware_id') or self.args.hardware_id or leer_machine_guid()
+            ),
             'hostname': socket.gethostname(),
             'numero_serie': numero_serie,
             'so_nombre': f'Windows {platform.win32_ver()[0]}',
@@ -2905,6 +2932,13 @@ def main():
     parser.add_argument(
         '--espera-liveness-segundos', type=int, default=15,
         help='Segundos a esperar tras relanzar el POS antes de chequear si sigue vivo (default 15).',
+    )
+    parser.add_argument(
+        '--hardware-id', default='',
+        help='Identidad de hardware a reportar en el enrolamiento, para equipos donde no se puede '
+             'leer el MachineGuid del registro (una máquina de desarrollo sin Windows). Vacío = se '
+             'lee del registro. DISTINTO POR EQUIPO: repetirlo entre dos equipos anula la guarda '
+             'anti-suplantación del servidor, que es exactamente el defecto A-6.',
     )
     args = parser.parse_args()
 

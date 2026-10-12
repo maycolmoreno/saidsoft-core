@@ -5176,3 +5176,51 @@ el paquete del instalador completo.
 7 pruebas nuevas (`CatalogoFirmadoTests`), 835 de `apps.monitoreo` + `apps.mqtt_worker` en
 verde, sin migración. Del lado del agente no hay suite —es un script aparte—, así que las
 pruebas reconstruyen la firma igual que él, el método que ya usa `apps/despliegues/tests.py`.
+
+---
+
+## §10-BM — El `hardware_id` que todos los equipos compartían cuando fallaba (11-oct-2026)
+
+`A-6` de la auditoría por agentes. Va junto a §10-BK —en el mismo agente **0.33**— y no
+después, por una razón práctica: los dos arreglos son del agente, y separarlos obligaba a
+compilar el ejecutable y rotarlo en los 66 equipos dos veces.
+
+`leer_machine_guid()` caía a una constante de reserva cuando no podía leer el registro de
+Windows. Es lo peor posible **para este campo en particular**: `hardware_id` existe para una
+sola cosa —que un equipo ajeno no pueda pedir el token de una estación existente y
+suplantarla— y la única defensa del servidor es comparar el que llega contra el que se fijó
+la primera vez (`manejar_enrolamiento`). Dos equipos donde la lectura fallara presentaban el
+mismo valor y esa comparación pasaba sola, con un valor que además estaba escrito en el
+repo.
+
+**Ahora devuelve vacío.** No se reemplazó por otro valor derivado, y vale explicar por qué
+ninguna de las alternativas servía:
+
+- Un **UUID generado y guardado** en `identidad.json` no sirve: `identidad.json` es
+  justamente lo que se pierde en el único caso que hace falta cubrir (el re-enrolamiento
+  tras perder la identidad), así que al volver generaría otro distinto y el servidor lo
+  rechazaría por suplantación.
+- Algo **derivado del hostname o del número de serie** vuelve a ser adivinable por quien ya
+  conoce el código de la estación, que es exactamente el atacante del que `B-2` habla.
+
+Vacío es la respuesta honesta —este equipo no sabe identificarse— y el servidor ya lo trata
+del lado seguro: no lo fija como identidad (así que no deja el campo "puesto" con un valor
+falso) y **niega el re-enrolamiento de una estación que sí tenía uno**. Las dos cosas quedaron
+fijadas con pruebas, porque son lo que hace seguro devolver vacío.
+
+Para una máquina de desarrollo sin registro de Windows —el motivo real por el que existía la
+constante— el escape ahora es `--hardware-id`, explícito y distinto por equipo, y su propia
+ayuda dice que repetirlo entre dos equipos reintroduce `A-6`.
+
+El fallo deja un `logging.error` que explica la consecuencia (que esa estación va a necesitar
+reaprobación manual si tiene que re-enrolarse), en vez del `warning` genérico de antes.
+
+**Lo que `A-6` NO cierra:** el hueco de trust-on-first-use que `B-2` dejó anotado. Una
+estación cuyo `hardware_id` está vacío —las creadas antes de que el mecanismo existiera, y
+ahora también las que no puedan leer el registro— sigue aceptando el primer valor que llegue.
+`A-6` quita el valor compartido y conocido; medir cuántas estaciones están en ese estado es
+una de las cuatro consultas de solo lectura pendientes.
+
+3 pruebas nuevas. Dos de ellas vigilan el fuente del agente desde el backend —`agente-prueba`
+no es un paquete importable y no tiene suite propia—, que es el mismo método que ya usaban
+las dos pruebas de la ventana de timestamp.
