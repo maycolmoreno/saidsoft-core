@@ -13,9 +13,28 @@ broker—; (3) un **orden** con el motivo, que es lo que §10-BH dejó pedido.
 De los 12 ALTO, **11 seguían vigentes** y 1 ya estaba corregido (`BUG-01`, en `ecc9e70`).
 Ninguno fue tocado por accidente por el trabajo de estos días.
 
-**`INV-01` se reprodujo y se corrigió el mismo día** — es el primer hallazgo de la auditoría
-por agentes que pasa por `Reproducción: SÍ` antes de arreglarse, y el §5 cuenta cómo.
-Quedan **10 ALTO abiertos**.
+## Estado al cierre del 11-oct-2026
+
+**Cuatro de los 12 ALTO están cerrados** —uno antes del triage y tres el mismo día que el
+triage— y **8 siguen abiertos**. De los 94 hallazgos de la Fase 4 quedan **90**.
+
+| ID | Estado | Dónde está documentado |
+|---|---|---|
+| `BUG-01` | **CERRADO** antes del triage, en `ecc9e70` | §10-BH |
+| `INV-01` | **CERRADO** — reproducido primero, el primer `Reproducción: SÍ` de la auditoría | §5 · §10-BJ |
+| `RIESGO-06` | **CERRADO en el código.** Falta el agente 0.33 corriendo en la flota | §6 · §10-BK |
+| `B-1` | **CERRADO** | §7 · §10-BL |
+| `B-2` | **CERRADO el daño** (la expulsión del broker). El hueco de trust-on-first-use sigue abierto | §7 · §10-BL |
+| `A-6` | abierto — es la otra mitad del hueco de `B-2`, y el siguiente del orden | §3 |
+| `A-2` | abierto | §3 |
+| `C-1` | abierto — conviene que entre con la tanda de la app móvil | §3 |
+| `INV-02`, `INV-04`, `INV-05`, `INV-07` | abiertos — al final por oportunidad, no por gravedad | §3 |
+
+**Lo que estas correcciones dejaron pendiente y comparte una sola pasada de solo lectura
+contra producción:** cuántos activos estaban congelados (`INV-01`), si hay series duplicadas
+(`INV-07`), cuántas estaciones tienen `hardware_id` vacío (`B-2`) y cuántas entraron al
+denominador del KPI al dejar de excluir el grupo `PENDIENTE` (`L-1`, del informe del
+tablero). Son cuatro consultas, ningún cambio.
 
 ---
 
@@ -24,8 +43,8 @@ Quedan **10 ALTO abiertos**.
 | ID | Vigente | Línea verificada hoy | Qué hace falta para reproducirlo |
 |---|---|---|---|
 | `RIESGO-06` | **SÍ** | `monitoreo/servicios_pos.py:115,164` publican `retain=True` sin firma · `agente_prueba.py:564,566` aplican sin pasar por `_firma_valida` | Prueba local para la firma; el ataque completo necesita el broker |
-| `B-1` ≡ `RIESGO-07` | **SÍ** | `mqtt_worker/services.py:107` (`aprovisionar_credencial_estacion` dentro de `_respuesta_aceptado`) · `panel/views/estaciones.py:199-205` (`estacion_rechazar` solo escribe el campo) · `emqx_admin.py` no tiene ninguna función de baja | Prueba local con EMQX simulado; la confirmación final, contra el broker |
-| `B-2` | **SÍ** | `emqx_admin.py:124` — `publish` sobre `/saidsof/enrolamiento/solicitar/`, sin código en la ruta | Broker real (publicar con la credencial de una estación por el código de otra) |
+| `B-1` ≡ `RIESGO-07` | **CORREGIDO** | `mqtt_worker/services.py:107` (`aprovisionar_credencial_estacion` dentro de `_respuesta_aceptado`) · `panel/views/estaciones.py:199-205` (`estacion_rechazar` solo escribe el campo) · `emqx_admin.py` no tiene ninguna función de baja | Prueba local con EMQX simulado; la confirmación final, contra el broker |
+| `B-2` | **CORREGIDO en el daño**, hueco de TOFU abierto | `emqx_admin.py:124` · `services.py` (`_tiene_latido_fresco`) | **Cerrado para estaciones vivas** — ver §7 |
 | `A-6` | **SÍ** | `agente_prueba.py:135` — `return 'SIN-MACHINEGUID-DE-PRUEBA'` en el `except` | Nada: la constante está a la vista |
 | `A-2` | **SÍ** | `aperturas/management/commands/generar_paquete_apertura.py:106` — `hmac_secret=settings.COMANDO_HMAC_SECRET` | Prueba local del comando |
 | `C-1` ≡ `RIESGO-11` | **SÍ** | `mantenimiento/api_views.py:75` filtra por `(usuario, origen_id)` · `models.py:803-806` el constraint es el mismo par · `sincronizador.dart:91` manda `origen_id = accion.id` | **Prueba local**, sin teléfono |
@@ -228,6 +247,71 @@ JOIN estacion e ON e.id = a.estacion_id
 WHERE a.estacion_id IS NOT NULL
   AND (a.ip IS NOT NULL OR a.mac <> '');
 ```
+
+---
+
+## 7. `B-1` y `B-2`, cerrados el 11-oct-2026
+
+Entrada del plan: **§10-BL**. (La sección 6 documenta `RIESGO-06`, que viajó en su propia
+rama; esta entrada y esa se escribieron el mismo día, en ramas separadas.)
+
+Fueron juntos porque viven en las mismas dos funciones. `B-1`: `emqx_admin` sabía dar de
+alta y no dar de baja, así que **rechazar una estación no le quitaba el acceso al broker** —
+conservaba usuario MQTT con ACL sobre sus tópicos y sobre los dos catálogos globales, y cada
+reintento de enrolamiento le entregaba contraseña nueva; borrar la fila dejaba el usuario
+huérfano en EMQX para siempre. `B-2`: el tópico de enrolamiento es global y no lleva el
+código en la ruta, y responder **rotaba la contraseña de la víctima** como efecto colateral,
+así que una estación comprometida podía expulsar del broker a toda la cadena en un bucle.
+
+Lo que se hizo está en §10-BL. Acá va lo que el triage no podía anticipar y apareció al
+implementar:
+
+**La ficha recomendaba negar el re-enrolamiento de una estación con latido fresco. Se
+descartó, y la evidencia estaba en el agente.** Dos cosas:
+
+1. **El re-enrolamiento legítimo de una estación viva existe**: es el de `_on_connect`
+   cuando el agente tiene token pero no su secreto HMAC propio, puesto deliberadamente tras
+   el incidente del 16-sep-2026 que dejó mudas a dos estaciones del piloto. Negarlo habría
+   roto esa auto-reparación.
+2. **El agente solo pide enrolarse al conectar y no reintenta.** Un rechazo lo habría dejado
+   mudo hasta la próxima reconexión al broker.
+
+En su lugar se **dejó de rotar** la credencial cuando la estación late. Elimina el daño de
+`B-2` —la expulsión— sin pedirle nada al agente y sin tocar la auto-reparación, porque lo
+que ese camino busca es `hmac_secret`, que se entrega siempre. Y la asimetría de costos
+queda del lado seguro: si el criterio se equivoca, la estación sigue usando la credencial
+que tiene y lo reintenta cuando el latido envejezca; negarle el enrolamiento la habría
+callado.
+
+**Otro hallazgo del camino:** la revocación necesitaba **tres** resultados y no dos. `False`
+("EMQX no confirmó, sigue autenticando") y `None` ("esta instalación no usa credenciales por
+estación") piden mensajes distintos: sin la diferencia, el panel avisaba de un fallo que no
+había ocurrido en toda instalación sin `EMQX_ADMIN_CONFIG` — es decir, en desarrollo y en
+cada prueba.
+
+**El repo corrigió el primer intento.** La lógica del rechazo —marcar la fila y revocar—
+había quedado en la vista, y `DivisionDeVistasTests` la rebotó: hay un techo de 550 líneas
+por módulo de vistas y `estaciones.py` estaba a cinco de alcanzarlo. La prueba dice "la
+respuesta es dividirlo, no subir el límite", y acá la respuesta era una tercera: eso no iba
+en la vista. Quedó en `catalogo.services.rechazar_estacion`, como una sola operación —un
+rechazo que no revoca es el defecto que se estaba arreglando, así que separarlos otra vez en
+dos llamadas es cómo volvería—. Vale anotarlo porque la prueba de arquitectura hizo
+exactamente lo que se le pide: avisar antes, no después.
+
+**Y una decisión de arquitectura que el repo ya tenía tomada:** el borrado se engancha en
+`EstacionAdmin.delete_model`/`delete_queryset`, no en una señal `post_delete`.
+`FarmaciaAdmin.save_model` ya dejó escrito por qué —este proyecto no usa señales en ninguna
+app, y esconder un efecto así hace mucho más difícil entender después por qué una credencial
+dejó de funcionar—, así que se siguió ese criterio en vez de abrir el primer caso.
+
+**Lo que queda abierto:** el hueco de **trust-on-first-use**. Una estación con `hardware_id`
+vacío puede ser suplantada por quien acierte su código, y si está **apagada**, la rotación
+forzada todavía la expulsa: la no-rotación solo protege a las vivas. Dimensionarlo es una
+consulta de solo lectura —cuántas estaciones tienen hoy `hardware_id` vacío— que va en la
+misma pasada que `L-1`, `INV-07` y la de `INV-01`. `A-6` es la otra mitad del mismo hueco.
+
+**Alcance:** 16 pruebas nuevas en `apps.mqtt_worker`, `apps.catalogo` y `apps.panel`. Sin
+migración.
 
 ---
 

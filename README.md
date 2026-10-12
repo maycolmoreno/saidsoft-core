@@ -1890,6 +1890,12 @@ instalador sigue dando de alta equipos que arrancan sin pausar. Bloquea las alta
 **incluido el camino cero-touch**, pero nunca un re-enrolamiento: una estación que perdió
 su `identidad.json` tiene ahí su único camino de vuelta.
 
+> La única estación a la que el re-enrolamiento sí le dice no es la que está **RECHAZADA**
+> en el panel, desde el 11-oct-2026 (`B-1`, §10-BL). No es el freno de emergencia actuando:
+> es que el rechazo es una decisión humana y antes el re-enrolamiento no la miraba, así que
+> le devolvía token, credencial recién rotada y secreto HMAC a una estación que alguien
+> acababa de sacar del sistema. Para que vuelva, hay que aprobarla de nuevo.
+
 ## Credenciales MQTT por estación (aislamiento a nivel de broker)
 
 Hasta ahora las ~1.800 estaciones comparten una sola credencial MQTT (`MQTT_USERNAME_AGENTE`,
@@ -1909,6 +1915,31 @@ le da a cada estación su propia credencial MQTT, con ACL restringida a sus prop
   la credencial compartida a solo enrolamiento — correrlo **solo** cuando se confirmó que
   toda la flota ya tiene su propia credencial (corta el tráfico de cualquier estación que
   todavía dependa de la compartida).
+
+### La baja de la credencial (desde el 11-oct-2026)
+
+Hasta esa fecha este módulo solo sabía dar de alta, y eso tenía una consecuencia que no
+estaba escrita en ningún lado: **rechazar una estación en el panel no le quitaba el acceso
+al broker** (`B-1`, §10-BL). Seguía autenticando con ACL sobre sus tópicos y sobre los dos
+catálogos globales, y cada reintento de enrolamiento le entregaba una contraseña nueva.
+Borrar la fila era peor: el usuario quedaba huérfano en EMQX para siempre.
+
+Ahora, con `EMQX_ADMIN_CONFIG` configurado:
+
+- **Rechazar** una estación en `/estaciones/` revoca su usuario y su ACL, y **si EMQX no
+  responde lo dice en pantalla** — el rechazo que parece exitoso y deja la estación
+  conectada es el modo de falla que había que evitar. Queda en la auditoría, en el detalle
+  del evento `estacion.rechazar`.
+- **Borrarla** desde el admin hace lo mismo antes de borrar la fila, y avisa si no pudo.
+- **Una estación `RECHAZADA` no puede re-enrolarse.** Para que vuelva hay que aprobarla de
+  nuevo en el panel.
+- **Un re-enrolamiento ya no rota la credencial de una estación que está dando latido**
+  (`B-2`): el tópico de enrolamiento es global, así que antes cualquier estación podía
+  expulsar del broker a otra pidiendo su re-enrolamiento. La auto-reparación del secreto
+  HMAC propio sigue funcionando igual, porque eso se entrega siempre.
+
+Sin `EMQX_ADMIN_CONFIG` no hay credenciales por estación y no hay nada que revocar: el
+panel no avisa de nada, que es lo correcto.
 
 ## Producción (Docker + TimescaleDB + EMQX)
 

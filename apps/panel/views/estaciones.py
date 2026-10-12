@@ -10,7 +10,7 @@ from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Farmacia, Grupo, VersionAgente
 from apps.catalogo.services import (
     enviar_actualizacion_agente, enviar_comando, enviar_configurar_nodo_pos, enviar_pausa,
-    obtener_clave_bitlocker_descifrada, obtener_password_nodo,
+    obtener_clave_bitlocker_descifrada, obtener_password_nodo, rechazar_estacion,
     url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
@@ -200,10 +200,11 @@ def estacion_aprobar(request, pk):
 def estacion_rechazar(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
     verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
-    estacion.estado_aprobacion = Estacion.EstadoAprobacion.RECHAZADA
-    estacion.save(update_fields=['estado_aprobacion'])
-    registrar_evento(usuario=request.user, accion='estacion.rechazar', objeto=estacion, request=request)
-    return estaciones_pendientes_partial(request)
+    revocada = rechazar_estacion(estacion)  # revoca su credencial del broker (`B-1`, §10-BL)
+    registrar_evento(usuario=request.user, accion='estacion.rechazar', objeto=estacion, request=request, detalle={'credencial_mqtt_revocada': revocada})
+    return estaciones_pendientes_partial(request, aviso='' if revocada is not False else (
+        f'{estacion.codigo} quedó rechazada, pero su credencial MQTT no se pudo revocar: sigue '
+        f'pudiendo conectarse al broker. Reintentá cuando EMQX responda.'))
 
 
 @login_required

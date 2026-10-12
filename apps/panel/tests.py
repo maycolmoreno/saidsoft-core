@@ -735,6 +735,67 @@ class EstacionMesaDeAyudaVsSoporteTecnicoTests(TestCase):
         )
 
 
+class RechazarEstacionCortaElAccesoAlBrokerTests(TestCase):
+    """Rechazar desde el panel tiene que revocar la credencial MQTT (`B-1`).
+
+    Antes escribía `estado_aprobacion = RECHAZADA` y nada más: la estación seguía
+    autenticando contra EMQX con ACL sobre sus tópicos y sobre los dos catálogos globales,
+    y cada reintento de enrolamiento le entregaba una contraseña nueva. El rechazo era de
+    aplicación, no de broker.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+        self.usuario = User.objects.create_user(username='u_rechaza', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        for codename in ('aprobar_estacion', 'view_estacion'):
+            self.usuario.user_permissions.add(
+                Permission.objects.get(content_type__app_label='catalogo', codename=codename),
+            )
+        self.client.force_login(self.usuario)
+
+    def test_rechazar_revoca_la_credencial_de_esa_estacion(self):
+        with patch(
+            'apps.mqtt_worker.emqx_admin.revocar_credencial_estacion', return_value=True,
+        ) as revocar:
+            resp = self.client.post(reverse('panel:estacion_rechazar', args=[self.estacion.pk]))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(revocar.call_args.args[0].pk, self.estacion.pk)
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.estado_aprobacion, Estacion.EstadoAprobacion.RECHAZADA)
+
+    def test_queda_registrado_en_la_auditoria_si_se_revoco(self):
+        """El rechazo ya se auditaba; lo que faltaba era saber si el acceso al broker se
+        cortó de verdad, que es la parte que puede fallar."""
+        with patch('apps.mqtt_worker.emqx_admin.revocar_credencial_estacion', return_value=True):
+            self.client.post(reverse('panel:estacion_rechazar', args=[self.estacion.pk]))
+
+        evento = EventoAuditoria.objects.get(accion='estacion.rechazar')
+        self.assertTrue(evento.detalle['credencial_mqtt_revocada'])
+
+    def test_si_emqx_no_responde_lo_dice_en_pantalla(self):
+        """Lo peor sería un rechazo que se ve exitoso y deja la estación conectada. El
+        aviso va en el partial porque esta vista responde por HTMX: un `messages.error`
+        no se vería hasta la próxima navegación completa."""
+        with patch('apps.mqtt_worker.emqx_admin.revocar_credencial_estacion', return_value=False):
+            resp = self.client.post(reverse('panel:estacion_rechazar', args=[self.estacion.pk]))
+
+        self.assertContains(resp, 'no se pudo revocar')
+        self.assertContains(resp, 'ML001-A')
+
+    def test_sin_credenciales_por_estacion_no_avisa_de_un_fallo_que_no_ocurrio(self):
+        """`None` es "no aplica": sin `EMQX_ADMIN_CONFIG` esta instalación no usa
+        credenciales por estación."""
+        with patch('apps.mqtt_worker.emqx_admin.revocar_credencial_estacion', return_value=None):
+            resp = self.client.post(reverse('panel:estacion_rechazar', args=[self.estacion.pk]))
+
+        self.assertNotContains(resp, 'no se pudo revocar')
+
+
 class EstacionActualizarAgenteTests(TestCase):
     """Actualización remota del agente desde el panel: mismo permiso propio
     (catalogo.actualizar_agente_estacion) que las demás acciones de riesgo sobre una

@@ -222,6 +222,47 @@ class EstacionAdmin(admin.ModelAdmin):
     def desactivar_monitoreo_recursos(self, request, queryset):
         self._cambiar_monitoreo_recursos(request, queryset, activar=False)
 
+    def _revocar_en_el_broker(self, request, estaciones):
+        """Da de baja en EMQX las credenciales de las estaciones que se están borrando.
+
+        Borrar la fila dejaba el usuario huérfano en EMQX **para siempre** (`B-1` de la
+        auditoría por agentes): una credencial que autentica contra el broker, con ACL
+        sobre los tópicos de una estación que ya no existe y sobre los dos catálogos
+        globales, y que nada en el sistema vuelve a nombrar.
+
+        Va en el admin y no en una señal `post_delete` por el mismo criterio que
+        `FarmaciaAdmin.save_model`: este proyecto no usa señales en ninguna app, y
+        esconder un efecto así haría mucho más difícil entender después por qué una
+        credencial dejó de funcionar. El admin es hoy la única vía que borra estaciones;
+        si algún día hay otra, el punto a llamar es
+        `apps.mqtt_worker.emqx_admin.revocar_credencial_estacion`, que es idempotente.
+        """
+        from apps.mqtt_worker.emqx_admin import revocar_credencial_estacion
+
+        fallaron = []
+        for estacion in estaciones:
+            registrar_evento(usuario=request.user, accion='estacion.borrar', objeto=estacion)
+            if not revocar_credencial_estacion(estacion):
+                fallaron.append(estacion.codigo)
+        if fallaron:
+            # Importa decirlo: la fila se va igual (el borrado no se aborta por esto), así
+            # que si no se avisa, queda una credencial viva que ya no tiene dueño en la BD
+            # y nadie sabría que hay que ir a EMQX a mano.
+            self.message_user(
+                request,
+                'No se pudo revocar en EMQX la credencial de: %s. Siguen autenticando contra el '
+                'broker y hay que darlas de baja a mano.' % ', '.join(fallaron),
+                level=messages.WARNING,
+            )
+
+    def delete_model(self, request, obj):
+        self._revocar_en_el_broker(request, [obj])
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        self._revocar_en_el_broker(request, list(queryset))
+        super().delete_queryset(request, queryset)
+
 
 @admin.register(VersionAgente)
 class VersionAgenteAdmin(admin.ModelAdmin):
