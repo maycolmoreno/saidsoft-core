@@ -5339,3 +5339,62 @@ una de las cuatro consultas de solo lectura pendientes.
 3 pruebas nuevas. Dos de ellas vigilan el fuente del agente desde el backend —`agente-prueba`
 no es un paquete importable y no tiene suite propia—, que es el mismo método que ya usaban
 las dos pruebas de la ventana de timestamp.
+
+---
+
+## §10-BN — Desplegado y medido: dos de las cuatro incógnitas cambian una decisión (11-oct-2026)
+
+Despliegue de `5604833` en el NUC —las cuatro fases del tablero (§10-BI) y los cinco
+hallazgos ALTO de §10-BJ a §10-BM— y las cuatro mediciones de
+`docs/auditoria-fase5-verificacion.sql` contra producción. Detalle en
+`docs/auditoria/fase5-triage.md` §9.
+
+**El despliegue sirvió:** seis imágenes construidas (incluida `telegram_bot`), 11
+contenedores corriendo y sanos, web en 200, sin migraciones pendientes. Las dos migraciones
+del tablero habían entrado en el despliegue anterior y estas correcciones no traen ninguna.
+
+**Los dos catálogos republicados**, que es el paso que el `desplegar.sh` no hace y sin el
+cual `RIESGO-06` quedaba a medias: el mensaje retenido que estaba en EMQX se había publicado
+sin firma. Ahora los dos van firmados — el de eventos lo reporta explícitamente ("Publicado y
+firmado. 10 evento(s)"), con el comando que se escribió para eso.
+
+### Lo que midió, y las dos decisiones que cambia
+
+| | Resultado |
+|---|---|
+| `INV-01` — activos congelados | **0.** El bug era real y reproducible, pero no había alcanzado a nadie |
+| `INV-07` — series duplicadas | **1**: `BB3VJD3`, en un desktop **y** un laptop |
+| `B-2` — estaciones sin `hardware_id` | **0** de 66 |
+| `L-1` — el KPI de flota | **No cambió**: 66 = 66, 35 en línea con los dos umbrales |
+
+**1. El hueco de trust-on-first-use de `B-2` es teórico hoy, y eso lo vuelve fácil de
+cerrar.** Las 66 estaciones tienen identidad de hardware fijada, así que la guarda
+anti-suplantación está activa en toda la flota. Lo que este plan decía —que haría falta un
+camino en el panel para fijar las que faltaran— ya no aplica: no falta ninguna. Y al revés,
+**se puede endurecer la regla ahora sin dejar a nadie afuera** (negar el TOFU para una
+estación que ya existe) precisamente porque hoy el número es cero. Mientras siga en cero el
+cambio es gratis; con estaciones nuevas en el medio, deja de serlo.
+
+**2. El duplicado de `INV-07` no es un duplicado legítimo.** `BB3VJD3` está en un desktop y
+en un laptop, y dos equipos así no comparten número de serie de fábrica; tampoco es una serie
+de relleno del BIOS (ese bloque dio cero). Es un error de carga. Así que el arreglo de
+`INV-07` empieza por mirar las etiquetas físicas de esos dos equipos y corregir la fila mala
+—no por el constraint—, y con **una sola** fila sucia el constraint deja de ser el riesgo que
+hizo descartarlo en §10-BI.
+
+**Y una advertencia que no se materializó:** el KPI de flota no se movió. No hay farmacias
+aprobadas en el grupo `PENDIENTE`, así que el denominador nuevo da igual que el viejo, y los
+35 en línea son los mismos con 5 o con 10 minutos. **No hay nada que avisarle a la mesa de
+ayuda.** La advertencia estaba bien puesta —el cambio podía mover el número— y lo que la
+medición dice es que en esta flota no lo mueve.
+
+### Lo que sigue pendiente de este despliegue
+
+- **El agente 0.33 no está en la flota.** `RIESGO-06` y `A-6` están cerrados en el código y
+  en el servidor, pero hasta que el agente corra en los 66 equipos los agentes viejos siguen
+  aceptando un catálogo sin firma. Falta compilar el ejecutable (`agente-prueba/build.ps1`),
+  cargar una `VersionAgente` y disparar la actualización, que va retenida.
+- **La fila de `BB3VJD3`**, que necesita mirar dos equipos reales.
+- `deploy/desplegar.sh` verifica **diez** servicios y `telegram_bot` no está en la lista, y su
+  comentario habla de cinco imágenes cuando hoy son seis (las construye todas porque `build`
+  va sin argumento). Si el bot quedara caído, el script diría "Todo aplicado" igual.

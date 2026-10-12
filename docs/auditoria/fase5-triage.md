@@ -24,7 +24,7 @@ triage— y **7 siguen abiertos**. De los 94 hallazgos de la Fase 4 quedan **89*
 | `INV-01` | **CERRADO** — reproducido primero, el primer `Reproducción: SÍ` de la auditoría | §5 · §10-BJ |
 | `RIESGO-06` | **CERRADO en el código.** Falta el agente 0.33 corriendo en la flota | §6 · §10-BK |
 | `B-1` | **CERRADO** | §7 · §10-BL |
-| `B-2` | **CERRADO el daño** (la expulsión del broker). El hueco de trust-on-first-use sigue abierto | §7 · §10-BL |
+| `B-2` | **CERRADO el daño** (la expulsión del broker). El hueco de trust-on-first-use resultó **teórico**: 0 estaciones sin identidad — ver §9 | §7 · §10-BL |
 | `A-6` | **CERRADO** — viaja en el mismo agente 0.33 que `RIESGO-06` | §8 · §10-BM |
 | `A-2` | abierto | §3 |
 | `C-1` | abierto — conviene que entre con la tanda de la app móvil | §3 |
@@ -423,6 +423,69 @@ como ejemplo. Quedó descrito sin escribirlo.
 **Lo que no cierra:** el trust-on-first-use. `A-6` quita el valor compartido y conocido, pero
 una estación con `hardware_id` vacío sigue aceptando el primero que llegue. Cuántas están en
 ese estado es una de las cuatro consultas pendientes.
+
+---
+
+## 9. Las cuatro mediciones, corridas el 11-oct-2026
+
+Desplegado `5604833` en el NUC y corrido `docs/auditoria-fase5-verificacion.sql` contra
+produccion. Las cuatro respuestas, y lo que cada una decide:
+
+| Bloque | Resultado | Consecuencia |
+|---|---|---|
+| `A` · `INV-01` | **0 activos congelados** | El bug era real —se reprodujo con prueba— pero no habia alcanzado a nadie |
+| `B` · `INV-07` | **1 duplicado**: `BB3VJD3` en `CR-DSK-0002` y `CR-LAP-0001` | El constraint **es viable**: hay una sola fila que resolver |
+| `C` · `B-2` | **0 estaciones sin `hardware_id`**, 66 con | El hueco de trust-on-first-use **es teorico hoy** |
+| `D` · `L-1` | 66 = 66, 35 en linea con los dos umbrales, 0 entran | **El KPI no cambio** |
+
+### `INV-01`: se atrapo antes de que doliera
+
+Cero filas. El 500 era real y reproducible —tres pruebas en rojo antes del arreglo— pero
+ningun activo de produccion estaba en ese estado todavia. Vale anotarlo porque es la
+respuesta a "¿cuanto importaba?": importaba por lo que iba a pasar, no por lo que ya habia
+pasado. La fila que lo dispara la produce el flujo normal, asi que era cuestion de tiempo.
+
+### `INV-07`: un duplicado, y no es un duplicado legitimo
+
+`BB3VJD3` aparece en **un desktop y un laptop**. Un desktop y un laptop no comparten numero
+de serie: es un error de carga, no dos equipos con el mismo serial de fabrica. Y no es una
+serie de relleno del BIOS (el bloque B2 dio cero), asi que no se explica por la captura
+automatica.
+
+**Esto decide el orden del arreglo de `INV-07`:** primero averiguar cual de los dos equipos
+tiene el serial correcto —cosa que necesita mirar las etiquetas fisicas, no la base— y
+corregir esa fila; despues el constraint de unicidad, que con una sola fila sucia deja de ser
+el riesgo que era. La alternativa que se descarto en §10-BI (imponer unicidad sobre datos
+sucios y que falle el despliegue) ya no aplica a esta escala.
+
+Tambien explica con que se equivocaba `INV-02`: el robo de vinculo necesita exactamente esto,
+dos activos con la misma serie.
+
+### `B-2`: el hueco de trust-on-first-use no existe en la practica
+
+Las **66** estaciones tienen `hardware_id` fijado; ninguna esta en TOFU. La guarda
+anti-suplantacion esta activa en toda la flota, asi que hoy no hay ninguna estacion
+suplantable por ese camino.
+
+**Esto invierte lo que este documento decia.** Dos cosas cambian:
+
+1. No hace falta un camino en el panel para fijar identidades: no hay ninguna que fijar.
+2. **Se puede endurecer la regla ahora sin romper nada** —negar el trust-on-first-use para
+   una estacion que ya existe— precisamente porque hoy ninguna lo necesita. Conviene hacerlo
+   mientras el numero es cero: despues, con estaciones nuevas en el medio, el mismo cambio
+   deja a alguna afuera.
+
+Queda como el siguiente paso natural de este tema, y es chico.
+
+### `L-1`: la advertencia no se materializo
+
+Cero farmacias aprobadas en el grupo `PENDIENTE`, asi que el denominador nuevo y el viejo dan
+lo mismo (66), y los 35 en linea son los mismos con 5 o con 10 minutos. **No hay ningun
+numero que cambie en el panel y no hay nada que avisarle a la mesa de ayuda.**
+
+La advertencia estaba bien puesta —el cambio de denominador y de umbral podia mover el KPI— y
+lo que la medicion dice es que en esta flota no lo mueve. De paso: 35 de 66 en linea, y
+ninguna estacion que nunca haya reportado.
 
 ---
 

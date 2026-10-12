@@ -558,13 +558,17 @@ Que entra: las cuatro fases del tablero (§10-BI) y cinco hallazgos ALTO de la a
 
 ### 1. Antes de tocar nada: anotar los numeros viejos
 
-Los del KPI de flota del tablero, con captura o a mano. **Van a cambiar en el despliegue y
-ese cambio es la correccion**, no un error: el denominador ahora son solo las estaciones
+Los del KPI de flota del tablero, con captura o a mano. **Podian cambiar en el despliegue y
+ese cambio seria la correccion**, no un error: el denominador ahora son solo las estaciones
 aprobadas e incluye las farmacias del grupo `PENDIENTE`, y el umbral de "en linea" paso de
-5 a 10 minutos. Si nadie anoto los valores previos, la primera pregunta de la mesa de ayuda
-no se puede responder.
+5 a 10 minutos.
 
-**Avisarle a la mesa de ayuda el mismo dia**, antes de que lo noten solos.
+> **Medido el 11-oct-2026: no cambio nada.** No hay farmacias aprobadas en el grupo
+> `PENDIENTE`, asi que el denominador nuevo da igual que el viejo (66), y las 35 estaciones
+> en linea son las mismas con 5 o con 10 minutos. No hubo que avisarle nada a la mesa de
+> ayuda. El bloque D de `docs/auditoria-fase5-verificacion.sql` calcula los dos criterios en
+> SQL, asi que esto se puede volver a comprobar en cualquier momento —tambien DESPUES de
+> desplegar, que es lo que lo salva si alguien se saltea este paso.
 
 ### 2. El backend
 

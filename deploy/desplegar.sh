@@ -39,11 +39,13 @@ git pull
 
 cd "$REPO/deploy"
 
-# `build` SIN argumento a propósito: este proyecto tiene CINCO imágenes (web, worker,
-# celery_worker, celery_beat, meshcentral_worker). Con `build web` la parte web queda
-# actualizada y los procesos de fondo —el que habla por MQTT con los agentes, el que
-# corre las tareas programadas— siguen con el código viejo. Ya pasó el 11-sep-2026.
-echo "==> 2/4  build (las cinco imágenes)"
+# `build` SIN argumento a propósito: este proyecto tiene SEIS imágenes (web, worker,
+# celery_worker, celery_beat, meshcentral_worker y telegram_bot). Con `build web` la parte
+# web queda actualizada y los procesos de fondo —el que habla por MQTT con los agentes, el
+# que corre las tareas programadas, el bot— siguen con el código viejo. Ya pasó el
+# 11-sep-2026. Eran cinco hasta que se agregó `telegram_bot`; este comentario decía cinco
+# todavía el 11-oct-2026, aunque el `build` sin argumento siempre las construyó todas.
+echo "==> 2/4  build (las seis imágenes)"
 docker compose --env-file .env build
 
 # `|| true` a propósito: `up -d` puede fallar con "the container name ... is already in
@@ -121,7 +123,7 @@ fi
 # arrastran un prefijo de hash (ej. "1abca43cf424_deploy-db-1") de un conflicto viejo, y
 # buscar el nombre exacto daría falsos negativos.
 FALTAN=""
-for SERVICIO in db redis emqx nginx web worker celery_worker celery_beat meshcentral meshcentral_worker; do
+for SERVICIO in db redis emqx nginx web worker celery_worker celery_beat meshcentral meshcentral_worker telegram_bot; do
     ESTADO=$(docker compose ps --format '{{.Service}} {{.State}}' 2>/dev/null | awk -v s="$SERVICIO" '$1==s {print $2}')
     if [ "$ESTADO" != "running" ]; then
         FALTAN="$FALTAN $SERVICIO(${ESTADO:-ausente})"
@@ -145,7 +147,7 @@ ENFERMOS=""
 for INTENTO in 1 2 3 4 5 6 7 8 9 10 11 12; do
     ENFERMOS=""
     ARRANCANDO=""
-    for SERVICIO in db redis emqx nginx web worker celery_worker celery_beat meshcentral_worker; do
+    for SERVICIO in db redis emqx nginx web worker celery_worker celery_beat meshcentral_worker telegram_bot; do
         SALUD=$(docker compose ps --format '{{.Service}} {{.Health}}' 2>/dev/null | awk -v s="$SERVICIO" '$1==s {print $2}')
         case "$SALUD" in
             healthy|'') ;;                       # vacío = el servicio no define chequeo
