@@ -5659,3 +5659,30 @@ estaciones tienen `hmac_propio_confirmado`**, y ese secreto se entrega en el mis
 re-enrolamiento que la credencial MQTT propia. Es un indicio fuerte de que las dos estaciones
 que `CLAUDE.md` daba por pendientes (`MC001-B`, `MC001-C`) ya migraron — pero un indicio no es
 una confirmación, y esto es lo que permite tenerla.
+
+### La respuesta, medida el 12-oct-2026
+
+`revisar_credenciales_mqtt` contra el broker de producción:
+
+```
+Revisadas 66 estación(es):
+  con credencial propia en EMQX : 66
+  dependen de la compartida     : 0
+```
+
+Y la otra mitad, la que el comando avisa que no puede ver —qué credencial usa cada equipo en
+su `config.txt`— se sacó del broker: **48 clientes conectados, 48 usernames distintos**, uno
+por estación. El único username conectado que no es un código de estación es `saidsof_worker`,
+el worker del backend. Ninguna estación está usando la credencial compartida.
+
+**`CLAUDE.md` estaba desactualizado:** daba `MC001-B` y `MC001-C` por pendientes de migrar
+desde el 21-sep. Ya migraron. Corregido ahí mismo, con la consulta que lo reproduce.
+
+**La condición de `deploy/emqx-narrow-acl-agente.sh` está cumplida.** Angostar la ACL es
+además seguro para las dos estaciones apagadas incluso si su `config.txt` siguiera con la
+compartida: la ACL angosta deja el tópico de **enrolamiento**, que es justamente el camino de
+vuelta —se re-enrolan y reciben su credencial propia—. Lo mismo vale para cualquier estación
+nueva: el bootstrap no se rompe, que es por lo que el script angosta en vez de borrar.
+
+Correrlo queda pendiente de decisión humana: es un cambio de seguridad del broker que corta
+tráfico si la medición estuviera equivocada, y el script pide confirmación por teclado.

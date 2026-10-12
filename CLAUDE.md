@@ -91,11 +91,17 @@ corre sobre `timescale/timescaledb`.
 
 ### Pendientes concretos
 
-- **2 estaciones apagadas** (`MC001-B`, `MC001-C`) siguen con la credencial MQTT
-  compartida — verificado contra EMQX el 21-sep-2026: no existe usuario propio para
-  ellas. `ML016-A` **ya migró** (decía lo contrario acá hasta hoy: está conectada como
-  `usuario=ML016-A`). Cuando enciendan, correrles el script "Migrar a credencial MQTT
-  propia".
+- ~~**2 estaciones apagadas** (`MC001-B`, `MC001-C`) siguen con la credencial MQTT
+  compartida.~~ **DESACTUALIZADO — medido el 12-oct-2026: ya migraron.** Las **66**
+  estaciones tienen usuario propio en EMQX y **ninguna** depende de la compartida; de los
+  48 clientes conectados, los 48 usan su credencial por estación (el único username que no
+  es un código de estación es `saidsof_worker`, el worker del backend).
+  La verificación es reproducible y de solo lectura: `manage.py revisar_credenciales_mqtt`
+  (§10-BQ), que pregunta por estación esté encendida o apagada — el snapshot de conexiones
+  del propio script no alcanzaba, porque una estación apagada no aparece ahí.
+  **Consecuencia: `deploy/emqx-narrow-acl-agente.sh` ya se puede correr**, y con él se
+  desbloquean la rotación de `MQTT_PASSWORD_AGENTE`, el paquete del instalador completo
+  (§10-Z) y el freno de `RIESGO-06` que no depende del rollout del agente.
   **La ROTACIÓN de credencial estaba rota; corregida en código el 28-sep-2026** (§10-AV):
   el `PUT` de `apps.mqtt_worker.emqx_admin` mandaba `user_id` en el cuerpo y EMQX 5.8.3
   responde HTTP 400 `unknown_fields`, así que `aprovisionar_credencial_estacion` devolvía
