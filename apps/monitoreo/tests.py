@@ -6686,6 +6686,39 @@ class CatalogoFirmadoTests(TestCase):
             ),
         )
 
+    def test_el_catalogo_de_eventos_tiene_su_propio_comando_y_simula_por_defecto(self):
+        """El gemelo de `publicar_catalogo_servicios_pos`, que faltaba. Sin comando, la
+        única forma de republicar el catálogo de eventos era entrar al admin y guardar una
+        fila cualquiera para disparar su `save_model` — y republicar es justamente lo que
+        hay que hacer después de desplegar la firma, porque el mensaje retenido que está en
+        el broker se publicó sin ella."""
+        import io
+
+        salida = io.StringIO()
+        with patch('apps.catalogo.services._publicar_mqtt') as publicar:
+            call_command('publicar_catalogo_eventos_sistema', stdout=salida)
+        publicar.assert_not_called()
+        self.assertIn('SIMULACRO', salida.getvalue())
+
+    def test_el_comando_de_eventos_con_aplicar_publica_firmado(self):
+        import io
+        import json
+
+        from apps.catalogo.services import firmar_payload
+
+        with patch('apps.catalogo.services._publicar_mqtt', return_value=True) as publicar:
+            call_command('publicar_catalogo_eventos_sistema', '--aplicar', stdout=io.StringIO())
+
+        publicar.assert_called_once()
+        cuerpo = json.loads(publicar.call_args.args[1])
+        self.assertEqual(
+            cuerpo['firma'],
+            firmar_payload(
+                None, comando='catalogo_eventos_sistema',
+                catalogo=cuerpo['catalogo'], timestamp=cuerpo['timestamp'],
+            ),
+        )
+
     def test_el_catalogo_de_eventos_tambien(self):
         from apps.catalogo.services import firmar_payload
         from apps.monitoreo.servicios_pos import publicar_catalogo_eventos_sistema

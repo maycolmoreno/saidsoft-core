@@ -4897,11 +4897,19 @@ La tabla con el estado de cada uno y lo que falta para cada arreglo está en
 `docs/auditoria/fase5-triage.md`, que es el documento vivo de esta fase: **se actualiza en
 el mismo turno en que se cierra un hallazgo**, no después.
 
-**Las cuatro consultas de solo lectura que estas correcciones dejaron pendientes conviene
-correrlas juntas**, porque ninguna cambia nada y las cuatro necesitan producción: cuántos
-activos estaban congelados (`INV-01`), si hay números de serie duplicados (`INV-07`),
-cuántas estaciones tienen `hardware_id` vacío (`B-2`) y cuántas entraron al denominador del
-KPI de flota al dejar de excluir el grupo `PENDIENTE` (`L-1`, del informe del tablero).
+**Las cuatro consultas de solo lectura que estas correcciones dejaron pendientes están
+escritas y listas**, en `docs/auditoria-fase5-verificacion.sql`, con el mismo comando de
+`psql` dentro del contenedor que usan `auditoria-integridad.sql` y `auditoria-seguimiento.sql`.
+Van juntas porque ninguna cambia nada y las cuatro necesitan producción: cuántos activos
+estaban congelados (`INV-01`), si hay números de serie duplicados (`INV-07`), cuántas
+estaciones no tienen identidad de hardware (el hueco de `B-2`) y cuánto cambia el KPI de
+flota con el denominador y el umbral nuevos (`L-1`, del informe del tablero).
+
+**Dos de las cuatro deciden cómo se arregla un hallazgo abierto**, y por eso conviene
+correrlas antes de seguir bajando la lista y no después: con series duplicadas, `INV-07`
+empieza por resolverlas a mano y no por un constraint; y el número de estaciones sin
+`hardware_id` decide si el trust-on-first-use se cierra a mano o necesita un camino en el
+panel.
 
 ---
 

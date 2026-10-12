@@ -545,3 +545,98 @@ coinciden, 1 si no.
 
 Hacerlo al revés —servidor primero— deja a toda la flota de teléfonos fuera de servicio
 durante el tiempo que tarde la distribución manual, que hoy son días.
+
+## Desplegar las correcciones de la auditoria por agentes (Fase 5, 11-oct-2026)
+
+Este despliegue no es uno normal: ademas del backend hay **un agente nuevo (0.33)** y hay
+**numeros del panel que van a cambiar de valor a proposito**. El orden importa y los pasos
+que siguen estan en el orden en que hay que hacerlos.
+
+Que entra: las cuatro fases del tablero (§10-BI) y cinco hallazgos ALTO de la auditoria
+—`INV-01`, `RIESGO-06`, `B-1`, `B-2` y `A-6`— documentados en §10-BJ a §10-BM y en
+`docs/auditoria/fase5-triage.md`.
+
+### 1. Antes de tocar nada: anotar los numeros viejos
+
+Los del KPI de flota del tablero, con captura o a mano. **Van a cambiar en el despliegue y
+ese cambio es la correccion**, no un error: el denominador ahora son solo las estaciones
+aprobadas e incluye las farmacias del grupo `PENDIENTE`, y el umbral de "en linea" paso de
+5 a 10 minutos. Si nadie anoto los valores previos, la primera pregunta de la mesa de ayuda
+no se puede responder.
+
+**Avisarle a la mesa de ayuda el mismo dia**, antes de que lo noten solos.
+
+### 2. El backend
+
+```sh
+sh ~/Documentos/Said/saidsoft-core/deploy/desplegar.sh
+```
+
+**`build` sin nombre de servicio**, que es lo que hace el script. Este despliegue toca
+`run_mqtt_worker`, `apps/monitoreo/tasks.py` y `apps/monitoreo/servicios_pos.py`, asi que el
+worker MQTT y los de Celery necesitan imagen nueva: con `build web` se quedarian con el
+codigo viejo y los catalogos seguirian saliendo sin firma.
+
+Dos migraciones: `mqtt_worker/0003` y `catalogo/0036`. El entrypoint las corre solo.
+
+### 3. Republicar los dos catalogos, para que queden firmados
+
+**Esto es facil de olvidar y deja el arreglo a medias.** Los catalogos viajan RETENIDOS: el
+mensaje que hoy esta guardado en EMQX se publico sin firma, y ahi se queda hasta que alguien
+publique uno nuevo. Un agente 0.33 que arranque recibe el retenido viejo, lo aplica y deja un
+`WARNING` en su log — no se rompe nada, pero tampoco se gano la firma.
+
+```sh
+cd deploy
+docker compose --env-file .env exec web python manage.py publicar_catalogo_servicios_pos --aplicar
+docker compose --env-file .env exec web python manage.py publicar_catalogo_eventos_sistema --aplicar
+```
+
+Los dos **simulan por defecto**: sin `--aplicar` muestran lo que se enviaria y no publican
+nada, asi que se pueden correr antes para mirar. El segundo se escribio el 11-oct-2026 junto
+con la firma, porque hasta entonces el catalogo de eventos solo se podia republicar entrando
+al admin y guardando una fila cualquiera.
+
+### 4. El agente 0.33
+
+Lleva `RIESGO-06` (verifica la firma de los dos catalogos) y `A-6` (ya no inventa un
+`hardware_id` compartido). **Mientras la flota no lo tenga, los agentes viejos siguen
+aceptando un catalogo forjado**: el commit no cierra `RIESGO-06`, lo cierra el rollout.
+
+No hay que ir equipo por equipo —eso es la app movil, no este agente—:
+
+1. Compilar el ejecutable (`agente-prueba/build.ps1`). Este paso **si** es manual.
+2. Cargar una `VersionAgente` nueva en el admin con el `.exe`; el modelo calcula su sha256.
+3. Disparar la actualizacion desde el panel. Va **retenida**, asi que alcanza tambien a las
+   estaciones apagadas: la aplican al encender.
+4. `manejar_heartbeat` limpia el retenido de cada estacion en cuanto confirma la version, asi
+   que no hace falta limpiarlo a mano.
+
+**El freno que no depende de este rollout** es `deploy/emqx-narrow-acl-agente.sh`: con la ACL
+angosta ninguna estacion puede publicar en los topicos de catalogo. Sigue esperando que las 2
+estaciones apagadas migren a credencial propia.
+
+### 5. Las cuatro mediciones que este despliegue habilita
+
+```sh
+cd deploy
+docker compose --env-file .env exec -T db \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < ../docs/auditoria-fase5-verificacion.sql > /tmp/fase5.txt 2>&1
+```
+
+Solo `SELECT`. Responden cuantos activos estaban congelados (`INV-01`), si hay series
+duplicadas (`INV-07`), cuantas estaciones no tienen identidad de hardware (el hueco de `B-2`)
+y cuanto cambio el KPI de flota (`L-1`). **Las dos del medio deciden como se arreglan dos
+hallazgos que siguen abiertos**, asi que conviene correrlas el mismo dia.
+
+### 6. Comprobar que quedo bien
+
+- Que ninguna imagen tenga codigo viejo, con el `diff` dentro del contenedor:
+  `docker exec deploy-worker-1 cat /app/apps/monitoreo/services.py | diff -q - apps/monitoreo/services.py`
+- **La tarea `latido-de-beat` es nueva**: hasta que Beat la dispare la primera vez, la Zona 0
+  del panel muestra "Tareas periodicas - sin verificar" en gris. Es correcto, no un fallo.
+- **`conectado` arranca en `null`** para los workers que ya estaban corriendo: hasta que se
+  recreen, el panel dice "conexion al broker sin verificar" en ambar. Tambien es correcto.
+- Rechazar una estacion de prueba y confirmar que su usuario ya no existe en EMQX: es lo que
+  `B-1` vino a arreglar y lo unico que lo prueba de verdad es el broker real.

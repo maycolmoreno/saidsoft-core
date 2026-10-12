@@ -181,6 +181,13 @@ class ContratoTenantDeAuditoriaTests(TestCase):
 
         Es deliberadamente tonto: la alternativa (inferir tipos) fallaría en silencio,
         que es exactamente el problema que esta clase existe para evitar.
+
+        La número 102 es `estacion.borrar` en `catalogo.admin` (11-oct-2026, `B-1` de la
+        auditoría por agentes): borrar una estación ahora revoca su credencial en EMQX, y
+        eso tenía que quedar auditado como el resto de las acciones sobre una estación.
+        `catalogo.Estacion` ya estaba en `CON_TENANT` por `farmacia`, así que el evento
+        nuevo llega al tenant sin tocar nada más — que es justo lo que este tripwire
+        obliga a comprobar antes de subir el número.
         """
         sitios = []
         for archivo in sorted(pathlib.Path(settings.BASE_DIR, 'apps').rglob('*.py')):
@@ -192,9 +199,9 @@ class ContratoTenantDeAuditoriaTests(TestCase):
                     sitios.append(f'{archivo.name}:{nodo.lineno}')
 
         self.assertEqual(
-            len(sitios), 101,
-            'Cambió la cantidad de llamadas a registrar_evento (eran 101 el '
-            '1-oct-2026). Si agregaste una sobre un modelo que todavía no figura en '
+            len(sitios), 102,
+            'Cambió la cantidad de llamadas a registrar_evento (eran 102 el '
+            '11-oct-2026; 101 el 1-oct). Si agregaste una sobre un modelo que todavía no figura en '
             'CON_TENANT / COMPARTIDOS_LEGITIMOS / SIN_TENANT_POR_NOMBRE_DEL_CAMPO, '
             'clasificalo ahí y actualizá este número. Un modelo sin clasificar se '
             'audita sin tenant y queda visible para todas las unidades de negocio.',

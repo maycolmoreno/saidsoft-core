@@ -39,7 +39,16 @@ no depende de nada es `deploy/emqx-narrow-acl-agente.sh`.
 contra producción:** cuántos activos estaban congelados (`INV-01`), si hay series duplicadas
 (`INV-07`), cuántas estaciones tienen `hardware_id` vacío (el hueco de `B-2`, que `A-6` no
 cierra) y cuántas entraron al denominador del KPI al dejar de excluir el grupo `PENDIENTE`
-(`L-1`, del informe del tablero). Son cuatro consultas, ningún cambio.
+(`L-1`, del informe del tablero).
+
+Las cuatro están escritas y listas para correr en **`docs/auditoria-fase5-verificacion.sql`**,
+con el comando de `psql` dentro del contenedor que ya usan las otras dos baterías. Solo
+`SELECT`, ni un `UPDATE`. **Dos de ellas deciden cómo se arregla un hallazgo que sigue
+abierto**: si hay series duplicadas, `INV-07` empieza por resolverlas a mano y no por un
+constraint —una migración que imponga unicidad sobre datos sucios falla en el despliegue, la
+misma trampa que hizo descartar el constraint de `EventoEnlaceFarmacia`—; y cuántas
+estaciones están sin identidad de hardware decide si el hueco de trust-on-first-use se cierra
+a mano o necesita un camino en el panel.
 
 ---
 
@@ -302,6 +311,15 @@ El freno que no depende de nada de eso es `deploy/emqx-narrow-acl-agente.sh` —
 angosta ninguna estación puede publicar en estos dos tópicos—, que a su vez espera a que las
 2 estaciones apagadas migren a credencial propia. Es la misma dependencia que ya bloquea la
 rotación de `MQTT_PASSWORD_AGENTE` y el paquete del instalador completo.
+
+**Un paso operativo que el commit no resuelve y es fácil de olvidar:** los catálogos viajan
+**retenidos**, así que el mensaje que hoy está guardado en EMQX se publicó sin firma y ahí se
+queda hasta que alguien publique uno nuevo. Después de desplegar hay que republicar los dos.
+El de servicios del POS ya tenía comando; **el de eventos de Windows no lo tenía y se
+escribió acá** (`publicar_catalogo_eventos_sistema`, simula por defecto como su gemelo),
+porque hasta entonces la única forma de republicarlo era entrar al admin y guardar una fila
+cualquiera para disparar su `save_model`. El runbook está en `deploy/README-produccion.md`,
+sección "Desplegar las correcciones de la auditoría por agentes".
 
 **Alcance:** 7 pruebas nuevas (`CatalogoFirmadoTests`), 835 de `apps.monitoreo` +
 `apps.mqtt_worker` en verde. Sin migración. Del lado del agente no hay suite —es un script
