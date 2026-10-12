@@ -152,11 +152,21 @@ def _respuesta_aceptado(estacion, payload_version: str = '', *, rotar_credencial
     # servidor tampoco lo usa para firmar hasta que la estación reporte una versión que
     # lo soporte, así que entregarlo acá no cambia nada por sí solo.
     #
-    # Lo que este canal NO resuelve todavía: mientras el usuario MQTT compartido siga con
-    # ACL sobre /saidsof/#, cualquiera con esa credencial puede suscribirse al tópico de
-    # respuesta de otra estación y leer este secreto — igual que ya puede leer
-    # `mqtt_password`. El aislamiento real llega con deploy/emqx-narrow-acl-agente.sh,
-    # que espera a que las 3 estaciones apagadas migren a credencial propia.
+    # Lo que este canal NO resuelve, con la precisión que dio correr el angostamiento el
+    # 12-oct-2026 (§10-BQ): `deploy/emqx-narrow-acl-agente.sh` ya se corrió y la credencial
+    # compartida perdió el ACL sobre `/saidsof/#`, así que ya NO puede leer el tráfico de la
+    # flota. Pero el angostamiento le deja —a propósito, es el bootstrap— `subscribe` sobre
+    # `/saidsof/enrolamiento/respuesta/+/`, **con wildcard**: quien tenga esa credencial
+    # sigue pudiendo oír la respuesta de enrolamiento de CUALQUIER estación, y en esa
+    # respuesta viajan el token, este `hmac_secret` y la contraseña MQTT nueva.
+    #
+    # Hasta hoy este comentario decía que el aislamiento real "llega con" ese script. Llega
+    # a medias: cierra la lectura del tráfico permanente y deja abierta la ventana del
+    # re-enrolamiento. El wildcard es necesario porque una estación que todavía no tiene
+    # credencial propia tiene que poder oír su propia respuesta, así que acotarlo pide otra
+    # cosa: que la respuesta no lleve secretos legibles (cifrarla contra un nonce que el
+    # agente manda en la solicitud) o una credencial de bootstrap por instalación, que el
+    # instalador ya podría emitir porque genera un `config.txt` por estación.
     return {
         'aceptado': True,
         'token': estacion.token_enrolamiento,

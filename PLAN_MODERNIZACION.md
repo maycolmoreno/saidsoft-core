@@ -5686,3 +5686,36 @@ nueva: el bootstrap no se rompe, que es por lo que el script angosta en vez de b
 
 Correrlo queda pendiente de decisión humana: es un cambio de seguridad del broker que corta
 tráfico si la medición estuviera equivocada, y el script pide confirmación por teclado.
+
+### Corrido el 12-oct-2026, y lo que descubrió
+
+`deploy/emqx-narrow-acl-agente.sh` se corrió. La credencial compartida pasó de ACL sobre
+`/saidsof/#` a solo los dos tópicos de enrolamiento. **El snapshot del propio script coincidió
+con la medición**: 0 clientes conectados con `saidsof_agente`, que era la tercera lectura
+independiente después de las dos del comando.
+
+Verificación posterior: **46 estaciones siguieron latiendo** y cero clientes con la credencial
+compartida. Una estación (`MM023-ADM`) estaba caída, y el histórico de `evento_monitoreo`
+descarta que fuera el angostamiento: venía parpadeando desde antes —offline 18:25, online
+18:31, offline 18:53— con la ACL amplia todavía puesta, y conectaba con su propio username,
+así que la ACL del usuario compartido no la gobierna.
+
+**Y el angostamiento dejó al descubierto un límite que el repo daba por cerrado.** El
+comentario de `_respuesta_aceptado` decía que *"el aislamiento real llega con
+deploy/emqx-narrow-acl-agente.sh"*. Llega a medias: el script deja —a propósito, es el
+bootstrap— `subscribe` sobre `/saidsof/enrolamiento/respuesta/+/` **con wildcard**. Quien
+tenga la credencial compartida ya no puede leer el tráfico permanente de la flota, pero sigue
+pudiendo oír la respuesta de enrolamiento de **cualquier** estación, y en esa respuesta viajan
+el token, el `hmac_secret` y la contraseña MQTT nueva.
+
+El wildcard no se puede quitar sin más: una estación que todavía no tiene credencial propia
+tiene que poder oír su propia respuesta. Acotarlo pide una de dos cosas, y las dos son trabajo
+de diseño, no de configuración:
+
+- que la **respuesta no lleve secretos legibles** —cifrarla contra un nonce que el agente
+  manda en la solicitud—, o
+- una **credencial de bootstrap por instalación**, que el instalador ya podría emitir porque
+  genera un `config.txt` por estación.
+
+Queda anotado con esa precisión en el código, en `CLAUDE.md` y acá: el agujero grande se
+cerró, el que queda es la ventana del re-enrolamiento y es más chica, pero no es cero.

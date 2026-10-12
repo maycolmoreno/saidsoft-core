@@ -99,9 +99,18 @@ corre sobre `timescale/timescaledb`.
   La verificación es reproducible y de solo lectura: `manage.py revisar_credenciales_mqtt`
   (§10-BQ), que pregunta por estación esté encendida o apagada — el snapshot de conexiones
   del propio script no alcanzaba, porque una estación apagada no aparece ahí.
-  **Consecuencia: `deploy/emqx-narrow-acl-agente.sh` ya se puede correr**, y con él se
-  desbloquean la rotación de `MQTT_PASSWORD_AGENTE`, el paquete del instalador completo
-  (§10-Z) y el freno de `RIESGO-06` que no depende del rollout del agente.
+  **`deploy/emqx-narrow-acl-agente.sh` se corrió el 12-oct-2026.** La credencial compartida
+  ya no tiene ACL sobre `/saidsof/#`: quedó limitada a los dos tópicos de enrolamiento. Se
+  verificó después: 46 estaciones siguieron latiendo y **cero** clientes conectados con el
+  usuario compartido. Con eso se desbloquean la rotación de `MQTT_PASSWORD_AGENTE`, el
+  paquete del instalador completo (§10-Z) y el freno de `RIESGO-06` que no depende del
+  rollout del agente.
+  **Ojo con lo que el angostamiento NO cierra** —medido al correrlo—: deja `subscribe` sobre
+  `/saidsof/enrolamiento/respuesta/+/` **con wildcard**, porque una estación sin credencial
+  propia tiene que poder oír su respuesta. Quien tenga la compartida sigue pudiendo leer la
+  respuesta de enrolamiento de cualquier estación, y ahí viajan el token, el `hmac_secret` y
+  la contraseña MQTT nueva. Acotarlo pide otra cosa (cifrar la respuesta contra un nonce del
+  agente, o una credencial de bootstrap por instalación).
   **La ROTACIÓN de credencial estaba rota; corregida en código el 28-sep-2026** (§10-AV):
   el `PUT` de `apps.mqtt_worker.emqx_admin` mandaba `user_id` en el cuerpo y EMQX 5.8.3
   responde HTTP 400 `unknown_fields`, así que `aprovisionar_credencial_estacion` devolvía
