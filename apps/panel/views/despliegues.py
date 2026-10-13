@@ -8,7 +8,10 @@ from ..busqueda import buscar
 from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
-from apps.despliegues.services import publicar_despliegue, reintentar_despliegue
+from apps.despliegues.services import (
+    aprobar_despliegue, marcar_reanudado, pausar_despliegue, publicar_despliegue,
+    reintentar_despliegue,
+)
 
 from ..forms import DespliegueForm, PromoverDespliegueForm
 from ..progreso import resumen_de_progreso
@@ -141,14 +144,14 @@ def despliegue_progreso_partial(request, pk):
 def despliegue_aprobar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
     verificar_acceso(request.user, despliegue.unidad_negocio)
-    if despliegue.estado != Despliegue.Estado.PENDIENTE_APROBACION:
-        messages.error(request, 'Este despliegue ya no está pendiente de aprobación.')
-    elif despliegue.creado_por_id == request.user.id:
-        messages.error(request, 'Quien crea un despliegue no puede aprobarlo (regla de cuatro ojos).')
+    # El estado y la regla de cuatro ojos las valida el servicio (`D-5`): es gobernanza, y
+    # en la vista la saltea cualquier otra vía. Acá quedan el permiso (decorador), el acceso
+    # por unidad de negocio, la auditoría —con `request`, para no perder la IP— y el mensaje.
+    try:
+        aprobar_despliegue(despliegue=despliegue, usuario=request.user)
+    except ValueError as exc:
+        messages.error(request, str(exc))
     else:
-        despliegue.estado = Despliegue.Estado.APROBADO
-        despliegue.aprobado_por = request.user
-        despliegue.save(update_fields=['estado', 'aprobado_por'])
         registrar_evento(usuario=request.user, accion='despliegue.aprobar', objeto=despliegue, request=request)
         messages.success(request, f'Despliegue {despliegue.version} aprobado.')
     return redirect('panel:despliegue_detalle', pk=pk)
@@ -186,9 +189,14 @@ def despliegue_publicar(request, pk):
 def despliegue_pausar(request, pk):
     despliegue = get_object_or_404(Despliegue, pk=pk)
     verificar_acceso(request.user, despliegue.unidad_negocio)
-    if despliegue.estado == Despliegue.Estado.PUBLICANDO:
-        despliegue.estado = Despliegue.Estado.PAUSADO
-        despliegue.save(update_fields=['estado'])
+    # Antes, si el despliegue no estaba publicando esta vista no hacía NADA y redirigía
+    # igual: indistinguible de "se pausó". Ahora el servicio dice por qué no se pudo
+    # (`D-5`, §10-BW) — misma corrección que ya se hizo en el lote de aprobación.
+    try:
+        pausar_despliegue(despliegue=despliegue)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
         registrar_evento(usuario=request.user, accion='despliegue.pausar', objeto=despliegue, request=request)
         messages.success(request, 'Despliegue pausado.')
     return redirect('panel:despliegue_detalle', pk=pk)
@@ -215,11 +223,10 @@ def despliegue_reanudar(request, pk):
         )
         return redirect('panel:despliegue_detalle', pk=pk)
 
-    despliegue.estado = Despliegue.Estado.PUBLICANDO
-    # Reanudar es una decisión consciente del operador: marca que ya vio los errores,
-    # para que el próximo reporte de error no lo vuelva a frenar en un bucle.
-    despliegue.freno_omitido = True
-    despliegue.save(update_fields=['estado', 'freno_omitido'])
+    # La transición (estado + `freno_omitido`) vive en el servicio (`D-5`), y se llama
+    # SOLO acá, después de que el reenvío salió bien: si el broker falla, el despliegue
+    # sigue pausado en vez de quedar "publicando" algo que nunca salió.
+    marcar_reanudado(despliegue=despliegue)
     registrar_evento(
         usuario=request.user, accion='despliegue.reanudar', objeto=despliegue,
         detalle={'estaciones_reintentadas': resultado.total_estaciones}, request=request,

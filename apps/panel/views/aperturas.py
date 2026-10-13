@@ -18,6 +18,7 @@ from ..busqueda import buscar
 from apps.aperturas.models import Apertura, PasoApertura, TokenApertura
 from apps.aperturas.services import (
     aprobar_apertura,
+    cancelar_apertura,
     completar_paso_manual,
     ejecutar_paso,
     emitir_tokens,
@@ -264,19 +265,15 @@ def apertura_paso_reintentar(request, pk, paso_pk):
 @require_POST
 def apertura_cancelar(request, pk):
     apertura = _apertura_visible(request, pk)
-    if apertura.estado in (Apertura.Estado.COMPLETADA, Apertura.Estado.CANCELADA):
-        messages.error(request, 'Esta apertura ya está cerrada.')
+    # La transición y la revocación de tokens son una sola operación de dominio y viven en
+    # el servicio, en una transacción (`D-5`). Acá queda el permiso, el scoping, el evento
+    # —con `request`, para no perder la IP— y el mensaje.
+    try:
+        revocados = cancelar_apertura(apertura=apertura, usuario=request.user)
+    except ValueError as exc:
+        messages.error(request, str(exc))
         return redirect('panel:apertura_detalle', pk=pk)
 
-    # Cancelar deja tokens sin usar dando vueltas: cada uno todavía sirve para enrolar una
-    # estación ya aprobada. Se revocan todos, o la cancelación es solo cosmética.
-    revocados = 0
-    for token in apertura.tokens.filter(usado_en__isnull=True, revocado=False):
-        revocar_token(token=token, usuario=request.user, motivo='Apertura cancelada')
-        revocados += 1
-
-    apertura.estado = Apertura.Estado.CANCELADA
-    apertura.save(update_fields=['estado'])
     registrar_evento(
         usuario=request.user, accion='apertura.cancelar', objeto=apertura,
         detalle={'tokens_revocados': revocados}, request=request,

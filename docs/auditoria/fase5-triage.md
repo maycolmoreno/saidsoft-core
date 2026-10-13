@@ -17,7 +17,11 @@ Ninguno fue tocado por accidente por el trabajo de estos días.
 
 **Diez de los 12 ALTO están cerrados** —uno antes del triage, cuatro el día del triage y
 cinco el 12-oct— y **2 siguen abiertos**: `INV-07`, que necesita mirar dos equipos físicos, y
-`C-1`, que viaja con la tanda de la app móvil. De los 94 hallazgos de la Fase 4 quedan **84**.
+`C-1`, que viaja con la tanda de la app móvil.
+
+**Y los 94 hallazgos resultaron ser 92:** al triar los MEDIO/BAJO (§10) aparecieron dos pares
+de duplicados que la deduplicación original no detectó. De esos 92 quedan **77 abiertos**: 2
+ALTO y 75 MEDIO/BAJO, con el orden propuesto en §10.
 
 Cerrados además, fuera de los 94: el **trust-on-first-use** (§10-BÑ) y el **angostamiento de
 la ACL de la credencial compartida** (§10-BQ), que llevaba desde septiembre esperando una
@@ -494,6 +498,103 @@ numero que cambie en el panel y no hay nada que avisarle a la mesa de ayuda.**
 La advertencia estaba bien puesta —el cambio de denominador y de umbral podia mover el KPI— y
 lo que la medicion dice es que en esta flota no lo mueve. De paso: 35 de 66 en linea, y
 ninguna estacion que nunca haya reportado.
+
+---
+
+## 10. Triage de los 81 MEDIO/BAJO (12-oct-2026)
+
+El bloque que nadie había leído. Al revisarlo aparecieron tres cosas antes de entrar a
+priorizar, y las tres cambian el número:
+
+### Los 94 hallazgos son en realidad 92
+
+La Fase 4 dedujo seis pares de duplicados. Se le pasaron **dos más**, y por el mismo motivo
+en los dos casos: los IDs viven en informes de agentes distintos y describen lo mismo con
+palabras distintas.
+
+| Par | Qué es |
+|---|---|
+| `B-5` ≡ `DOC-01` | El §4 del descubrimiento dice que la credencial MQTT la da la **aprobación** humana; la da el **enrolamiento** |
+| `B-6` ≡ `DOC-02` | `servicios_pos.py:31` remite a `emqx_admin.reglas_acl_estacion`, que no existe (es `_reglas_para`) |
+
+Vale anotarlo junto a la lección que §10-BH ya dejó escrita: deduplicar por `archivo:línea`
+sin leer las fichas pierde pares. Acá los dos pares **sí** compartían archivo y línea, y aun
+así se escaparon — porque uno de los dos informes los agrupaba en una tabla de "desvíos
+menores" sin ficha propia.
+
+### Dos quedaron cerrados por el trabajo de estos días, sin que nadie los estuviera mirando
+
+- **`B-4`** — *"2 de 3 rechazos de enrolamiento no llegan a la bandeja de triage"*. Hoy los
+  tres llegan: farmacia inexistente (ya iba), identidad de hardware distinta (§10-BT) y sin
+  identidad con historia de uso (§10-BÑ, que no existía cuando se auditó). Los otros dos
+  rechazos que hay ahora —freno de emergencia y rechazo humano— **no van a propósito**: el
+  primero es esperado y masivo, y el segundo ya se ve en el panel porque alguien acaba de
+  hacerlo.
+- **`HALLAZGO-19`** ≡ `INV-02`, cerrado en §10-BS.
+
+### Las cuatro afirmaciones falsas, corregidas
+
+Los cuatro hallazgos de "documentación desactualizada" se cierran en esta misma pasada,
+porque son el tipo de defecto que este repo trata como de primera clase: **documentación que
+afirma lo que uno querría que el código hiciera**.
+
+| | Qué decía | Qué hace |
+|---|---|---|
+| `B-5`≡`DOC-01` | La credencial MQTT la entrega la aprobación humana | La entrega el enrolamiento, antes y con independencia de la aprobación |
+| `DOC-03` | El servidor central **no** alcanza las IP de las farmacias ("100% de pérdida de ping") | Desmentido el 11-sep-2026: responden 19 de 25 gateways |
+| `B-6`≡`DOC-02` | Remite a `emqx_admin.reglas_acl_estacion` | Esa función no existe; es `_reglas_para` |
+| `F-1` | "27 módulos de vistas", "services.py 1.466 ln" | 26 módulos; 1.629 líneas (medido hoy, no copiado) |
+
+**`B-5` es el que más importa de los cuatro, y no es el más grave: es el más instructivo.** El
+documento describía el flujo que uno espera —un humano aprueba y *entonces* se entrega la
+credencial— y el código nunca hizo eso. Mientras la documentación dijera lo correcto, `B-1`
+era invisible: nadie va a buscar un agujero donde el mapa dice que no hay puerta.
+
+### Lo que queda, agrupado por cómo se arregla
+
+De los 79 MEDIO/BAJO únicos que quedan, el orden que propongo no es por severidad —son todos
+MEDIO o BAJO— sino por **cuántos cierra un mismo cambio**:
+
+> **`D-5` está CORREGIDO** (§10-BV y §10-BW). Sus cinco transiciones viven en servicios: las
+> dos de estaciones, las tres de despliegues y la de aperturas. De paso quedó **un escritor
+> menos** del estado `PAUSADO` —`evaluar_freno_automatico` delega la escritura y conserva su
+> decisión— y `apps/panel/views/estaciones.py` bajó a 485 líneas al dividirse.
+>
+> Un cambio de comportamiento observable: **`despliegue_pausar` ya no falla en silencio**.
+> Pendientes anotados: `despliegue_reanudar` sí sigue redirigiendo sin avisar si el despliegue
+> no está pausado, y dos cancelaciones simultáneas de una apertura registrarían dos eventos
+> (no hay `select_for_update`; el estado y los tokens quedan correctos).
+
+1. **Duplicación de transiciones de dominio** (`D-1`, `D-2`, `D-5`, `D-3`): el bloque de
+   publicación MQTT escrito 5 veces, la transición "alerta resuelta" otras 5 —una dentro de
+   una vista—, aprobar/rechazar estación como lógica en la vista, y 14 manejadores MQTT
+   repitiendo el preámbulo de autenticación. Son cuatro hallazgos y **un solo refactor**, y
+   `B-1` nació exactamente de este patrón: lógica de dominio en una vista que nadie revisa.
+2. **Paginación inestable** (`BD-01`, `BD-02`): cinco listados ordenan por fecha no única sin
+   desempate, y la vista de auditoría **anula** con su `order_by` el desempate que el modelo
+   había agregado. Barato y con síntoma real: filas repetidas o perdidas al paginar.
+3. **Integridad de datos observados** (`BD-07`≡`INV-08`, `BD-18`, `INV-13`, `INV-10`,
+   `INV-14`): MAC sin normalizar que rompe el cruce declarado×observado, el centinela
+   `0.0.0.0` guardado como medición, `ip_sondeada` que puede hablar de otro destino. Todos en
+   la misma cadena que `INV-02` y `INV-07`.
+4. **Herencia de tenant que falta en SNMP** (`INV-11`, `E-2`): el admin de SNMP sin scoping y
+   `PerfilSnmp.unidad_negocio` declarado y nunca aplicado. Es el mismo defecto que `INV-05`,
+   que ya se cerró, en el módulo nuevo.
+5. **Concurrencia en la ruta caliente** (`BD-04`, `INV-18`, `RIESGO-12`): el latido guarda la
+   fila completa de `Estacion` y pisa ediciones del panel. Los tres apuntan al mismo
+   `save()`; `R-7` del informe del tablero lo declaró fuera de alcance en su momento.
+6. **Rendimiento medible** (`BD-12`…`BD-16`, `E-4`): N+1 en dos listados, upsert en lote para
+   ARP, el `Cast` innecesario en seis `count()`. **`BD-11` va aparte y primero**: propone
+   tocar índices y su propio informe pide medir antes.
+7. **El resto** (`A-1`, `A-3`…`A-5`, `A-7`, `C-2`…`C-6`, `D-4`, `D-6`, `D-7`, `E-1`, `E-3`,
+   `INV-03`, `INV-06`, `INV-09`, `INV-12`, `INV-15`…`INV-20`, `BUG-02`, `BUG-03`, `BUG-10`,
+   `RIESGO-04`, `RIESGO-05`, `RIESGO-08`, `RIESGO-09`, `HALLAZGO-13`…`HALLAZGO-27`): cada uno
+   es independiente. Los cuatro `BUG CONFIRMADO` restantes (`BUG-02`, `BUG-03`, `BUG-10`)
+   merecen leerse antes que el resto de este grupo, porque su evidencia ya es inequívoca.
+
+**`INV-03` quedó a medias y conviene cerrarlo con el grupo 7**: la resincronización de §10-BS
+deja `EventoActivo`, pero la **vinculación inicial** sigue cambiando la farmacia sin dejar
+rastro. Es el mismo hallazgo partido en dos caminos, y ahora solo uno lo cumple.
 
 ---
 

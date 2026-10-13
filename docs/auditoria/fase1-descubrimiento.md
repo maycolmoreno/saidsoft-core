@@ -460,7 +460,7 @@ saidsoft-core/
 │   ├── activos/       ★ ITAM     Activo, EventoActivo, Colaborador, Bodega, Ubicacion,
 │   │                             Departamento, Cargo, Marca, CategoriaEquipo, TipoConsumible,
 │   │                             StockBodega, OrdenCompra(+Detalle), RecepcionLote,
-│   │                             MovimientoInventario   (services.py 1.466 ln)
+│   │                             MovimientoInventario   (services.py 1.629 ln)
 │   ├── monitoreo/     ★ RMM      21 modelos (métricas, alertas, enlaces, servicios POS,
 │   │                             eventos de Windows, dispositivos ARP, equipo de borde)
 │   │                             + mikrotik.py (SNMP), enlaces.py (ICMP),
@@ -473,7 +473,7 @@ saidsoft-core/
 │   │                             Notificacion, ConsentimientoMonitoreo, UbicacionTecnico,
 │   │                             AccionOfflineAplicada, CierreEnConflicto
 │   │                             + API DRF para la app móvil
-│   ├── panel/          ★ UI      Sin modelos. 27 módulos de vistas, urls (298 ln), forms,
+│   ├── panel/          ★ UI      Sin modelos. 26 módulos de vistas, urls (298 ln), forms,
 │   │                             indicadores, reportes, busqueda, paginacion, progreso, middleware
 │   ├── despliegues/              Despliegue, ResultadoDespliegue, EventoDespliegue
 │   ├── scripts/                  Script, EjecucionScript, ResultadoEjecucionScript, ScriptProgramado
@@ -507,9 +507,18 @@ Commit 2 agregó `activos/0027`, con lo que `activos` pasa a 27 y el total a 158
 1. **Enrolamiento de estación.** El agente publica en `/saidsof/enrolamiento/solicitar/` →
    `manejar_enrolamiento` (`apps/mqtt_worker/services.py:134`) → crea/actualiza `Estacion`
    en `PENDIENTE`, fija `hardware_id` (MachineGuid) y lo exige en re-enrolamientos → un
-   humano aprueba en el panel (permiso `aprobar_estacion`) →
-   `emqx_admin.aprovisionar_credencial_estacion` da credencial MQTT propia y se entrega
-   `hmac_secret`. Los rechazos quedan en `EnrolamientoRechazado`.
+   humano aprueba en el panel (permiso `aprobar_estacion`).
+
+   **Ojo con el orden, que este documento describía al revés hasta el 12-oct-2026** (`B-5`):
+   `emqx_admin.aprovisionar_credencial_estacion` y la entrega del `hmac_secret` ocurren en
+   `_respuesta_aceptado`, o sea **en el enrolamiento y no en la aprobación**. Describirlo como
+   si la credencial la diera el humano al aprobar es parte de por qué `B-1` pasó inadvertido:
+   el flujo escrito era el que uno espera, no el que el código hace. Desde §10-BL una estación
+   `RECHAZADA` ya no recibe credencial, pero el momento sigue siendo el enrolamiento.
+
+   Los rechazos quedan en `EnrolamientoRechazado` — los tres que importan desde §10-BT
+   (farmacia inexistente, identidad de hardware distinta y sin identidad con historia de uso);
+   el freno de emergencia y el rechazo humano no van a esa bandeja a propósito.
 2. **Latido y telemetría.** `/saidsof/agente/{codigo}/heartbeat/` → `manejar_heartbeat`
    actualiza `estado_conexion`, `ultimo_heartbeat`, versiones, `pos_servidor/bdd/puerto`,
    desfase de reloj, zona horaria y confirmación de pausa →
@@ -666,7 +675,7 @@ Los 12 tipos de `EventoActivo.TipoEvento`: `ingreso`, `asignacion`,
 `baja_recomendada`, `transito`, `ubicacion_actualizada`, `datos_red_cargados`,
 `correccion_datos`.
 
-**Dónde vive la lógica de negocio:** `apps/activos/services.py` (1.466 ln, 40 funciones).
+**Dónde vive la lógica de negocio:** `apps/activos/services.py` (1.629 ln al 12-oct-2026; creció con los arreglos de §10-BS). Las cifras de este documento se miden, no se arrastran: §0.9 pide revalidarlas en cada fase y `F-1` las encontró desfasadas.
 El panel y el admin la reusan; no hay lógica de transición en las vistas.
 
 **Cadena de inventario (declarado → observado):**

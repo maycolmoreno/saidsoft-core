@@ -41,12 +41,17 @@ from .despliegues import (
     despliegues_lista,
 )
 from .estaciones import (
-    estacion_actualizar_agente_solicitar, estacion_aprobar, estacion_bitlocker_ver_clave, estacion_info_modal,
+    estacion_actualizar_agente_solicitar, estacion_bitlocker_ver_clave, estacion_info_modal,
     estacion_pausar,
     estacion_info_solicitar, estacion_meshcentral_escritorio, estacion_meshcentral_terminal,
-    estacion_meshcentral_vincular, estacion_perifericos_solicitar, estacion_rechazar, estacion_reiniciar,
+    estacion_meshcentral_vincular, estacion_perifericos_solicitar, estacion_reiniciar,
     estacion_software_instalado_solicitar, estacion_supervision_grabaciones, estacion_windows_update_solicitar,
-    estaciones_aprobar_lote, estaciones_lista, estaciones_pendientes_partial, farmacia_aplicar_nodo_pos,
+    estaciones_lista, farmacia_aplicar_nodo_pos,
+)
+# El flujo de aprobación vive en su propio módulo desde el 12-oct-2026 (ver su docstring):
+# el techo de 550 líneas de `DivisionDeVistasTests` y `D-5` empujaban en la misma dirección.
+from .estaciones_aprobacion import (
+    estacion_aprobar, estacion_rechazar, estaciones_aprobar_lote, estaciones_pendientes_partial,
 )
 from .actividades import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,

@@ -92,6 +92,51 @@ def aprobar_apertura(*, apertura, usuario):
     return apertura
 
 
+def cancelar_apertura(*, apertura, usuario) -> int:
+    """Cancela `apertura` y revoca sus tokens sin usar. Devuelve cuántos revocó.
+
+    La transición vivía en `apps/panel/views/aperturas.py` (`D-5` de la auditoría por
+    agentes). En la vista queda lo que le toca: el scoping por unidad de negocio, el
+    permiso, el evento `apertura.cancelar` y el mensaje al operador.
+
+    **Revocar no es opcional.** Un token sin usar sigue sirviendo para enrolar una estación
+    ya aprobada, así que una cancelación que los deja vivos es cosmética — el comentario que
+    lo explicaba estaba en la vista y se muda acá con la lógica.
+
+    **Y va en una transacción**, con el mismo `with transaction.atomic()` que ya usan
+    `crear_apertura` y `enrolar_estacion_de_apertura`. El motivo es que todos los efectos de
+    esta operación son escrituras de base de datos —el `revocado` de cada token y los
+    `EventoAuditoria` que deja `revocar_token`—: no hay publish MQTT, ni correo, ni archivos,
+    ni señales sobre estos modelos. Un rollback los revierte íntegros, así que no puede
+    quedar un efecto externo huérfano. Sin transacción, un fallo en el token 3 de 5 dejaba
+    dos revocados con la apertura **todavía activa**: peor que no cancelar, porque esos
+    tokens ya no sirven y la apertura aparenta estar en curso.
+
+    **Lo que NO registra: el evento `apertura.cancelar`.** Ese se queda en la vista a
+    propósito, porque `registrar_evento` saca la IP del `request` y los servicios no lo
+    reciben —los eventos de `aprobar_apertura` hoy no la tienen—. Que este sea el único
+    lugar que no lo registra es lo que garantiza que se escriba exactamente una vez.
+
+    Los eventos individuales de revocación sí los deja `revocar_token`, uno por token, sin
+    cambios.
+    """
+    if apertura.estado in (Apertura.Estado.COMPLETADA, Apertura.Estado.CANCELADA):
+        raise ValueError('Esta apertura ya está cerrada.')
+
+    with transaction.atomic():
+        revocados = 0
+        # `usado_en__isnull=True, revocado=False`: un token usado ya enroló su estación y
+        # revocarlo no desenrola nada; uno ya revocado no necesita un segundo evento que
+        # diga que pasó algo que no pasó.
+        for token in apertura.tokens.filter(usado_en__isnull=True, revocado=False):
+            revocar_token(token=token, usuario=usuario, motivo='Apertura cancelada')
+            revocados += 1
+
+        apertura.estado = Apertura.Estado.CANCELADA
+        apertura.save(update_fields=['estado'])
+    return revocados
+
+
 def emitir_tokens(*, apertura, usuario, dias_vigencia=None):
     """Emite un token por cada perfil de estación que todavía no tenga uno vigente o usado.
 

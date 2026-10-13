@@ -28,7 +28,7 @@ lista vieja unos minutos— y si algún día hace falta saberlo, el agente ya re
 `version_agente` en cada latido y se podría sumar la versión del catálogo ahí.
 
 **Ojo con la ACL**: EMQX autoriza por lista explícita y **deniega en silencio**. El
-tópico de acá está en `apps.mqtt_worker.emqx_admin.reglas_acl_estacion`; sin esa regla el
+tópico de acá está en `apps.mqtt_worker.emqx_admin._reglas_para`; sin esa regla el
 agente se suscribe, no recibe nada, y nada en ningún log lo dice.
 
 ## Los dos catálogos van firmados (desde el 11-oct-2026)

@@ -311,6 +311,32 @@ def limpiar_actualizacion_pendiente(estacion) -> bool:
     return _publicar_mqtt(_topico_actualizar_agente(estacion), '', retain=True)
 
 
+def aprobar_estacion(estacion) -> bool:
+    """Aprueba `estacion`. Devuelve True si **venía rechazada**, que es el caso que importa.
+
+    La transición vive acá y no en la vista por el mismo motivo que `rechazar_estacion`
+    (`D-5` de la auditoría: transiciones de dominio escritas en vistas), y porque dejarla
+    partida era peor que el estado original — desde §10-BL rechazar pasaba por un servicio y
+    aprobar escribía el campo a mano tres renglones más abajo.
+
+    **Por qué el valor de retorno.** Aprobar una estación que venía `RECHAZADA` no la devuelve
+    al servicio por sí solo: al rechazarla se le revocó la credencial en EMQX (§10-BL), su
+    `identidad.json` conserva una que ya no existe, y el agente no cae a la compartida cuando
+    el broker se la rechaza. Puede volver sola **solo si todavía logra conectarse**; si no, hay
+    que borrarle `identidad.json` en el equipo —y el script que lo hace viaja por MQTT, así que
+    tampoco le llega—. El arreglo de fondo es del agente y está anotado en §10-BV; hasta
+    entonces, lo único honesto es que quien aprueba se entere. Por eso esto devuelve un dato y
+    no None: el aviso es parte de la operación, no un adorno.
+
+    Medido el 12-oct-2026: **nunca se rechazó una estación**, así que este camino no afectó a
+    nadie todavía. Lo que hace el aviso es que la primera vez no se diagnostique a ciegas.
+    """
+    venia_rechazada = estacion.estado_aprobacion == estacion.EstadoAprobacion.RECHAZADA
+    estacion.estado_aprobacion = estacion.EstadoAprobacion.APROBADA
+    estacion.save(update_fields=['estado_aprobacion'])
+    return venia_rechazada
+
+
 def rechazar_estacion(estacion) -> bool | None:
     """Marca `estacion` como RECHAZADA y le quita el acceso al broker.
 

@@ -5911,3 +5911,234 @@ más rápido de lo que se pone en uso*. No es un defecto de código —el mecani
 capacidad instalada esperando una decisión de dos minutos en el admin.
 
 3 pruebas nuevas; 159 de `apps.mqtt_worker` en verde. Sin migración.
+
+---
+
+## §10-BU — El bloque que nadie había leído: los 81 MEDIO/BAJO (12-oct-2026)
+
+Triage del único bloque de la auditoría sin revisar. Detalle en
+`docs/auditoria/fase5-triage.md` §10. Al leerlo aparecieron tres cosas antes de poder
+priorizar, y las tres cambian los números del informe.
+
+### Los 94 hallazgos son 92
+
+La Fase 4 dedujo seis pares de duplicados y se le pasaron **dos**: `B-5`≡`DOC-01` (el §4 del
+descubrimiento sobre cuándo se entrega la credencial MQTT) y `B-6`≡`DOC-02` (una referencia a
+`emqx_admin.reglas_acl_estacion`, función que no existe).
+
+Lo interesante es **por qué** se escaparon, porque no es el motivo que §10-BH anticipó. Esa
+entrada advirtió que deduplicar por `archivo:línea` sin leer las fichas perdería pares. Estos
+dos **sí** compartían archivo y línea: se escaparon porque uno de los dos informes los
+agrupaba en una tabla de "desvíos menores, agrupados" **sin ficha propia**, y la deduplicación
+comparó fichas.
+
+### Dos hallazgos quedaron cerrados sin que nadie los estuviera mirando
+
+`B-4` —*"2 de 3 rechazos de enrolamiento no llegan a la bandeja de triage"*— se cerró solo, en
+dos pasos de estos días: §10-BÑ agregó el rechazo por falta de identidad y §10-BT el de
+identidad distinta. Los tres originales llegan ahora. Los otros dos rechazos que existen hoy
+**no van a propósito**: el freno de emergencia es esperado y masivo, y el rechazo humano ya se
+ve en el panel porque alguien acaba de hacerlo. Y `HALLAZGO-19` ≡ `INV-02`, cerrado en §10-BS.
+
+### Las cuatro afirmaciones falsas, corregidas en esta pasada
+
+Los cuatro hallazgos de documentación desactualizada se cierran acá, porque son el tipo de
+defecto que este repo trata como de primera clase: **documentación que afirma lo que uno
+querría que el código hiciera.**
+
+- **`B-5`≡`DOC-01`** — el §4 del descubrimiento decía que la credencial MQTT la entrega la
+  aprobación humana. La entrega el enrolamiento, antes y con independencia de la aprobación.
+- **`DOC-03`** — `monitoreo/api_views.py` seguía afirmando que el servidor central no alcanza
+  las IP de las farmacias, *"100% de pérdida de ping, confirmado el 24-ago-2026"*. Eso quedó
+  desmentido el 11-sep: responden 19 de 25 gateways. El endpoint sigue siendo útil por la otra
+  mitad de su razón —un sondeador sin acceso a la base— pero no por la que decía.
+- **`B-6`≡`DOC-02`** — `servicios_pos.py` remitía a una función que no existe.
+- **`F-1`** — dos cifras del descubrimiento, remedidas hoy en vez de copiadas del informe: 26
+  módulos de vistas (decía 27) y 1.629 líneas en `activos/services.py` (decía 1.466; el
+  informe midió 1.486 hace dos días, y §10-BS la hizo crecer).
+
+**`B-5` es el más instructivo de los cuatro, y no el más grave.** El documento describía el
+flujo que uno espera —un humano aprueba y *entonces* se entrega la credencial— y el código
+nunca hizo eso. Mientras la documentación dijera lo correcto, `B-1` era invisible: nadie busca
+un agujero donde el mapa dice que no hay puerta. Es el argumento más concreto que dio esta
+auditoría a favor de la regla de documentación viva que `CLAUDE.md` ya tenía escrita.
+
+### El orden propuesto para los 75 que quedan
+
+No por severidad —son todos MEDIO o BAJO— sino por **cuántos cierra un mismo cambio**. El
+primer grupo es el que más vale: `D-1`, `D-2`, `D-3` y `D-5` son cuatro hallazgos y **un solo
+refactor** (transiciones de dominio duplicadas, una de ellas dentro de una vista), y `B-1`
+nació exactamente de ese patrón. Después: paginación inestable (`BD-01`, `BD-02`), integridad
+de datos observados, la herencia de tenant que falta en el módulo SNMP —el mismo defecto que
+`INV-05`, ya cerrado, en el código nuevo—, la concurrencia del latido y el rendimiento
+medible, con `BD-11` primero porque pide medir antes de tocar índices.
+
+**Y un pendiente que este triage descubrió a medias:** `INV-03` quedó parcialmente cerrado por
+§10-BS. La resincronización deja `EventoActivo`, pero la **vinculación inicial** sigue
+cambiando la farmacia de un activo sin dejar rastro. Es el mismo hallazgo partido en dos
+caminos y ahora solo uno lo cumple.
+
+707 pruebas de `apps.monitoreo` en verde; los cambios de esta entrada son docstrings y
+documentación.
+
+---
+
+## §10-BV — Cerrar un agujero abrió un modo de falla: la estación rechazada que vuelve (12-oct-2026)
+
+Hallazgo que salió de triar `D-5`, y es **consecuencia directa de §10-BL**: no estaba en los 92
+de la auditoría porque antes de ese cambio no existía.
+
+### Lo que pasa
+
+`B-1` hizo que rechazar una estación **revoque su credencial en EMQX**, que era el punto: antes
+una estación rechazada conservaba acceso al broker y recibía contraseña nueva en cada reintento
+de enrolamiento. Pero si después alguien la **aprueba de nuevo**:
+
+1. Su `identidad.json` conserva la credencial propia, que ya no existe en el broker.
+2. El agente usa esa credencial si está presente (`agente_prueba.py:275-278`) y **no cae a la
+   compartida** cuando el broker la rechaza.
+3. El script que borraría `identidad.json` para forzar el re-enrolamiento
+   (`seed_scripts_migracion_mqtt`) viaja **por MQTT**, así que necesita que la estación esté
+   conectada — y no lo está.
+
+**Resultado: la estación queda muda y la única recuperación es ir físicamente al equipo.** Y el
+síntoma no apunta a la causa: nadie va a pensar que la estación no conecta *porque la
+aprobaron*.
+
+Dicho sin adornos: se cerró un agujero de seguridad y se abrió un modo de falla operativo. Las
+dos cosas son ciertas y la primera valía la pena, pero la segunda hay que resolverla.
+
+### Lo que se hace ahora, sin tocar el agente
+
+El arreglo de fondo es del agente y queda para 0.34 (ver abajo); con el rollout de 0.33 a mitad
+de camino, meter otro binario sería peor. Mientras tanto, del lado del servidor:
+
+- **La aprobación avisa.** Aprobar una estación que venía `RECHAZADA` ya no es un cambio de
+  campo silencioso: el panel dice que su credencial fue revocada, que va a volver sola **solo
+  si todavía puede conectarse**, y qué hacer si no. Un aviso no arregla nada, pero cambia un
+  diagnóstico a ciegas por uno de treinta segundos.
+- **Y la transición pasa al servicio** (`catalogo.services.aprobar_estacion`), que además cierra
+  la mitad de `D-5` que quedaba y la asimetría que §10-BL había dejado: rechazar pasaba por un
+  servicio y aprobar escribía el campo en la vista.
+
+### `D-5`, y el módulo que se dividió porque tocaba dividirlo
+
+`D-5` señalaba cinco transiciones de estado escritas en vistas de `apps/panel`. Las dos de
+estaciones quedan cerradas: la transición vive en `catalogo.services` y la vista hace lo que le
+toca —permisos, scoping, auditoría y qué se le dice al operador—. Hay una prueba que lo fija
+leyendo el fuente del módulo: si alguien vuelve a escribir `estado_aprobacion` ahí, falla.
+
+Al hacerlo, `apps/panel/views/estaciones.py` pasó de 553 a **485 líneas**, porque el flujo de
+aprobación se mudó a **`estaciones_aprobacion.py`**. Eso no fue un extra: el módulo venía
+peleando con el techo de 550 líneas de `DivisionDeVistasTests` en cada cambio —§10-BL tuvo que
+compactar comentarios para entrar, y este cambio directamente no cabía—. La prueba dice *"si un
+módulo lo pasa, la respuesta es dividirlo, no subir el límite"*, y las cuatro vistas del flujo
+se mueven juntas porque son un solo flujo: las tres acciones devuelven la bandeja renderizada,
+que es lo que HTMX reemplaza.
+
+Las URLs y el resto del sistema no cambian: `views/__init__.py` las reexporta desde el módulo
+nuevo. Lo confirman las 635 pruebas de `apps.panel`, que incluyen las del flujo y la del techo.
+
+Quedan las tres transiciones de `D-5` que viven en `despliegues.py` y `aperturas.py`, con el
+mismo tratamiento pendiente.
+
+### El arreglo de fondo, para el agente 0.34
+
+**Que el agente caiga a la credencial compartida cuando el broker le rechaza la propia.** Cierra
+el ciclo sin intervención: se conecta con la compartida —que desde §10-BQ **solo sirve para
+enrolarse**, no para leer ni publicar nada más— se re-enrola, y recibe credencial nueva.
+
+Es mejor que un parche para este caso porque cubre a toda una familia: EMQX restaurado de un
+respaldo anterior al aprovisionamiento, una credencial borrada por error, o cualquier
+divergencia entre lo que el broker tiene y lo que el equipo cree tener. Hoy todas esas
+situaciones dejan a la estación muda y requieren visita.
+
+Es, además, la razón por la que el angostamiento de la ACL no borró la credencial compartida
+sino que la limitó al enrolamiento: el bootstrap existe justamente para volver.
+
+### Medido: el modo de falla es teórico, y eso dice algo más
+
+```
+estado_aprobacion  | aprobada: 66   (ninguna PENDIENTE, ninguna RECHAZADA)
+rechazos historicos| 0
+aprobaciones       | 65
+```
+
+**Nunca se rechazó una estación en toda la vida del sistema.** Así que este modo de falla no
+afectó ni puede haber afectado a nadie, y el arreglo del agente (0.34) no tiene apuro: entra
+cuando toque un binario nuevo por otro motivo.
+
+**Y hay algo más honesto que anotar:** si nunca se rechazó una estación, entonces la mitad de
+`B-1` que §10-BL arregló —*"rechazar no revoca la credencial"*— también era teórica en la
+práctica. El arreglo sigue valiendo, porque la primera vez que alguien use ese botón va a
+funcionar bien, pero no estaba causando daño. La otra mitad de `B-1` sí ocurría todo el tiempo
+(`_respuesta_aceptado` aprovisionaba sin mirar `estado_aprobacion`, en cada enrolamiento); lo
+que no había era ninguna estación rechazada a la que premiar.
+
+De paso queda un dato sobre el producto, no sobre el código: **hay una acción del panel con su
+propio permiso (`aprobar_estacion` cubre rechazar) que existe, está probada y nunca se usó.**
+Vale tenerlo presente cuando se discuta qué partes del panel se usan de verdad.
+
+---
+
+## §10-BW — `D-5`: las cuatro transiciones de dominio que vivían en vistas (12-oct-2026)
+
+Cierre de `D-5`. Las cinco transiciones que el hallazgo señalaba quedan en servicios: las dos
+de estaciones (§10-BV), las tres de despliegues y la de aperturas. **No se tocó nada de MQTT,
+ni la lógica de reintentos, ni permisos, ni el scoping por unidad de negocio.**
+
+| Transición | Servicio | Reglas que se mudaron | Lo que queda en la vista |
+|---|---|---|---|
+| `apertura_cancelar` | `aperturas.cancelar_apertura` (atómico) | estado cerrado + revocación de tokens sin usar | permiso, scoping, evento `apertura.cancelar` **con IP**, mensaje |
+| `despliegue_aprobar` | `despliegues.aprobar_despliegue` | estado + **regla de cuatro ojos** | permiso (403), `verificar_acceso`, evento, mensajes |
+| `despliegue_pausar` | `despliegues.pausar_despliegue` | solo pausa lo que está publicando | permiso, `verificar_acceso`, evento, mensajes |
+| `despliegue_reanudar` | `despliegues.marcar_reanudado` | estado + `freno_omitido` | permiso, scoping, **la secuencia** y el reenvío |
+
+### Tres decisiones que no eran obvias
+
+**1. La auditoría se queda en las vistas, y no por comodidad.** `registrar_evento` saca la IP
+del `request`, y los servicios no lo reciben: moverla habría perdido ese dato —los eventos de
+`aprobar_apertura`, que sí audita en el servicio, hoy no tienen IP—. Que el servicio sea el
+único lugar que **no** registra es lo que garantiza una fila por operación, y hay una prueba
+por transición que lo fija. Los eventos individuales de `revocar_token` siguen en el servicio,
+sin cambios.
+
+**2. El permiso no es una regla de dominio.** `despliegues.aprobar_despliegue` se queda en el
+decorador: sin permiso la respuesta es un **403**, mientras que violar la regla de cuatro ojos
+es un **mensaje en pantalla**. Son dos controles distintos y mezclarlos habría debilitado uno.
+Lo que sí se mudó es la regla de gobernanza (AC-2, 22-ago-2026): en un `elif` de la vista la
+saltea cualquier otra vía —un `shell`, un comando, una tarea futura— y ahora hay una prueba
+que la ejerce **sin pasar por la vista**.
+
+**3. `marcar_reanudado` no orquesta el reenvío, a propósito.** `reintentar_despliegue` sigue
+siendo el responsable de publicar, y la vista llama a la transición **solo en el camino de
+éxito**. Un servicio que hiciera las dos cosas juntas podría volver a dejar el estado
+mintiendo si el broker falla a mitad, que es exactamente el bug del piloto del 6-ago-2026.
+Hay una prueba con el broker caído que verifica que el despliegue **sigue pausado**.
+
+### Un escritor de estado menos, que no estaba en el plan
+
+`evaluar_freno_automatico` **también** escribía `PAUSADO`, así que crear el servicio solo para
+la vista habría dejado dos escritores del mismo estado — el patrón que `D-2` critica. El freno
+delega ahora la escritura y **conserva su decisión** (umbral, `freno_omitido`, su log): su
+comportamiento no cambia porque su condición ya exigía `PUBLICANDO`, que es lo único que el
+servicio valida. Hay una prueba que lo confirma por el camino del freno.
+
+### Cambio de comportamiento observable (uno)
+
+**`despliegue_pausar` ya no falla en silencio.** Si el despliegue no está publicando, antes no
+hacía nada y redirigía igual —indistinguible de "se pausó"— y ahora dice en qué estado está.
+Es la misma corrección que el repo ya había hecho en el lote de aprobación de estaciones. Las
+otras tres transiciones conservan mensajes y contratos idénticos.
+
+### Pendiente anotado, no hecho
+
+- **`despliegue_reanudar` sigue redirigiendo en silencio** si el despliegue no está pausado
+  (su guarda previa al reenvío). Es el mismo defecto que se corrigió en `pausar` y conviene
+  unificarlo, pero cambiarlo acá habría sido ampliar el alcance de esta intervención.
+- **Dos cancelaciones simultáneas de la misma apertura** registrarían dos eventos
+  `apertura.cancelar`: no hay `select_for_update` sobre la apertura. El estado final y los
+  tokens quedan correctos —el filtro `revocado=False` hace la revocación idempotente—; lo
+  único afectado es la auditoría. No se agregó el bloqueo para no ampliar alcance.
+- Las transiciones de `D-2` ("alerta resuelta", escrita cinco veces) siguen abiertas: son otro
+  hallazgo del mismo grupo.

@@ -92,6 +92,95 @@ def _payload(despliegue: Despliegue, estacion) -> dict:
     }
 
 
+def aprobar_despliegue(*, despliegue: Despliegue, usuario) -> Despliegue:
+    """Aprueba `despliegue` aplicando la regla de cuatro ojos. Lanza `ValueError` si no.
+
+    `D-5` de la auditoría por agentes: esta transición vivía en un `elif` de
+    `apps/panel/views/despliegues.py`, y con ella la **regla de gobernanza** de que quien
+    crea un despliegue no puede aprobarlo (AC-2 de la auditoría del 22-ago-2026). Una regla
+    de ese tipo en la vista la saltea cualquier otra vía: un `shell`, un comando, una tarea.
+
+    Mismo contrato que `aperturas.services.aprobar_apertura`, que es el equivalente del otro
+    módulo: valida estado, valida cuatro ojos, escribe con `update_fields` y lanza
+    `ValueError` con el motivo para que quien llama lo muestre. Los mensajes son
+    literalmente los que la vista ya mostraba, para no cambiar lo que ve el operador.
+
+    **Lo que queda afuera a propósito:**
+
+    - El permiso `despliegues.aprobar_despliegue`, que sigue en el decorador de la vista: es
+      autorización HTTP, no una regla de dominio. La diferencia importa — sin permiso la
+      respuesta es un 403, y esto en cambio es un mensaje de error en la pantalla.
+    - `verificar_acceso` por unidad de negocio, por el mismo motivo.
+    - La auditoría. Ningún servicio de este módulo registra eventos y la vista ya lo hace con
+      su `request` (y por tanto con la IP); moverla acá cambiaría el patrón de la app entera
+      y perdería ese dato.
+    """
+    if despliegue.estado != Despliegue.Estado.PENDIENTE_APROBACION:
+        raise ValueError('Este despliegue ya no está pendiente de aprobación.')
+    if despliegue.creado_por_id == usuario.id:
+        raise ValueError('Quien crea un despliegue no puede aprobarlo (regla de cuatro ojos).')
+
+    despliegue.estado = Despliegue.Estado.APROBADO
+    despliegue.aprobado_por = usuario
+    despliegue.save(update_fields=['estado', 'aprobado_por'])
+    return despliegue
+
+
+def pausar_despliegue(*, despliegue: Despliegue) -> Despliegue:
+    """Pausa un despliegue que está publicando. Lanza `ValueError` si no lo está.
+
+    `D-5`, y además **un solo escritor del estado `PAUSADO`**. Había dos: esta transición en
+    `apps/panel/views/despliegues.py` y `evaluar_freno_automatico`. El freno sigue decidiendo
+    *cuándo* frenar —umbral de error, `freno_omitido`, su propio log— y delega la escritura
+    acá; su comportamiento no cambia porque su condición ya exigía `PUBLICANDO`, que es
+    exactamente lo que este servicio valida.
+
+    El `ValueError` lleva el estado actual a propósito: en la vista, "no se pudo pausar" sin
+    decir por qué obliga al operador a adivinar si el despliegue ya estaba pausado,
+    completado o cancelado.
+
+    No registra auditoría —ningún servicio de este módulo lo hace— ni toca MQTT: pausar es
+    solo el estado. Lo que deja de publicarse lo decide `publicar_despliegue` al consultar el
+    estado, y los reintentos siguen en `reintentar_despliegue`.
+    """
+    if despliegue.estado != Despliegue.Estado.PUBLICANDO:
+        raise ValueError(
+            f'Solo se puede pausar un despliegue que está publicando, y este está '
+            f'{despliegue.get_estado_display().lower()}.',
+        )
+    despliegue.estado = Despliegue.Estado.PAUSADO
+    despliegue.save(update_fields=['estado'])
+    return despliegue
+
+
+def marcar_reanudado(*, despliegue: Despliegue) -> Despliegue:
+    """Pasa un despliegue pausado a `PUBLICANDO` y marca `freno_omitido`.
+
+    `D-5`. **Solo la transición**: el reenvío por MQTT sigue siendo de
+    `reintentar_despliegue`, y quien llama debe invocar esto **después** de que ese reenvío
+    tuvo éxito. Esa separación es deliberada — el bug del piloto (6-ago-2026) fue
+    exactamente un estado que pasaba a `PUBLICANDO` sin que se reintentara nada, así que un
+    servicio que hiciera las dos cosas juntas volvería a poder dejar el estado mintiendo si
+    el broker falla a mitad.
+
+    `freno_omitido = True` es la semántica que se conserva: reanudar es una decisión
+    consciente del operador sobre errores que ya vio, así que el próximo error no debe
+    volver a frenar el despliegue en un bucle (ver `evaluar_freno_automatico`).
+
+    Valida `PAUSADO` como defensa en profundidad: la vista ya lo comprueba antes de
+    reenviar, y revalidar acá no cuesta nada.
+    """
+    if despliegue.estado != Despliegue.Estado.PAUSADO:
+        raise ValueError(
+            f'Solo se puede reanudar un despliegue pausado, y este está '
+            f'{despliegue.get_estado_display().lower()}.',
+        )
+    despliegue.estado = Despliegue.Estado.PUBLICANDO
+    despliegue.freno_omitido = True
+    despliegue.save(update_fields=['estado', 'freno_omitido'])
+    return despliegue
+
+
 def publicar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     """Resuelve el destino, crea ResultadoDespliegue por estación y publica por MQTT.
 
@@ -287,8 +376,12 @@ def evaluar_freno_automatico(despliegue: Despliegue) -> bool:
     errores = ya_reportaron.filter(estado=ResultadoDespliegue.Estado.ERROR).count()
     porcentaje = (errores / total) * 100
     if porcentaje >= float(despliegue.umbral_error_pct) and despliegue.estado == Despliegue.Estado.PUBLICANDO:
-        despliegue.estado = Despliegue.Estado.PAUSADO
-        despliegue.save(update_fields=['estado'])
+        # La escritura del estado pasa por `pausar_despliegue` para que haya un solo
+        # escritor (`D-5`). No puede lanzar desde acá: la condición de arriba ya exige
+        # PUBLICANDO, que es lo único que ese servicio valida. Lo que NO se mueve es la
+        # decisión —umbral, `freno_omitido`— ni este log, que es del freno y no de la
+        # transición.
+        pausar_despliegue(despliegue=despliegue)
         logger.warning(
             'Despliegue %s pausado automáticamente: %.1f%% de error (umbral %.1f%%)',
             despliegue.id, porcentaje, despliegue.umbral_error_pct,

@@ -352,6 +352,222 @@ class ReintentarDespliegueTests(_BaseDespliegueTests):
         )
 
 
+class AprobarDespliegueServicioTests(_BaseDespliegueTests):
+    """`aprobar_despliegue` como servicio (`D-5` de la auditoría por agentes).
+
+    La regla de cuatro ojos —quien crea un despliegue no puede aprobarlo— vivía en un `elif`
+    de `apps/panel/views/despliegues.py`. Eso significa que **cualquier otra vía de
+    aprobación se la saltea**: un `manage.py shell`, un comando, una tarea futura. Es una
+    regla de gobernanza (AC-2 de la auditoría del 22-ago-2026), no una validación de
+    formulario, así que su sitio es el servicio.
+
+    Lo que NO se mueve: el permiso `despliegues.aprobar_despliegue` sigue en el decorador de
+    la vista —es autorización HTTP, no dominio— y `verificar_acceso` por unidad de negocio
+    también. La auditoría se queda en la vista porque ningún servicio de este módulo registra
+    eventos (cero `registrar_evento` en `apps/despliegues/services.py`), y moverla sería
+    cambiar el patrón de la app entera.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.otro = User.objects.create_user(username='aprobador_srv', password='x')
+
+    def test_aprueba_y_deja_constancia_de_quien_aprobo(self):
+        from apps.despliegues.services import aprobar_despliegue
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PENDIENTE_APROBACION)
+
+        aprobar_despliegue(despliegue=despliegue, usuario=self.otro)
+
+        despliegue.refresh_from_db()
+        self.assertEqual(despliegue.estado, Despliegue.Estado.APROBADO)
+        self.assertEqual(despliegue.aprobado_por, self.otro)
+
+    def test_la_regla_de_cuatro_ojos_se_aplica_en_el_servicio(self):
+        """El punto del hallazgo: sin pasar por la vista, el creador tampoco puede aprobar."""
+        from apps.despliegues.services import aprobar_despliegue
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PENDIENTE_APROBACION)
+
+        with self.assertRaisesMessage(ValueError, 'cuatro ojos'):
+            aprobar_despliegue(despliegue=despliegue, usuario=self.usuario)
+
+        despliegue.refresh_from_db()
+        self.assertEqual(despliegue.estado, Despliegue.Estado.PENDIENTE_APROBACION)
+        self.assertIsNone(despliegue.aprobado_por)
+
+    def test_no_aprueba_uno_que_ya_no_esta_pendiente(self):
+        from apps.despliegues.services import aprobar_despliegue
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.APROBADO)
+
+        with self.assertRaisesMessage(ValueError, 'pendiente de aprobación'):
+            aprobar_despliegue(despliegue=despliegue, usuario=self.otro)
+
+    def test_tampoco_uno_cancelado_o_completado(self):
+        """Aprobar algo terminado reescribiría una historia que ya pasó."""
+        from apps.despliegues.services import aprobar_despliegue
+
+        for estado in (Despliegue.Estado.CANCELADO, Despliegue.Estado.COMPLETADO,
+                       Despliegue.Estado.BORRADOR):
+            despliegue = self._crear_despliegue(version=f'9.{estado}', estado=estado)
+            with self.assertRaises(ValueError):
+                aprobar_despliegue(despliegue=despliegue, usuario=self.otro)
+
+    def test_el_servicio_no_registra_auditoria(self):
+        """Se queda en la vista, que tiene el `request` y por tanto la IP. Que este sea el
+        único lugar que no la registra es lo que garantiza una sola fila por aprobación."""
+        from apps.auditoria.models import EventoAuditoria
+        from apps.despliegues.services import aprobar_despliegue
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PENDIENTE_APROBACION)
+
+        aprobar_despliegue(despliegue=despliegue, usuario=self.otro)
+
+        self.assertEqual(EventoAuditoria.objects.filter(accion='despliegue.aprobar').count(), 0)
+
+
+class PausarDespliegueServicioTests(_BaseDespliegueTests):
+    """`pausar_despliegue` como servicio (`D-5`), y **un solo escritor del estado PAUSADO**.
+
+    Había dos: la vista del panel y `evaluar_freno_automatico`. El freno sigue decidiendo
+    *cuándo* frenar —umbral de error, `freno_omitido`, su propio log— pero la escritura del
+    estado es ahora una sola. Su comportamiento no cambia: su condición ya exigía
+    `estado == PUBLICANDO`, que es justo lo que el servicio valida, así que desde ahí no
+    puede lanzar.
+
+    **Cambio de comportamiento observable** (documentado en §10-BW): si el despliegue no
+    está publicando, la vista antes **no hacía nada y redirigía en silencio** —indistinguible
+    de "se pausó"— y ahora dice por qué no se pudo. Es la misma corrección que el repo ya
+    hizo en el lote de aprobación de estaciones.
+    """
+
+    def test_pausa_uno_que_esta_publicando(self):
+        from apps.despliegues.services import pausar_despliegue
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PUBLICANDO)
+
+        pausar_despliegue(despliegue=despliegue)
+
+        despliegue.refresh_from_db()
+        self.assertEqual(despliegue.estado, Despliegue.Estado.PAUSADO)
+
+    def test_no_pausa_uno_que_no_esta_publicando_y_dice_en_que_estado_esta(self):
+        """El mensaje lleva el estado actual: "no se pudo" sin decir por qué obliga al
+        operador a adivinar si ya estaba pausado, completado o cancelado."""
+        from apps.despliegues.services import pausar_despliegue
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.COMPLETADO)
+
+        with self.assertRaises(ValueError) as ctx:
+            pausar_despliegue(despliegue=despliegue)
+
+        # En minúscula porque el estado va dentro de la frase ("...y este está completado.").
+        self.assertIn(despliegue.get_estado_display().lower(), str(ctx.exception))
+        despliegue.refresh_from_db()
+        self.assertEqual(despliegue.estado, Despliegue.Estado.COMPLETADO)
+
+    def test_tampoco_pausa_uno_ya_pausado(self):
+        from apps.despliegues.services import pausar_despliegue
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PAUSADO)
+
+        with self.assertRaises(ValueError):
+            pausar_despliegue(despliegue=despliegue)
+
+    def test_el_servicio_no_registra_auditoria(self):
+        from apps.auditoria.models import EventoAuditoria
+        from apps.despliegues.services import pausar_despliegue
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PUBLICANDO)
+
+        pausar_despliegue(despliegue=despliegue)
+
+        self.assertEqual(EventoAuditoria.objects.filter(accion='despliegue.pausar').count(), 0)
+
+    def test_el_freno_automatico_sigue_pausando_por_el_mismo_camino(self):
+        """Lo que garantiza que no quedaron dos escritores: el freno pausa a través del
+        servicio, y su decisión (umbral, `freno_omitido`) no cambia."""
+        from apps.despliegues.services import evaluar_freno_automatico
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PUBLICANDO, umbral_error_pct=50)
+        estacion = self._crear_estacion('ML001-FRENO')
+        despliegue.estaciones.set([estacion])
+        self._resultado(despliegue, estacion, ResultadoDespliegue.Estado.ERROR)
+
+        self.assertTrue(evaluar_freno_automatico(despliegue))
+
+        despliegue.refresh_from_db()
+        self.assertEqual(despliegue.estado, Despliegue.Estado.PAUSADO)
+
+
+class MarcarReanudadoServicioTests(_BaseDespliegueTests):
+    """`marcar_reanudado`: solo la transición de reanudar (`D-5`).
+
+    Deliberadamente NO orquesta el reenvío. `reintentar_despliegue` sigue siendo el
+    responsable de publicar por MQTT, y la vista llama a este servicio **solo en el camino
+    de éxito**: el estado no puede pasar a `PUBLICANDO` si el paquete no se reenvió, que es
+    el bug que esta pantalla tuvo en el piloto (6-ago-2026) — "reanudar" cambiaba el estado
+    sin reintentar nada.
+
+    Valida `PAUSADO` igual que la vista antes de reenviar, como defensa en profundidad: la
+    guarda de la vista sigue ahí y esta revalidación cuesta nada.
+    """
+
+    def test_pasa_a_publicando_y_marca_el_freno_omitido(self):
+        """`freno_omitido` es lo que evita que el próximo error vuelva a frenar en bucle:
+        reanudar es una decisión consciente del operador sobre errores que ya vio."""
+        from apps.despliegues.services import marcar_reanudado
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PAUSADO)
+        self.assertFalse(despliegue.freno_omitido)
+
+        marcar_reanudado(despliegue=despliegue)
+
+        despliegue.refresh_from_db()
+        self.assertEqual(despliegue.estado, Despliegue.Estado.PUBLICANDO)
+        self.assertTrue(despliegue.freno_omitido)
+
+    def test_no_reanuda_uno_que_no_esta_pausado(self):
+        from apps.despliegues.services import marcar_reanudado
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PUBLICANDO)
+
+        with self.assertRaises(ValueError):
+            marcar_reanudado(despliegue=despliegue)
+
+    def test_el_servicio_no_registra_auditoria(self):
+        from apps.auditoria.models import EventoAuditoria
+        from apps.despliegues.services import marcar_reanudado
+
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PAUSADO)
+
+        marcar_reanudado(despliegue=despliegue)
+
+        self.assertEqual(EventoAuditoria.objects.filter(accion='despliegue.reanudar').count(), 0)
+
+    def test_si_el_reenvio_falla_el_estado_NO_pasa_a_publicando(self):
+        """La garantía que importa, verificada por la vista completa: con el broker caído el
+        despliegue sigue pausado, no queda "publicando" algo que nunca salió."""
+        aprobador = User.objects.create_user(username='reanuda_falla', password='x')
+        PerfilUsuario.objects.create(usuario=aprobador, acceso_todas_unidades=True)
+        aprobador.user_permissions.add(
+            Permission.objects.get(content_type__app_label='despliegues', codename='change_despliegue'),
+        )
+        despliegue = self._crear_despliegue(estado=Despliegue.Estado.PAUSADO)
+        estacion = self._crear_estacion('ML001-FALLA')
+        despliegue.estaciones.set([estacion])
+        self._resultado(despliegue, estacion, ResultadoDespliegue.Estado.ERROR)
+
+        self.client.force_login(aprobador)
+        with patch('apps.despliegues.services.mqtt_publish.multiple', side_effect=OSError('broker caído')):
+            self.client.post(f'/despliegues/{despliegue.pk}/reanudar/')
+
+        despliegue.refresh_from_db()
+        self.assertEqual(despliegue.estado, Despliegue.Estado.PAUSADO)
+        self.assertFalse(despliegue.freno_omitido)
+
+
 class DespliegueReanudarVistaTests(_BaseDespliegueTests):
     def setUp(self):
         super().setUp()

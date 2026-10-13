@@ -1,11 +1,16 @@
 """API de ingesta de sondeos de enlace.
 
 Por qué existe: el sondeo ICMP tiene que correr desde un host con ruta hacia las IP de
-las farmacias, y ese host **no es** el servidor central (100% de pérdida de ping,
-confirmado el 24-ago-2026 — ver `apps.monitoreo.enlaces`). Cuando ese host además no
-puede alcanzar la base de datos, la alternativa es que reporte por HTTP: una sonda
-liviana mide y este endpoint persiste, reusando exactamente el mismo
-`registrar_sondeo()` que usa el comando local.
+las farmacias. Cuando ese host además no puede alcanzar la base de datos, la alternativa
+es que reporte por HTTP: una sonda liviana mide y este endpoint persiste, reusando
+exactamente el mismo `registrar_sondeo()` que usa el comando local.
+
+**Este docstring afirmaba que ese host "no es el servidor central (100% de pérdida de ping,
+confirmado el 24-ago-2026)", y eso quedó desmentido el 11-sep-2026** (`DOC-03` de la
+auditoría por agentes): desde el NUC responden 19 de los 25 gateways de San Gregorio, y las
+6 que no son caídas reales o sitios de baja — sin ruta fallarían las 25. Ver `CLAUDE.md`,
+"Lo que bloquea de verdad". El endpoint sigue siendo útil por la otra mitad de la razón —un
+sondeador sin acceso a la base— pero no por la que decía acá.
 
 Mismo esquema que la API móvil (`apps/mantenimiento/api_views.py`): DRF con
 `TokenAuthentication`, que ya está configurado como default en `REST_FRAMEWORK`.

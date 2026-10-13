@@ -735,6 +735,79 @@ class EstacionMesaDeAyudaVsSoporteTecnicoTests(TestCase):
         )
 
 
+class AprobarUnaEstacionQueVeniaRechazadaAvisaTests(TestCase):
+    """Volver de un rechazo no es gratis, y el panel ahora lo dice (§10-BV).
+
+    Desde §10-BL rechazar revoca la credencial MQTT en EMQX. Si después se aprueba, el
+    `identidad.json` del equipo conserva una credencial que ya no existe, el agente no cae a
+    la compartida y el script que borraría ese archivo viaja por MQTT — así que no le llega.
+    La estación puede quedar muda y el síntoma no apunta a la causa: nadie piensa que no
+    conecta *porque la aprobaron*.
+
+    El arreglo de fondo es del agente (0.34, §10-BV). Esto no arregla: avisa. Medido el
+    12-oct-2026, nunca se rechazó una estación, así que lo que cambia es que la primera vez
+    no se diagnostique a ciegas.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
+        self.usuario = User.objects.create_user(username='u_aprueba', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        for codename in ('aprobar_estacion', 'view_estacion'):
+            self.usuario.user_permissions.add(
+                Permission.objects.get(content_type__app_label='catalogo', codename=codename),
+            )
+        self.client.force_login(self.usuario)
+
+    def _aprobar(self):
+        return self.client.post(reverse('panel:estacion_aprobar', args=[self.estacion.pk]))
+
+    def test_aprobar_una_pendiente_no_avisa_nada(self):
+        """El caso normal —y el único que ocurre hoy— no se ensucia con una advertencia."""
+        resp = self._aprobar()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'venía RECHAZADA')
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.estado_aprobacion, Estacion.EstadoAprobacion.APROBADA)
+
+    def test_aprobar_una_rechazada_avisa_que_puede_no_volver_sola(self):
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.RECHAZADA
+        self.estacion.save(update_fields=['estado_aprobacion'])
+
+        resp = self._aprobar()
+
+        self.assertContains(resp, 'venía RECHAZADA')
+        self.assertContains(resp, 'identidad.json')
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.estado_aprobacion, Estacion.EstadoAprobacion.APROBADA)
+
+    def test_queda_en_la_auditoria_de_donde_venia(self):
+        """Si una estación aprobada no vuelve, lo primero que hay que poder contestar es si
+        venía de un rechazo."""
+        self.estacion.estado_aprobacion = Estacion.EstadoAprobacion.RECHAZADA
+        self.estacion.save(update_fields=['estado_aprobacion'])
+
+        self._aprobar()
+
+        evento = EventoAuditoria.objects.filter(accion='estacion.aprobar').latest('timestamp')
+        self.assertTrue(evento.detalle['venia_rechazada'])
+
+    def test_la_transicion_no_se_escribe_en_la_vista(self):
+        """`D-5`: la vista hace permisos, scoping, auditoría y el aviso; la transición es del
+        servicio. Si alguien vuelve a escribir el campo acá, esto lo marca."""
+        import inspect
+
+        from apps.panel.views import estaciones_aprobacion
+
+        fuente = inspect.getsource(estaciones_aprobacion)
+        self.assertNotIn('estado_aprobacion = Estacion.EstadoAprobacion', fuente)
+        self.assertIn('aprobar_estacion(estacion)', fuente)
+
+
 class RechazarEstacionCortaElAccesoAlBrokerTests(TestCase):
     """Rechazar desde el panel tiene que revocar la credencial MQTT (`B-1`).
 

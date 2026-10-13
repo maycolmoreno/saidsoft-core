@@ -374,6 +374,146 @@ class VerificacionTests(_BaseAperturaTests):
         self.assertTrue(cumple)
 
 
+class CancelarAperturaTests(_BaseAperturaTests):
+    """`cancelar_apertura` como servicio (`D-5` de la auditoría por agentes).
+
+    La transición vivía en `apps/panel/views/aperturas.py`: la vista validaba el estado,
+    recorría los tokens revocándolos y escribía `estado = CANCELADA`. Lo que queda en la
+    vista es el scoping por unidad de negocio, el permiso, el evento `apertura.cancelar`
+    —con su `request`, para no perder la IP— y el mensaje al operador.
+
+    **Es atómica, y el motivo es técnico y no de consistencia con el módulo:** todos los
+    efectos de la operación son escrituras de base de datos —`token.save()` y los
+    `EventoAuditoria` de `revocar_token`—, no hay publish MQTT, correo, archivo ni señales
+    (verificado). Un rollback los revierte íntegros y no puede dejar huérfano un efecto
+    externo. Sin transacción, un fallo en el token 3 de 5 dejaba dos tokens revocados con
+    la apertura **todavía activa**: peor que no haber cancelado, porque esos tokens ya no
+    sirven para enrolar y la apertura aparenta estar en curso.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.auditoria.models import EventoAuditoria
+
+        self.EventoAuditoria = EventoAuditoria
+
+    def _con_tokens(self):
+        apertura = self._apertura_aprobada()
+        emitir_tokens(apertura=apertura, usuario=self.aprobador)
+        return apertura
+
+    def test_cancela_y_devuelve_cuantos_tokens_revoco(self):
+        from apps.aperturas.services import cancelar_apertura
+
+        apertura = self._con_tokens()
+        total_tokens = apertura.tokens.count()
+
+        revocados = cancelar_apertura(apertura=apertura, usuario=self.aprobador)
+
+        apertura.refresh_from_db()
+        self.assertEqual(apertura.estado, Apertura.Estado.CANCELADA)
+        self.assertEqual(revocados, total_tokens)
+        self.assertTrue(all(t.revocado for t in apertura.tokens.all()))
+
+    def test_no_toca_un_token_ya_usado(self):
+        """Un token usado ya enroló su estación: revocarlo no desenrola nada y ensuciaría
+        el historial con una revocación que no ocurrió."""
+        from apps.aperturas.services import cancelar_apertura
+
+        apertura = self._con_tokens()
+        usado = apertura.tokens.first()
+        usado.usado_en = timezone.now()
+        usado.save(update_fields=['usado_en'])
+
+        revocados = cancelar_apertura(apertura=apertura, usuario=self.aprobador)
+
+        usado.refresh_from_db()
+        self.assertFalse(usado.revocado)
+        self.assertEqual(revocados, apertura.tokens.count() - 1)
+
+    def test_no_vuelve_a_revocar_uno_ya_revocado(self):
+        """El filtro es `revocado=False`: un segundo evento de revocación sobre el mismo
+        token diría que pasó algo que no pasó."""
+        from apps.aperturas.services import cancelar_apertura, revocar_token
+
+        apertura = self._con_tokens()
+        token = apertura.tokens.first()
+        revocar_token(token=token, usuario=self.aprobador, motivo='revocado antes')
+        eventos_antes = self.EventoAuditoria.objects.filter(accion='apertura.revocar_token').count()
+
+        revocados = cancelar_apertura(apertura=apertura, usuario=self.aprobador)
+
+        self.assertEqual(revocados, apertura.tokens.count() - 1)
+        self.assertEqual(
+            self.EventoAuditoria.objects.filter(accion='apertura.revocar_token').count(),
+            eventos_antes + revocados,
+        )
+
+    def test_una_apertura_ya_cancelada_no_se_cancela_dos_veces(self):
+        from apps.aperturas.services import cancelar_apertura
+
+        apertura = self._apertura_aprobada()
+        apertura.estado = Apertura.Estado.CANCELADA
+        apertura.save(update_fields=['estado'])
+
+        with self.assertRaisesMessage(ValueError, 'cerrada'):
+            cancelar_apertura(apertura=apertura, usuario=self.aprobador)
+
+    def test_una_apertura_completada_tampoco(self):
+        """Cancelar una apertura terminada reescribiría una historia que ya pasó."""
+        from apps.aperturas.services import cancelar_apertura
+
+        apertura = self._apertura_aprobada()
+        apertura.estado = Apertura.Estado.COMPLETADA
+        apertura.save(update_fields=['estado'])
+
+        with self.assertRaisesMessage(ValueError, 'cerrada'):
+            cancelar_apertura(apertura=apertura, usuario=self.aprobador)
+
+    def test_un_fallo_a_mitad_no_deja_la_cancelacion_partida(self):
+        """La razón de ser de la transacción. Se fuerza el fallo en la segunda revocación y
+        se comprueba que no quedó NADA: ni el primer token revocado, ni su evento de
+        auditoría, ni la apertura cancelada."""
+        from apps.aperturas import services as aperturas_services
+        from apps.aperturas.services import cancelar_apertura
+
+        apertura = self._con_tokens()
+        self.assertGreaterEqual(apertura.tokens.count(), 2)
+        eventos_antes = self.EventoAuditoria.objects.filter(accion='apertura.revocar_token').count()
+        real = aperturas_services.revocar_token
+        llamadas = {'n': 0}
+
+        def falla_en_la_segunda(**kwargs):
+            llamadas['n'] += 1
+            if llamadas['n'] == 2:
+                raise RuntimeError('fallo simulado a mitad de la cancelación')
+            return real(**kwargs)
+
+        with patch.object(aperturas_services, 'revocar_token', side_effect=falla_en_la_segunda):
+            with self.assertRaises(RuntimeError):
+                cancelar_apertura(apertura=apertura, usuario=self.aprobador)
+
+        apertura.refresh_from_db()
+        self.assertEqual(apertura.estado, Apertura.Estado.APROBADA)
+        self.assertFalse(any(t.revocado for t in apertura.tokens.all()))
+        self.assertEqual(
+            self.EventoAuditoria.objects.filter(accion='apertura.revocar_token').count(), eventos_antes,
+        )
+
+    def test_el_servicio_no_registra_el_evento_de_cancelacion(self):
+        """Se queda en la vista a propósito: `registrar_evento` saca la IP del `request` y
+        los servicios no lo reciben. Moverlo acá habría perdido trazabilidad —los eventos de
+        `aprobar_apertura` hoy no tienen IP— y la garantía de "exactamente una vez" es que
+        este sea el único lugar que NO lo registra."""
+        from apps.aperturas.services import cancelar_apertura
+
+        apertura = self._con_tokens()
+
+        cancelar_apertura(apertura=apertura, usuario=self.aprobador)
+
+        self.assertEqual(self.EventoAuditoria.objects.filter(accion='apertura.cancelar').count(), 0)
+
+
 class CierreDeAperturaTests(_BaseAperturaTests):
     @patch('apps.scripts.services.enviar_script', return_value=True)
     @patch('apps.mqtt_worker.services.aprovisionar_credencial_estacion', return_value=None)

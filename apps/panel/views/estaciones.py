@@ -10,7 +10,7 @@ from apps.auditoria.models import registrar_evento
 from apps.catalogo.models import Estacion, Farmacia, Grupo, VersionAgente
 from apps.catalogo.services import (
     enviar_actualizacion_agente, enviar_comando, enviar_configurar_nodo_pos, enviar_pausa,
-    obtener_clave_bitlocker_descifrada, obtener_password_nodo, rechazar_estacion,
+    aprobar_estacion, obtener_clave_bitlocker_descifrada, obtener_password_nodo, rechazar_estacion,
     url_escritorio_remoto_meshcentral, url_grabaciones_meshcentral, url_terminal_remoto_meshcentral,
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
@@ -163,48 +163,10 @@ def estaciones_lista(request):
     })
 
 
-@login_required
-@permission_required('catalogo.view_estacion', raise_exception=True)
-def estaciones_pendientes_partial(request, aviso=''):
-    # `_activa` como su marco: sin eso, con un cliente fijado el aviso contaba las pendientes
-    # de TODOS mientras la tabla mostraba uno (ver AvisoDePendientesSigueAlClienteActivoTests).
-    pendientes = scope_por_unidad_negocio_activa(
-        Estacion.objects.select_related('farmacia', 'farmacia__grupo').filter(
-            estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
-        ),
-        request, 'farmacia__unidad_negocio',
-    ).order_by('codigo')
-    # `aviso` se renderiza dentro del propio partial: las vistas de abajo devuelven
-    # este HTML por HTMX (sin recargar la página), así que un messages.error() no se
-    # vería hasta la próxima navegación completa.
-    return render(request, 'panel/estaciones_pendientes_partial.html', {
-        'pendientes': pendientes, 'aviso': aviso,
-    })
 
 
-@login_required
-@permission_required('catalogo.aprobar_estacion', raise_exception=True)
-@require_POST
-def estacion_aprobar(request, pk):
-    estacion = get_object_or_404(Estacion, pk=pk)
-    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
-    estacion.estado_aprobacion = Estacion.EstadoAprobacion.APROBADA
-    estacion.save(update_fields=['estado_aprobacion'])
-    registrar_evento(usuario=request.user, accion='estacion.aprobar', objeto=estacion, request=request)
-    return estaciones_pendientes_partial(request)
 
 
-@login_required
-@permission_required('catalogo.aprobar_estacion', raise_exception=True)
-@require_POST
-def estacion_rechazar(request, pk):
-    estacion = get_object_or_404(Estacion, pk=pk)
-    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
-    revocada = rechazar_estacion(estacion)  # revoca su credencial del broker (`B-1`, §10-BL)
-    registrar_evento(usuario=request.user, accion='estacion.rechazar', objeto=estacion, request=request, detalle={'credencial_mqtt_revocada': revocada})
-    return estaciones_pendientes_partial(request, aviso='' if revocada is not False else (
-        f'{estacion.codigo} quedó rechazada, pero su credencial MQTT no se pudo revocar: sigue '
-        f'pudiendo conectarse al broker. Reintentá cuando EMQX responda.'))
 
 
 @login_required
@@ -521,30 +483,3 @@ def estacion_bitlocker_ver_clave(request, pk):
     return _render_info_modal(request, estacion, bitlocker_clave_revelada=clave, bitlocker_solicitada=True)
 
 
-@login_required
-@permission_required('catalogo.aprobar_estacion', raise_exception=True)
-@require_POST
-def estaciones_aprobar_lote(request):
-    ids = request.POST.getlist('estacion_ids')
-    if not ids:
-        # Antes esto no aprobaba nada y devolvía la tabla igual, sin decir por qué:
-        # indistinguible de "se aprobó y falló en silencio" para quien lo usa.
-        return estaciones_pendientes_partial(
-            request, aviso='No seleccionaste ninguna estación: marcá al menos una casilla antes de aprobar en lote.',
-        )
-    estaciones = scope_por_unidad_negocio(
-        Estacion.objects.filter(pk__in=ids, estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE),
-        request.user, 'farmacia__unidad_negocio',
-    )
-    aprobadas = 0
-    for estacion in estaciones:
-        estacion.estado_aprobacion = Estacion.EstadoAprobacion.APROBADA
-        estacion.save(update_fields=['estado_aprobacion'])
-        registrar_evento(usuario=request.user, accion='estacion.aprobar', objeto=estacion, request=request)
-        aprobadas += 1
-    aviso = ''
-    if aprobadas < len(ids):
-        # Puede pasar si otro operador ya las aprobó, o si el filtro por unidad de
-        # negocio dejó afuera alguna de las que llegaron en el POST.
-        aviso = f'Se aprobaron {aprobadas} de {len(ids)} estaciones seleccionadas.'
-    return estaciones_pendientes_partial(request, aviso=aviso)
