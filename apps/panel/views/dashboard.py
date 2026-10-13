@@ -7,6 +7,7 @@ from django.views.decorators.http import require_GET
 from django.utils import timezone
 
 from apps.catalogo.models import Estacion, Farmacia
+from apps.catalogo.horarios import separar_calladas_por_horario
 from apps.catalogo.services import calcular_matriz_cumplimiento, estado_flota
 from apps.cuentas.services import unidades_negocio_en_foco
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
@@ -159,6 +160,21 @@ def _contexto_vivo(request):
     )
     total_sin_reportar = flota['sin_reportar']
 
+    # El reparto por el horario de CADA farmacia, que es la diferencia entre "hay 37
+    # estaciones calladas" y "hay 7 que deberían estar vendiendo y no responden".
+    #
+    # Medido el 12-oct-2026 a las 23:29: 37 calladas de 66 y ninguna era una avería —eran
+    # locales cerrados—. Una franja global no alcanza: de las 702 farmacias activas, 8
+    # abren 24 horas y 42 cierran después de las 22:00, así que cualquier hora de corte
+    # única miente para unas 50 (ver apps.catalogo.horarios).
+    #
+    # Se MATERIALIZA la lista en vez de dejarla perezosa: antes se pedía `[:6]` y esto
+    # necesita todas para repartirlas. Es la MISMA consulta, sin el LIMIT — son decenas de
+    # filas, no miles, porque ya viene acotada a aprobadas y no administrativas. El reparto
+    # no consulta nada: el horario viaja en `farmacia`, que ya venía con select_related.
+    calladas = list(sin_reportar)
+    reparto_calladas = separar_calladas_por_horario(calladas)
+
     # Farmacias sin enlace, para el KPI. La LISTA ya no vive acá: sus filas entran en la
     # cola de incidencias de arriba, con prioridad 1, porque una farmacia sin enlace no
     # vende y es lo primero que hay que ver.
@@ -268,7 +284,12 @@ def _contexto_vivo(request):
         'total_enlaces_caidos': total_enlaces_caidos,
         'caidas_en_curso': caidas_en_curso,
         'ventana_linea_tiempo_horas': VENTANA_LINEA_TIEMPO_HORAS,
-        'sin_reportar': sin_reportar[:6],
+        # Se muestran primero las que deberían estar operando: son las accionables. Si no
+        # hay ninguna, se muestran las otras igual, para no dejar el bloque vacío cuando
+        # el total dice que hay calladas.
+        'sin_reportar': (reparto_calladas['dentro'] or calladas)[:6],
+        'calladas_dentro_de_horario': reparto_calladas['total_dentro'],
+        'calladas_fuera_de_horario': reparto_calladas['total_fuera'],
         'total_sin_reportar': total_sin_reportar,
         'worker_mqtt_activo': worker_mqtt_activo,
         'worker_mqtt_ultimo_latido': latido_worker.instante if latido_worker else None,

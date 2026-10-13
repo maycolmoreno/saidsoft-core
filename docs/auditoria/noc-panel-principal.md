@@ -333,12 +333,21 @@ sacar; las otras 25 son cajas de farmacias que cerraron.
    esa curva. Graficar la flota sin distinguir horario de operación produciría una gráfica que
    parece una caída masiva diaria.
 
-**Tratado el 13-oct-2026 (§10-BY), rotulando y sin recontar.** `estado_flota` informa
-`fuera_de_horario` y `horario_operacion` (franja 07:00–22:00, elegida midiendo), el tablero lo
-dice, y fuera de horario el distintivo de "sin reportar" pasa de ámbar a neutro porque no se
-puede afirmar que algo esté mal. **Ningún conteo cambió**, y hay prueba que lo fija. Lo que sigue
-pendiente: el horario por sitio (`Farmacia.horario` es texto libre en 691 filas) y la decisión de
-si el conteo debe cambiar fuera de horario.
+**Tratado el 13-oct-2026, en dos pasos.** Primero (§10-BY) con una franja horaria global de
+07:00–22:00; el usuario señaló que eso ignora las farmacias de 24 horas y que el campo
+`Farmacia.horario` ya existe para contemplarlo. Tenía razón: la franja era falsa para unas 50
+farmacias. Así que se retiró y se reemplazó (§10-BZ) por el **horario real de cada sitio**, leído
+de ese campo —validado contra los 702 valores de producción: 682 rangos, 8 de 24 horas, 12 sin
+determinar de los cuales 11 están vacíos, 0 implausibles—.
+
+El KPI "sin reportar" ahora desglosa `N en farmacia abierta · M en local cerrado`, y el
+distintivo se pone ámbar solo si hay estaciones cuya farmacia debería estar operando. **Ningún
+conteo cambió**, y hay prueba de que el desglose suma exactamente el total. Entre las 39
+farmacias con agente hay **diez horas de cierre distintas** más una de 24 horas, así que ninguna
+franja única habría servido.
+
+Pendiente: el horario por **día** (lo que se lee es la envolvente del sitio, así que un domingo
+de horario corto no se distingue) y la decisión de si el conteo debe cambiar fuera de horario.
 
 **La exclusión de administrativas sigue siendo código muerto**: no se tocó, porque quitarla o
 corregirla cambia un criterio de conteo.

@@ -10177,151 +10177,237 @@ class LineaTiempoEnlacesCaidosTests(TestCase):
         self.assertEqual(len(barras), MAX_BARRAS_LINEA_TIEMPO)
 
 
-class HorarioDeOperacionEnElTableroTests(TestCase):
-    """Que el tablero DIGA con qué horario habla, sin que eso cambie ningún conteo.
+class HorarioDeFarmaciaTests(TestCase):
+    """Leer `Farmacia.horario`, que es texto libre, para saber si un local debería estar
+    abierto.
 
-    Salió de medir producción el 12-oct-2026 a las 23:29: 29 de 66 estaciones en línea y
-    37 "sin reportar", y ninguna de esas 37 era una avería — eran locales cerrados. El
-    número estaba bien y la pantalla no daba forma de saber si había que llamar a alguien.
+    Reemplaza a `HorarioDeOperacionEnElTableroTests`, que probaba una franja horaria
+    GLOBAL de 07:00–22:00. Esa franja miente para unas 50 farmacias y por eso se retiró:
+    8 abren 24 horas —y la franja las declaraba cerradas toda la noche— y 42 cierran
+    después de las 22:00, así que a las 22:30 las declaraba cerradas mientras vendían.
 
-    La regla que estas pruebas fijan: **el horario explica, no cuenta.** Si algún día el
-    conteo tiene que cambiar fuera de horario, será una decisión aparte; hacerlo a medias
-    repetiría el hallazgo D-01, donde el mismo concepto se calculaba distinto en tres
-    pantallas.
+    **Todos los textos de estas pruebas son valores reales**, tomados de los 364 distintos
+    que hay cargados en producción. Dos de ellos son las trampas que el primer parseo que
+    escribí interpretó mal, y están acá para que no vuelvan.
+    """
+
+    # (texto real, apertura esperada, cierre esperado)
+    CASOS_CON_RANGO = [
+        ('07H00 a 22H00', 7.0, 22.0),
+        ('07H00 a 21H00', 7.0, 21.0),
+        ('07H00 a 23H30', 7.0, 23.5),
+        ('06H30 a 23H00', 6.5, 23.0),
+        # Trampa 1: un patrón ingenuo de hora+am/pm toma los MINUTOS ("00 AM") como hora y
+        # devuelve las 00:00 de apertura. Son ~11 farmacias con este formato.
+        ('07:00 AM - 20:00 PM', 7.0, 20.0),
+        ('07:00 am A 23:00 pm', 7.0, 23.0),
+        ('07:00 am A 22:00 pm', 7.0, 22.0),
+        # Trampa 2: el "1:" de "DOMINGO  1:" parece la hora 01:08.
+        ('LUNES A VIERNES: 07:00 - 21:00 / SABADO: 08:00:00 - 21:00 / DOMINGO  1: 08:00 - 13:00 '
+         '/ DOMINGO  2: - - -', 7.0, 21.0),
+        ('LUNES A VIERNES: 07:30 - 22:00 / SABADO: 08:00:00 - 21:00 / DOMINGO  1: 08:00 - 21:00 '
+         '/ DOMINGO  2: - - -', 7.5, 22.0),
+        # Sin espacio entre el primer rango y el siguiente.
+        ('07H30 a 21H30Sab y Dom: 07H30 a 21H00', 7.5, 21.5),
+        ('LUNES A VIERNES 06H30 a 22H30 SAB Y DOM 06H30 a 22H00', 6.5, 22.5),
+        # Prosa con am/pm sueltos.
+        ('Lunes a viernes de 7 am a 8pm / Sábado de 7am a 8pm / Domingo de 8 am a 5pm', 7.0, 20.0),
+        ('Lunes a Sabados de 7am a 9pm / Domingo de 8 am a 8pm', 7.0, 21.0),
+        # "a 24H00" es cerrar a medianoche, NO abrir 24 horas. Son cinco farmacias.
+        ('06H00 a 24H00', 6.0, 24.0),
+        ('07H00 a 24H00', 7.0, 24.0),
+        ('07H00 a 23H00(LUN-DOM)', 7.0, 23.0),
+        ('TODOS LOS DIAS: 07H00 a 21H00', 7.0, 21.0),
+        # La hora pegada al nombre del día. Tres farmacias lo tienen así, y con la limpieza
+        # de 'DOMINGO  1:' sin afinar el '7:' se perdía y el horario quedaba sin determinar.
+        ('LUNES A DOMINGO 7:00 A 21:00', 7.0, 21.0),
+        ('LUNES A SABADO 7:00 A 21:00 Y DOMINGO DE 08:00 A 20:00', 7.0, 21.0),
+    ]
+
+    SIEMPRE_ABIERTAS = [
+        '24 HORAS',
+        'LUNES A VIERNES: 24 HORAS - 24 HORAS / SABADO: 24 HORAS - 24 HORAS / DOMINGO  1: 24 HORAS',
+    ]
+
+    NO_DETERMINABLES = [
+        '',
+        '   ',
+        # Una sola hora reconocible: el "7" no lleva marca, así que solo se lee "9 pm". Con
+        # eso la apertura saldría a las 21:00, peor que no saber.
+        'De lunes a domingo horario 7 a 9 pm',
+        'horario corrido',
+    ]
+
+    def test_extrae_la_envolvente_de_cada_formato_real(self):
+        from apps.catalogo.horarios import leer_horario
+
+        for texto, apertura, cierre in self.CASOS_CON_RANGO:
+            h = leer_horario(texto)
+            self.assertTrue(h.determinado, 'no se pudo leer: %r' % texto)
+            self.assertFalse(h.es_24h, '%r no es de 24 horas' % texto)
+            self.assertEqual(
+                (h.apertura, h.cierre), (apertura, cierre),
+                'mal leído %r -> %s' % (texto, (h.apertura, h.cierre)),
+            )
+
+    def test_reconoce_las_que_abren_siempre(self):
+        from apps.catalogo.horarios import leer_horario
+
+        for texto in self.SIEMPRE_ABIERTAS:
+            h = leer_horario(texto)
+            self.assertTrue(h.es_24h, 'debería ser de 24 horas: %r' % texto)
+            self.assertTrue(h.abierta_a(3.0), 'una de 24 horas está abierta a las 03:00')
+            self.assertTrue(h.abierta_a(23.5))
+
+    def test_un_horario_ilegible_no_sirve_de_excusa(self):
+        """La regla de seguridad del módulo: ante la duda, el local cuenta como ABIERTO, así
+        que la estación callada queda a la vista en vez de quedar explicada por un dato
+        malo."""
+        from apps.catalogo.horarios import leer_horario
+
+        for texto in self.NO_DETERMINABLES:
+            h = leer_horario(texto)
+            self.assertFalse(h.determinado, 'no debería poder leerse: %r' % texto)
+            self.assertTrue(h.abierta_a(3.0), 'sin dato, no se excusa a nadie: %r' % texto)
+
+    def test_los_bordes_del_rango(self):
+        """Intervalo semiabierto, igual que las cubetas de antigüedad: a la hora de cierre
+        ya está cerrado."""
+        from apps.catalogo.horarios import leer_horario
+
+        h = leer_horario('07H00 a 22H00')
+        self.assertFalse(h.abierta_a(6.99))
+        self.assertTrue(h.abierta_a(7.0))
+        self.assertTrue(h.abierta_a(21.99))
+        self.assertFalse(h.abierta_a(22.0))
+
+    def test_una_que_cierra_a_las_2330_sigue_abierta_a_las_2230(self):
+        """El caso que la franja global de 07:00–22:00 declaraba cerrado mientras vendía.
+        Son 42 farmacias las que cierran después de las 22:00."""
+        from apps.catalogo.horarios import leer_horario
+
+        self.assertTrue(leer_horario('07H00 a 23H30').abierta_a(22.5))
+        self.assertTrue(leer_horario('06H30 a 23H00').abierta_a(22.5))
+
+
+class CalladasSegunElHorarioDeSuFarmaciaTests(TestCase):
+    """El reparto de las estaciones calladas según si su farmacia debería estar operando.
+
+    Es la diferencia entre "hay 37 estaciones calladas" y "hay 7 que deberían estar
+    vendiendo y no responden". Medido el 12-oct-2026 a las 23:29: 37 calladas de 66 y
+    ninguna era una avería.
     """
 
     def setUp(self):
+        from datetime import datetime, timezone as dt_timezone
+
         self.sg = UnidadNegocio.objects.get(codigo='SG')
         grupo = Grupo.objects.create(codigo='TRXHOR')
-        self.farmacia = Farmacia.objects.create(codigo='HR001', grupo=grupo, unidad_negocio=self.sg)
-        # Una que reporta y una callada: el conteo tiene que salir 1 de 2 siempre, dentro
-        # y fuera de horario.
-        Estacion.objects.create(
-            codigo='HR001-A', farmacia=self.farmacia,
-            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
-            ultimo_heartbeat=timezone.now(),
-        )
-        Estacion.objects.create(
-            codigo='HR001-B', farmacia=self.farmacia,
-            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
-            ultimo_heartbeat=timezone.now() - timedelta(hours=4),
-        )
+        viejo = timezone.now() - timedelta(hours=4)
+
+        # Tres farmacias con horarios distintos y una estación callada en cada una.
+        self.corta = Farmacia.objects.create(
+            codigo='HR001', grupo=grupo, unidad_negocio=self.sg, horario='07H00 a 21H00')
+        self.tardia = Farmacia.objects.create(
+            codigo='HR002', grupo=grupo, unidad_negocio=self.sg, horario='07H00 a 23H30')
+        self.siempre = Farmacia.objects.create(
+            codigo='HR003', grupo=grupo, unidad_negocio=self.sg, horario='24 HORAS')
+        self.sin_horario = Farmacia.objects.create(
+            codigo='HR004', grupo=grupo, unidad_negocio=self.sg, horario='')
+
+        for codigo, farmacia in (('HR001-A', self.corta), ('HR002-A', self.tardia),
+                                 ('HR003-A', self.siempre), ('HR004-A', self.sin_horario)):
+            Estacion.objects.create(
+                codigo=codigo, farmacia=farmacia,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+                ultimo_heartbeat=viejo,
+            )
+
+        # Un instante fijo: 22:00 en Ecuador (03:00 UTC del día siguiente).
+        self.a_las_22 = datetime(2026, 10, 14, 3, 0, tzinfo=dt_timezone.utc)
+        # Y otro a las 10:00 de la mañana.
+        self.a_las_10 = datetime(2026, 10, 13, 15, 0, tzinfo=dt_timezone.utc)
+
         self.usuario = User.objects.create_user(username='u_horario', password='x')
         PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
         self.client.force_login(self.usuario)
 
-    def _a_las(self, hora_local, minuto=0):
-        """Un instante aware en la hora local de Ecuador que se pide."""
-        from django.utils import timezone as tz
+    def _reparto(self, instante):
+        from apps.catalogo.horarios import separar_calladas_por_horario
 
-        local = tz.localtime(tz.now()).replace(hour=hora_local, minute=minuto, second=0, microsecond=0)
-        return local
+        calladas = list(
+            Estacion.objects.filter(codigo__startswith='HR').select_related('farmacia')
+        )
+        return separar_calladas_por_horario(calladas, instante)
 
-    def test_dentro_del_horario_no_esta_fuera(self):
-        from apps.catalogo.services import fuera_de_horario_operacion
+    def test_a_las_22_solo_quedan_la_tardia_la_de_24h_y_la_sin_horario(self):
+        """La que cierra a las 21:00 está cerrada: su estación callada es esperable. Las
+        otras tres deberían estar operando — la de 24 horas siempre, y la que no tiene
+        horario cargado porque un dato ausente no excusa a nadie."""
+        reparto = self._reparto(self.a_las_22)
+        self.assertEqual(
+            sorted(e.codigo for e in reparto['dentro']), ['HR002-A', 'HR003-A', 'HR004-A'])
+        self.assertEqual(reparto['total_dentro'], 3)
+        self.assertEqual(reparto['total_fuera'], 1)
 
-        for hora in (7, 12, 18, 21):
-            self.assertFalse(
-                fuera_de_horario_operacion(self._a_las(hora)),
-                'las %02d:00 deberían estar DENTRO del horario' % hora,
-            )
+    def test_a_las_10_de_la_manana_todas_deberian_estar_operando(self):
+        reparto = self._reparto(self.a_las_10)
+        self.assertEqual(reparto['total_dentro'], 4)
+        self.assertEqual(reparto['total_fuera'], 0)
 
-    def test_fuera_del_horario_si_lo_esta(self):
-        from apps.catalogo.services import fuera_de_horario_operacion
-
-        for hora in (22, 23, 0, 3, 6):
-            self.assertTrue(
-                fuera_de_horario_operacion(self._a_las(hora)),
-                'las %02d:00 deberían estar FUERA del horario' % hora,
-            )
-
-    def test_los_bordes_exactos(self):
-        """Las 07:00 abren y las 22:00 ya cierran: el intervalo es semiabierto, igual que
-        las cubetas de antigüedad."""
-        from apps.catalogo.services import fuera_de_horario_operacion
-
-        self.assertFalse(fuera_de_horario_operacion(self._a_las(7, 0)))
-        self.assertFalse(fuera_de_horario_operacion(self._a_las(21, 59)))
-        self.assertTrue(fuera_de_horario_operacion(self._a_las(22, 0)))
-        self.assertTrue(fuera_de_horario_operacion(self._a_las(6, 59)))
-
-    def test_se_compara_en_hora_local_y_no_en_utc(self):
-        """El servidor guarda UTC y Ecuador es UTC-5 todo el año. A las 03:00 UTC son las
-        22:00 en Ecuador: fuera de horario. Comparar sin convertir habría dicho lo
-        contrario, y ese es el error que no se ve hasta que alguien mira de noche."""
+    def test_la_de_24_horas_nunca_se_excusa(self):
+        """El caso que la franja global trataba peor: las declaraba cerradas toda la noche.
+        Son 8 farmacias."""
         from datetime import datetime, timezone as dt_timezone
 
-        from apps.catalogo.services import fuera_de_horario_operacion
+        a_las_3 = datetime(2026, 10, 13, 8, 0, tzinfo=dt_timezone.utc)  # 03:00 en Ecuador
+        dentro = [e.codigo for e in self._reparto(a_las_3)['dentro']]
+        self.assertIn('HR003-A', dentro)
 
-        utc_03 = datetime(2026, 10, 13, 3, 0, tzinfo=dt_timezone.utc)   # 22:00 en Ecuador
-        utc_15 = datetime(2026, 10, 13, 15, 0, tzinfo=dt_timezone.utc)  # 10:00 en Ecuador
-        self.assertTrue(fuera_de_horario_operacion(utc_03))
-        self.assertFalse(fuera_de_horario_operacion(utc_15))
+    def test_el_reparto_no_consulta_nada(self):
+        """Recibe la lista ya materializada y el horario viaja en `farmacia`, que vino con
+        select_related: el costo es del llamador y se ve en su presupuesto."""
+        from apps.catalogo.horarios import separar_calladas_por_horario
 
-    def test_el_horario_no_cambia_ningun_conteo(self):
-        """La prueba que importa. Los mismos datos, dentro y fuera de horario, dan los
-        mismos números: el horario es contexto, no criterio."""
-        from unittest.mock import patch
+        calladas = list(
+            Estacion.objects.filter(codigo__startswith='HR').select_related('farmacia')
+        )
+        with self.assertNumQueries(0):
+            separar_calladas_por_horario(calladas, self.a_las_22)
 
+    def test_el_tablero_desglosa_sin_cambiar_el_total(self):
+        """Lo que importa: el número grande sigue siendo el mismo conteo de siempre, y lo
+        que se agrega es el desglose."""
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.status_code, 200)
+        total = resp.context['total_sin_reportar']
+        self.assertEqual(
+            total,
+            resp.context['calladas_dentro_de_horario'] + resp.context['calladas_fuera_de_horario'],
+            'el desglose tiene que sumar exactamente el total del KPI',
+        )
+        self.assertEqual(total, 4)
+
+    def test_el_tablero_muestra_primero_las_accionables(self):
+        """La lista corta de la Zona 5 prioriza las estaciones cuya farmacia debería estar
+        abierta: son las únicas sobre las que alguien actúa ahora."""
+        resp = self.client.get(reverse('panel:dashboard'))
+        mostradas = [e.codigo for e in resp.context['sin_reportar']]
+        dentro = resp.context['calladas_dentro_de_horario']
+        if dentro:
+            self.assertEqual(len(mostradas), min(dentro, 6))
+
+    def test_estado_flota_ya_no_informa_una_franja_global(self):
+        """La franja de 07:00–22:00 se retiró porque miente para unas 50 farmacias. Esta
+        prueba existe para que no vuelva por costumbre."""
         from apps.catalogo.services import estado_flota
 
-        claves = ('total', 'en_linea', 'sin_reportar', 'nunca_reporto',
-                  'dejaron_de_reportar', 'pausadas', 'umbral_minutos')
-        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=False):
-            dentro = estado_flota(None)
-        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=True):
-            fuera = estado_flota(None)
-
-        self.assertEqual({k: dentro[k] for k in claves}, {k: fuera[k] for k in claves})
-        self.assertEqual(dentro['total'], 2)
-        self.assertEqual(dentro['en_linea'], 1)
-        self.assertEqual(dentro['sin_reportar'], 1)
-        # Lo único que difiere es el rótulo.
-        self.assertFalse(dentro['fuera_de_horario'])
-        self.assertTrue(fuera['fuera_de_horario'])
+        flota = estado_flota(None)
+        self.assertNotIn('fuera_de_horario', flota)
+        self.assertNotIn('horario_operacion', flota)
 
     def test_estado_flota_sigue_costando_una_consulta(self):
-        """El horario se calcula del reloj, no de la base."""
         from apps.catalogo.services import estado_flota
 
         with self.assertNumQueries(1):
             estado_flota(None)
-
-    def test_el_tablero_avisa_cuando_esta_fuera_de_horario(self):
-        from unittest.mock import patch
-
-        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=True):
-            resp = self.client.get(reverse('panel:dashboard'))
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'fuera del horario de operación')
-        self.assertContains(resp, '07:00–22:00')
-        # Y explica las calladas en vez de dejarlas como advertencia muda.
-        self.assertContains(resp, 'esperable fuera del horario de operación')
-
-    def test_dentro_del_horario_no_dice_nada_del_horario(self):
-        """Un aviso permanente es ruido: en horario comercial no aporta nada."""
-        from unittest.mock import patch
-
-        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=False):
-            resp = self.client.get(reverse('panel:dashboard'))
-        self.assertNotContains(resp, 'fuera del horario de operación')
-        self.assertNotContains(resp, 'esperable fuera del horario de operación')
-
-    def test_fuera_de_horario_las_calladas_no_se_pintan_de_ambar(self):
-        """El único cambio visible del trabajo. Fuera de horario no se puede AFIRMAR que
-        algo esté mal, así que el distintivo pasa a neutro: es el corolario de la regla de
-        la Zona 0 (nada se pinta de verde sin comprobar, nada de ámbar sin poder afirmar).
-        El número no cambia."""
-        from unittest.mock import patch
-
-        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=True):
-            fuera = self.client.get(reverse('panel:dashboard'))
-        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=False):
-            dentro = self.client.get(reverse('panel:dashboard'))
-
-        # El mismo conteo en los dos casos.
-        self.assertEqual(fuera.context['total_sin_reportar'], 1)
-        self.assertEqual(dentro.context['total_sin_reportar'], 1)
-        # Distinto distintivo: 'Sin umbral' es el texto del chip neutro.
-        self.assertContains(fuera, 'Sin umbral')
-        self.assertNotContains(dentro, 'Sin umbral')

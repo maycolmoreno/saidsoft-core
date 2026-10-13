@@ -257,19 +257,6 @@ Los números son los mismos de antes, con las mismas definiciones. Corregirlas e
             {% if flota.pausadas %}· <span class="est-fg-warning">{{ flota.pausadas }} pausada{{ flota.pausadas|pluralize:"s" }}</span>{% endif %}
         </div>
         {% comment %}
-        El HORARIO también se dice, por el mismo motivo que el umbral. Medido el
-        12-oct-2026 a las 23:29: 29 de 66 en línea y 37 "sin reportar", y ninguna de esas
-        37 era una avería — eran locales cerrados. El número estaba bien; lo que faltaba
-        era poder saber si había que llamar a alguien.
-
-        No cambia el conteo (ver `estado_flota`): es el contexto que lo hace interpretable.
-        {% endcomment %}
-        {% if flota.fuera_de_horario %}
-        <div class="text-xs est-fg-warning" title="Franja de referencia en hora de Ecuador, no el horario de cada sitio: Farmacia.horario es texto libre y hoy no se puede leer por programa. Las estaciones apagadas fuera de esta franja son, casi siempre, locales cerrados.">
-            fuera del horario de operación ({{ flota.horario_operacion }})
-        </div>
-        {% endif %}
-        {% comment %}
         Administrativas aparte y no sumadas: se apagan de noche y el fin de semana, así que
         sumarlas haría saltar "sin reportar" ~100 todas las noches y el número dejaría de
         significar "hay un problema". Verlas igual importa: cero de veinte un martes a las
@@ -325,32 +312,49 @@ Los números son los mismos de antes, con las mismas definiciones. Corregirlas e
     {% endcomment %}
     <div class="card kpi">
         {% comment %}
-        El distintivo depende del HORARIO, y es el único lugar donde este trabajo cambia
-        algo visible. Fuera de horario, "37 sin reportar" no se puede afirmar que esté mal
-        —son locales cerrados— así que el chip pasa a neutro en vez de ámbar. Es el
-        corolario de la regla que ya gobierna la Zona 0: nada se pinta de verde si no se
-        comprobó, y nada se pinta de ámbar si no se puede afirmar que está mal.
+        El distintivo depende del horario de CADA farmacia, y es el único lugar donde este
+        trabajo cambia algo visible.
 
-        El NÚMERO no cambia en ningún caso: sigue siendo el mismo conteo, con el mismo
-        criterio y el mismo umbral.
+        Lo que decide es `calladas_dentro_de_horario`: las estaciones cuya farmacia debería
+        estar operando AHORA y no responden. Esas son una avería. Las otras son locales
+        cerrados, y pintarlas de ámbar enseña a ignorar el ámbar — de noche son casi todas
+        (37 de 66, medido el 12-oct-2026 a las 23:29, ninguna de ellas una avería).
+
+        Es el corolario de la regla que ya gobierna la Zona 0: nada se pinta de verde si no
+        se comprobó, y nada de ámbar si no se puede afirmar que está mal.
+
+        Hasta hoy esto usaba una franja horaria global, que miente para unas 50 farmacias
+        —8 abren 24 horas y 42 cierran después de las 22:00—. Ahora sale del horario escrito
+        de cada sitio; ver apps/catalogo/horarios.py, incluido qué pasa cuando ese texto no
+        se puede interpretar (no se excusa a nadie).
+
+        El NÚMERO GRANDE no cambia en ningún caso: sigue siendo el mismo conteo, con el
+        mismo criterio y el mismo umbral. Lo que se agrega es el desglose.
         {% endcomment %}
         <div class="kpi-top">
             <div class="kpi-label">Estaciones sin reportar</div>
-            {% if total_sin_reportar and flota.fuera_de_horario %}
-                {% include "panel/_estado_chip.html" with estado="sin_umbral" solo_icono=True %}
-            {% elif total_sin_reportar %}
+            {% if calladas_dentro_de_horario %}
                 {% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}
+            {% elif total_sin_reportar %}
+                {% include "panel/_estado_chip.html" with estado="sin_umbral" solo_icono=True %}
             {% else %}
                 {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
             {% endif %}
         </div>
-        <div class="kpi-value num {% if total_sin_reportar and not flota.fuera_de_horario %}est-fg-warning{% endif %}">{{ total_sin_reportar }}</div>
+        <div class="kpi-value num {% if calladas_dentro_de_horario %}est-fg-warning{% endif %}">{{ total_sin_reportar }}</div>
         <div class="text-xs text-[var(--text-faint)]">
             {{ flota.nunca_reporto }} nunca reportó · {{ flota.dejaron_de_reportar }} dejaron de hacerlo
         </div>
-        {% if total_sin_reportar and flota.fuera_de_horario %}
-        <div class="text-xs text-[var(--text-faint)]">
-            esperable fuera del horario de operación
+        {% if total_sin_reportar %}
+        <div class="text-xs" title="Una farmacia que debería estar abierta y cuya estación no reporta es una avería: alguien tiene que mirarla. Las demás están cerradas a esta hora, según el horario cargado en cada sitio.">
+            {% if calladas_dentro_de_horario %}
+                <span class="est-fg-warning">{{ calladas_dentro_de_horario }} en farmacia abierta</span>
+            {% else %}
+                <span class="text-[var(--text-faint)]">ninguna en farmacia abierta</span>
+            {% endif %}
+            {% if calladas_fuera_de_horario %}
+            <span class="text-[var(--text-faint)]">· {{ calladas_fuera_de_horario }} en local cerrado</span>
+            {% endif %}
         </div>
         {% endif %}
     </div>

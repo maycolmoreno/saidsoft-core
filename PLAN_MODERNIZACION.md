@@ -6578,3 +6578,185 @@ diga nada** dentro; y que fuera de horario las calladas no se pinten de ámbar.
 | **Suite completa** | **`Ran 2560 tests in 1735.468s` · `OK`** |
 
 De 2.551 a 2.560: las 9 nuevas, sin tocar ninguna existente.
+
+
+## §10-BZ — El horario sale de cada farmacia, no de una franja inventada (13-oct-2026)
+
+Corrección de §10-BY, el mismo día. Esa sección rotuló el tablero con una franja horaria
+**global** de 07:00–22:00, elegida midiendo las transiciones y los horarios más frecuentes. El
+usuario señaló lo que esa medición no vio: **hay farmacias 24 horas, y el campo que lo dice ya
+existe.** Tenía razón, y la franja era falsa para unas 50 farmacias.
+
+### Qué estaba mal
+
+Medido sobre las 702 farmacias activas:
+
+| Caso | Farmacias | Qué afirmaba la franja 07:00–22:00 |
+|---|---|---|
+| Abren **24 horas** | **8** | "fuera de horario" toda la noche, cuando no cierran nunca |
+| Cierran entre 22:30 y 23:30 | **42** | "fuera de horario" a las 22:30, mientras vendían |
+| Cierran a medianoche (`a 24H00`) | 5 | lo mismo |
+| Cierran entre 19:00 y 21:00 | ~330 | "dentro de horario" a las 21:30, ya cerradas |
+
+El error de fondo no fueron los límites: fue **usar un límite único para una cadena cuyos
+horarios van de las 19:00 a las 24 horas**. Y hacerlo habiendo descartado el campo
+`Farmacia.horario` por "texto libre no parseable" tras mirar solo los seis valores más comunes.
+
+### El campo sí es utilizable
+
+691 de 702 farmacias activas tienen horario escrito, en 364 valores distintos. El parseo nuevo
+vive en `apps/catalogo/horarios.py` y se validó **contra los 702 valores reales de producción**,
+no contra ejemplos:
+
+| Resultado | Farmacias |
+|---|---|
+| Rango leído (apertura y cierre) | **682** |
+| 24 horas | **8** |
+| Sin determinar | 12 — y **11 tienen el campo vacío** |
+| Rangos implausibles (abre de tarde, dura <6 h…) | **0** |
+
+El único texto que queda ambiguo es `GNB01`: `'De lunes a domingo horario 7 a 9 pm'`, donde el
+"7" no lleva marca de am/pm.
+
+### Y sobre la población que de verdad importa: 10 horarios distintos entre 39
+
+El reparto solo se aplica a farmacias que tienen estaciones, y ahí el argumento es todavía más
+claro. De las **39 farmacias con al menos una estación aprobada**:
+
+| Cierre | Farmacias |
+|---|---|
+| 19:00 | 2 |
+| 19:30 | 1 |
+| 20:00 | 5 |
+| 20:30 | 3 |
+| 21:00 | 11 |
+| 21:30 | 2 |
+| 22:00 | 11 |
+| 22:30 | 1 |
+| 23:00 | 2 |
+| **24 horas** | **1** (`MS002`) |
+
+Diez horas de cierre distintas. Con la franja única de 07:00–22:00, a las 21:00 el panel daba
+por abiertas a **11** farmacias que ya habían cerrado —y sus estaciones calladas salían en ámbar
+sin motivo— y a las 22:30 excusaba a **3** que seguían vendiendo, `MS002` entre ellas, que no
+cierra nunca.
+
+**Las 39 tienen horario legible.** Al medir esto apareció que `GLG01` lo tenía vacío —la única de
+las 39— y el usuario lo cargó el mismo día (`'07H00 a 21H00'`), así que ya no queda ninguna
+farmacia con agente cuyo horario el panel no pueda leer. Las 11 sin horario que quedan en la
+cadena no tienen estaciones, así que no afectan a este cálculo; y si alguna las tuviera, la regla
+conservadora haría que su estación no se excuse.
+
+### Verificado contra el estado real, antes de desplegar
+
+Con los datos de producción a las 11:33 del 13-oct-2026 había **20 estaciones calladas, y las 20
+en farmacias abiertas**: las 20 accionables, cero excusadas. Correcto para media mañana — si una
+farmacia está abierta y su caja no reporta, es una avería. De noche el mismo cálculo reparte al
+revés, que es el caso que motivó todo esto.
+
+### Tres trampas, encontradas midiendo
+
+Las tres están fijadas como casos de prueba con el texto real:
+
+1. **`'07:00 AM - 20:00 PM'`** → un patrón ingenuo de hora+am/pm captura los **minutos**
+   (`00 AM`) y devuelve las 00:00 como apertura. Afecta a ~11 farmacias. De ahí el
+   `(?<![\d:])` del lookbehind.
+2. **`'DOMINGO  1: 08:00'`** → el `1:` del nombre del día parece la hora 01:08. Es el formato
+   más común de la cadena.
+3. **`'LUNES A DOMINGO 7:00 A 21:00'`** → quedaba sin determinar, porque la limpieza que
+   arregla la trampa 2 se comía la hora pegada al nombre del día. Son 3 farmacias, y **esta
+   solo apareció al pasar los 702 valores**: con quince casos de muestra no se veía.
+
+### Lo que se extrae es la envolvente, y por qué alcanza
+
+La apertura más temprana y el cierre más tardío de todo el texto, no el horario de cada día.
+Un domingo de horario corto se considera abierto hasta la hora del sábado, así que la estación
+callada **no se excusa** y queda a la vista. Distinguir por día requeriría el campo
+estructurado, y el error va del lado seguro.
+
+**Ante la duda, no se excusa.** Si del texto no sale un rango coherente —una sola hora suelta,
+apertura posterior al cierre, campo vacío— el consumidor trata la estación como si estuviera en
+horario. Un dato malo no puede servir para silenciar una avería; como mucho, para no explicarla.
+
+### Qué cambió en el tablero
+
+La franja global se **retiró** (45 líneas en `apps/catalogo/services.py`, más las dos claves que
+`estado_flota` devolvía y sus nueve pruebas, reemplazadas por las del mecanismo nuevo). En su
+lugar, el KPI "Estaciones sin reportar" desglosa:
+
+```
+Sin reportar: 37
+   0 nunca reportó · 37 dejaron de hacerlo
+   7 en farmacia abierta · 30 en local cerrado
+```
+
+Y el distintivo depende de **`calladas_dentro_de_horario`**, no de la hora: ámbar solo si hay
+estaciones cuya farmacia debería estar operando ahora. Las demás son locales cerrados, y
+pintarlas de ámbar enseña a ignorar el ámbar.
+
+La lista corta de la Zona 5 muestra primero esas mismas: son las únicas sobre las que alguien
+actúa ahora.
+
+**El número grande no cambia**, y hay una prueba que exige que el desglose sume exactamente el
+total del KPI.
+
+### Costo: ninguna consulta nueva
+
+`sin_reportar` pasó de pedirse con `LIMIT 6` a materializarse completa, que es **la misma
+consulta sin el LIMIT** — decenas de filas, porque ya viene acotada a aprobadas y no
+administrativas. El reparto no consulta nada: el horario viaja en `farmacia`, que ya venía con
+`select_related`, y hay una prueba con `assertNumQueries(0)` que lo fija. `leer_horario` tiene
+caché por texto (364 valores distintos para 691 farmacias).
+
+### Archivos
+
+| Archivo | Qué cambió |
+|---|---|
+| `apps/catalogo/horarios.py` | **nuevo**: `leer_horario`, `HorarioFarmacia`, `farmacia_deberia_estar_abierta`, `separar_calladas_por_horario` |
+| `apps/catalogo/services.py` | se retiró la franja global y las dos claves de `estado_flota` |
+| `apps/panel/views/dashboard.py` | materializa las calladas y las reparte (373 → 394 líneas, límite 550) |
+| `templates/panel/dashboard_vivo_partial.html` | el KPI desglosa por horario de cada farmacia en vez de por franja global |
+| `apps/panel/tests.py` | `HorarioDeFarmaciaTests` y `CalladasSegunElHorarioDeSuFarmaciaTests` (13 pruebas) reemplazan a `HorarioDeOperacionEnElTableroTests` (9) |
+
+### Lo que queda pendiente
+
+- **El horario por DÍA.** Lo que se lee es la envolvente del sitio. La farmacia que el domingo
+  cierra a las 13:00 se considera abierta hasta su hora del sábado, así que esa estación callada
+  aparece como accionable sin serlo. Para distinguirlo hace falta el campo estructurado.
+- **11 farmacias sin horario cargado** y 1 con texto ambiguo (`GNB01`). Ninguna se excusa, así
+  que el efecto es conservador, pero son datos que convendría completar en el módulo de
+  farmacias.
+- **El campo estructurado sigue siendo el final del camino** (apertura/cierre por día,
+  `abierta_24h`), con una migración que parsee una vez y un comando para recalcular. No se hizo:
+  esto usa el dato que ya existe sin tocar el modelo.
+- La exclusión de farmacias administrativas sigue siendo código muerto (§10-BY), sin tocar.
+
+### Lección, que es la misma de §10-BN y §10-BT
+
+**Medir seis valores no es medir el campo.** La conclusión "texto libre no parseable" salió de
+mirar los más frecuentes; el universo completo mostró 100 % de cobertura con reglas simples, y
+además una tercera trampa que los quince casos de muestra no tenían. Es la cuarta vez en este
+proyecto que una decisión cambia al medir: el usuario lo vio antes que la medición.
+
+### Pruebas
+
+`HorarioDeFarmaciaTests` (6) y `CalladasSegunElHorarioDeSuFarmaciaTests` (7) reemplazan a
+`HorarioDeOperacionEnElTableroTests` (9), que probaba la franja global retirada. No se borró
+ninguna prueba por fallar: se sustituyó el mecanismo y con él sus pruebas, y las que seguían
+valiendo —hora local y no UTC, los bordes del intervalo, que el conteo no cambie— se
+reescribieron sobre el mecanismo nuevo.
+
+Los 19 textos de horario de las pruebas son **valores reales de producción**, los tres casos
+trampa entre ellos.
+
+| Qué se ejecutó | Resultado |
+|---|---|
+| El parser contra los **702 horarios reales** (fuera de la suite) | 682 rangos, 8 de 24 h, 12 sin determinar (11 vacíos), **0 implausibles** |
+| `HorarioDeFarmaciaTests` + `CalladasSegunElHorarioDeSuFarmaciaTests` | 13 pruebas, OK |
+| Regresión del tablero y el Centro (10 clases, con `DivisionDeVistasTests`) | 88 pruebas, OK |
+| `apps.catalogo` completa (consume `estado_flota`) | 305 pruebas, OK |
+| `manage.py check` | `no issues (1 silenced)` |
+| `makemigrations --check --dry-run` | `No changes detected` |
+| **Suite completa** | **`Ran 2564 tests in 1323.075s` · `OK`** |
+
+De 2.560 a 2.564: nueve pruebas retiradas con el mecanismo que probaban, trece nuevas.
