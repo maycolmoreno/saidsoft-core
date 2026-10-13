@@ -7,7 +7,7 @@ panel HTMX, app móvil Flutter, multi-cliente por `UnidadNegocio`). Tres unidade
 negocio: SG (393 farmacias), MIA (305), 7DIAS (2).
 
 **El estado real en una línea: la plataforma está construida; el despliegue no.**
-15 apps Django, 2.551 pruebas, 701 farmacias modeladas — y **66 equipos con agente
+15 apps Django, 2.560 pruebas, 701 farmacias modeladas — y **66 equipos con agente
 instalado de ~1.800 estimados**. El cuello de botella dejó de ser el código.
 
 Los tres números se corrigieron el 5-oct-2026 contra la base de producción (decía

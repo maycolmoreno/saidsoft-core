@@ -6412,3 +6412,169 @@ Qué prueba cada bloque, en concreto:
   arriba; una caída de un minuto se sigue viendo (mínimo de 1,5 % de ancho); sin caídas el
   bloque dice "Ninguna farmacia sin enlace ahora mismo"; y el bloque cuesta **una** consulta y
   **no crece** con el número de caídas.
+
+
+## §10-BY — El tablero dice con qué horario habla (12-oct-2026)
+
+Salió de medir producción al cerrar las fases A/B/C del modo NOC (§10-BX): a las **23:29 de
+Ecuador el tablero mostraba 29 de 66 estaciones en línea y 37 "sin reportar", y ninguna de esas
+37 era una avería** — eran locales cerrados. El número estaba bien. Lo que faltaba era que la
+pantalla diera forma de saber si había que llamar a alguien.
+
+### El hallazgo de fondo: la protección que existía no opera
+
+`estado_flota` y la lista de "estaciones sin reportar" excluyen las estaciones cuya **farmacia**
+es de tipo `ADMINISTRATIVO`. El comentario que lo justifica dice que esos equipos *"se apagan de
+noche y el fin de semana, así que sumadas harían saltar esta lista ~100 todas las noches y el
+número dejaría de significar 'hay un problema'"*.
+
+Medido: **no existe ninguna farmacia de ese tipo.** 701 son `farmacia`, 2 son `tienda`, y
+`estado_flota` devuelve `admin_total = 0`, así que las tres cifras que calcula para
+administrativas son constantes en cero. Mientras tanto **23 de las 66 estaciones aprobadas llevan
+`-ADM` en el código** (`GLG01-ADM`, `GSD01-ADM`…) y están en farmacias normales: se cuentan como
+flota.
+
+Y el fenómeno es **más amplio que los `-ADM`**: de las 37 calladas de esa noche, 12 eran `-ADM` y
+**25 eran cajas de farmacias que cerraron**. El criterio por tipo de farmacia no habría alcanzado
+ni funcionando.
+
+### Qué se hizo: rotular, no recontar
+
+Decisión del usuario entre cuatro opciones. **No se cambió ningún conteo.** `estado_flota`
+devuelve dos claves nuevas —`fuera_de_horario` y `horario_operacion`— y la pantalla las usa para
+explicarse, igual que ya hacía con `umbral_minutos`.
+
+El motivo de no recontar: si el conteo debe cambiar fuera de horario es una decisión aparte, y
+tomarla a medias reproduciría el hallazgo D-01, donde el mismo concepto se calculaba distinto en
+tres pantallas. Las otras tres opciones se descartaron con su razón:
+
+- **Excluir por sufijo `-ADM`**: arreglaría lo que el código pretendía, pero medido solo cubre
+  12 de 37 calladas, y depende de una convención de nombres en vez de un dato modelado.
+- **Horario de operación modelado**: es lo correcto de fondo. `Farmacia.horario` existe y está
+  cargado en 691 de 702 farmacias, pero es **texto libre en varios formatos a la vez**
+  —`'07H00 a 22H00'` junto a `'LUNES A VIERNES: 07:00 - 22:00 / SABADO: 07:00:00 - 22:00 /
+  DOMINGO...'`— así que exige campo estructurado y normalizar 691 filas. Queda pendiente.
+- **Solo documentarlo**: deja el problema en pantalla.
+
+### La franja sale de medir, no de suponer
+
+`HORA_APERTURA_OPERACION = 7`, `HORA_CIERRE_OPERACION = 22`, en hora local de Ecuador
+(`TIME_ZONE = 'America/Guayaquil'`).
+
+Sobre 14 días de `evento_monitoreo` (fuente `mqtt`, agrupado por hora local):
+
+| Hora local | A offline | A online | Qué es |
+|---|---|---|---|
+| 06:00 | 0 | 70 | apertura |
+| 07:00 | 44 | 76 | arranque |
+| 13:00–16:00 | 206 | 204 | inestabilidad diurna, otra cosa |
+| 19:00–22:00 | 197 | 56 | cierre |
+| 00:00–05:00 | ~19 | ~9 | ya están apagados |
+
+Y el horario más cargado en las farmacias es `07H00–22H00` (71 sitios), seguido de `07H00–21H00`
+(58).
+
+**Se eligió el extremo más amplio de los dos dominantes —cierre a las 22, no a las 21— a
+propósito: así "fuera de horario" nunca es una afirmación falsa.** Con el cierre a las 21 el
+panel diría "fuera de horario" a las 21:30, cuando las 71 farmacias que cierran a las 22:00
+siguen vendiendo.
+
+### El único cambio visible
+
+Fuera de horario, el distintivo del KPI "Estaciones sin reportar" pasa de **ámbar a neutro**, y
+el valor deja de pintarse de ámbar. Es el corolario de la regla que ya gobierna la Zona 0 —nada
+se pinta de verde si no se comprobó— aplicada al otro lado: **nada se pinta de ámbar si no se
+puede afirmar que está mal.** Fuera de horario, 37 calladas no se puede afirmar que estén mal.
+
+El número no cambia en ningún caso, y hay una prueba que lo fija comparando las siete cifras de
+`estado_flota` dentro y fuera de horario con los mismos datos.
+
+Además, dentro del horario comercial **el tablero no dice nada del horario**: un aviso permanente
+es el mismo ruido que la barra que decía "todo operativo".
+
+### Archivos
+
+| Archivo | Qué cambió |
+|---|---|
+| `apps/catalogo/services.py` | `HORA_APERTURA_OPERACION`, `HORA_CIERRE_OPERACION`, `fuera_de_horario_operacion()`, y dos claves nuevas en `estado_flota` |
+| `templates/panel/dashboard_vivo_partial.html` | rótulo en "Estaciones en línea"; distintivo y nota en "Estaciones sin reportar" |
+| `static/css/app.css` | **sin cambios**: se recompiló y el artefacto salió idéntico, porque el bloque usa solo utilidades y tokens que ya existían |
+| `apps/panel/tests.py` | `HorarioDeOperacionEnElTableroTests` (9 pruebas) |
+
+**Cero consultas nuevas**: el horario sale del reloj, no de la base. Hay prueba de que
+`estado_flota` sigue costando una sola consulta.
+
+### Lo que queda pendiente
+
+- **El horario por sitio.** Mientras `Farmacia.horario` siga siendo texto libre, esta franja es
+  global y no distingue la farmacia que cierra a las 21:00 de la que cierra a las 22:00.
+  Normalizarlo es un campo nuevo más una migración de datos sobre 691 filas.
+- **Si el conteo debe cambiar fuera de horario**, sin decidir. Hoy solo cambia el rótulo.
+- **La inestabilidad diurna de 13:00 a 16:00** sí se caracterizó, y resultó ser otra cosa de la
+  que parecía. Son 206 transiciones a offline en 14 días, y la duración del episodio lo explica:
+
+  | Duración del episodio offline | Episodios |
+  |---|---|
+  | menos de 15 min | **124** |
+  | 15 – 60 min | 65 |
+  | 1 – 4 h | 3 |
+  | más de 4 h | 11 |
+  | sigue así | 3 |
+
+  O sea: **el 60 % vuelve en menos de 15 minutos y el 92 % en menos de una hora.** No son
+  apagados deliberados —y no son de los equipos administrativos: 118 son cajas contra 88
+  `-ADM`—, ni es flapping de unas pocas estaciones: **60 de las 66 aparecen en esa franja**.
+  Es jitter del latido: con `ALERTA_SIN_LATIDO_UMBRAL_MINUTOS = 5`, perder tres latidos
+  seguidos ya marca la estación OFFLINE y escribe la transición, y vuelve sola un rato después.
+
+  **Y no está generando alertas**, que era lo primero que había que descartar: la regla
+  `Sin heartbeat` está configurada a **30 minutos**, no a los 5 del marcado de estado, así que
+  los 124 episodios cortos no abren nada. Medido sobre 14 días: 335 alertas en total, 331 ya
+  resueltas y 4 abiertas, y de las de `sin_heartbeat` hubo 67, todas resueltas. El ruido ensucia
+  el histórico de transiciones —y por eso importa para la Fase D— pero no la cola de alertas.
+
+  **Importa para la Fase D**: una serie de 24 h reconstruida desde `EventoMonitoreo` tendría
+  dientes de sierra durante todo el día por episodios que no son caídas. Habría que suavizarla,
+  o declarar que la curva cuenta "estaciones con latido fresco" y no "estaciones funcionando".
+  No se tocó nada: caracterizarlo era el pendiente, y qué hacer con él es parte de la decisión
+  de la Fase D.
+- **La exclusión de administrativas sigue siendo código muerto.** No se tocó: quitarla o
+  corregirla cambia un criterio de conteo, que es justamente lo que esta intervención evitó.
+
+### De paso: qué son las cinco alertas viejas que el histograma de la Fase B destapó
+
+Medido en la misma pasada. En 14 días se abrieron **335 alertas y se resolvieron 331**, con lo que
+la cola no se acumula. Las que quedan abiertas son crónicas y casi todas de la misma regla:
+
+| Regla | Abiertas | Promedio abierta |
+|---|---|---|
+| Agente caído con red viva | 3 | ~11 días |
+| Reloj por quedar incomunicado (90 s) | 1 | ~10 días |
+
+(la quinta se abrió antes de la ventana de 14 días; la más vieja es del 28-sep).
+
+`Agente caído con red viva` es la que `evaluar_cruce_monitoreo` abre cuando MeshCentral sigue
+viendo la estación pero el agente dejó de latir — o sea, el servicio del agente se cayó y hace
+falta ir. Que tres lleven once días abiertas es exactamente lo que el histograma vino a hacer
+visible: no son incidentes de hoy, son equipos que nadie fue a atender.
+
+### Pruebas
+
+`HorarioDeOperacionEnElTableroTests`, 9 pruebas: que las horas de dentro den dentro y las de
+fuera, fuera; los bordes exactos (07:00 está dentro, 22:00 ya fuera); que la comparación sea en
+hora **local** y no en UTC —a las 03:00 UTC son las 22:00 en Ecuador, y comparar sin convertir
+diría lo contrario, que es el error que no se ve hasta que alguien mira de noche—; que el horario
+**no cambie ningún conteo**, comparando las siete cifras de `estado_flota` dentro y fuera con los
+mismos datos; que siga costando una sola consulta; que el tablero avise fuera de horario y **no
+diga nada** dentro; y que fuera de horario las calladas no se pinten de ámbar.
+
+| Qué se ejecutó | Resultado |
+|---|---|
+| `HorarioDeOperacionEnElTableroTests` | 9 pruebas, OK |
+| `apps.catalogo` completa (consume `estado_flota`) | 305 pruebas, OK |
+| Regresión del tablero y el Centro (8 clases) | 81 pruebas, OK |
+| `manage.py check` | `no issues (1 silenced)` |
+| `makemigrations --check --dry-run` | `No changes detected` |
+| **Suite completa** | **`Ran 2560 tests in 1735.468s` · `OK`** |
+
+De 2.551 a 2.560: las 9 nuevas, sin tocar ninguna existente.

@@ -333,6 +333,54 @@ sacar; las otras 25 son cajas de farmacias que cerraron.
    esa curva. Graficar la flota sin distinguir horario de operación produciría una gráfica que
    parece una caída masiva diaria.
 
-No se corrigió nada de esto: estaba fuera del alcance autorizado (A, B y C) y toca un umbral y
-un criterio de conteo que el proyecto fijó deliberadamente. Queda anotado como **decisión
-pendiente**, y conviene resolverlo antes o junto con la Fase D.
+**Tratado el 13-oct-2026 (§10-BY), rotulando y sin recontar.** `estado_flota` informa
+`fuera_de_horario` y `horario_operacion` (franja 07:00–22:00, elegida midiendo), el tablero lo
+dice, y fuera de horario el distintivo de "sin reportar" pasa de ámbar a neutro porque no se
+puede afirmar que algo esté mal. **Ningún conteo cambió**, y hay prueba que lo fija. Lo que sigue
+pendiente: el horario por sitio (`Farmacia.horario` es texto libre en 691 filas) y la decisión de
+si el conteo debe cambiar fuera de horario.
+
+**La exclusión de administrativas sigue siendo código muerto**: no se tocó, porque quitarla o
+corregirla cambia un criterio de conteo.
+
+### 9.1 Y la inestabilidad diurna resultó ser jitter
+
+Al caracterizar el patrón horario apareció un segundo pico, entre las 13:00 y las 16:00, que no
+es apertura ni cierre: 206 transiciones a offline en 14 días. La duración del episodio lo explica:
+
+| Duración del episodio offline | Episodios |
+|---|---|
+| menos de 15 min | **124** |
+| 15 – 60 min | 65 |
+| 1 – 4 h | 3 |
+| más de 4 h | 11 |
+| sigue así | 3 |
+
+El **60 % vuelve en menos de 15 minutos** y el 92 % en menos de una hora. No es flapping de unas
+pocas estaciones —**60 de las 66** aparecen en esa franja— ni suspensión de equipos de oficina
+(118 son cajas contra 88 `-ADM`). Es jitter del latido: con el marcado de estado a 5 minutos,
+perder tres latidos seguidos ya escribe la transición.
+
+**No genera alertas**, que era lo primero a descartar: la regla `Sin heartbeat` está configurada
+a **30 minutos**, no a los 5 del marcado de estado. Medido sobre 14 días: 335 alertas abiertas,
+331 resueltas, 4 abiertas; de `sin_heartbeat` hubo 67, todas resueltas.
+
+**Importa para la Fase D**: una serie de 24 h reconstruida desde `EventoMonitoreo` tendría dientes
+de sierra todo el día por episodios que no son caídas. Habría que suavizarla o declarar que la
+curva cuenta "estaciones con latido fresco" y no "estaciones funcionando".
+
+### 9.2 Qué son las cinco alertas viejas que el histograma destapó
+
+En 14 días se abrieron 335 alertas y se resolvieron 331: la cola no se acumula. Las abiertas son
+crónicas y casi todas de la misma regla:
+
+| Regla | Abiertas | Promedio abierta |
+|---|---|---|
+| Agente caído con red viva | 3 | ~11 días |
+| Reloj por quedar incomunicado (90 s) | 1 | ~10 días |
+
+(la quinta se abrió antes de la ventana de 14 días; la más vieja es del 28-sep).
+
+`Agente caído con red viva` la abre `evaluar_cruce_monitoreo` cuando MeshCentral sigue viendo la
+estación pero el agente dejó de latir: el servicio se cayó y hace falta ir al sitio. Que tres
+lleven once días abiertas es exactamente lo que el histograma de la Fase B vino a hacer visible.

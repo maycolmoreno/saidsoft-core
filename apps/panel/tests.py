@@ -10175,3 +10175,153 @@ class LineaTiempoEnlacesCaidosTests(TestCase):
         with self.assertNumQueries(1):
             barras = self._barras()
         self.assertEqual(len(barras), MAX_BARRAS_LINEA_TIEMPO)
+
+
+class HorarioDeOperacionEnElTableroTests(TestCase):
+    """Que el tablero DIGA con qué horario habla, sin que eso cambie ningún conteo.
+
+    Salió de medir producción el 12-oct-2026 a las 23:29: 29 de 66 estaciones en línea y
+    37 "sin reportar", y ninguna de esas 37 era una avería — eran locales cerrados. El
+    número estaba bien y la pantalla no daba forma de saber si había que llamar a alguien.
+
+    La regla que estas pruebas fijan: **el horario explica, no cuenta.** Si algún día el
+    conteo tiene que cambiar fuera de horario, será una decisión aparte; hacerlo a medias
+    repetiría el hallazgo D-01, donde el mismo concepto se calculaba distinto en tres
+    pantallas.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXHOR')
+        self.farmacia = Farmacia.objects.create(codigo='HR001', grupo=grupo, unidad_negocio=self.sg)
+        # Una que reporta y una callada: el conteo tiene que salir 1 de 2 siempre, dentro
+        # y fuera de horario.
+        Estacion.objects.create(
+            codigo='HR001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            ultimo_heartbeat=timezone.now(),
+        )
+        Estacion.objects.create(
+            codigo='HR001-B', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+            ultimo_heartbeat=timezone.now() - timedelta(hours=4),
+        )
+        self.usuario = User.objects.create_user(username='u_horario', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def _a_las(self, hora_local, minuto=0):
+        """Un instante aware en la hora local de Ecuador que se pide."""
+        from django.utils import timezone as tz
+
+        local = tz.localtime(tz.now()).replace(hour=hora_local, minute=minuto, second=0, microsecond=0)
+        return local
+
+    def test_dentro_del_horario_no_esta_fuera(self):
+        from apps.catalogo.services import fuera_de_horario_operacion
+
+        for hora in (7, 12, 18, 21):
+            self.assertFalse(
+                fuera_de_horario_operacion(self._a_las(hora)),
+                'las %02d:00 deberían estar DENTRO del horario' % hora,
+            )
+
+    def test_fuera_del_horario_si_lo_esta(self):
+        from apps.catalogo.services import fuera_de_horario_operacion
+
+        for hora in (22, 23, 0, 3, 6):
+            self.assertTrue(
+                fuera_de_horario_operacion(self._a_las(hora)),
+                'las %02d:00 deberían estar FUERA del horario' % hora,
+            )
+
+    def test_los_bordes_exactos(self):
+        """Las 07:00 abren y las 22:00 ya cierran: el intervalo es semiabierto, igual que
+        las cubetas de antigüedad."""
+        from apps.catalogo.services import fuera_de_horario_operacion
+
+        self.assertFalse(fuera_de_horario_operacion(self._a_las(7, 0)))
+        self.assertFalse(fuera_de_horario_operacion(self._a_las(21, 59)))
+        self.assertTrue(fuera_de_horario_operacion(self._a_las(22, 0)))
+        self.assertTrue(fuera_de_horario_operacion(self._a_las(6, 59)))
+
+    def test_se_compara_en_hora_local_y_no_en_utc(self):
+        """El servidor guarda UTC y Ecuador es UTC-5 todo el año. A las 03:00 UTC son las
+        22:00 en Ecuador: fuera de horario. Comparar sin convertir habría dicho lo
+        contrario, y ese es el error que no se ve hasta que alguien mira de noche."""
+        from datetime import datetime, timezone as dt_timezone
+
+        from apps.catalogo.services import fuera_de_horario_operacion
+
+        utc_03 = datetime(2026, 10, 13, 3, 0, tzinfo=dt_timezone.utc)   # 22:00 en Ecuador
+        utc_15 = datetime(2026, 10, 13, 15, 0, tzinfo=dt_timezone.utc)  # 10:00 en Ecuador
+        self.assertTrue(fuera_de_horario_operacion(utc_03))
+        self.assertFalse(fuera_de_horario_operacion(utc_15))
+
+    def test_el_horario_no_cambia_ningun_conteo(self):
+        """La prueba que importa. Los mismos datos, dentro y fuera de horario, dan los
+        mismos números: el horario es contexto, no criterio."""
+        from unittest.mock import patch
+
+        from apps.catalogo.services import estado_flota
+
+        claves = ('total', 'en_linea', 'sin_reportar', 'nunca_reporto',
+                  'dejaron_de_reportar', 'pausadas', 'umbral_minutos')
+        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=False):
+            dentro = estado_flota(None)
+        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=True):
+            fuera = estado_flota(None)
+
+        self.assertEqual({k: dentro[k] for k in claves}, {k: fuera[k] for k in claves})
+        self.assertEqual(dentro['total'], 2)
+        self.assertEqual(dentro['en_linea'], 1)
+        self.assertEqual(dentro['sin_reportar'], 1)
+        # Lo único que difiere es el rótulo.
+        self.assertFalse(dentro['fuera_de_horario'])
+        self.assertTrue(fuera['fuera_de_horario'])
+
+    def test_estado_flota_sigue_costando_una_consulta(self):
+        """El horario se calcula del reloj, no de la base."""
+        from apps.catalogo.services import estado_flota
+
+        with self.assertNumQueries(1):
+            estado_flota(None)
+
+    def test_el_tablero_avisa_cuando_esta_fuera_de_horario(self):
+        from unittest.mock import patch
+
+        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=True):
+            resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'fuera del horario de operación')
+        self.assertContains(resp, '07:00–22:00')
+        # Y explica las calladas en vez de dejarlas como advertencia muda.
+        self.assertContains(resp, 'esperable fuera del horario de operación')
+
+    def test_dentro_del_horario_no_dice_nada_del_horario(self):
+        """Un aviso permanente es ruido: en horario comercial no aporta nada."""
+        from unittest.mock import patch
+
+        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=False):
+            resp = self.client.get(reverse('panel:dashboard'))
+        self.assertNotContains(resp, 'fuera del horario de operación')
+        self.assertNotContains(resp, 'esperable fuera del horario de operación')
+
+    def test_fuera_de_horario_las_calladas_no_se_pintan_de_ambar(self):
+        """El único cambio visible del trabajo. Fuera de horario no se puede AFIRMAR que
+        algo esté mal, así que el distintivo pasa a neutro: es el corolario de la regla de
+        la Zona 0 (nada se pinta de verde sin comprobar, nada de ámbar sin poder afirmar).
+        El número no cambia."""
+        from unittest.mock import patch
+
+        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=True):
+            fuera = self.client.get(reverse('panel:dashboard'))
+        with patch('apps.catalogo.services.fuera_de_horario_operacion', return_value=False):
+            dentro = self.client.get(reverse('panel:dashboard'))
+
+        # El mismo conteo en los dos casos.
+        self.assertEqual(fuera.context['total_sin_reportar'], 1)
+        self.assertEqual(dentro.context['total_sin_reportar'], 1)
+        # Distinto distintivo: 'Sin umbral' es el texto del chip neutro.
+        self.assertContains(fuera, 'Sin umbral')
+        self.assertNotContains(dentro, 'Sin umbral')

@@ -648,6 +648,51 @@ def url_grabaciones_meshcentral(estacion) -> str | None:
     return f"{conf['SERVER_URL']}/login?gotonode={estacion.meshcentral_node_id}"
 
 
+# --- Horario de operación de las farmacias -----------------------------------------
+#
+# Franja de REFERENCIA, en hora local de Ecuador (TIME_ZONE = 'America/Guayaquil').
+# No es el horario de cada sitio: `Farmacia.horario` existe y está cargado en 691 de 702
+# farmacias, pero es texto libre en varios formatos a la vez —'07H00 a 22H00' junto a
+# 'LUNES A VIERNES: 07:00 - 22:00 / SABADO: 07:00:00 - 22:00 / DOMINGO...'— así que hoy
+# no se puede leer por programa sin inventar un parseo frágil. Mientras eso no se
+# normalice, esto es una franja global.
+#
+# **Para qué sirve y para qué NO.** Sirve para DECIR en pantalla que las estaciones
+# calladas a las 23:00 son locales cerrados y no una avería. No se usa para contar: no
+# cambia ningún KPI, ni excluye estaciones, ni abre o cierra alertas. Esa decisión —si el
+# conteo debe cambiar fuera de horario— no está tomada, y tomarla a medias sería repetir
+# el hallazgo D-01, donde el mismo concepto se calculaba distinto en tres pantallas.
+#
+# **Los valores salen de medir, no de suponer.** Sobre 14 días de `evento_monitoreo`
+# (fuente mqtt, hora local, medido el 12-oct-2026): a las 06:00 hay 70 encendidos y 0
+# apagados, a las 07:00 otros 76; entre las 19:00 y las 22:00 hay 197 apagados contra 56
+# encendidos. Y el horario más cargado en las farmacias es 07H00–22H00, seguido de
+# 07H00–21H00.
+#
+# Se eligió el extremo MÁS AMPLIO de los dos dominantes (cierre a las 22 y no a las 21) a
+# propósito: así "fuera de horario" nunca es una afirmación falsa. Con el cierre a las 21
+# el panel diría "fuera de horario" a las 21:30, cuando las 71 farmacias que cierran a
+# las 22:00 siguen vendiendo.
+HORA_APERTURA_OPERACION = 7
+HORA_CIERRE_OPERACION = 22
+
+
+def fuera_de_horario_operacion(instante=None) -> bool:
+    """¿Estamos fuera del horario en que se espera que las farmacias estén encendidas?
+
+    `instante` en UTC (o cualquier zona); se convierte a hora local antes de comparar,
+    porque la franja está expresada en hora de Ecuador y el servidor guarda todo en UTC.
+    Sin argumento, ahora.
+
+    Es un predicado de PRESENTACIÓN: lo consume `estado_flota` para que la pantalla pueda
+    explicar sus propios números, no para cambiarlos.
+    """
+    from django.utils import timezone
+
+    hora = timezone.localtime(instante or timezone.now()).hour
+    return not (HORA_APERTURA_OPERACION <= hora < HORA_CIERRE_OPERACION)
+
+
 def estado_flota(unidades_negocio=None):
     """Cuántas estaciones hay y cuántas están en línea. **Fuente única.**
 
@@ -733,6 +778,16 @@ def estado_flota(unidades_negocio=None):
         # Va en el resultado para que la pantalla pueda DECIR con qué umbral habla, en vez
         # de que el operador tenga que adivinarlo o leer el código.
         'umbral_minutos': ONLINE_UMBRAL_MINUTOS,
+        # Y con qué horario, por el mismo motivo. Medido el 12-oct-2026 a las 23:29: 29 de
+        # 66 estaciones en línea y 37 "sin reportar", y ninguna de esas 37 era una avería
+        # —eran locales cerrados—. El número era correcto y la pantalla no daba forma de
+        # saber si había que llamar a alguien.
+        #
+        # **No cambia ningún conteo**: las dos claves son para que la pantalla se explique.
+        # Si además hay que contar distinto fuera de horario es una decisión aparte y no
+        # está tomada; mezclarla acá repetiría el hallazgo D-01.
+        'fuera_de_horario': fuera_de_horario_operacion(),
+        'horario_operacion': '%02d:00–%02d:00' % (HORA_APERTURA_OPERACION, HORA_CIERRE_OPERACION),
     }
 
 
