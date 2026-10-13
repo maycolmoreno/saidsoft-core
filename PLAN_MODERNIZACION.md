@@ -6334,12 +6334,44 @@ cubrieron solo A, B y C.
   el agente, con el precedente medido de medio millón de filas mensuales a 1.800 estaciones. No
   recomendada por ahora.
 
-### Lo que no se pudo verificar
+### Lo medido después del despliegue
 
-La auditoría previa no pudo medir nada contra producción: las lecturas fueron **denegadas por el
-clasificador de permisos** y no se intentó rodearlas. Siguen sin verificar, entre otras, el
-volumen y rango real de `evento_monitoreo` —que decide si la Fase D es viable— y cuántas
-farmacias activas tienen estación aprobada, que es el dato que define la Fase E.
+Durante la auditoría las lecturas contra producción estaban **denegadas por el clasificador de
+permisos**. Se midieron al terminar, ya con `1b9f842` desplegado, y los siete puntos pendientes
+están en `docs/auditoria/noc-panel-principal.md` §8. Lo que cambia decisiones:
+
+- **La Fase D es viable y barata**: `evento_monitoreo` tiene 2.889 filas y **103 en las últimas
+  24 h**, con 31 estaciones distintas moviéndose. TimescaleDB 2.17.2 confirmado, las cuatro
+  hypertables con retención de 30 días y compresión a los 7, y 2 de los 5 chunks de
+  `evento_monitoreo` sin comprimir: la ventana caliente es el caso óptimo.
+- **El universo del mosaico son 38 farmacias** (MIA 24, SG 14), no ~697. Eso desbloquea la
+  decisión de la Fase E: 38 celdas se leen de un vistazo.
+- **La Fase G no se puede aproximar, y ahora está cuantificado**: de las 43 ocurrencias con
+  `ultima_vez` en 24 h, **18 (el 42 %) vienen de una sola fila que empezó antes**. Es la misma
+  fila que la maqueta mostraba como "GLG01-ADM · 18× apagón inesperado" — un número que no era
+  de 24 horas.
+- **Las cinco alertas abiertas están TODAS en la cubeta de más de 7 días**, la más vieja desde el
+  28-sep. Es el valor de la Fase B confirmado con datos reales: el tablero decía "5 sin
+  reconocer", que se lee como urgencia, y las cinco son deuda.
+
+### Hallazgo que salió de medir: la exclusión de administrativas no excluye nada
+
+**No existe ninguna farmacia de tipo `ADMINISTRATIVO`** —701 son `farmacia`, 2 son `tienda`— así
+que `estado_flota` devuelve `admin_total = 0` y las tres cifras que calcula para administrativas
+son constantes en cero. Mientras tanto, **23 de las 66 estaciones aprobadas llevan `-ADM` en el
+código** (`GLG01-ADM`, `GSD01-ADM`…) y están en farmacias normales, así que se cuentan como
+flota. La protección que el comentario de `estado_flota` describe —evitar que los equipos de
+oficina apagados de noche hagan saltar la lista— **no opera**.
+
+Medido a las 23:29 de Ecuador, con los locales cerrados: **29 de 66 en línea y 37 "sin
+reportar"**, ninguna de ellas una incidencia. 12 son `-ADM` y 25 son cajas de farmacias cerradas,
+así que el fenómeno es más amplio que los `-ADM`: el criterio por tipo de farmacia no habría
+alcanzado ni funcionando.
+
+No se corrigió: toca un criterio de conteo que el proyecto fijó deliberadamente y estaba fuera
+del alcance autorizado. **Es insumo crítico para la Fase D**, porque una serie de 24 h caería a
+~44 % todas las noches sin que nada esté roto, y la maqueta dibujaba un "SLA 90 %" sobre esa
+curva. Ver `docs/auditoria/noc-panel-principal.md` §9.
 
 ### Pruebas ejecutadas y resultado real
 

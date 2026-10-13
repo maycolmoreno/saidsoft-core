@@ -57,11 +57,14 @@ que con la base vacía muestra su estado vacío en vez de una barra.
 | 19 | Selector por cliente | **Sí, ya existe** | `cuentas.services.unidades_negocio_en_foco()` | ya existía |
 | 20 | Selector de ventana temporal | **No existe** | requiere parámetro nuevo | D |
 
-**PV** — Ninguno de los valores concretos que la maqueta declaraba como "los que muestra hoy
-SAIDSOFT" (38/66, 5 enlaces, 9 farmacias, 5 alertas, 28 sin reportar, 4 MQTT fallidos, respaldo
-hace 19 h) pudo confirmarse: las lecturas contra producción fueron **denegadas por el
-clasificador de permisos** y no se intentó rodearlas. Tampoco se verificó que las estaciones
-citadas (`GEC12`, `GSD12`, `MC001`, `MSI01`, `GLG01-ADM`…) existan con esos estados.
+Sobre los valores concretos que la maqueta declaraba como "los que muestra hoy SAIDSOFT"
+(38/66, 5 enlaces, 9 farmacias, 5 alertas, 28 sin reportar…): durante la auditoría no se pudieron
+confirmar, porque las lecturas contra producción estaban **denegadas por el clasificador de
+permisos** y no se intentó rodearlas. Se midieron al terminar (§8), y conviene no leer esa
+coincidencia como validación general: **5 alertas abiertas** coincide, pero resultan estar todas
+en la cubeta de más de 7 días; los enlaces caídos eran **4** en el momento de medir, no 5, y ese
+número cambia hora a hora. El "18× apagón inesperado en 24 h" de `GLG01-ADM` **sí existe como
+fila pero no como dato de 24 horas**: son 18 ocurrencias acumuladas desde semanas antes (§8.6).
 
 ## 3. El dato que no existe: ocurrencias de eventos de Windows
 
@@ -119,6 +122,21 @@ Tres salidas, a decidir antes de escribir código:
 Recomendación de la auditoría: **D-2**, el único que hace coincidir la curva con el número de al
 lado sin crear un modelo. Conviene medir su coste real antes de fijarlo en el refresco de 60 s.
 
+**Dos factores más, descubiertos al medir** (ver §8.2 y §9), que la decisión tiene que
+contemplar y que no estaban en el análisis inicial:
+
+1. **`EventoMonitoreo` tiene DOS fuentes.** En las últimas 24 h hubo 59 transiciones de `mqtt` y
+   44 de `meshcentral`. El KPI `estado_flota` sale de `Estacion.ultimo_heartbeat`, que es el
+   latido MQTT, así que una serie que mezclara las dos fuentes contaría en línea a estaciones
+   que el KPI cuenta caídas — y ese cruce es precisamente la señal que
+   `evaluar_cruce_monitoreo` usa para detectar "el agente se cayó pero la red vive". La serie
+   tiene que filtrar `fuente='mqtt'` o declarar que mide otra cosa.
+2. **El efecto nocturno es masivo y la protección contra él no funciona** (§9). Medido a las
+   23:29, con las farmacias cerradas: 29 de 66 estaciones en línea. Una serie de 24 h caería a
+   ~44 % todas las noches sin que nada esté roto, y la maqueta dibujaba una línea de "SLA 90 %"
+   sobre esa curva. Sin distinguir horario de operación, la gráfica mostraría una caída masiva
+   diaria que no es una caída.
+
 ## 5. El universo del mosaico (Fase E)
 
 **HV** — `CLAUDE.md` registra **701 farmacias modeladas y 66 equipos con agente** de ~1.800
@@ -134,8 +152,9 @@ admitía que sus verdes eran ilustrativos.
 Antecedente a no repetir: `/monitoreo/` sigue sin paginar y a 700 farmacias son 700 tarjetas
 (§10-AK).
 
-**PV** — Cuántas farmacias activas hay hoy, cuántas se sondean y cuántas tienen al menos una
-estación aprobada. **Es el dato que define esta fase.**
+**Medido después (§8.4): el universo por agente son 38 farmacias** (MIA 24, SG 14) contra ~697
+sondeadas por enlace. 38 celdas se leen de un vistazo y es casi lo que la maqueta dibujaba; ~697
+no. El dato que faltaba para decidir esta fase ya está.
 
 ## 6. Rendimiento y seguridad del tablero
 
@@ -171,24 +190,149 @@ aplica.
 | A | Franja de salud compacta | **Implementada** (§10-BX) |
 | B | Histograma de antigüedad de alertas | **Implementada** (§10-BX) |
 | C | Línea de tiempo de enlaces caídos | **Implementada** (§10-BX) |
-| D | Serie de disponibilidad de 24 h | **Pendiente** — requiere decidir §4 |
-| E | Mosaico de farmacias | **Pendiente** — requiere definir §5 |
+| D | Serie de disponibilidad de 24 h | **Pendiente** — el dato existe y es barato (§8.2); falta **decidir** §4: umbral, fuente y efecto nocturno |
+| E | Mosaico de farmacias | **Pendiente** — el universo ya está medido en 38 (§8.4); falta **decidir** si es ese |
 | F | Sparklines históricos de los KPI | **Pendiente** — depende de D |
-| G | Histórico temporal de eventos de Windows | **Pendiente** — requiere modelo nuevo y cambio en el agente (§3) |
+| G | Histórico temporal de eventos de Windows | **No recomendada** — exige modelo nuevo y cambio en el agente, y la aproximación mentiría un 42 % (§3, §8.6) |
 
 **La evolución del modo NOC no está terminada.** Las autorizaciones cubrieron A, B y C.
 
-## 8. Lo que queda sin verificar
+Después de medir, **D y E ya no están bloqueadas por falta de datos sino por una decisión**: los
+números que faltaban están en §8. D arrastra además el hallazgo de §9, que conviene resolver
+antes o junto con ella.
 
-Las lecturas contra producción fueron denegadas por el clasificador de permisos. Siguen sin
-medir, todas con consultas de solo lectura:
+## 8. Mediciones contra producción (12-oct-2026, 23:29 ECT)
 
-1. Que TimescaleDB esté activo y las cuatro hypertables con sus políticas realmente aplicadas
-   (hay evidencia de las migraciones 0035 y 0040, no del estado del servidor).
-2. Volumen y rango real de `evento_monitoreo` — **decide si la Fase D es viable**.
-3. Los valores concretos que la maqueta declaraba como actuales.
-4. Farmacias activas, sondeadas y con estación aprobada — **define la Fase E**.
-5. Distribución real de antigüedad de alertas abiertas.
-6. Caídas de enlace de las últimas 6 h.
-7. Rango de `primera_vez`/`ultima_vez` en `evento_sistema_detectado`, para dimensionar cuánto
-   distorsionaría un "24 h" aproximado.
+Durante la auditoría las lecturas contra producción estaban **denegadas por el clasificador de
+permisos**, así que los siete puntos quedaron sin verificar. Se midieron después de desplegar
+A/B/C (`1b9f842`), todas con consultas de solo lectura a través del ORM. Esto es lo que hay.
+
+### 8.1 TimescaleDB: aplicado, y la ventana caliente está sin comprimir
+
+`timescaledb 2.17.2`. Las cuatro hypertables existen con sus dos políticas:
+
+| Hypertable | Chunks | Retención | Compresión |
+|---|---|---|---|
+| `evento_monitoreo` | 5 (3 comprimidos) | 30 días | a los 7 días |
+| `muestra_metrica` | 27 | 30 días | a los 7 días |
+| `muestra_red_farmacia` | 5 | 30 días | a los 7 días |
+| `muestra_servicio_pos` | 26 | 30 días | a los 7 días |
+
+**HV** — De los 5 chunks de `evento_monitoreo`, 3 están comprimidos y 2 no: la ventana de las
+últimas 24 h cae siempre en chunk sin comprimir, que es el caso óptimo. Lo que la auditoría
+había inferido de las migraciones 0035 y 0040 se confirma en el servidor.
+
+### 8.2 `evento_monitoreo`: la Fase D es viable y barata
+
+| Medición | Valor |
+|---|---|
+| Filas totales | 2.889 |
+| Rango | 10-sep-2026 → 13-oct-2026 (33 días, coherente con la retención de 30) |
+| **Últimas 24 h** | **103 filas** |
+| Últimas 48 h / 7 días | 196 / 899 |
+| Estaciones distintas con transición en 24 h | 31 (de 66) |
+| Transiciones a offline / a online en 24 h | 56 / 47 |
+| Por fuente en 24 h | `mqtt` 59, `meshcentral` 44 |
+
+**HV** — 103 filas para reconstruir una serie de 24 puntos es trivial en coste. El dato existe,
+está fresco y la tabla está indexada por `(estacion, -timestamp)`. **Técnicamente la Fase D se
+puede hacer.**
+
+### 8.3 Alertas abiertas: las cinco son deuda, ninguna es un incidente
+
+| Cubeta | Total |
+|---|---|
+| menos de 1 h | 0 |
+| 1 – 24 h | 0 |
+| 1 – 7 días | 0 |
+| **más de 7 días** | **5** |
+
+Las 5 sin reconocer, 0 en atención. La más vieja abierta desde el **28-sep-2026** (15 días).
+
+**Es el valor que la Fase B vino a aportar, confirmado con datos reales:** el tablero venía
+diciendo "5 alertas sin reconocer", que se lee como urgencia, y las cinco son deuda acumulada.
+Ninguna requiere que alguien corra hoy.
+
+### 8.4 Farmacias: el universo del mosaico son 38, no 700
+
+| Medición | Valor |
+|---|---|
+| Farmacias totales / activas | 703 / 702 |
+| Activas con `ip_router` (sondeables) | 702 |
+| Con fila en `EstadoEnlaceFarmacia` | 703 |
+| De esas, `respondio_alguna_vez=False` | 6 → **~697 sondeadas de verdad** |
+| **Activas con ≥1 estación APROBADA** | **38** |
+| Reparto por unidad (activas) | SG 393, MIA 307, 7DIAS 2 |
+| Reparto de las 38 con agente | MIA 24, SG 14 |
+
+**HV — Esto decide la Fase E.** Un mosaico por enlace son ~697 celdas: ilegible. Un mosaico por
+agente son **38**, repartidas en dos clientes, que es casi exactamente lo que la maqueta dibujaba
+(mostraba 30). 38 celdas se leen de un vistazo.
+
+### 8.5 Enlaces caídos en curso
+
+4 caídas, las cuatro de TELCONET, de 39, 83, 138 y 206 minutos. **Ninguna recortada**: las cuatro
+caben dentro de la ventana de 6 h. El bloque de la Fase C las mostró con el orden correcto (lo
+más reciente arriba).
+
+### 8.6 `evento_sistema_detectado`: cuánto mentiría un "24 h" aproximado
+
+| Medición | Valor |
+|---|---|
+| Filas | 43 |
+| Ocurrencias acumuladas (`cantidad_total`) | 287 |
+| Rango de `primera_vez` | 21-sep → 12-oct-2026 |
+| Filas con `ultima_vez` en 24 h | 16, sumando 43 ocurrencias |
+| **De esas, filas que EMPEZARON antes de 24 h** | **1, que aporta 18 ocurrencias** |
+
+**HV — La aproximación está cuantificada: 18 de 43, el 42 % del número, sería histórico
+disfrazado de "últimas 24 h".** Y es exactamente la fila que la maqueta mostraba como
+"GLG01-ADM · 18× apagón inesperado → revisar UPS/energía": esos 18 apagones no son de las
+últimas 24 horas, son el acumulado desde que se empezó a recolectar.
+
+Confirma que **la Fase G no se puede aproximar**: hace falta la serie de ocurrencias.
+
+## 9. Hallazgo nuevo: la exclusión de equipos administrativos no excluye nada
+
+Esto no estaba en la auditoría original; salió de medir el punto 8.4.
+
+**HV** — `catalogo.services.estado_flota` y la lista de "estaciones sin reportar" del tablero
+excluyen las estaciones cuya **farmacia** es de tipo `ADMINISTRATIVO`. El comentario que
+justifica esa exclusión dice:
+
+> *"Se apagan de noche y el fin de semana, así que sumadas harían saltar esta lista ~100 todas
+> las noches y el número dejaría de significar 'hay un problema'."*
+
+**La protección no opera.** Medido:
+
+- **No existe ninguna farmacia de tipo `ADMINISTRATIVO`**: 701 son `farmacia` y 2 son `tienda`.
+- `estado_flota(None)` devuelve **`admin_total = 0`**, así que las tres cifras que el diccionario
+  calcula para administrativas son constantes en cero.
+- De las 66 estaciones aprobadas, **23 llevan `-ADM` en el código** (`GLG01-ADM`, `GSD01-ADM`,
+  `GSD02-ADM`…), que son los equipos de oficina del administrador de cada local. **Las 23 están
+  en farmacias normales**, así que se cuentan como flota.
+
+El efecto, medido a las **23:29 de Ecuador** (farmacias cerradas):
+
+| Grupo | Total | En línea |
+|---|---|---|
+| Estaciones `-ADM` | 23 | 11 |
+| Resto | 43 | 18 |
+| **`estado_flota`** | **66** | **29** · 37 sin reportar, 0 nunca reportó |
+
+O sea: de noche el tablero muestra **29/66 en línea y 37 "sin reportar"**, y ninguna de esas 37
+es una incidencia — son locales cerrados. 12 son equipos `-ADM`, los que la exclusión pretendía
+sacar; las otras 25 son cajas de farmacias que cerraron.
+
+**Dos consecuencias.**
+
+1. El fenómeno nocturno es **más amplio que los `-ADM`**: incluso excluyéndolos, 25 de 43 cajas
+   están apagadas. El criterio por tipo de farmacia no habría alcanzado ni funcionando.
+2. **Es un insumo crítico para la Fase D.** Una serie de disponibilidad de 24 h caería a ~44 %
+   todas las noches sin que nada esté roto, y la maqueta dibujaba una línea de "SLA 90 %" sobre
+   esa curva. Graficar la flota sin distinguir horario de operación produciría una gráfica que
+   parece una caída masiva diaria.
+
+No se corrigió nada de esto: estaba fuera del alcance autorizado (A, B y C) y toca un umbral y
+un criterio de conteo que el proyecto fijó deliberadamente. Queda anotado como **decisión
+pendiente**, y conviene resolverlo antes o junto con la Fase D.
