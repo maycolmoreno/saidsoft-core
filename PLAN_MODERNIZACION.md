@@ -6142,3 +6142,241 @@ otras tres transiciones conservan mensajes y contratos idénticos.
   único afectado es la auditoría. No se agregó el bloqueo para no ampliar alcance.
 - Las transiciones de `D-2` ("alerta resuelta", escrita cinco veces) siguen abiertas: son otro
   hallazgo del mismo grupo.
+
+
+## §10-BX — Modo NOC, fases A/B/C: la Zona 0 compacta y los dos primeros bloques con memoria (12-oct-2026)
+
+Primera evolución del tablero hacia un modo NOC, sobre una auditoría de solo lectura previa.
+De las siete fases que esa auditoría propuso (A–G), se autorizaron e implementaron **tres: las
+únicas que se apoyan en datos que ya existen y son exactos**, sin modelo nuevo, sin tocar el
+agente y sin ninguna decisión pendiente. Las otras cuatro siguen abiertas y su motivo está al
+final de esta sección.
+
+El punto de partida de la auditoría conviene recordarlo porque cambia qué era el trabajo: **el
+tablero ya era un NOC en casi todo** —tema oscuro (`--bg:#0b1220`, `color-scheme:dark`),
+refresco de 60 s, zonas ordenadas por pregunta operativa, cola unificada por farmacia, franja
+de salud con nueve señales, aviso de pérdida de contacto—. Lo que no tenía era **memoria**: cada
+número era el del instante, sin forma de saber si venía mejorando o empeorando. El delta real
+era histórico y densidad, no estética, y por eso no se tocó la paleta ni se reemplazó nada.
+
+### Fase A — la franja de salud, de dos columnas altas a franja compacta
+
+Las mismas nueve señales, los mismos datos, los mismos distintivos. Lo único que cambió es
+cuántas entran por fila: `.salud-franja` es un grid `auto-fit minmax(210px, 1fr)` —mismo
+patrón y mismo motivo que `.kpi-strip`, que ya estaba— así que a 1600 px entran siete por fila
+y en móvil una, en vez de las dos columnas fijas de antes.
+
+**Por qué importa el alto de esta zona:** es permanente y va primero, así que cada píxel que
+ocupa lo paga la cola de incidencias que viene debajo. En un monitor de NOC lo que cuenta es
+cuántas zonas entran sin desplazar.
+
+**Dos líneas por señal y no una.** El detalle lo arma el dominio y es una frase completa
+("último latido hace 1 s (umbral 90 s)"), no una cifra corta como en la maqueta. En una sola
+línea de 210 px habría que truncarla, y ese texto es justamente lo que permite interpretar la
+señal: comprimir el alto no puede costar el contexto. El nombre tampoco lleva `nowrap`
+—envuelve antes que recortarse.
+
+**Cero consultas nuevas**: la vista no se tocó en esta fase, solo la plantilla y el CSS.
+
+Accesibilidad intacta: el distintivo sigue siendo `panel/_estado_chip.html`, que da color +
+forma + palabra para el lector de pantalla. La franja no introdujo ningún color propio.
+
+### Fase B — antigüedad de las alertas sin resolver (Zona 2b)
+
+Las **mismas** alertas que los dos contadores de arriba, repartidas en cuatro cubetas: menos
+de 1 h, 1–24 h, 1–7 días, más de 7 días.
+
+Existe porque un total no dice si hay que correr: cinco alertas de la última hora son un
+incidente en curso y cinco de hace dos semanas son deuda que nadie atendió, y el tablero
+mostraba las dos cosas como la misma cifra. El corte de 7 días es el que separa incidente de
+deuda.
+
+**Qué cuenta, exactamente.** `ABIERTA` + `RECONOCIDA`, o sea todo lo que no está `RESUELTA`:
+el mismo universo que el par de contadores del tablero, para que el histograma y las tarjetas
+no puedan sumar distinto. **Y las separa, no las junta**: cada cubeta trae los dos números por
+separado, porque una reconocida no está resuelta —sigue abierta y sigue envejeciendo— pero
+tiene a alguien encima, y sumarlas reproduciría el defecto que el tablero ya corrigió cuando
+mostraba "Alertas abiertas" como una cifra única (hallazgo D-03).
+
+La antigüedad sale de `abierta_en` en los dos casos, no de `reconocida_en`: la pregunta es
+desde cuándo existe el problema, no desde cuándo alguien lo mira.
+
+**Una consulta.** Ocho conteos condicionales y el mínimo, en un `aggregate`. El estado se
+filtra en el `WHERE` y no solo dentro de los `Count` —eso es lo que hace que entre por el
+índice `(estado, -abierta_en)` que la tabla ya tenía—: con los conteos condicionales como
+único filtro, Postgres tendría que recorrer la tabla entera, incluidas todas las resueltas,
+que son la mayoría y crecen para siempre.
+
+**Sin SVG, a propósito.** `construir_grafico` y `_sparkline.html` dibujan una serie temporal
+continua, y esto son cuatro cubetas categóricas: una polilínea entre ellas insinuaría una
+continuidad que no existe. Se reusó `.rank-row` (track / fill / val), que ya es la barra
+horizontal del panel. El relleno va en `--serie` y no en un color de estado: son cuatro tramos
+de la misma distribución, no cuatro niveles de gravedad, y nadie definió a partir de cuántas
+alertas viejas esto es "crítico".
+
+### Fase C — línea de tiempo de los enlaces caídos (Zona 2c)
+
+Las **mismas** caídas que cuenta el KPI "farmacias sin enlace", dibujadas por cuánto llevan.
+El número dice cuántas son; esto dice desde cuándo, que es lo que decide a dónde va el técnico
+primero: una farmacia que lleva 15 minutos caída puede ser un corte de luz que ya pasó, y una
+que lleva ocho horas no.
+
+**Las tres exclusiones son las canónicas**, idénticas a las del tablero, el Centro y
+`cola_incidencias`, y no una cuarta definición de "caída": `fin__isnull=True`,
+`farmacia__activa=True`, y excluir `respondio_alguna_vez=False`.
+
+**Las seis horas son la ESCALA del dibujo, no un filtro temporal.** Es la decisión de fondo
+del bloque y conviene dejarla escrita: filtrar por `inicio >= ahora - 6 h` habría dejado afuera
+justamente las peores —las crónicas, que son mayoría: cuando se montó el aviso por correo había
+162 caídas abiertas y 134 pasaban las 24 horas— y habría hecho que este bloque y el KPI
+contaran poblaciones distintas bajo el mismo nombre, que es el defecto que el tablero ya
+corrigió dos veces (D-01 y D-03). Así que entran todas las abiertas, y la que empezó antes del
+borde se dibuja llena con el extremo izquierdo degradado (`recortada`) y su duración real al
+lado: la barra se agota, el dato no.
+
+**El total no se vuelve a contar.** La plantilla muestra `total_enlaces_caidos`, el del KPI, así
+que las dos cifras no pueden discrepar ni hace falta una segunda consulta.
+
+**Una farmacia, una barra.** Nada impide hoy dos eventos abiertos para el mismo sitio —no hay
+constraint, hallazgo D-04— y el KPI cuenta farmacias distintas, no eventos. Si pasara, se queda
+el inicio **más antiguo**: con el más reciente la barra diría que lleva menos tiempo caída de lo
+que lleva.
+
+**Una consulta**, acotada a 8 filas (mismo número que la cola de incidencias) y con
+`select_related('farmacia')` porque `nombre_proveedor` lee `farmacia.tipo_enlace`. Se reusó esa
+función en vez de cortar el circuito, que es otra cosa y ya tiene su propia sutileza
+documentada. Hay una prueba de que el bloque no crece con el número de caídas: el día que se
+caiga un proveedor entero son cientos de eventos abiertos y esta pantalla se refresca cada
+minuto.
+
+El relleno acá sí va en `--critical`, al contrario que el histograma de antigüedad, porque cada
+barra es un estado: una farmacia que no vende.
+
+### Archivos y qué se tocó en cada uno
+
+| Archivo | Qué cambió |
+|---|---|
+| `templates/panel/dashboard_vivo_partial.html` | Zona 0 compactada (solo clases y estructura, ningún condicional), bloques 2b y 2c nuevos, `{% load l10n %}` |
+| `static_src/components.css` | `.salud-franja/.salud-senal*`, `.antiguedad-*`, `.lt-*` |
+| `static/css/app.css` | recompilado con `./tools/tailwindcss.exe` (artefacto versionado) |
+| `apps/monitoreo/services.py` | `CUBETAS_ANTIGUEDAD_ALERTAS` + `antiguedad_alertas_sin_resolver` |
+| `apps/monitoreo/enlaces.py` | `VENTANA_LINEA_TIEMPO_HORAS`, `MAX_BARRAS_LINEA_TIEMPO`, `linea_tiempo_caidas_en_curso` |
+| `apps/panel/views/dashboard.py` | solo coordinación: 2 imports, 2 llamadas, 3 claves de contexto (351 → 373 líneas, límite 550) |
+| `apps/panel/tests.py` | `AntiguedadDeAlertasTests` (11) y `LineaTiempoEnlacesCaidosTests` (14) |
+
+**El cálculo vive en el dominio, no en la vista.** Las dos funciones están en `apps/monitoreo/`
+y la vista solo las llama y pasa el resultado al contexto: no decide qué es "viejo", ni cuántas
+cubetas hay, ni qué es una caída. Es la misma dirección que §10-BW, un paso más.
+
+**Un endpoint vivo, el que ya había.** Los dos bloques entran en `_contexto_vivo`, compartido
+por la carga inicial y el refresco, así que no pueden mostrar estados de momentos distintos.
+No se agregó ningún endpoint por indicador y la cadencia sigue en 60 s.
+
+### Costo: dos consultas más por refresco
+
+| Fase | Consultas añadidas |
+|---|---|
+| A | 0 |
+| B | 1 |
+| C | 1 |
+
+Las dos tienen prueba propia con `assertNumQueries(1)`, que es el presupuesto que la auditoría
+había fijado para cada bloque.
+
+### Lo que NO se hizo, y por qué
+
+- **La maqueta genera sus series con una función pseudoaleatoria** (`Math.sin` más un término
+  determinista disfrazado de ruido). No se portó nada de eso. Cada bloque nuevo tiene una prueba
+  de que con la base vacía muestra su estado vacío y no una barra.
+- **Los dos bloques de eventos de Windows de la maqueta no se implementaron**: no se pueden
+  llenar con datos verdaderos. `EventoSistemaDetectado` agrega por `(estación, log, origen, id)`
+  con un `cantidad_total` acumulativo desde `primera_vez`, sin fila por ocurrencia, así que
+  "22 apagones en las últimas 24 h" no es computable. Filtrar por `ultima_vez` y sumar
+  `cantidad_total` daría un número que mezcla ocurrencias de semanas atrás. Es el mismo problema
+  que §9 ya documenta para `PosErrorDetectado`.
+- **No se tocó la paleta** ni los tokens: el panel ya es oscuro y §10-AK ya reforzó los estados
+  con forma, trazo e icono. Cambiar los colores por la paleta de la maqueta habría obligado a
+  revalidar todo el panel por una ganancia estética.
+- **Ni modelos, ni migraciones, ni agente, ni umbrales, ni retención.** Fuera de alcance.
+
+### Limitaciones que permanecen
+
+- **El histograma incluye las reconocidas** (en su propia columna). Es la lectura de "abiertas y
+  sin resolver" que los criterios de aceptación pedían —"las reconocidas no se contabilizan como
+  no reconocidas" solo tiene sentido si están presentes—, pero si lo que se quería era
+  únicamente `ABIERTA`, el cambio es de una línea en `antiguedad_alertas_sin_resolver`.
+- **La línea de tiempo muestra las 8 más recientes** de todas las abiertas. Con muchas caídas
+  simultáneas, una crónica puede no aparecer en la lista aunque sí esté en el total; el listado
+  completo está en `/enlaces/` y la priorización en la Zona 1.
+- **Sigue sin haber histórico de los KPI.** Lo que estas tres fases agregan es distribución
+  (antigüedad) y duración (caídas), que se calculan del estado actual. Las series de 24 h son la
+  Fase D y siguen pendientes.
+
+### Fases pendientes del modo NOC
+
+Ninguna está cerrada y **la evolución completa no está terminada**: estas autorizaciones
+cubrieron solo A, B y C.
+
+- **D — serie de disponibilidad de 24 h.** Reconstruible desde `EventoMonitoreo` (hypertable,
+  retención 30 días, y comprime a los 7, así que la ventana caliente está sin comprimir). Antes
+  de implementarla hay que **resolver un conflicto de umbrales**: las transiciones las escribe
+  `marcar_estaciones_offline` con el umbral de ALERTA (5 min) mientras los KPI de pantalla usan
+  el de VISUALIZACIÓN (10 min), así que el último punto de la curva no coincidiría con el número
+  de al lado — exactamente lo que D-01 vino a cerrar. Decisión del usuario, no tomada.
+- **E — mosaico de farmacias.** Falta definir su universo: hay 701 farmacias modeladas y 66
+  estaciones con agente, y la maqueta mezcla las dos poblaciones en los mismos cuadritos. Con
+  701 celdas el bloque es ilegible. `cola_incidencias` ya da las afectadas; falta el conjunto
+  "operativas". Decisión del usuario, no tomada.
+- **F — sparklines históricos de los KPI.** Depende de D. Cuatro de los cinco son reconstruibles
+  desde las tablas de eventos; el de "farmacias afectadas" no, porque dos de sus tres fuentes
+  son snapshots sin historia.
+- **G — histórico temporal de eventos de Windows.** La única que exige modelo nuevo y cambio en
+  el agente, con el precedente medido de medio millón de filas mensuales a 1.800 estaciones. No
+  recomendada por ahora.
+
+### Lo que no se pudo verificar
+
+La auditoría previa no pudo medir nada contra producción: las lecturas fueron **denegadas por el
+clasificador de permisos** y no se intentó rodearlas. Siguen sin verificar, entre otras, el
+volumen y rango real de `evento_monitoreo` —que decide si la Fase D es viable— y cuántas
+farmacias activas tienen estación aprobada, que es el dato que define la Fase E.
+
+### Pruebas ejecutadas y resultado real
+
+Pruebas nuevas: **25** (11 de la Fase B, 14 de la Fase C). La Fase A no agregó pruebas: no
+cambió ningún dato ni ninguna regla, y las que ya existían cubren que las nueve señales sigan
+presentes con su hora.
+
+| Qué se ejecutó | Resultado |
+|---|---|
+| `DashboardZonaDeConfianzaTests`, `DashboardTests`, `SaludEnLaBarraSuperiorTests`, `SaludRespaldoDashboardTests` (Fase A) | 21 pruebas, OK |
+| `TableroRefrescoYCostoTests`, `DashboardTableroTests`, `DashboardJerarquiaTests` (Fase A, costo) | 21 pruebas, OK |
+| `AntiguedadDeAlertasTests` (Fase B) | 11 pruebas, OK |
+| `LineaTiempoEnlacesCaidosTests` (Fase C) | 14 pruebas, OK |
+| Regresión del tablero + aislamiento multi-tenant (10 clases) | 87 pruebas, OK |
+| `DivisionDeVistasTests`, `ContratoTenantDeAuditoriaTests`, `EquivalenciaPredicadosEstacionTests` | 13 pruebas, OK |
+| `manage.py check` | `System check identified no issues (1 silenced)` |
+| `manage.py makemigrations --check --dry-run` | `No changes detected` |
+| **Suite completa** | **`Ran 2551 tests in 1604.722s` · `OK`** |
+
+La suite pasó de 2.526 a 2.551: las 25 nuevas, ninguna existente eliminada ni modificada para
+que pasara.
+
+Qué prueba cada bloque, en concreto:
+
+- **Fase B**: una alerta en cada cubeta da uno en cada cubeta; el borde exacto (1 h y 5 s cae en
+  "1–24 h", no en "menos de 1 h"); una reconocida cuenta en `en_atencion` y **no** en
+  `sin_reconocer`; una resuelta no aparece en ninguna cubeta y `mas_vieja` queda en `None`; una
+  alerta de otra unidad de negocio no entra, ni por la función ni por HTTP con el alcance real
+  de la sesión; sin alertas el bloque dice "Ninguna alerta sin resolver" y ninguna barra se
+  dibuja llena; las barras se escalan contra la cubeta más poblada; y el cálculo cuesta
+  **una** consulta.
+- **Fase C**: una caída en curso de 2 h 17 min aparece con 137 minutos y 38,1 % de ancho; una de
+  14 días se dibuja **recortada** al 100 % conservando su duración real, en vez de esconderse;
+  una caída ya recuperada (`fin` no nulo) no aparece; una farmacia dada de baja y una con
+  `respondio_alguna_vez=False` quedan excluidas; una farmacia de otro cliente no se ve, ni por
+  la función ni por HTTP; el total del bloque es el mismo número que el KPI; dos eventos
+  abiertos del mismo sitio son **una** barra con el inicio más antiguo; lo más reciente va
+  arriba; una caída de un minuto se sigue viendo (mínimo de 1,5 % de ancho); sin caídas el
+  bloque dice "Ninguna farmacia sin enlace ahora mismo"; y el bloque cuesta **una** consulta y
+  **no crece** con el número de caídas.

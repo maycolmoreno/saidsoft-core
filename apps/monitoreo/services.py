@@ -1600,6 +1600,117 @@ def resumen_operacion(unidades=None) -> dict:
     }
 
 
+# --- Antigüedad de las alertas sin resolver ----------------------------------------
+#
+# Las cuatro cubetas, de la más nueva a la más vieja, en HORAS. Los límites viven acá y
+# no en la plantilla por el mismo motivo que cualquier otro umbral del proyecto: un
+# número escrito en el HTML no se puede probar ni reusar, y este bloque y su prueba
+# tienen que hablar de los mismos cortes.
+#
+# El corte de 7 días no es arbitrario: es el que separa "incidente" de "deuda". Una
+# alerta de hace dos semanas no es algo que pasó, es algo que nadie atendió, y mezclarla
+# con las de la última hora hace que el total no signifique nada — que es exactamente lo
+# que el contador único de alertas venía haciendo.
+CUBETAS_ANTIGUEDAD_ALERTAS = (
+    ('menos de 1 h', 1),
+    ('1 – 24 h', 24),
+    ('1 – 7 días', 24 * 7),
+    ('más de 7 días', None),   # None = sin tope: todo lo que quedó atrás
+)
+
+
+def antiguedad_alertas_sin_resolver(unidades=None) -> dict:
+    """Las alertas SIN RESOLVER repartidas por antigüedad, con una sola consulta.
+
+    **Qué cuenta.** `ABIERTA` y `RECONOCIDA`, o sea todo lo que no está `RESUELTA`: es el
+    mismo universo que el par de contadores del tablero (`sin_reconocer` / `en_atencion`),
+    para que el histograma y las dos tarjetas de arriba no puedan sumar distinto.
+
+    **Y las separa, no las junta.** Cada cubeta trae los dos números por separado. Una
+    reconocida no está resuelta —sigue abierta y sigue envejeciendo— pero tiene a alguien
+    encima, y eso cambia qué hace el operador con ella; sumarlas en un solo total
+    reproduciría el defecto que el tablero ya corrigió cuando mostraba "Alertas abiertas"
+    como una cifra única (hallazgo D-03).
+
+    **La antigüedad sale de `abierta_en` en los dos casos**, no de `reconocida_en`:
+    la pregunta es desde cuándo existe el problema, no desde cuándo alguien lo mira.
+
+    `unidades` = iterable de UnidadNegocio, o None para todas. El llamador decide el
+    alcance; esta función no lee la sesión ni el request — igual que `resumen_operacion`
+    y `estado_flota`.
+
+    **Una consulta.** Ocho conteos condicionales y el mínimo, en un solo `aggregate`, y
+    el filtro `estado__in` + rango de `abierta_en` entra por el índice `(estado,
+    -abierta_en)` que la tabla ya tiene (ver el Meta de `Alerta`).
+
+    `pct` viene calculado desde acá porque las plantillas de Django no dividen, y es
+    relativo a la cubeta más poblada: lo que la barra compara son las cubetas entre sí,
+    no cada una contra el total.
+    """
+    from datetime import timedelta
+
+    from django.db.models import Count, Min, Q
+
+    from .models import Alerta
+
+    ahora = timezone.now()
+    abierta = Q(estado=Alerta.Estado.ABIERTA)
+    reconocida = Q(estado=Alerta.Estado.RECONOCIDA)
+
+    # El estado se filtra en el WHERE y no solo dentro de los `Count`, que es lo que hace
+    # que esta consulta entre por el índice `(estado, -abierta_en)`: con los conteos
+    # condicionales como único filtro, Postgres tendría que recorrer la tabla entera
+    # —incluidas TODAS las resueltas, que son la mayoría y crecen para siempre— para
+    # descartarlas una por una. Sigue siendo una sola consulta.
+    base = Alerta.objects.filter(estado__in=[Alerta.Estado.ABIERTA, Alerta.Estado.RECONOCIDA])
+
+    # Los bordes de cada cubeta, en el mismo orden que CUBETAS_ANTIGUEDAD_ALERTAS. Cada
+    # una es un intervalo semiabierto —más nueva que su borde anterior, más vieja o igual
+    # que el suyo— así que no hay solape ni hueco y las cuatro suman el total.
+    agregados = {}
+    anterior = None
+    for indice, (_etiqueta, horas) in enumerate(CUBETAS_ANTIGUEDAD_ALERTAS):
+        desde = None if horas is None else ahora - timedelta(hours=horas)
+        rango = Q()
+        if desde is not None:
+            rango &= Q(abierta_en__gte=desde)
+        if anterior is not None:
+            rango &= Q(abierta_en__lt=anterior)
+        agregados['c%d_sin_reconocer' % indice] = Count('pk', filter=abierta & rango)
+        agregados['c%d_en_atencion' % indice] = Count('pk', filter=reconocida & rango)
+        anterior = desde
+
+    agregados['mas_vieja'] = Min('abierta_en')
+    datos = _por_unidad(
+        base, unidades, 'estacion__farmacia__unidad_negocio',
+    ).aggregate(**agregados)
+
+    cubetas = []
+    for indice, (etiqueta, _horas) in enumerate(CUBETAS_ANTIGUEDAD_ALERTAS):
+        sin_reconocer = datos['c%d_sin_reconocer' % indice]
+        en_atencion = datos['c%d_en_atencion' % indice]
+        cubetas.append({
+            'etiqueta': etiqueta,
+            'sin_reconocer': sin_reconocer,
+            'en_atencion': en_atencion,
+            'total': sin_reconocer + en_atencion,
+        })
+
+    maximo = max((c['total'] for c in cubetas), default=0)
+    for cubeta in cubetas:
+        # Sin datos, 0% en todas: una barra llena sobre cero alertas diría lo contrario
+        # de lo que pasa. El bloque muestra su estado vacío y no una barra.
+        cubeta['pct'] = round(cubeta['total'] * 100 / maximo, 1) if maximo else 0
+
+    return {
+        'cubetas': cubetas,
+        'total': sum(c['total'] for c in cubetas),
+        'sin_reconocer': sum(c['sin_reconocer'] for c in cubetas),
+        'en_atencion': sum(c['en_atencion'] for c in cubetas),
+        'mas_vieja': datos['mas_vieja'],
+    }
+
+
 def fuente_desactualizada(instante, clave: str) -> bool:
     """True si `instante` quedó fuera de la tolerancia de esa fuente.
 

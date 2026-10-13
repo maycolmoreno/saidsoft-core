@@ -559,3 +559,74 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
    auto-fit por el mismo motivo que .kpi-strip: con `grid-cols-5` fijas, un código de
    farmacia largo o un valor de cuatro cifras en kbps desbordaban la celda. */
 .metricas-grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(96px, 1fr)); gap:12px 14px; }
+
+/* ---------- Franja de salud de la plataforma (Zona 0 del tablero) ----------
+   Las nueve señales de "Confianza en el dato" en franja compacta, no en dos columnas
+   de filas altas. El motivo es de pantalla: la Zona 0 es permanente y va primero, así
+   que cada píxel que ocupa lo paga la cola de incidencias que viene debajo — en un
+   monitor de NOC lo que importa es cuántas zonas entran sin desplazar.
+
+   auto-fit y no un número fijo de columnas, por lo mismo que .kpi-strip: las nueve
+   señales no se reparten bien en 2 ni en 3, y con pistas fijas sobra fila en blanco a
+   la derecha. A 1600px entran siete por fila; en un portátil, cuatro; en móvil, una.
+
+   DOS líneas por señal y no una: el detalle que arma el dominio es una frase completa
+   ("último latido hace 1 s (umbral 90 s)"), no una cifra corta. En una sola línea de
+   210px habría que truncarla, y ese texto es justamente lo que permite interpretar la
+   señal — comprimir el alto no puede costar el contexto. El nombre tampoco lleva
+   nowrap: envuelve antes que recortarse.
+
+   El distintivo sigue siendo `panel/_estado_chip.html`: color + forma + palabra para
+   el lector de pantalla. La franja no introduce ningún color de estado propio. */
+.salud-franja{ display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:0 16px; }
+.salud-senal{
+  display:flex; flex-direction:column; gap:1px; min-width:0;
+  padding:5px 0; border-top:1px solid var(--border-soft);
+}
+.salud-senal-top{ display:flex; align-items:center; gap:6px; min-width:0; }
+.salud-senal-nombre{ font-size:12px; font-weight:500; line-height:1.3; }
+.salud-senal-detalle{ font-size:10.5px; line-height:1.35; color:var(--text-faint); font-variant-numeric:tabular-nums; }
+
+/* ---------- Antigüedad de las alertas sin resolver (Zona 2b del tablero) ----------
+   Reusa .rank-row (track / fill / val), que ya es la barra horizontal del panel; lo
+   único propio son los dos anchos fijos que hacen que las cuatro barras arranquen y
+   terminen alineadas, porque una barra que empieza en una x distinta por fila no se
+   puede comparar de un vistazo — y comparar las cubetas entre sí es todo lo que este
+   bloque hace.
+
+   El relleno va en --serie, nunca en un color de estado: son cuatro tramos de la misma
+   distribución, no cuatro niveles de gravedad, y nadie definió a partir de cuántas
+   alertas viejas esto es "crítico". El estado de cada alerta se dice con su número. */
+.antiguedad-fila + .antiguedad-fila{ margin-top:7px; }
+.antiguedad-etiqueta{ flex:none; width:102px; font-size:11.5px; color:var(--text-dim); }
+.antiguedad-desglose{ flex:none; font-size:10.5px; color:var(--text-faint); }
+
+/* ---------- Línea de tiempo de caídas de enlace (Zona 2c del tablero) ----------
+   Una barra por farmacia, creciendo hacia la IZQUIERDA desde "ahora": el extremo
+   derecho de todas las pistas es el mismo instante, así que los largos se comparan
+   directamente. De ahí el `right:0` del relleno, que es lo único que distingue esta
+   barra de .rank-row (donde el origen está a la izquierda porque mide una proporción,
+   no un tiempo).
+
+   La barra de una caída que empezó antes del borde de la ventana llega al 100% y lleva
+   `recortada`: el borde izquierdo queda abierto con un degradado para que se vea que
+   sigue más allá del dibujo, y la duración real se escribe al lado. Una barra llena sin
+   esa marca afirmaría que la caída empezó justo en el borde.
+
+   El relleno va en --critical y no en --serie —al contrario que el histograma de
+   antigüedad— porque acá cada barra sí es un estado: una farmacia que no vende. */
+.lt-fila{ display:flex; align-items:center; gap:9px; }
+.lt-fila + .lt-fila{ margin-top:6px; }
+.lt-sitio{ flex:none; width:74px; font-size:11.5px; font-weight:500; }
+.lt-pista{ position:relative; flex:1; height:16px; border-radius:4px; background:var(--track-bg); overflow:hidden; }
+.lt-barra{ position:absolute; right:0; top:0; bottom:0; border-radius:4px; background:var(--critical); min-width:3px; }
+.lt-barra.recortada{
+  border-top-left-radius:0; border-bottom-left-radius:0;
+  mask-image:linear-gradient(to right, transparent 0, #000 14px);
+  -webkit-mask-image:linear-gradient(to right, transparent 0, #000 14px);
+}
+.lt-dur{ flex:none; font-size:10.5px; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.lt-escala{
+  display:flex; justify-content:space-between; margin-left:83px;
+  font-size:10px; color:var(--text-faint); font-variant-numeric:tabular-nums;
+}

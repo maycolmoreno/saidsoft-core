@@ -10,6 +10,7 @@ from apps.catalogo.models import Estacion, Farmacia
 from apps.catalogo.services import calcular_matriz_cumplimiento, estado_flota
 from apps.cuentas.services import unidades_negocio_en_foco
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
+from apps.monitoreo.enlaces import VENTANA_LINEA_TIEMPO_HORAS, linea_tiempo_caidas_en_curso
 from apps.monitoreo.incidencias import cola_incidencias
 from apps.monitoreo.models import (
     Alerta, EstadoEnlaceFarmacia, EventoEnlaceFarmacia, MuestraRedFarmacia,
@@ -18,7 +19,7 @@ from apps.monitoreo.models import (
 # barra superior (apps.panel.context_processors) y, el día que se unifiquen, el comando
 # `verificar_salud`. Ver el docstring de apps.monitoreo.salud.
 from apps.monitoreo.salud import estado_latidos, resumen_salud
-from apps.monitoreo.services import fuente_desactualizada
+from apps.monitoreo.services import antiguedad_alertas_sin_resolver, fuente_desactualizada
 from apps.monitoreo.umbrales import ONLINE_UMBRAL_MINUTOS
 # Los dos umbrales de salud de la plataforma vivian ACA y el comando verificar_salud
 # los importaba, con lo que el dominio terminaba dependiendo de una vista. Despues la
@@ -107,6 +108,15 @@ def _contexto_vivo(request):
         en_atencion=Count('pk', filter=Q(estado=Alerta.Estado.RECONOCIDA)),
     )
 
+    # Las MISMAS alertas de arriba, repartidas por antigüedad. Un total de alertas no
+    # dice si hay que correr: cinco abiertas en la última hora son un incidente en curso
+    # y cinco de hace dos semanas son deuda que nadie atendió, y hasta hoy el tablero
+    # mostraba las dos cosas como el mismo número.
+    #
+    # Lo calcula el dominio (`apps.monitoreo.services`), no esta vista, y en UNA consulta
+    # con conteos condicionales: la vista no decide qué es "viejo" ni cuántas cubetas hay.
+    antiguedad_alertas = antiguedad_alertas_sin_resolver(visibles)
+
     # Zona 1: la cola unificada. Reemplaza a las dos listas por dominio que había acá
     # —"alertas abiertas más recientes" y "enlaces caídos"— porque una farmacia con el
     # enlace caído aparecía en las dos Y en "estaciones sin reportar", tres veces por un
@@ -171,6 +181,15 @@ def _contexto_vivo(request):
         .exclude(farmacia__estado_enlace__respondio_alguna_vez=False)
         .values('farmacia_id').distinct().count()
     )
+
+    # Las MISMAS caídas, dibujadas. El KPI de arriba dice cuántas son; esto dice desde
+    # cuándo, que es lo que decide a dónde va el técnico primero. Mismo queryset y mismas
+    # tres exclusiones —las calcula el dominio, en `apps.monitoreo.enlaces`— así que el
+    # número y las barras no pueden hablar de conjuntos distintos.
+    #
+    # El total de la lista NO se vuelve a contar: la plantilla muestra
+    # `total_enlaces_caidos`, el del KPI.
+    caidas_en_curso = linea_tiempo_caidas_en_curso(visibles)
 
     # Misma consulta que arriba: `componentes_salud` ya trajo la tabla entera.
     latido_respaldo = por_clave.get(NOMBRE_RESPALDO)
@@ -243,9 +262,12 @@ def _contexto_vivo(request):
         'flota': flota,
         'total_estaciones': total_estaciones,
         'total_online': total_online,
+        'antiguedad_alertas': antiguedad_alertas,
         'alertas_sin_reconocer': conteo_alertas['sin_reconocer'],
         'alertas_en_atencion': conteo_alertas['en_atencion'],
         'total_enlaces_caidos': total_enlaces_caidos,
+        'caidas_en_curso': caidas_en_curso,
+        'ventana_linea_tiempo_horas': VENTANA_LINEA_TIEMPO_HORAS,
         'sin_reportar': sin_reportar[:6],
         'total_sin_reportar': total_sin_reportar,
         'worker_mqtt_activo': worker_mqtt_activo,

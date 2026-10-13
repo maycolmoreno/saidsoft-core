@@ -423,6 +423,112 @@ def _agrupar_por_proveedor(eventos):
     return dict(sorted(grupos.items()))
 
 
+# --- Línea de tiempo de las caídas en curso (Zona 2c del tablero) ------------------
+
+# El ancho del dibujo, en horas. Es la ESCALA de la línea de tiempo, no un filtro: ver
+# el docstring de `linea_tiempo_caidas_en_curso` sobre por qué esa distinción es lo
+# único que mantiene el bloque coherente con el KPI de al lado.
+VENTANA_LINEA_TIEMPO_HORAS = 6
+
+# Cuántas barras entran. Mismo número que la cola de incidencias del tablero
+# (`cola_incidencias` recortada a 8): es una pantalla de decisión, no un listado, y
+# para el listado completo ya está /enlaces/.
+MAX_BARRAS_LINEA_TIEMPO = 8
+
+
+def linea_tiempo_caidas_en_curso(unidades=None, *, horas=VENTANA_LINEA_TIEMPO_HORAS,
+                                 limite=MAX_BARRAS_LINEA_TIEMPO) -> list[dict]:
+    """Las caídas de enlace TODAVÍA ABIERTAS, con cuánto llevan, para dibujarlas.
+
+    **Mismo conjunto que el KPI "farmacias sin enlace", por construcción.** Las tres
+    exclusiones son las canónicas, idénticas a las que ya usan el tablero, el Centro y
+    `cola_incidencias`, y no una cuarta definición de "caída":
+
+      - `fin__isnull=True`  -> solo las que siguen abiertas; una recuperada no es una
+                               caída en curso y su historia está en /enlaces/.
+      - `farmacia__activa`  -> una farmacia dada de baja deja de sondearse y su estado
+                               queda congelado; no es algo que alguien vaya a ir a
+                               arreglar (reportado con GP063 el 2-oct-2026).
+      - `respondio_alguna_vez=False` excluido -> nunca respondió es configuración
+                               pendiente, no una caída.
+
+    **Las seis horas son la escala del dibujo, NO un filtro temporal**, y esto es la
+    decisión de fondo del bloque. Filtrar por `inicio >= ahora - 6 h` habría dejado
+    afuera justamente las peores: las caídas crónicas, que son mayoría —cuando se montó
+    el aviso por correo había 162 caídas abiertas y 134 de ellas pasaban las 24 horas
+    (ver el backfill de `notificado_en`)—. Y además habría hecho que este bloque y el KPI
+    contaran poblaciones distintas bajo el mismo nombre, que es el defecto que el tablero
+    ya corrigió dos veces (hallazgos D-01 y D-03). Así que entran todas las abiertas, y
+    la que empezó antes del borde se dibuja llena hasta el borde con `recortada=True`:
+    la barra se agota, el texto sigue diciendo la duración real.
+
+    **Una farmacia, una barra.** Nada impide hoy dos eventos abiertos para el mismo
+    sitio —no hay constraint, hallazgo D-04— y el KPI cuenta farmacias distintas, no
+    eventos. Si pasara, se queda la más antigua: es la que dice desde cuándo el sitio no
+    vende.
+
+    `unidades` = iterable de UnidadNegocio, o None para todas. El llamador decide el
+    alcance; esta función no lee la sesión ni el request.
+
+    El TOTAL no sale de acá a propósito: la vista ya lo calcula para el KPI
+    (`total_enlaces_caidos`) y el bloque muestra ese mismo número, así que las dos cifras
+    no pueden discrepar ni hace falta una segunda consulta para contarlas.
+
+    Una consulta, acotada a `limite` filas y con `select_related('farmacia')` porque
+    `nombre_proveedor` lee `farmacia.tipo_enlace`.
+    """
+    from .models import EventoEnlaceFarmacia
+
+    ahora = timezone.now()
+    ventana_minutos = horas * 60
+
+    eventos = (
+        EventoEnlaceFarmacia.objects
+        .filter(fin__isnull=True, farmacia__activa=True)
+        .exclude(farmacia__estado_enlace__respondio_alguna_vez=False)
+    )
+    if unidades is not None:
+        eventos = eventos.filter(farmacia__unidad_negocio__in=list(unidades))
+
+    # `-inicio`: lo más reciente arriba. En una ventana de seis horas la pregunta es qué
+    # se acaba de caer; lo crónico ya está contado en el total y priorizado en la Zona 1.
+    # Se piden `limite + 1` por si las dos primeras filas son del mismo sitio: así la
+    # deduplicación no deja la lista corta sin motivo.
+    eventos = eventos.select_related('farmacia').order_by('-inicio')[:limite + 1]
+
+    def barra(evento):
+        minutos = max(0, int((ahora - evento.inicio).total_seconds() // 60))
+        recortada = minutos > ventana_minutos
+        return {
+            'farmacia': evento.farmacia,
+            'proveedor': nombre_proveedor(evento.farmacia),
+            'inicio': evento.inicio,
+            'minutos': minutos,
+            # El ancho en % de la ventana. Se calcula acá y no en la plantilla porque las
+            # plantillas de Django no dividen, y con un mínimo visible: una caída de un
+            # minuto sobre una escala de 360 da 0,3% y no se vería, pero existe.
+            'pct': 100 if recortada else max(1.5, round(minutos * 100 / ventana_minutos, 1)),
+            'recortada': recortada,
+        }
+
+    barras = []
+    fila_de_farmacia = {}
+    for evento in eventos:
+        fila = fila_de_farmacia.get(evento.farmacia_id)
+        if fila is not None:
+            # Segundo evento abierto del mismo sitio. Viene detrás porque el orden es
+            # `-inicio`, o sea que es el MÁS ANTIGUO, y es ese el que dice desde cuándo la
+            # farmacia no vende: se reemplaza el dato de la fila y no se agrega otra. Con
+            # el más reciente, la barra diría que lleva menos tiempo caída de lo que lleva.
+            barras[fila] = barra(evento)
+            continue
+        if len(barras) >= limite:
+            break
+        fila_de_farmacia[evento.farmacia_id] = len(barras)
+        barras.append(barra(evento))
+    return barras
+
+
 # --- Caídas simultáneas: circuito individual, corte del proveedor, o ceguera propia ---
 #
 # ESTO NO DISTINGUE CORTE DE LUZ DE CAÍDA DEL ENLACE. Se investigó el 20-sep-2026 y hoy

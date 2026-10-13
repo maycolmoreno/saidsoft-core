@@ -1,4 +1,4 @@
-{% comment %}
+{% load l10n %}{% comment %}
 El interior del tablero que cambia solo. Lo reemplaza HTMX cada SEGUNDOS_REFRESCO_TABLERO
 (ver apps.panel.views.dashboard) y tambien lo renderiza la carga inicial, con el MISMO
 contexto: una sola funcion lo arma, asi que la pagina de entrada y el refresco no pueden
@@ -23,22 +23,28 @@ verde.** El broker MQTT aparece en gris con la palabra "sin verificar" en vez de
 porque que falte esa comprobación es información útil — no un detalle a esconder.
 {% endcomment %}
 <div id="salud" class="card p-4 mb-4">
-    <div class="flex items-baseline justify-between mb-3">
+    <div class="flex items-baseline justify-between mb-2">
         <h2 class="text-sm font-medium">Confianza en el dato</h2>
         <span class="text-xs text-[var(--text-faint)]">
             lo que se comprobó, y de cuándo es
         </span>
     </div>
 
-    <div class="grid gap-x-6 gap-y-2 md:grid-cols-2">
-        {% comment %} Salud de los procesos: una fila por componente, con su propio instante. {% endcomment %}
+    {% comment %}
+    Franja compacta (`.salud-franja`, ver static_src/components.css) y no dos columnas de
+    filas altas: la Zona 0 es permanente y va primero, así que su alto lo paga la cola de
+    incidencias que viene debajo. Las nueve señales son las mismas, con los mismos datos y
+    los mismos distintivos; lo único que cambió es cuántas entran por fila.
+    {% endcomment %}
+    <div class="salud-franja">
+        {% comment %} Salud de los procesos: una señal por componente, con su propio instante. {% endcomment %}
         {% for c in salud.componentes %}
-        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
-            <div class="min-w-0 flex items-center gap-2">
+        <div class="salud-senal">
+            <div class="salud-senal-top">
                 {% include "panel/_estado_chip.html" with estado=c.estado solo_icono=True %}
-                <span class="font-medium">{{ c.etiqueta }}</span>
+                <span class="salud-senal-nombre">{{ c.etiqueta }}</span>
             </div>
-            <span class="text-xs text-[var(--text-faint)] text-right flex-none">{{ c.detalle }}</span>
+            <span class="salud-senal-detalle">{{ c.detalle }}</span>
         </div>
         {% endfor %}
 
@@ -49,8 +55,8 @@ porque que falte esa comprobación es información útil — no un detalle a esc
         que sí lo prueba. Las cuatro salen de datos que ya se persistían y que no se veían
         en ninguna pantalla.
         {% endcomment %}
-        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
-            <div class="min-w-0 flex items-center gap-2">
+        <div class="salud-senal">
+            <div class="salud-senal-top">
                 {% if ultimo_latido_flota and not latido_flota_vencido %}
                     {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
                 {% elif ultimo_latido_flota %}
@@ -58,23 +64,23 @@ porque que falte esa comprobación es información útil — no un detalle a esc
                 {% else %}
                     {% include "panel/_estado_chip.html" with estado="sin_dato" solo_icono=True %}
                 {% endif %}
-                <span class="font-medium">Último latido de la flota</span>
+                <span class="salud-senal-nombre">Último latido de la flota</span>
             </div>
-            <span class="text-xs text-[var(--text-faint)] text-right flex-none">
+            <span class="salud-senal-detalle">
                 {% if ultimo_latido_flota %}hace {{ ultimo_latido_flota|timesince }}{% else %}ninguna estación reportó todavía{% endif %}
             </span>
         </div>
 
-        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
-            <div class="min-w-0 flex items-center gap-2">
+        <div class="salud-senal">
+            <div class="salud-senal-top">
                 {% if sondeo_enlaces_vencido %}
                     {% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}
                 {% else %}
                     {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
                 {% endif %}
-                <span class="font-medium">Sondeo de enlaces</span>
+                <span class="salud-senal-nombre">Sondeo de enlaces</span>
             </div>
-            <span class="text-xs text-[var(--text-faint)] text-right flex-none">
+            <span class="salud-senal-detalle">
                 {% if ultimo_sondeo_enlaces %}hace {{ ultimo_sondeo_enlaces|timesince }}{% else %}ninguna farmacia sondeada{% endif %}
             </span>
         </div>
@@ -85,18 +91,18 @@ porque que falte esa comprobación es información útil — no un detalle a esc
         tabla de muestras siga creciendo. Lo que queda acá es la otra pregunta, que antes
         iba mezclada con esa: si el sondeo de red está PRODUCIENDO datos.
         {% endcomment %}
-        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
-            <div class="min-w-0 flex items-center gap-2">
+        <div class="salud-senal">
+            <div class="salud-senal-top">
                 {% if beat_vencido %}
                     {% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}
                 {% else %}
                     {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
                 {% endif %}
-                <span class="font-medium">Sondeo de red
-                    <span class="text-xs font-normal text-[var(--text-faint)]" title="Ancho de banda por farmacia. Lo escriben dos rutas: el sondeo SNMP directo y el sondeo vía agente.">(ancho de banda)</span>
+                <span class="salud-senal-nombre">Sondeo de red
+                    <span class="font-normal text-[var(--text-faint)]" title="Ancho de banda por farmacia. Lo escriben dos rutas: el sondeo SNMP directo y el sondeo vía agente.">(ancho de banda)</span>
                 </span>
             </div>
-            <span class="text-xs text-[var(--text-faint)] text-right flex-none">
+            <span class="salud-senal-detalle">
                 {% if ultima_muestra_red %}última muestra hace {{ ultima_muestra_red|timesince }}{% else %}sin muestras todavía{% endif %}
             </span>
         </div>
@@ -106,18 +112,16 @@ porque que falte esa comprobación es información útil — no un detalle a esc
         admin de Django, y son la prueba directa de "recibe pero no procesa" — el estado que
         el latido del worker no puede distinguir.
         {% endcomment %}
-        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
-            <div class="min-w-0 flex items-center gap-2">
+        <div class="salud-senal">
+            <div class="salud-senal-top">
                 {% if mqtt_fallidos %}
                     {% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}
                 {% else %}
                     {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
                 {% endif %}
-                <span class="font-medium">Mensajes MQTT fallidos</span>
+                <span class="salud-senal-nombre">Mensajes MQTT fallidos</span>
             </div>
-            <span class="text-xs text-[var(--text-faint)] text-right flex-none">
-                {{ mqtt_fallidos }} sin revisar
-            </span>
+            <span class="salud-senal-detalle">{{ mqtt_fallidos }} sin revisar</span>
         </div>
     </div>
 </div>
@@ -320,6 +324,129 @@ Los números son los mismos de antes, con las mismas definiciones. Corregirlas e
             {{ flota.nunca_reporto }} nunca reportó · {{ flota.dejaron_de_reportar }} dejaron de hacerlo
         </div>
     </div>
+</div>
+
+{% comment %}
+=== ZONA 2b · ANTIGÜEDAD DE LAS ALERTAS SIN RESOLVER =============================
+
+Las MISMAS alertas que los dos contadores de arriba, repartidas por cuánto llevan
+abiertas. Existe porque un total no dice si hay que correr: cinco alertas de la última
+hora son un incidente en curso y cinco de hace dos semanas son deuda que nadie atendió,
+y el tablero mostraba las dos cosas como la misma cifra.
+
+Lo que cuenta sale de `apps.monitoreo.services.antiguedad_alertas_sin_resolver`, en UNA
+consulta y con el mismo universo que los contadores (`ABIERTA` + `RECONOCIDA`, o sea
+todo lo no resuelto), así que el histograma y las tarjetas no pueden sumar distinto.
+
+Sin SVG a propósito: `construir_grafico` y `_sparkline.html` dibujan una serie temporal
+continua, y esto son cuatro cubetas categóricas. Una polilínea entre ellas insinuaría una
+continuidad que no existe. La barra horizontal (`.rank-row`) es el componente que el panel
+ya tiene para comparar categorías.
+
+`{% localize off %}` alrededor del ancho: el proyecto corre en es-EC y Django imprime
+`98.5` como `98,5`, que metido en `width:…%` es CSS inválido y la barra no se dibuja —
+el mismo error silencioso que ya documenta `_sparkline.html`.
+{% endcomment %}
+<div class="card p-4 mb-6">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-sm font-medium">Antigüedad de las alertas sin resolver</h2>
+        <span class="text-xs text-[var(--text-faint)]">
+            lo viejo es deuda, no incidente
+        </span>
+    </div>
+
+    {% if antiguedad_alertas.total %}
+    {% localize off %}
+    {% for c in antiguedad_alertas.cubetas %}
+    <div class="rank-row antiguedad-fila">
+        <span class="antiguedad-etiqueta">{{ c.etiqueta }}</span>
+        <span class="track"><span class="fill" style="width:{{ c.pct }}%; background:var(--serie);"></span></span>
+        <span class="val">{{ c.total }}</span>
+        <span class="antiguedad-desglose">
+            {% if c.total %}
+                {{ c.sin_reconocer }} sin reconocer{% if c.en_atencion %} · {{ c.en_atencion }} en atención{% endif %}
+            {% else %}&nbsp;{% endif %}
+        </span>
+    </div>
+    {% endfor %}
+    {% endlocalize %}
+    <div class="mt-3 text-xs text-[var(--text-faint)]">
+        {{ antiguedad_alertas.total }} sin resolver en total ·
+        {{ antiguedad_alertas.sin_reconocer }} sin reconocer ·
+        {{ antiguedad_alertas.en_atencion }} en atención{% if antiguedad_alertas.mas_vieja %} ·
+        la más vieja lleva {{ antiguedad_alertas.mas_vieja|timesince }} abierta{% endif %}
+    </div>
+    {% else %}
+    {% comment %}
+    Estado vacío explícito y no cuatro barras en cero: una barra vacía se lee como "hay
+    datos y están bajos", y acá lo que pasa es que no hay ninguna alerta sin resolver en
+    el alcance del usuario.
+    {% endcomment %}
+    <div class="text-sm text-[var(--text-faint)]">Ninguna alerta sin resolver.</div>
+    {% endif %}
+</div>
+
+{% comment %}
+=== ZONA 2c · LÍNEA DE TIEMPO DE LOS ENLACES CAÍDOS ==============================
+
+Las MISMAS caídas que cuenta el KPI "farmacias sin enlace", dibujadas por cuánto llevan.
+El número dice cuántas son; esto dice desde cuándo, que es lo que decide a dónde va el
+técnico primero: una farmacia que lleva 15 minutos caída puede ser un corte de luz que
+ya pasó, y una que lleva ocho horas no.
+
+Las seis horas son la ESCALA del dibujo, no un filtro: entran todas las caídas abiertas,
+y la que empezó antes del borde se dibuja llena con el extremo izquierdo degradado y su
+duración real al lado. Filtrar por la ventana habría escondido las crónicas —que son
+mayoría— y habría hecho que este bloque y el KPI contaran poblaciones distintas con el
+mismo nombre. Ver el docstring de `apps.monitoreo.enlaces.linea_tiempo_caidas_en_curso`.
+
+El total que se muestra abajo es `total_enlaces_caidos`, EL DEL KPI, no un recuento
+propio: así las dos cifras no pueden discrepar.
+
+`{% localize off %}` por el ancho en %: en es-EC, `38.1` se imprime `38,1` y eso dentro
+de `width:…%` es CSS inválido (mismo motivo que en `_sparkline.html`).
+{% endcomment %}
+<div class="card p-4 mb-6">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-sm font-medium">Enlaces caídos · desde cuándo</h2>
+        <span class="text-xs text-[var(--text-faint)]">
+            una barra = tiempo sin enlace
+        </span>
+    </div>
+
+    {% if caidas_en_curso %}
+    {% localize off %}
+    {% for c in caidas_en_curso %}
+    <div class="lt-fila">
+        <span class="lt-sitio">{{ c.farmacia.codigo }}</span>
+        <span class="lt-pista">
+            <span class="lt-barra{% if c.recortada %} recortada{% endif %}"
+                  style="width:{{ c.pct }}%"
+                  title="{{ c.farmacia.codigo }} · {{ c.proveedor }} · sin enlace desde {{ c.inicio }}{% if c.recortada %} (empezó antes de la ventana de {{ ventana_linea_tiempo_horas }} h){% endif %}"></span>
+        </span>
+        <span class="lt-dur">{{ c.inicio|timesince }}</span>
+    </div>
+    {% endfor %}
+    <div class="lt-escala mt-2">
+        <span>hace {{ ventana_linea_tiempo_horas }} h</span>
+        <span>ahora</span>
+    </div>
+    {% endlocalize %}
+    <div class="mt-3 text-xs text-[var(--text-faint)]">
+        {{ total_enlaces_caidos }} farmacia{{ total_enlaces_caidos|pluralize:"s" }} sin enlace
+        {% if total_enlaces_caidos > caidas_en_curso|length %}
+            · se muestran las {{ caidas_en_curso|length }} más recientes
+        {% endif %}
+        · <a href="{% url 'panel:enlaces_farmacias_lista' %}" class="text-[var(--info)] hover:underline">ver todas</a>
+    </div>
+    {% else %}
+    {% comment %}
+    Estado vacío y no una pista en blanco: una pista vacía se lee como "hay datos y no
+    se dibujaron". Acá lo que pasa es que ninguna farmacia del alcance del usuario está
+    sin enlace — que es la noticia buena y conviene que se diga.
+    {% endcomment %}
+    <div class="text-sm text-[var(--text-faint)]">Ninguna farmacia sin enlace ahora mismo.</div>
+    {% endif %}
 </div>
 {% comment %}
 === ZONA 5 . ESTACIONES, POR QUE CALLAN ==========================================

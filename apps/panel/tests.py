@@ -9857,3 +9857,321 @@ class AltaDeActivoEnUbicacionTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'BOD-PV')
         self.assertEqual(Activo.objects.get(modelo='MP C3004').estado, Activo.Estado.EN_BODEGA)
+
+
+class AntiguedadDeAlertasTests(TestCase):
+    """El histograma de antigüedad de la Zona 2b del tablero.
+
+    Lo que fija: que las cuatro cubetas no se solapen ni dejen hueco, que una reconocida
+    no se cuente como sin reconocer —son dos trabajos distintos y el tablero ya se
+    equivocó una vez sumándolas (hallazgo D-03)—, que una resuelta no aparezca, que el
+    alcance por unidad de negocio se respete, y que el bloque cueste UNA consulta.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRXANT')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML950', grupo=grupo, unidad_negocio=self.sg)
+        self.farmacia_mia = Farmacia.objects.create(codigo='MM950', grupo=grupo, unidad_negocio=self.mia)
+        self.estacion_sg = Estacion.objects.create(
+            codigo='ML950-A', farmacia=self.farmacia_sg,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.estacion_mia = Estacion.objects.create(
+            codigo='MM950-A', farmacia=self.farmacia_mia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+
+        self.usuario = User.objects.create_user(username='u_antiguedad', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario).unidades_negocio.add(self.sg)
+        self.regla = ReglaAlerta.objects.create(
+            nombre='CPU alta antiguedad', metrica=Metrica.CPU_CARGA_PCT, umbral=90,
+            creado_por=self.usuario,
+        )
+        self.client.force_login(self.usuario)
+
+    def _alerta(self, *, hace, estado=Alerta.Estado.ABIERTA, estacion=None):
+        """`abierta_en` es auto_now_add, así que la fecha se fija con un UPDATE posterior
+        — el mismo camino que ya usan las otras pruebas de alertas del archivo."""
+        alerta = Alerta.objects.create(
+            regla=self.regla, estacion=estacion or self.estacion_sg,
+            valor_disparador=95, estado=estado,
+        )
+        Alerta.objects.filter(pk=alerta.pk).update(abierta_en=timezone.now() - hace)
+        return alerta
+
+    def _cubetas(self, unidades=None):
+        from apps.monitoreo.services import antiguedad_alertas_sin_resolver
+
+        if unidades is None:
+            unidades = [self.sg]
+        return antiguedad_alertas_sin_resolver(unidades)
+
+    def test_una_alerta_en_cada_cubeta_da_uno_en_cada_cubeta(self):
+        """Los cuatro cortes son intervalos semiabiertos: ninguna alerta cae en dos
+        cubetas ni se queda fuera de las cuatro."""
+        self._alerta(hace=timedelta(minutes=10))
+        self._alerta(hace=timedelta(hours=5))
+        self._alerta(hace=timedelta(days=3))
+        self._alerta(hace=timedelta(days=8))
+
+        datos = self._cubetas()
+        self.assertEqual([c['total'] for c in datos['cubetas']], [1, 1, 1, 1])
+        self.assertEqual(datos['total'], 4)
+        self.assertEqual(
+            [c['etiqueta'] for c in datos['cubetas']],
+            ['menos de 1 h', '1 – 24 h', '1 – 7 días', 'más de 7 días'],
+        )
+
+    def test_los_bordes_exactos_caen_en_la_cubeta_mas_vieja(self):
+        """Una alerta de poco más de 1 h no es "menos de 1 h". El borde se prueba porque
+        es donde un `__gt` por un `__gte` cambia el número sin que nada falle."""
+        self._alerta(hace=timedelta(hours=1, seconds=5))
+        datos = self._cubetas()
+        self.assertEqual([c['total'] for c in datos['cubetas']], [0, 1, 0, 0])
+
+    def test_una_reconocida_no_cuenta_como_sin_reconocer(self):
+        """Sigue sin resolver y sigue envejeciendo, pero tiene a alguien encima: entra en
+        la cubeta y en el total, en su propia columna."""
+        self._alerta(hace=timedelta(hours=5), estado=Alerta.Estado.RECONOCIDA)
+        datos = self._cubetas()
+        cubeta = datos['cubetas'][1]
+        self.assertEqual(cubeta['total'], 1)
+        self.assertEqual(cubeta['en_atencion'], 1)
+        self.assertEqual(cubeta['sin_reconocer'], 0)
+        self.assertEqual(datos['sin_reconocer'], 0)
+        self.assertEqual(datos['en_atencion'], 1)
+
+    def test_una_resuelta_no_aparece_en_ninguna_cubeta(self):
+        self._alerta(hace=timedelta(hours=5), estado=Alerta.Estado.RESUELTA)
+        datos = self._cubetas()
+        self.assertEqual([c['total'] for c in datos['cubetas']], [0, 0, 0, 0])
+        self.assertEqual(datos['total'], 0)
+        self.assertIsNone(datos['mas_vieja'])
+
+    def test_no_cuenta_las_alertas_de_otra_unidad_de_negocio(self):
+        self._alerta(hace=timedelta(hours=5), estacion=self.estacion_mia)
+        self.assertEqual(self._cubetas()['total'], 0)
+        # Sin acotar, la misma alerta sí se ve: lo que filtra es el alcance, no un
+        # recorte escondido en la consulta. Se llama a la función directamente porque
+        # `_cubetas()` sin argumentos ya significa "acotado a SG".
+        from apps.monitoreo.services import antiguedad_alertas_sin_resolver
+
+        self.assertEqual(antiguedad_alertas_sin_resolver(None)['total'], 1)
+
+    def test_el_tablero_no_filtra_alertas_de_otro_cliente(self):
+        """La misma comprobación, pero por HTTP y con el alcance real del usuario."""
+        self._alerta(hace=timedelta(hours=5), estacion=self.estacion_mia)
+        self._alerta(hace=timedelta(days=8))
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.status_code, 200)
+        datos = resp.context['antiguedad_alertas']
+        self.assertEqual(datos['total'], 1)
+        self.assertEqual([c['total'] for c in datos['cubetas']], [0, 0, 0, 1])
+
+    def test_sin_alertas_el_bloque_dice_que_no_hay_ninguna(self):
+        """Estado vacío explícito y no cuatro barras en cero: una barra vacía se lee como
+        "hay datos y están bajos"."""
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.context['antiguedad_alertas']['total'], 0)
+        self.assertContains(resp, 'Ninguna alerta sin resolver')
+
+    def test_las_barras_se_escalan_contra_la_cubeta_mas_poblada(self):
+        """Lo que la barra compara son las cubetas entre sí. Y el porcentaje se calcula en
+        el dominio porque las plantillas de Django no dividen."""
+        self._alerta(hace=timedelta(days=8))
+        self._alerta(hace=timedelta(days=9))
+        self._alerta(hace=timedelta(hours=5))
+        datos = self._cubetas()
+        self.assertEqual(datos['cubetas'][3]['pct'], 100)
+        self.assertEqual(datos['cubetas'][1]['pct'], 50)
+        self.assertEqual(datos['cubetas'][0]['pct'], 0)
+
+    def test_sin_alertas_ninguna_barra_se_dibuja_llena(self):
+        """Con el máximo en cero, dividir habría explotado o —peor— dejado el 100%."""
+        self.assertEqual([c['pct'] for c in self._cubetas()['cubetas']], [0, 0, 0, 0])
+
+    def test_informa_cuanto_lleva_abierta_la_mas_vieja(self):
+        vieja = self._alerta(hace=timedelta(days=14))
+        self._alerta(hace=timedelta(minutes=10))
+        self.assertEqual(
+            self._cubetas()['mas_vieja'].replace(microsecond=0),
+            Alerta.objects.get(pk=vieja.pk).abierta_en.replace(microsecond=0),
+        )
+
+    def test_el_calculo_cuesta_una_sola_consulta(self):
+        """Ocho conteos condicionales y el mínimo, en un `aggregate`. El presupuesto que
+        la auditoría fijó para este bloque era exactamente una consulta."""
+        self._alerta(hace=timedelta(hours=5))
+        self._alerta(hace=timedelta(days=8))
+        with self.assertNumQueries(1):
+            self._cubetas()
+
+
+class LineaTiempoEnlacesCaidosTests(TestCase):
+    """La línea de tiempo de la Zona 2c del tablero.
+
+    Lo que fija: las tres exclusiones canónicas —las mismas que `resumen_operacion`, el
+    Centro y `cola_incidencias`, para que los cuatro no discrepen—, que una caída ya
+    recuperada no aparezca, que la ventana de seis horas sea la ESCALA y no un filtro
+    (una crónica se dibuja recortada, no se esconde), que una farmacia no ocupe dos
+    barras, y que el total del bloque sea literalmente el del KPI.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRXLT')
+        self.farmacia = Farmacia.objects.create(
+            codigo='LT001', grupo=grupo, unidad_negocio=self.sg, ip_router='10.95.0.1',
+            tipo_enlace='TELCONET',
+        )
+        self.otra = Farmacia.objects.create(
+            codigo='LT002', grupo=grupo, unidad_negocio=self.sg, ip_router='10.95.0.2',
+            tipo_enlace='PUNTO NET',
+        )
+        self.de_otro_cliente = Farmacia.objects.create(
+            codigo='LT003', grupo=grupo, unidad_negocio=self.mia, ip_router='10.95.0.3',
+        )
+        self.inactiva = Farmacia.objects.create(
+            codigo='LT004', grupo=grupo, unidad_negocio=self.sg, ip_router='10.95.0.4',
+            activa=False,
+        )
+        self.usuario = User.objects.create_user(username='u_lt', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario).unidades_negocio.add(self.sg)
+        self.client.force_login(self.usuario)
+
+    def _caer(self, farmacia, *, hace, respondio_alguna_vez=True, fin=None):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        EstadoEnlaceFarmacia.objects.update_or_create(
+            farmacia=farmacia,
+            defaults={'alcanzable': False, 'respondio_alguna_vez': respondio_alguna_vez},
+        )
+        return EventoEnlaceFarmacia.objects.create(
+            farmacia=farmacia, inicio=timezone.now() - hace, fin=fin,
+        )
+
+    def _barras(self, unidades=None):
+        from apps.monitoreo.enlaces import linea_tiempo_caidas_en_curso
+
+        if unidades is None:
+            unidades = [self.sg]
+        return linea_tiempo_caidas_en_curso(unidades)
+
+    def _codigos(self, **kwargs):
+        return [b['farmacia'].codigo for b in self._barras(**kwargs)]
+
+    def test_una_caida_en_curso_dentro_de_la_ventana_aparece(self):
+        self._caer(self.farmacia, hace=timedelta(hours=2, minutes=17))
+        barras = self._barras()
+        self.assertEqual(len(barras), 1)
+        self.assertEqual(barras[0]['farmacia'].codigo, 'LT001')
+        self.assertEqual(barras[0]['minutos'], 137)
+        self.assertFalse(barras[0]['recortada'])
+        # 137 de 360 minutos de escala.
+        self.assertEqual(barras[0]['pct'], 38.1)
+        self.assertEqual(barras[0]['proveedor'], 'TELCONET')
+
+    def test_una_caida_mas_vieja_que_la_ventana_se_dibuja_recortada_y_no_se_esconde(self):
+        """La decisión de fondo del bloque: las seis horas son la escala, no un filtro.
+        Filtrar por `inicio >= ahora - 6 h` habría escondido las crónicas, que son las
+        peores, y habría hecho que el bloque y el KPI contaran poblaciones distintas."""
+        self._caer(self.farmacia, hace=timedelta(days=14))
+        barras = self._barras()
+        self.assertEqual(len(barras), 1)
+        self.assertTrue(barras[0]['recortada'])
+        self.assertEqual(barras[0]['pct'], 100)
+        # La duración real se conserva: la barra se agota, el dato no se recorta.
+        self.assertGreater(barras[0]['minutos'], 6 * 60)
+
+    def test_una_caida_ya_recuperada_no_aparece(self):
+        """`fin` no nulo = el enlace volvió. Su historia está en /enlaces/, no acá."""
+        self._caer(self.farmacia, hace=timedelta(hours=3), fin=timezone.now() - timedelta(hours=1))
+        self.assertEqual(self._barras(), [])
+
+    def test_una_farmacia_dada_de_baja_queda_excluida(self):
+        """Deja de sondearse y su estado queda congelado: no es una caída que alguien vaya
+        a ir a arreglar (reportado con GP063 el 2-oct-2026)."""
+        self._caer(self.inactiva, hace=timedelta(hours=1))
+        self.assertEqual(self._barras(), [])
+
+    def test_una_farmacia_que_nunca_respondio_queda_excluida(self):
+        """Nunca respondió es configuración pendiente, no una caída."""
+        self._caer(self.farmacia, hace=timedelta(hours=1), respondio_alguna_vez=False)
+        self.assertEqual(self._barras(), [])
+
+    def test_no_muestra_las_caidas_de_otra_unidad_de_negocio(self):
+        self._caer(self.de_otro_cliente, hace=timedelta(hours=1))
+        self.assertEqual(self._barras(), [])
+        # Sin acotar sí se ve: lo que filtra es el alcance, no un recorte escondido.
+        from apps.monitoreo.enlaces import linea_tiempo_caidas_en_curso
+
+        self.assertEqual(len(linea_tiempo_caidas_en_curso(None)), 1)
+
+    def test_el_tablero_respeta_el_alcance_del_usuario(self):
+        """La misma comprobación por HTTP, con el alcance real de la sesión."""
+        self._caer(self.de_otro_cliente, hace=timedelta(hours=1))
+        self._caer(self.farmacia, hace=timedelta(hours=2))
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([b['farmacia'].codigo for b in resp.context['caidas_en_curso']], ['LT001'])
+
+    def test_el_total_del_bloque_es_el_mismo_numero_que_el_kpi(self):
+        """No son dos conteos: la plantilla muestra `total_enlaces_caidos`, el del KPI."""
+        self._caer(self.farmacia, hace=timedelta(hours=1))
+        self._caer(self.otra, hace=timedelta(hours=4))
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.context['total_enlaces_caidos'], 2)
+        self.assertEqual(len(resp.context['caidas_en_curso']), 2)
+
+    def test_dos_eventos_abiertos_del_mismo_sitio_son_una_sola_barra(self):
+        """Nada lo impide hoy —no hay constraint, hallazgo D-04— y el KPI cuenta farmacias
+        distintas, no eventos. Se queda el inicio MÁS ANTIGUO: con el más reciente la barra
+        diría que lleva menos tiempo caída de lo que lleva."""
+        self._caer(self.farmacia, hace=timedelta(hours=5))
+        self._caer(self.farmacia, hace=timedelta(hours=1))
+        barras = self._barras()
+        self.assertEqual(len(barras), 1)
+        self.assertEqual(barras[0]['minutos'], 300)
+
+    def test_lo_mas_reciente_va_arriba(self):
+        """En una ventana de seis horas la pregunta es qué se acaba de caer; lo crónico ya
+        está contado en el total y priorizado en la Zona 1."""
+        self._caer(self.farmacia, hace=timedelta(hours=5))
+        self._caer(self.otra, hace=timedelta(minutes=20))
+        self.assertEqual(self._codigos(), ['LT002', 'LT001'])
+
+    def test_una_caida_de_un_minuto_se_sigue_viendo(self):
+        """1 de 360 minutos es 0,3% de ancho: sin un mínimo, la barra no se dibujaría y el
+        sitio parecería no tener problema."""
+        self._caer(self.farmacia, hace=timedelta(minutes=1))
+        self.assertEqual(self._barras()[0]['pct'], 1.5)
+
+    def test_sin_caidas_el_bloque_dice_que_no_hay_ninguna(self):
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.context['caidas_en_curso'], [])
+        self.assertContains(resp, 'Ninguna farmacia sin enlace ahora mismo')
+
+    def test_el_bloque_cuesta_una_sola_consulta(self):
+        self._caer(self.farmacia, hace=timedelta(hours=1))
+        self._caer(self.otra, hace=timedelta(hours=2))
+        with self.assertNumQueries(1):
+            self._barras()
+
+    def test_no_crece_con_el_numero_de_caidas(self):
+        """Una consulta acotada, no una por farmacia: el día que se caiga un proveedor
+        entero son cientos de eventos abiertos y esta pantalla se refresca cada minuto."""
+        from apps.monitoreo.enlaces import MAX_BARRAS_LINEA_TIEMPO
+
+        grupo = Grupo.objects.get(codigo='TRXLT')
+        for i in range(MAX_BARRAS_LINEA_TIEMPO + 4):
+            farmacia = Farmacia.objects.create(
+                codigo='LTX%03d' % i, grupo=grupo, unidad_negocio=self.sg,
+                ip_router='10.96.0.%d' % (i + 1), tipo_enlace='TELCONET',
+            )
+            self._caer(farmacia, hace=timedelta(minutes=10 + i))
+        with self.assertNumQueries(1):
+            barras = self._barras()
+        self.assertEqual(len(barras), MAX_BARRAS_LINEA_TIEMPO)
