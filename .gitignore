@@ -48,6 +48,13 @@ db.sqlite3
 /Instalar-Saidsoft.ps1
 /deploy/Instalar-Saidsoft.ps1
 
+# Los respaldos que deja `deploy/backup.sh` en el servidor. No estaban trackeados, pero
+# tampoco ignorados: salían como untracked en el `git status` del servidor, y ahí un
+# `git add -A` distraído mete 2,5 GB de volcados de la base al historial — de donde no
+# se sacan. Medido el 13-oct-2026: backups/ 2,5 GB, deploy/backups/ 1,1 GB.
+/backups/
+/deploy/backups/
+
 # Bases SQLite descartables de pruebas locales (demo-local.sqlite3, test-smoke.sqlite3...).
 # db.sqlite3 ya estaba arriba; esto cubre las que se crean al probar con otro nombre.
 *.sqlite3

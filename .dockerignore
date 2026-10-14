@@ -22,3 +22,16 @@ __pycache__/
 /media/
 /staticfiles/
 /tools/
+
+# Los respaldos. Medido el 13-oct-2026 en el servidor: `backups/` pesaba 2,5 GB y
+# `deploy/backups/` otros 1,1 GB, y los dos entraban en `COPY . .` — la capa pesaba
+# 3,79 GB y el `chown -R` de abajo la DUPLICA, así que cada una de las seis imágenes
+# cargaba ~7,5 GB de respaldos cifrados que no usa nadie. De ahí salían los 161 GB de
+# imágenes y los 278 GB de build cache del NUC.
+#
+# Los escribe `deploy/backup.sh` desde el HOST (via saidsoft-respaldo.timer), no desde
+# dentro del contenedor: nada del código ni del compose los lee, así que excluirlos del
+# build context no le quita nada a la imagen. Y aparte: son copias de la base y de
+# /media/ —cifradas, pero copias— y no tienen por qué viajar dentro de una imagen.
+/backups/
+/deploy/backups/
