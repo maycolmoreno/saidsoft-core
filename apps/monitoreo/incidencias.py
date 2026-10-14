@@ -213,3 +213,83 @@ def cola_incidencias(unidades=None, limite: int | None = 12) -> list:
         key=lambda i: (i.prioridad, i.desde is None, i.desde or ahora),
     )
     return orden[:limite] if limite else orden
+
+
+
+# --- Mosaico: el parque instrumentado de un vistazo --------------------------------
+
+def mosaico_farmacias(unidades=None, *, incidencias=None) -> list[dict]:
+    """Una celda por farmacia CON AGENTE, agrupadas por cliente, con su estado.
+
+    Qué resuelve: la cola de arriba dice qué duele, pero no cuánto es el total ni cómo se
+    reparte. Con 40 sitios instrumentados, verlos todos juntos contesta de un vistazo
+    "¿es un problema de un cliente o de la cadena?", que es lo primero que se pregunta
+    quien mira el tablero cuando hay varias incidencias a la vez.
+
+    **El universo son las farmacias con al menos una estación aprobada**, no las ~700 que
+    se sondean por enlace. Medido el 13-oct-2026: 40 contra 697. Un mosaico de 697 celdas
+    no se lee —sería el mismo error que `/monitoreo/`, que no está paginada y a 700
+    farmacias son 700 tarjetas (§10-AK)— y además mezclaría dos poblaciones que se miden
+    distinto: la que tiene agente reporta latido, servicios y métricas; la que solo tiene
+    enlace responde un ping y nada más.
+
+    Lo que queda afuera no se pierde: una farmacia sin agente con el enlace caído sigue
+    apareciendo en la cola de incidencias (Zona 1), que es donde se actúa sobre ella.
+
+    **El estado sale de `cola_incidencias`, no de un criterio nuevo.** Si la farmacia está
+    en la cola, se pinta con el estado que la cola ya le dio (`critical` o `warning`,
+    según el síntoma de mayor impacto); si no está, está operativa. Inventar acá una
+    segunda definición de "farmacia con problemas" es exactamente cómo se llega a que dos
+    zonas de la misma pantalla se contradigan.
+
+    `incidencias` permite pasar la cola YA calculada —el tablero la pide igual para la
+    Zona 1— y así el mosaico no cuesta ni una consulta más que la de las farmacias. Si no
+    se pasa, se calcula.
+
+    Devuelve una lista de grupos, uno por unidad de negocio, ordenados por cuántas
+    críticas tienen: el cliente con más problemas primero.
+    """
+    from apps.catalogo.models import Estacion, Farmacia
+
+    from .services import _por_unidad
+
+    if incidencias is None:
+        incidencias = cola_incidencias(unidades, limite=None)
+    por_pk = {i.farmacia.pk: i for i in incidencias}
+
+    farmacias = (
+        _por_unidad(
+            Farmacia.objects
+            .filter(activa=True, estaciones__estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+            .distinct(),
+            unidades, 'unidad_negocio',
+        )
+        .select_related('unidad_negocio')
+        .order_by('codigo')
+    )
+
+    grupos: dict[str, dict] = {}
+    for farmacia in farmacias:
+        incidencia = por_pk.get(farmacia.pk)
+        clave = farmacia.unidad_negocio.nombre if farmacia.unidad_negocio else 'Sin cliente'
+        grupo = grupos.setdefault(clave, {'cliente': clave, 'celdas': [], 'criticas': 0})
+        grupo['celdas'].append({
+            'farmacia': farmacia,
+            'estado': incidencia.estado if incidencia else 'ok',
+            # El título del síntoma de mayor impacto, para el tooltip. Sin incidencia no
+            # hay nada que contar: "operativa" ya lo dice el color y la ausencia de marca.
+            'titulo': incidencia.titulo if incidencia else '',
+            'detalle': incidencia.detalle if incidencia else '',
+            'otros': incidencia.otros_sintomas if incidencia else 0,
+        })
+        if incidencia is not None and incidencia.estado == 'critical':
+            grupo['criticas'] += 1
+
+    for grupo in grupos.values():
+        grupo['total'] = len(grupo['celdas'])
+        # Lo peor primero dentro de cada cliente: crítica, advertencia, operativa. Dentro
+        # de cada tramo se conserva el orden por código, que es el que la gente conoce.
+        orden = {'critical': 0, 'warning': 1}
+        grupo['celdas'].sort(key=lambda c: orden.get(c['estado'], 2))
+
+    return sorted(grupos.values(), key=lambda g: (-g['criticas'], g['cliente']))

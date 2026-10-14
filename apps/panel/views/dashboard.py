@@ -12,7 +12,7 @@ from apps.catalogo.services import calcular_matriz_cumplimiento, estado_flota
 from apps.cuentas.services import unidades_negocio_en_foco
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
 from apps.monitoreo.enlaces import VENTANA_LINEA_TIEMPO_HORAS, linea_tiempo_caidas_en_curso
-from apps.monitoreo.incidencias import cola_incidencias
+from apps.monitoreo.incidencias import cola_incidencias, mosaico_farmacias
 from apps.monitoreo.models import (
     Alerta, EstadoEnlaceFarmacia, EventoEnlaceFarmacia, MuestraRedFarmacia,
 )
@@ -130,6 +130,15 @@ def _contexto_vivo(request):
     # una segunda consulta que podría contar algo ligeramente distinto.
     incidencias = cola_incidencias(visibles, limite=None)
     total_incidencias = len(incidencias)
+
+    # Zona 2e — el mosaico. REUSA la cola que se acaba de calcular, así que cuesta una
+    # sola consulta más (las farmacias con agente): el estado de cada celda sale de la
+    # misma fuente que la Zona 1, y por construcción no pueden contradecirse.
+    #
+    # Va antes del recorte a 8: el mosaico necesita la cola COMPLETA para saber el estado
+    # de cada farmacia, no solo las ocho que se listan arriba.
+    mosaico = mosaico_farmacias(visibles, incidencias=incidencias)
+
     incidencias = incidencias[:8]
 
     # Zona 5: las estaciones calladas, con el MISMO criterio que el contador.
@@ -290,6 +299,7 @@ def _contexto_vivo(request):
         # Zona 1 — la cola unificada.
         'incidencias': incidencias,
         'total_incidencias': total_incidencias,
+        'mosaico': mosaico,
         # Zona 2 — indicadores. `flota` entero va al contexto porque la Zona 5 usa el
         # desglose (nunca reportó / dejaron de reportar / pausadas) y la tarjeta usa el
         # resumen: los dos tienen que salir del mismo cálculo o volverían a discrepar.

@@ -539,6 +539,61 @@ nocturna no se lea como una avería.
     <div class="text-sm text-[var(--text-faint)]">No hay estaciones en el alcance para graficar.</div>
     {% endif %}
 </div>
+
+{% comment %}
+=== ZONA 2e · ESTADO POR FARMACIA ================================================
+
+El parque instrumentado de un vistazo. La cola de arriba dice QUÉ duele; esto dice
+cuánto es el total y cómo se reparte, que es lo que contesta "¿es un problema de un
+cliente o de la cadena?" cuando hay varias incidencias a la vez.
+
+El universo son las farmacias CON AGENTE —40, no las ~697 que se sondean por enlace—.
+Un mosaico de 697 celdas no se lee, y mezclaría dos poblaciones que se miden distinto:
+la que tiene agente reporta latido, servicios y métricas; la que solo tiene enlace
+responde un ping. Lo que queda afuera no se pierde: una farmacia sin agente con el
+enlace caído sigue en la cola de la Zona 1, que es donde se actúa sobre ella.
+
+El estado de cada celda sale de `cola_incidencias`, la MISMA fuente que la Zona 1, y la
+cola ya viene calculada de ahí arriba: el mosaico no la vuelve a pedir ni aplica un
+criterio propio. Inventar acá una segunda definición de "farmacia con problemas" es
+exactamente cómo se llega a que dos zonas de la misma pantalla se contradigan.
+
+Ver apps.monitoreo.incidencias.mosaico_farmacias.
+{% endcomment %}
+{% if mosaico %}
+<div class="card p-4 mb-6">
+    <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-sm font-medium">Estado por farmacia</h2>
+        <span class="text-xs text-[var(--text-faint)]">
+            una celda = una farmacia con agente
+        </span>
+    </div>
+
+    {% for grupo in mosaico %}
+    <div class="mosaico-grupo">
+        <div class="mosaico-titulo">
+            <span class="font-medium text-[var(--text)]">{{ grupo.cliente }}</span>
+            <span>{{ grupo.total }} farmacia{{ grupo.total|pluralize:"s" }}</span>
+            {% if grupo.criticas %}<span class="est-fg-critical">· {{ grupo.criticas }} crítica{{ grupo.criticas|pluralize:"s" }}</span>{% endif %}
+        </div>
+        <div class="mosaico-celdas">
+            {% for c in grupo.celdas %}
+            <div class="mosaico-celda est-{{ c.estado }}"
+                 title="{{ c.farmacia.codigo }}{% if c.titulo %} · {{ c.titulo }}{% if c.detalle %}: {{ c.detalle }}{% endif %}{% if c.otros %} (+{{ c.otros }} síntoma{{ c.otros|pluralize:"s" }} más){% endif %}{% else %} · operativa{% endif %}">
+                {{ c.farmacia.codigo }}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+
+    <div class="mt-3 flex gap-4 text-xs text-[var(--text-faint)] flex-wrap">
+        <span>✕ crítica</span>
+        <span>! advertencia</span>
+        <span>sin marca · operativa</span>
+    </div>
+</div>
+{% endif %}
 {% comment %}
 === ZONA 5 . ESTACIONES, POR QUE CALLAN ==========================================
 

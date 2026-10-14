@@ -10585,3 +10585,132 @@ class SerieDisponibilidad24hTests(TestCase):
         etiquetas = [m.etiqueta for m in resp.context['grafico_24h'].marcas]
         self.assertTrue(any('promedio' in e for e in etiquetas), etiquetas)
         self.assertFalse(any('SLA' in e for e in etiquetas), etiquetas)
+
+
+class MosaicoDeFarmaciasTests(TestCase):
+    """El mosaico de la Zona 2e: una celda por farmacia con agente, por cliente.
+
+    Lo que fija: que el universo sean las farmacias INSTRUMENTADAS y no las ~697 que solo
+    se sondean por enlace, que el estado salga de `cola_incidencias` y no de un criterio
+    propio —dos definiciones de "farmacia con problemas" es como dos zonas de la misma
+    pantalla acaban contradiciéndose—, el orden, y que reusar la cola ya calculada no
+    cueste consultas de más.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRXMOS')
+
+        # Con agente: entran al mosaico.
+        self.sana = Farmacia.objects.create(
+            codigo='MS001', grupo=grupo, unidad_negocio=self.sg, ip_router='10.97.0.1')
+        self.caida = Farmacia.objects.create(
+            codigo='MS002', grupo=grupo, unidad_negocio=self.sg, ip_router='10.97.0.2')
+        self.de_mia = Farmacia.objects.create(
+            codigo='MM001', grupo=grupo, unidad_negocio=self.mia, ip_router='10.97.0.3')
+        for codigo, farmacia in (('MS001-A', self.sana), ('MS002-A', self.caida),
+                                 ('MM001-A', self.de_mia)):
+            Estacion.objects.create(
+                codigo=codigo, farmacia=farmacia,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+                ultimo_heartbeat=timezone.now())
+
+        # Sin agente, solo enlace: NO entra al mosaico aunque esté caída.
+        self.solo_enlace = Farmacia.objects.create(
+            codigo='MS003', grupo=grupo, unidad_negocio=self.sg, ip_router='10.97.0.4')
+
+        self.usuario = User.objects.create_user(username='u_mosaico', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def _caer_enlace(self, farmacia):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        EstadoEnlaceFarmacia.objects.update_or_create(
+            farmacia=farmacia, defaults={'alcanzable': False, 'respondio_alguna_vez': True})
+        return EventoEnlaceFarmacia.objects.create(
+            farmacia=farmacia, inicio=timezone.now() - timedelta(hours=1))
+
+    def _mosaico(self, unidades=None):
+        from apps.monitoreo.incidencias import mosaico_farmacias
+
+        return mosaico_farmacias(unidades)
+
+    def _celdas(self, mosaico):
+        return {c['farmacia'].codigo: c['estado'] for g in mosaico for c in g['celdas']}
+
+    def test_solo_entran_las_farmacias_con_agente(self):
+        """697 celdas no se leen. El universo son las instrumentadas; la que solo tiene
+        enlace sigue apareciendo en la cola de la Zona 1, que es donde se actúa."""
+        self._caer_enlace(self.solo_enlace)
+        celdas = self._celdas(self._mosaico())
+        self.assertEqual(set(celdas), {'MS001', 'MS002', 'MM001'})
+        self.assertNotIn('MS003', celdas)
+
+    def test_sin_incidencia_la_farmacia_esta_operativa(self):
+        self.assertEqual(self._celdas(self._mosaico())['MS001'], 'ok')
+
+    def test_el_estado_sale_de_la_cola_y_no_de_un_criterio_propio(self):
+        """Un enlace caído es prioridad 1 en la cola, o sea `critical`. El mosaico no
+        vuelve a decidir qué es grave: usa el estado que la cola ya dio."""
+        from apps.monitoreo.incidencias import cola_incidencias
+
+        self._caer_enlace(self.caida)
+        celdas = self._celdas(self._mosaico())
+        self.assertEqual(celdas['MS002'], 'critical')
+        self.assertEqual(celdas['MS001'], 'ok')
+
+        en_cola = {i.farmacia.codigo: i.estado for i in cola_incidencias(None, limite=None)}
+        self.assertEqual(celdas['MS002'], en_cola['MS002'])
+
+    def test_agrupa_por_cliente_y_cuenta_las_criticas(self):
+        self._caer_enlace(self.caida)
+        mosaico = self._mosaico()
+        por_cliente = {g['cliente']: g for g in mosaico}
+        self.assertEqual(len(por_cliente), 2)
+        sg = por_cliente[self.sg.nombre]
+        self.assertEqual(sg['total'], 2)
+        self.assertEqual(sg['criticas'], 1)
+        self.assertEqual(por_cliente[self.mia.nombre]['criticas'], 0)
+
+    def test_el_cliente_con_mas_criticas_va_primero(self):
+        self._caer_enlace(self.de_mia)
+        self.assertEqual(self._mosaico()[0]['cliente'], self.mia.nombre)
+
+    def test_lo_peor_primero_dentro_de_cada_cliente(self):
+        self._caer_enlace(self.caida)
+        grupo = next(g for g in self._mosaico() if g['cliente'] == self.sg.nombre)
+        self.assertEqual([c['farmacia'].codigo for c in grupo['celdas']], ['MS002', 'MS001'])
+
+    def test_respeta_el_alcance_por_unidad_de_negocio(self):
+        self.assertEqual(set(self._celdas(self._mosaico())), {'MS001', 'MS002', 'MM001'})
+        self.assertEqual(set(self._celdas(self._mosaico(unidades=[self.sg]))), {'MS001', 'MS002'})
+
+    def test_reusar_la_cola_no_cuesta_consultas_de_mas(self):
+        """El tablero ya calcula la cola para la Zona 1: pasándosela, el mosaico solo paga
+        la consulta de las farmacias."""
+        from apps.monitoreo.incidencias import cola_incidencias, mosaico_farmacias
+
+        self._caer_enlace(self.caida)
+        cola = cola_incidencias(None, limite=None)
+        with self.assertNumQueries(1):
+            mosaico_farmacias(None, incidencias=cola)
+
+    def test_el_tablero_lo_dibuja_con_el_mismo_estado_que_la_cola(self):
+        self._caer_enlace(self.caida)
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Estado por farmacia')
+        celdas = self._celdas(resp.context['mosaico'])
+        self.assertEqual(celdas['MS002'], 'critical')
+        # La misma farmacia está en la cola de la Zona 1, con el mismo estado.
+        en_cola = {i.farmacia.codigo: i.estado for i in resp.context['incidencias']}
+        self.assertEqual(en_cola['MS002'], celdas['MS002'])
+
+    def test_sin_farmacias_con_agente_no_se_dibuja_nada(self):
+        """Un bloque vacío permanente enseña a no mirarlo."""
+        Estacion.objects.all().delete()
+        self.assertEqual(self._mosaico(), [])
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertNotContains(resp, 'Estado por farmacia')

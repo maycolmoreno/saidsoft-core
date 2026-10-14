@@ -651,3 +651,35 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
 .serie24-banda i{ height:5px; border-radius:1px; background:var(--serie-dim); }
 .serie24-banda i.cerrado{ background:var(--overlay-faint); }
 .serie24-ejes{ display:flex; justify-content:space-between; margin-top:4px; font-size:10px; color:var(--text-faint); font-variant-numeric:tabular-nums; }
+
+/* ---------- Mosaico de farmacias (Zona 2e del tablero) ----------
+   Una celda por farmacia instrumentada, agrupadas por cliente. auto-fill y no un número
+   fijo de columnas, por lo mismo que .kpi-strip y .salud-franja: el parque crece y el
+   ancho disponible cambia según la pantalla.
+
+   El estado NO se comunica solo con color. Cada celda crítica lleva una marca y cada
+   advertencia la suya, porque verde/ámbar/rojo se acercan bajo deuteranopía y esta es
+   una pantalla que se deja abierta todo el día — la misma regla que ya gobierna
+   `_estado_chip.html` y que §10-AK aplicó al resto del monitoreo.
+
+   El tooltip nativo (`title`) y no uno propio en JS: dice el síntoma de mayor impacto y
+   es lo único que hace falta al pasar por encima. Un tooltip hecho a mano obligaría a
+   meter JavaScript en una pantalla que hoy no tiene nada más que HTMX. */
+.mosaico-grupo + .mosaico-grupo{ margin-top:14px; }
+.mosaico-titulo{ display:flex; align-items:baseline; gap:8px; font-size:12px; color:var(--text-dim); margin-bottom:6px; }
+.mosaico-celdas{ display:grid; grid-template-columns:repeat(auto-fill, minmax(72px, 1fr)); gap:4px; }
+.mosaico-celda{
+  position:relative; padding:7px 4px; border-radius:5px; text-align:center;
+  font-size:11px; font-weight:600; letter-spacing:.2px; line-height:1.2;
+  border:1px solid transparent;
+}
+.mosaico-celda.est-ok{ background:var(--good-dim); color:var(--good); border-color:var(--good-dim); }
+.mosaico-celda.est-warning{ background:var(--warning-dim); color:var(--warning); border-color:var(--warning); }
+.mosaico-celda.est-critical{ background:var(--critical-dim); color:var(--critical); border-color:var(--critical); }
+/* La marca que hace legible el estado sin color. */
+.mosaico-celda.est-warning::after,
+.mosaico-celda.est-critical::after{
+  position:absolute; top:1px; right:4px; font-size:9px; font-weight:700; line-height:1;
+}
+.mosaico-celda.est-warning::after{ content:"!"; }
+.mosaico-celda.est-critical::after{ content:"\00d7"; }

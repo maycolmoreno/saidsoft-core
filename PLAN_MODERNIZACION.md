@@ -7033,3 +7033,93 @@ De 2.564 a 2.574: las 10 nuevas, sin tocar ninguna existente.
 Una corrección sobre la marcha: el docstring de `serie_disponibilidad` decía "dos consultas" y
 la prueba demostró que son **tres**. Corregido antes de commitear — una afirmación falsa en un
 docstring es exactamente lo que este repo viene limpiando.
+
+
+## §10-CD — Fase E del modo NOC: el mosaico, y por qué son 40 celdas y no 697 (13-oct-2026)
+
+La vista de conjunto del parque instrumentado. La cola de la Zona 1 dice QUÉ duele; el mosaico
+dice cuánto es el total y cómo se reparte, que es lo que contesta "¿es de un cliente o de la
+cadena?" cuando hay varias incidencias a la vez.
+
+### El universo, que era lo único que bloqueaba esta fase
+
+Medido el 13-oct-2026: **40 farmacias con al menos una estación aprobada**, contra **~697 que
+se sondean por enlace**. El mosaico son las 40.
+
+Un mosaico de 697 celdas no se lee —sería el mismo error que `/monitoreo/`, que no está paginada
+y a 700 farmacias son 700 tarjetas (§10-AK)— y además mezclaría dos poblaciones que se miden
+distinto: la que tiene agente reporta latido, servicios, métricas y eventos; la que solo tiene
+enlace responde un ping y nada más. Pintarlas iguales diría que sabemos lo mismo de ambas.
+
+**Lo que queda afuera no se pierde**: una farmacia sin agente con el enlace caído sigue
+apareciendo en la cola de incidencias de la Zona 1, que es donde se actúa sobre ella.
+
+### El estado sale de la cola, no de un criterio nuevo
+
+Si la farmacia está en `cola_incidencias`, la celda se pinta con el estado que la cola ya le
+dio (`critical` o `warning`, según su síntoma de mayor impacto); si no está, está operativa.
+
+Es la decisión de fondo del bloque: inventar acá una segunda definición de "farmacia con
+problemas" es exactamente cómo se llega a que dos zonas de la misma pantalla se contradigan —el
+defecto que este tablero ya corrigió en D-01 y D-03—. Hay una prueba que compara celda contra
+cola y exige que coincidan.
+
+### Cuesta una consulta
+
+El tablero ya calcula la cola completa para la Zona 1, así que el mosaico la **recibe hecha** y
+solo paga la consulta de las farmacias con agente. Con `assertNumQueries(1)` que lo fija. El
+mosaico se arma antes del recorte a 8 filas de la Zona 1, porque necesita la cola entera para
+saber el estado de cada farmacia, no solo de las ocho que se listan.
+
+### Accesible sin color
+
+Cada celda crítica lleva `✕` y cada advertencia `!`, además del color: verde/ámbar/rojo se
+acercan bajo deuteranopía y esta pantalla se deja abierta todo el día. Es la misma regla que ya
+gobierna `_estado_chip.html` y que §10-AK aplicó al resto del monitoreo.
+
+El tooltip es el nativo (`title`) con el síntoma de mayor impacto y cuántos más hay. Uno propio
+obligaría a meter JavaScript en una pantalla que hoy no tiene nada más que HTMX.
+
+### Orden
+
+Los clientes con más críticas primero, y dentro de cada uno lo peor arriba: crítica,
+advertencia, operativa. Dentro de cada tramo se conserva el orden por código, que es el que la
+gente conoce de memoria.
+
+### Archivos
+
+| Archivo | Qué |
+|---|---|
+| `apps/monitoreo/incidencias.py` | `mosaico_farmacias` (vecino de `cola_incidencias`, de la que depende) |
+| `apps/panel/views/dashboard.py` | el mosaico al contexto, reusando la cola (417 → 427 líneas, límite 550) |
+| `templates/panel/dashboard_vivo_partial.html` | Zona 2e |
+| `static_src/components.css` | `.mosaico-*` |
+| `apps/panel/tests.py` | `MosaicoDeFarmaciasTests` (10 pruebas) |
+
+### Pruebas
+
+Que solo entren las farmacias con agente —y que la que solo tiene enlace **no** aparezca aunque
+esté caída—; que sin incidencia la celda sea operativa; que el estado coincida con el que dio la
+cola; el agrupado por cliente y el conteo de críticas; que el cliente con más críticas vaya
+primero y lo peor arriba dentro de cada uno; el alcance por unidad de negocio; que reusar la
+cola cueste **una** consulta; que el tablero dibuje el mismo estado que la Zona 1; y que sin
+farmacias instrumentadas el bloque no se dibuje —un bloque vacío permanente enseña a no mirarlo—.
+
+| Qué se ejecutó | Resultado |
+|---|---|
+| `MosaicoDeFarmaciasTests` | 10 pruebas, OK |
+| Regresión del tablero (9 clases, con `DivisionDeVistasTests`) | 89 pruebas, OK |
+| `apps.monitoreo` completa | 707 pruebas, OK |
+| `manage.py check` | `no issues (1 silenced)` |
+| `makemigrations --check --dry-run` | `No changes detected` |
+| **Suite completa** | **`Ran 2584 tests in 1750.357s` · `OK`** |
+
+De 2.574 a 2.584: las 10 nuevas.
+
+### Estado del modo NOC
+
+Cerradas **A, B, C, D y E**. Queda **F** (sparklines de los otros KPI), que ahora es más fácil
+porque el patrón de reconstrucción de §10-CC sirve igual para "farmacias sin enlace" (desde
+`EventoEnlaceFarmacia`) y "alertas sin reconocer" (desde `abierta_en`/`reconocida_en`/
+`resuelta_en`); y **G** (histórico de eventos de Windows), que sigue sin recomendarse porque
+exige modelo nuevo y tocar el agente, y la aproximación mentiría un 42 %.
