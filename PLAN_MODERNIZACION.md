@@ -6841,3 +6841,71 @@ justo lo contrario de lo que este repo viene haciendo.
 
 Y el historial del plan tampoco se reescribe: §10-K y las secciones de esa época narran lo que
 pasó entonces, con los nombres de archivo de entonces. Corregirlas sería falsear el diario.
+
+## §10-CB — 266 GB: los respaldos que viajaban dentro de cada imagen (13-oct-2026)
+
+Salió de una pregunta simple —si había imágenes de Docker que ya no fueran relevantes— y la
+respuesta fue que no: `dangling = 0`, las 13 imágenes estaban en uso o eran bases. El problema
+era otro y más grande: **cada imagen de la app pesaba 15,6 GB**, unas 30 veces lo normal para
+un Django.
+
+### Dónde estaba
+
+```
+docker history deploy-web:latest
+    3.79GB  RUN useradd ... && mkdir -p /app/media && chown -R appuser:appuser /app
+    3.79GB  COPY . .
+     250MB  RUN pip install --no-cache-dir -r requirements.txt
+     178MB  (base python:3.13-slim)
+```
+
+Los 3,79 GB del contexto eran `backups/` (2,5 GB) y `deploy/backups/` (1,1 GB): los volcados
+cifrados de la base y de `/media/`. El `.dockerignore` ya excluía `.venv/`, `/media/`, `/tools/`
+y `.git/`, pero no los respaldos. Y el `chown -R` reescribe la capa entera, así que se pagaban
+**dos veces**: ~7,5 GB de respaldos por imagen, en seis imágenes.
+
+### El arreglo, y lo que NO se tocó
+
+Dos líneas en `.dockerignore`. Los respaldos los escribe `deploy/backup.sh` desde el **host**
+(vía `saidsoft-respaldo.timer`), no desde dentro del contenedor; comprobado que nada del código
+ni del compose los lee.
+
+**El Dockerfile no se tocó.** El `chown -R` está donde está por un motivo documentado —el
+`mkdir /app/media` antes del chown fija el dueño del volumen `media_data`, y moverlo rompió el
+piloto en agosto de 2026 con un `PermissionError`— y con los respaldos fuera del contexto esa
+capa deja de pesar. Reordenarlo sería arriesgar algo ya resuelto para no ganar nada.
+
+También al `.gitignore`: no estaban trackeados pero tampoco ignorados, así que salían como
+untracked en el `git status` del servidor, donde un `git add -A` distraído mete 2,5 GB de
+volcados al historial.
+
+### Medido antes y después
+
+| | Antes | Después |
+|---|---|---|
+| Imagen de la app (cada una) | 15,6 GB | **521 MB** |
+| Capa `COPY . .` | 3,79 GB | **9,49 MB** |
+| Capa del `chown -R` | 3,79 GB | **9,56 MB** |
+| Imágenes (total) | 142,8 GB | **4,78 GB** |
+| Build cache | 274,3 GB | **0** |
+| **Disco del NUC** | **315 GB (73 %)** | **49 GB (12 %)** |
+
+**266 GB recuperados**, y 385 GB libres donde había 119.
+
+El orden importó: primero el arreglo y el redespliegue, y solo después `docker builder prune -af`
+—con el stack ya verificado sano—. Si hubiera habido que volver atrás, el cache era justamente
+lo que hacía rápido el rebuild.
+
+### Lo que se dejó a propósito
+
+Los **284 volúmenes anónimos huérfanos** (431 MB). El ahorro es despreciable y los seis con
+nombre —`deploy_db_data`, `deploy_emqx_data`, `deploy_media_data`, `deploy_meshcentral_data`,
+`deploy_meshcentral_files`, `deploy_redis_data`— llevan los datos reales. No es un sitio donde
+convenga podar por 431 MB.
+
+### Para que no vuelva
+
+El build cache crece con cada despliegue; lo que lo hacía monstruoso era recomprimir 3,79 GB de
+respaldos cada vez. Con el contexto en ~10 MB debería mantenerse chico solo. Si algún día el
+disco vuelve a apretar, `docker builder prune -af` es seguro: no toca imágenes etiquetadas,
+contenedores ni volúmenes, solo obliga a que el siguiente build sea más lento.
