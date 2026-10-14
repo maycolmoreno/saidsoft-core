@@ -4,7 +4,20 @@
 # context de Docker (encontrado 31-jul-2026: COMANDO_HMAC_SECRET "funcionaba" en
 # una prueba local porque el .env de desarrollo terminó horneado en la imagen).
 .env
+# Y TODAS sus variantes. El 13-oct-2026 se encontraron TRES copias del .env de
+# producción dentro de cada imagen —`deploy/.env.bak-20260917-212556`,
+# `-20260921-125612` y `-20260921-162614`, 117 variables con valor entre las tres:
+# SECRET_KEY, POSTGRES_PASSWORD, MQTT_PASSWORD_AGENTE, TELEGRAM_BOT_TOKEN,
+# MESHCENTRAL_API_PASSWORD, EMQX_DASHBOARD_PASSWORD—. Los patrones de arriba cubrían
+# `.env` y `deploy/.env` exactos, y un `cp .env .env.bak-$(date)` se cuela por el lado.
+#
+# Es el MISMO fallo del 31-jul-2026 que este archivo ya documenta, entrando por otra
+# puerta: por eso ahora el patrón es por prefijo y las plantillas se rescatan una a una.
+.env.*
+!.env.example
 deploy/.env
+deploy/.env.*
+!deploy/.env.prod.example
 # Solo la llave privada: cert.pem es público y web/worker lo necesitan DENTRO de la
 # imagen para verificar TLS contra EMQX (MQTT_CA_CERT=/app/deploy/certs/cert.pem en
 # docker-compose.yml) — excluirlo también rompía el worker en un crash-loop

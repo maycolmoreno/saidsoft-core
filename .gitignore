@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.example
 db.sqlite3
 /media/
 /staticfiles/
@@ -13,6 +15,11 @@ db.sqlite3
 
 # Secretos y certificados de producción
 /deploy/.env
+# Y sus variantes: un `cp .env .env.bak-$(date)` en el servidor no estaba
+# ignorado, y esos .bak llevan los 117 secretos de produccion. No llegaron a
+# git (comprobado en el historial el 13-oct-2026), pero nada lo impedia.
+/deploy/.env.*
+!/deploy/.env.prod.example
 
 # Datos reales de RRHH/operaciones (PII: cédulas, teléfonos, direcciones de sucursales
 # y colaboradores de CRESIO) usados para importar apps.catalogo.Farmacia/apps.activos.
