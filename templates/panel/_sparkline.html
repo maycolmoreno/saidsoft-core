@@ -15,10 +15,12 @@ Tres decisiones que no son obvias mirando el markup:
    reservados para "cómo está esto"; usarlos para distinguir series es lo que hacía que
    una RAM al 95% se viera verde.
 
-Parámetros: g (Grafico), estado, compacto (sin etiquetas de umbral, para el listado).
+Parámetros: g (Grafico), estado, compacto (sin etiquetas de umbral, para el listado),
+grande (alto de 120px, para la serie de 24 h del tablero — la forma de la curva es el
+contenido y en 64px no se lee).
 {% endcomment %}
 {% localize off %}
-<div class="spark{% if compacto %} spark-sm{% endif %}">
+<div class="spark{% if compacto %} spark-sm{% endif %}{% if grande %} spark-lg{% endif %}">
     {% if g.puntos %}
     <svg viewBox="0 0 {{ g.ancho }} {{ g.alto }}" preserveAspectRatio="none" aria-hidden="true" focusable="false">
         {% for m in g.marcas %}{% if m.dentro %}

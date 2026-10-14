@@ -10411,3 +10411,177 @@ class CalladasSegunElHorarioDeSuFarmaciaTests(TestCase):
 
         with self.assertNumQueries(1):
             estado_flota(None)
+
+
+class SerieDisponibilidad24hTests(TestCase):
+    """La serie de 24 h de la Zona 2d, reconstruida desde las transiciones del latido.
+
+    Lo que fija: que el último punto coincida con el KPI —que era el riesgo señalado como
+    mayor de esta fase y resultó teórico, pero una prueba es más barata que volver a
+    medirlo—, que el estado anterior a la primera transición se infiera bien, que solo
+    cuente la fuente MQTT, que use el mismo recorte que `estado_flota`, y que el costo no
+    crezca con la cantidad de puntos.
+    """
+
+    def setUp(self):
+        from datetime import datetime, timezone as dt_timezone
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRXSER')
+        self.farmacia = Farmacia.objects.create(
+            codigo='SR001', grupo=grupo, unidad_negocio=self.sg, horario='07H00 a 21H00')
+        self.otra_unidad = Farmacia.objects.create(
+            codigo='SR002', grupo=grupo, unidad_negocio=self.mia, horario='07H00 a 21H00')
+
+        # Un instante fijo y en punto, para que las cuentas por hora sean exactas.
+        self.ahora = datetime(2026, 10, 14, 18, 0, tzinfo=dt_timezone.utc)
+
+        self.a = Estacion.objects.create(
+            codigo='SR001-A', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        self.b = Estacion.objects.create(
+            codigo='SR001-B', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+
+        self.usuario = User.objects.create_user(username='u_serie', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def _estado(self, estacion, en_linea, fuente=None):
+        from apps.monitoreo.models import EstadoDispositivo
+
+        EstadoDispositivo.objects.update_or_create(
+            estacion=estacion, fuente=fuente or EstadoDispositivo.Fuente.MQTT,
+            defaults={'en_linea': en_linea},
+        )
+
+    def _transicion(self, estacion, en_linea, hace_horas, fuente=None):
+        from apps.monitoreo.models import EstadoDispositivo, EventoMonitoreo
+
+        ev = EventoMonitoreo.objects.create(
+            estacion=estacion, fuente=fuente or EstadoDispositivo.Fuente.MQTT, en_linea=en_linea)
+        EventoMonitoreo.objects.filter(pk=ev.pk).update(
+            timestamp=self.ahora - timedelta(hours=hace_horas))
+        return ev
+
+    def _serie(self, unidades=None):
+        from apps.monitoreo.series import serie_disponibilidad
+
+        return serie_disponibilidad(unidades, instante=self.ahora)
+
+    def test_sin_transiciones_la_serie_es_plana_con_el_estado_actual(self):
+        """Una estación sin eventos en la ventana estuvo todo el rato como está ahora."""
+        self._estado(self.a, True)
+        self._estado(self.b, False)
+        serie = self._serie()
+        self.assertEqual(len(serie), 25)  # 24 horas + el punto de ahora
+        self.assertEqual({p.en_linea for p in serie}, {1})
+        self.assertEqual({p.total for p in serie}, {2})
+        self.assertEqual(serie[-1].pct, 50.0)
+
+    def test_una_caida_a_media_ventana_parte_la_curva(self):
+        """Antes de la transición estaba en línea; después, no. El estado previo se
+        INFIERE del propio evento: son transiciones, no muestras."""
+        self._estado(self.a, False)
+        self._estado(self.b, True)
+        self._transicion(self.a, en_linea=False, hace_horas=12)
+
+        serie = self._serie()
+        # A las 18 h atrás (antes de la caída) las dos estaban arriba.
+        self.assertEqual(serie[6].en_linea, 2)
+        # Justo después de la caída, solo una.
+        self.assertEqual(serie[13].en_linea, 1)
+        self.assertEqual(serie[-1].en_linea, 1)
+
+    def test_el_ultimo_punto_coincide_con_el_kpi(self):
+        """El riesgo que la auditoría señaló como mayor: que la curva y el número de al
+        lado contaran cosas distintas (hallazgo D-01 otra vez). Resultó teórico —los
+        cuatro criterios dan el mismo número— y esta prueba lo deja fijado."""
+        from apps.catalogo.services import estado_flota
+
+        self._estado(self.a, True)
+        self._estado(self.b, False)
+        self.a.ultimo_heartbeat = timezone.now()
+        self.a.save(update_fields=['ultimo_heartbeat'])
+
+        serie = self._serie()
+        self.assertEqual(serie[-1].en_linea, estado_flota(None)['en_linea'])
+        self.assertEqual(serie[-1].total, estado_flota(None)['total'])
+
+    def test_ignora_las_transiciones_de_meshcentral(self):
+        """Mezclar las fuentes contaría en línea a estaciones que el KPI cuenta caídas —
+        que es justo el cruce con el que se detecta "el agente cayó pero la red vive"."""
+        from apps.monitoreo.models import EstadoDispositivo
+
+        self._estado(self.a, False)
+        self._estado(self.b, False)
+        self._transicion(self.a, en_linea=True, hace_horas=5,
+                         fuente=EstadoDispositivo.Fuente.MESHCENTRAL)
+        self.assertEqual(self._serie()[-1].en_linea, 0)
+
+    def test_respeta_el_alcance_por_unidad_de_negocio(self):
+        otra = Estacion.objects.create(
+            codigo='SR002-A', farmacia=self.otra_unidad,
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        self._estado(self.a, True)
+        self._estado(self.b, True)
+        self._estado(otra, True)
+
+        self.assertEqual(self._serie()[-1].total, 3)
+        self.assertEqual(self._serie(unidades=[self.sg])[-1].total, 2)
+
+    def test_usa_el_mismo_recorte_que_el_kpi(self):
+        """Solo aprobadas: una pendiente no reporta porque todavía no le toca."""
+        Estacion.objects.create(
+            codigo='SR001-C', farmacia=self.farmacia,
+            estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE)
+        self._estado(self.a, True)
+        self._estado(self.b, True)
+        self.assertEqual(self._serie()[-1].total, 2)
+
+    def test_marca_las_horas_en_que_casi_todo_esta_cerrado(self):
+        """La banda bajo la curva. No cambia el numerador ni el denominador: solo dice
+        qué se espera a cada hora, con el horario real de cada farmacia."""
+        self._estado(self.a, True)
+        self._estado(self.b, True)
+        serie = self._serie()
+        # La farmacia abre 07:00-21:00 (hora de Ecuador). En la madrugada local, cerrada.
+        from django.utils import timezone as tz
+
+        for p in serie:
+            local = tz.localtime(p.instante).hour
+            if 2 <= local <= 5:
+                self.assertTrue(p.fuera_de_horario, 'las %02d:00 deberían estar fuera' % local)
+            if 10 <= local <= 16:
+                self.assertFalse(p.fuera_de_horario, 'las %02d:00 deberían estar dentro' % local)
+
+    def test_el_porcentaje_no_explota_sin_estaciones(self):
+        Estacion.objects.all().delete()
+        self.assertEqual(self._serie(), [])
+
+    def test_cuesta_dos_consultas_y_no_crece_con_los_puntos(self):
+        """Una para las estaciones con su estado y otra para los eventos. La
+        reconstrucción es en memoria, así que dibujar más puntos no cuesta más consultas."""
+        from apps.monitoreo.series import serie_disponibilidad
+
+        self._estado(self.a, True)
+        self._estado(self.b, False)
+        self._transicion(self.a, en_linea=True, hace_horas=3)
+        with self.assertNumQueries(3):   # estaciones + estados + eventos
+            serie_disponibilidad(None, instante=self.ahora)
+        with self.assertNumQueries(3):
+            serie_disponibilidad(None, horas=72, instante=self.ahora)
+
+    def test_el_tablero_dibuja_la_serie_sin_inventar_un_sla(self):
+        """La marca es el promedio del período. Nadie definió un objetivo de
+        disponibilidad en este proyecto; dibujar una línea de 90% sería inventarlo."""
+        self._estado(self.a, True)
+        self._estado(self.b, True)
+        resp = self.client.get(reverse('panel:dashboard'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Estaciones en línea · últimas 24 h')
+        self.assertEqual(len(resp.context['serie_24h']), 25)
+        etiquetas = [m.etiqueta for m in resp.context['grafico_24h'].marcas]
+        self.assertTrue(any('promedio' in e for e in etiquetas), etiquetas)
+        self.assertFalse(any('SLA' in e for e in etiquetas), etiquetas)

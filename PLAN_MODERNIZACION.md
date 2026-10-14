@@ -6909,3 +6909,127 @@ El build cache crece con cada despliegue; lo que lo hacía monstruoso era recomp
 respaldos cada vez. Con el contexto en ~10 MB debería mantenerse chico solo. Si algún día el
 disco vuelve a apretar, `docker builder prune -af` es seguro: no toca imágenes etiquetadas,
 contenedores ni volúmenes, solo obliga a que el siguiente build sea más lento.
+
+
+## §10-CC — Fase D del modo NOC: el tablero gana memoria de verdad (13-oct-2026)
+
+La serie de 24 h de estaciones en línea, que era la fase que el plan dejaba bloqueada "a la
+espera de una decisión del usuario". Al medir, la decisión se disolvió.
+
+### El bloqueo era teórico
+
+La auditoría (§10-BX, y `docs/auditoria/noc-panel-principal.md` §4) señalaba como **riesgo
+mayor** que las transiciones de `EventoMonitoreo` las escribe `marcar_estaciones_offline` con
+el umbral de **alerta** (5 min) mientras las pantallas usan el de **visualización** (10 min):
+el último punto de la curva no coincidiría con el KPI de al lado, y eso es el hallazgo D-01
+otra vez. Medido contra producción:
+
+```
+KPI estado_flota (10 min, sin admin) : 35 / 71
+aprobadas con latido < 10 min        : 35 / 71
+aprobadas con latido <  5 min        : 35 / 71
+EstadoDispositivo mqtt en_linea=True : 35
+```
+
+**Los cuatro criterios dan el mismo número.** Una estación late cada minuto o lleva horas
+callada: la franja entre los 5 y los 10 minutos está casi siempre vacía. El riesgo era real en
+el papel y no en los datos. Queda una prueba que lo fija, por si algún día se separan.
+
+### Lo que la curva reveló, que importa más que la curva
+
+| Hora local | En línea |
+|---|---|
+| 02:00–06:00 | 29/71 (41 %) |
+| 13:00–14:00 | 50/71 (70 %) |
+| 19:00 | 55/71 (**78 %, máximo del día**) |
+
+**En pleno horario comercial la flota nunca pasa del 78 %.** Y el motivo está medido: **14
+estaciones llevan más de un día calladas, 8 más de tres días y 5 más de una semana**. Esas
+arrastran el piso de forma permanente. No es un defecto de la gráfica: es el estado real, y
+hasta ahora no había forma de verlo.
+
+### Se reconstruye, no se guarda
+
+`apps/monitoreo/series.py` arma la serie desde las transiciones: el estado en cualquier
+instante pasado es el del último evento anterior, y antes de la primera transición de una
+estación estaba en lo contrario de lo que esa transición declara —son cambios, no muestras—.
+
+Eso evita el modelo nuevo que §10-AK había dejado anotado como "decisión del usuario" para
+persistir un snapshot por hora, y encima es más barato: **24 horas de flota son ~103 filas**,
+contra los 24 × N snapshots que habría que escribir y purgar.
+
+**Tres consultas fijas** —estaciones, estados actuales, eventos de la ventana— y la
+reconstrucción en memoria, así que pedir 72 horas cuesta lo mismo que pedir 24. Hay prueba.
+
+Solo fuente **MQTT**: `EventoMonitoreo` tiene dos (59 y 44 transiciones en 24 h) y mezclarlas
+contaría en línea a estaciones que el KPI cuenta caídas — justo el cruce con el que
+`evaluar_cruce_monitoreo` detecta "el agente cayó pero la red vive". Y el mismo recorte que
+`estado_flota`: solo aprobadas, sin sitios administrativos.
+
+### Tres decisiones de presentación
+
+**No hay línea de SLA.** La maqueta dibujaba un "90 %"; nadie definió un objetivo de
+disponibilidad en este proyecto, y dibujarlo sería inventárselo. La única marca es el
+**promedio real del período**, y hay una prueba que falla si alguien mete un SLA.
+
+**La banda de horario va DEBAJO, no sombreando la curva.** El SVG se estira con
+`preserveAspectRatio="none"`, así que cualquier rectángulo metido adentro se deforma con él —
+el mismo motivo por el que las etiquetas de umbral ya vivían en HTML. La banda usa el horario
+real de cada farmacia (§10-BZ) para marcar las horas en que la mayoría de los locales están
+cerrados, y así la caída nocturna se lee como lo que es.
+
+**No se tocaron los denominadores.** Se probó filtrar la curva por "estaciones cuya farmacia
+debería estar abierta": entre las 08:00 y las 18:00 da **exactamente lo mismo**, y de madrugada
+el denominador baja a 1 —solo la farmacia de 24 horas— con lo que el porcentaje deja de
+significar nada. No compensa.
+
+### Reutilización, no componente nuevo
+
+La curva usa `construir_grafico` y `panel/_sparkline.html`, que ya existían, con una variante de
+tamaño (`.spark-lg`, 120 px). Lo único propio es la banda de horario. Cero JavaScript de
+graficado y cero dependencias, como el resto del panel.
+
+### Archivos
+
+| Archivo | Qué |
+|---|---|
+| `apps/monitoreo/series.py` | **nuevo**: `serie_disponibilidad`, `PuntoDisponibilidad` |
+| `apps/panel/views/dashboard.py` | la serie, el gráfico y sus estadísticas al contexto (394 → 417 líneas, límite 550) |
+| `templates/panel/_sparkline.html` | parámetro `grande`, aditivo |
+| `templates/panel/dashboard_vivo_partial.html` | Zona 2d |
+| `static_src/components.css` | `.spark-lg` y la banda de horario |
+| `apps/panel/tests.py` | `SerieDisponibilidad24hTests` (10 pruebas) |
+
+### Lo que queda pendiente
+
+- **Las 14 estaciones crónicas.** La curva las hace visibles pero no las arregla; es trabajo de
+  campo, no de código.
+- **Fase E** (mosaico): el universo ya está medido en 40 farmacias con agente.
+- **Fase F** (sparklines de los otros KPI): ahora es más fácil, porque el mismo patrón de
+  reconstrucción sirve para "farmacias sin enlace" (desde `EventoEnlaceFarmacia`) y para
+  "alertas sin reconocer" (desde `abierta_en`/`reconocida_en`/`resuelta_en`).
+- **Fase G**: sigue sin recomendarse.
+
+### Pruebas
+
+`SerieDisponibilidad24hTests`, 10 pruebas: serie plana cuando no hubo transiciones; una caída a
+media ventana parte la curva y el estado previo se infiere del propio evento; **el último punto
+coincide con `estado_flota`**; las transiciones de MeshCentral se ignoran; el alcance por unidad
+de negocio; el mismo recorte que el KPI (una pendiente de aprobación no cuenta); la banda marca
+la madrugada y no el mediodía; sin estaciones devuelve lista vacía en vez de dividir por cero;
+**tres consultas tanto para 24 como para 72 horas**; y que el tablero dibuje la serie **sin
+inventar un SLA** —la prueba falla si aparece una marca con esa palabra—.
+
+| Qué se ejecutó | Resultado |
+|---|---|
+| `SerieDisponibilidad24hTests` | 10 pruebas, OK |
+| Regresión del tablero (10 clases, con `DivisionDeVistasTests` y `GraficoConUmbralesTests`) | 81 pruebas, OK |
+| `manage.py check` | `no issues (1 silenced)` |
+| `makemigrations --check --dry-run` | `No changes detected` |
+| **Suite completa** | **`Ran 2574 tests in 1649.240s` · `OK`** |
+
+De 2.564 a 2.574: las 10 nuevas, sin tocar ninguna existente.
+
+Una corrección sobre la marcha: el docstring de `serie_disponibilidad` decía "dos consultas" y
+la prueba demostró que son **tres**. Corregido antes de commitear — una afirmación falsa en un
+docstring es exactamente lo que este repo viene limpiando.

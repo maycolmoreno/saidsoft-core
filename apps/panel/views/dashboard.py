@@ -19,7 +19,9 @@ from apps.monitoreo.models import (
 # La salud de la plataforma la calcula el dominio, no esta vista: la consumen también la
 # barra superior (apps.panel.context_processors) y, el día que se unifiquen, el comando
 # `verificar_salud`. Ver el docstring de apps.monitoreo.salud.
+from apps.monitoreo.graficos import construir_grafico
 from apps.monitoreo.salud import estado_latidos, resumen_salud
+from apps.monitoreo.series import serie_disponibilidad
 from apps.monitoreo.services import antiguedad_alertas_sin_resolver, fuente_desactualizada
 from apps.monitoreo.umbrales import ONLINE_UMBRAL_MINUTOS
 # Los dos umbrales de salud de la plataforma vivian ACA y el comando verificar_salud
@@ -207,6 +209,22 @@ def _contexto_vivo(request):
     # `total_enlaces_caidos`, el del KPI.
     caidas_en_curso = linea_tiempo_caidas_en_curso(visibles)
 
+    # Zona 2d — la serie de 24 h: lo mismo que el KPI de arriba, pero con memoria.
+    #
+    # Se reconstruye desde las transiciones (`apps.monitoreo.series`), no se guarda: son
+    # ~103 filas para 24 horas de flota, contra los 24 x N snapshots que haría falta
+    # persistir. El umbral NO da problema —medido: los cuatro criterios dan el mismo
+    # número, ver el docstring de ese módulo— así que el último punto coincide con el KPI.
+    #
+    # La marca es el PROMEDIO del período, no un SLA: nadie definió un objetivo de
+    # disponibilidad en este proyecto, y dibujar una línea de "90%" sería inventarlo.
+    serie_24h = serie_disponibilidad(visibles)
+    promedio_24h = round(sum(p.pct for p in serie_24h) / len(serie_24h), 1) if serie_24h else 0
+    grafico_24h = construir_grafico(
+        [p.pct for p in serie_24h], ancho=640, alto=120, escala_fija=100,
+        marcas=[(promedio_24h, 'referencia', 'promedio %.0f%%' % promedio_24h)] if serie_24h else (),
+    )
+
     # Misma consulta que arriba: `componentes_salud` ya trajo la tabla entera.
     latido_respaldo = por_clave.get(NOMBRE_RESPALDO)
     horas_sin_respaldo = None
@@ -283,6 +301,11 @@ def _contexto_vivo(request):
         'alertas_en_atencion': conteo_alertas['en_atencion'],
         'total_enlaces_caidos': total_enlaces_caidos,
         'caidas_en_curso': caidas_en_curso,
+        'serie_24h': serie_24h,
+        'grafico_24h': grafico_24h,
+        'promedio_24h': promedio_24h,
+        'minimo_24h': min(serie_24h, key=lambda p: p.pct) if serie_24h else None,
+        'maximo_24h': max(serie_24h, key=lambda p: p.pct) if serie_24h else None,
         'ventana_linea_tiempo_horas': VENTANA_LINEA_TIEMPO_HORAS,
         # Se muestran primero las que deberían estar operando: son las accionables. Si no
         # hay ninguna, se muestran las otras igual, para no dejar el bloque vacío cuando

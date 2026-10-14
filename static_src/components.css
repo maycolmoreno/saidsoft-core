@@ -499,6 +499,11 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
 /* ---------- Sparkline ---------- */
 .spark{ position:relative; height:64px; }
 .spark.spark-sm{ height:26px; }
+/* Variante grande: la serie de 24 h del tablero. Mismo componente y mismo
+   vocabulario (.spark-linea, .spark-area, .spark-umbral, .spark-punto): lo único
+   que cambia es el alto, porque ahí la forma de la curva ES el contenido y en
+   64 px no se lee. */
+.spark.spark-lg{ height:120px; }
 .spark svg{ display:block; width:100%; height:100%; }
 .spark-linea{ fill:none; stroke:var(--serie); stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
 .spark-area{ fill:var(--serie); fill-opacity:.13; stroke:none; }
@@ -630,3 +635,19 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
   display:flex; justify-content:space-between; margin-left:83px;
   font-size:10px; color:var(--text-faint); font-variant-numeric:tabular-nums;
 }
+
+/* ---------- Banda de horario bajo la serie de 24 h ----------
+   Una celda por punto de la serie, alineada con la curva de arriba. Marca las horas en
+   que la mayoría de los locales están cerrados, para que la caída nocturna se lea como
+   lo que es y no como una avería.
+
+   Va DEBAJO y no sombreando el SVG a propósito: la curva se dibuja con
+   `preserveAspectRatio="none"`, así que cualquier rectángulo metido adentro se deforma
+   con ella — el mismo motivo por el que las etiquetas de umbral viven en HTML.
+
+   No cambia ningún número: el numerador y el denominador de la curva son los mismos a
+   las 03:00 que a las 13:00. Esto solo dice qué se espera a cada hora. */
+.serie24-banda{ display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:1px; margin-top:6px; }
+.serie24-banda i{ height:5px; border-radius:1px; background:var(--serie-dim); }
+.serie24-banda i.cerrado{ background:var(--overlay-faint); }
+.serie24-ejes{ display:flex; justify-content:space-between; margin-top:4px; font-size:10px; color:var(--text-faint); font-variant-numeric:tabular-nums; }
