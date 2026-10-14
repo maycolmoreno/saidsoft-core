@@ -4,9 +4,10 @@
     en esta estación.
 
 .DESCRIPTION
-    Equivalente a deploy/docs/instalar-agente.ps1 del agente C# original, pero para el
-    reemplazo en Python (ver docstring de agente_prueba.py y PLAN_MODERNIZACION.md
-    §10-K sobre por qué existe este reemplazo). Usa el mismo nombre de servicio
+    Equivalente al instalador del agente C# original, pero para el reemplazo en Python
+    (ver docstring de agente_prueba.py y PLAN_MODERNIZACION.md §10-K sobre por qué
+    existe ese reemplazo; los scripts del agente C# se quitaron del repo el
+    13-oct-2026, §10-CA). Usa el mismo nombre de servicio
     ("SaidsoftAgente") a propósito — reemplaza en el lugar cualquier instalación previa
     del agente C#, no convive con ella.
 
@@ -28,8 +29,8 @@
 .PARAMETER MqttPuerto
     Puerto TLS de EMQX expuesto por el servidor. En el piloto (deploy/docker-compose.yml)
     es 8081, no el 8883 de siempre — EMQX está remapeado porque el firewall del servidor
-    solo abre 8080-8085 (mismo detalle que deploy/docs/prueba-agente/paquete-instalacion
-    /Instalar.bat ya documentaba para el agente C#).
+    solo abre 8080-8085 — un detalle que el paquete de instalación del agente C# ya
+    documentaba, y que sigue valiendo porque lo impone el firewall, no el agente.
 
 .PARAMETER MqttPassword
     Password del usuario MQTT "saidsof_agente" (deploy/.env -> MQTT_PASSWORD_AGENTE en

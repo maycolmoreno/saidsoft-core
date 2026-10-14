@@ -23,7 +23,9 @@ from apps.scripts.services import crear_script_adhoc, registrar_ejecucion_script
 
 NODO_PATTERN = re.compile(r'^[A-Za-z0-9_-]{1,50}$')
 
-# Mismo POS para SG/MIA/7DIAS (ver saidsoft-agente/deploy/instalar-agente.ps1).
+# Mismo POS para SG/MIA/7DIAS: la ruta de instalación del cliente Zabyca es idéntica en
+# las tres unidades de negocio. Es el mismo valor que usa `PosCarpetaInstalacion` en
+# `agente-prueba/instalar-servicio.ps1`.
 CONFIG_PATH = r'C:\Program Files (x86)\Farmamia Cia Ltda - Elipsys\Cliente\Zabyca.Pos.Desktop.exe.Config'
 
 CONTENIDO_TEMPLATE = r'''$ErrorActionPreference = "Stop"

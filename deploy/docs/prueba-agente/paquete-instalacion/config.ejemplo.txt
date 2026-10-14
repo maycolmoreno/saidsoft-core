@@ -1,4 +1,0 @@
-CentralHost=10.111.6.20
-MqttPuerto=8081
-MqttPassword=
-ComandoHmacSecret=

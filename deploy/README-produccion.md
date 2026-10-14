@@ -328,10 +328,12 @@ confirmar el flujo completo (grabar → listar en "Recordings" → reproducir).
 
 - **Los agentes** apuntan a `emqx:8883` con `MqttUsarTls=true` y las credenciales del
   usuario `saidsof_agente`. Deben confiar en el CA que firmó el cert de EMQX. Se
-  instalan con `deploy/instalar-agente.ps1` (repo `saidsoft-agente`), que además
-  necesita `COMANDO_HMAC_SECRET` (idéntico al de este `.env`, si no coincide el agente
-  descarta comandos remotos en silencio) y los datos del POS real — ver
-  PLAN_MODERNIZACION.md §10-C.
+  instalan con `agente-prueba/instalar-servicio.ps1`, que viaja dentro del paquete que
+  publica `armar_paquete_agente` en `/media/agente-instalador/`. El script listo para el
+  técnico lo genera `manage.py generar_script_instalacion`, que le mete la
+  `MQTT_PASSWORD_AGENTE` ya puesta — y por eso **no se versiona ni se sube a /media/**.
+  Desde el agente 0.21 `ComandoHmacSecret` va vacío: la estación recibe el suyo en el
+  enrolamiento. Ver PLAN_MODERNIZACION.md §10-C.
 - **`.dockerignore`**: existe desde 31-jul-2026 — sin él, `COPY . .` del `Dockerfile`
   horneaba `.env`/`deploy/.env`/`deploy/certs/key.pem` dentro de la imagen aunque
   estuvieran en `.gitignore` (que no protege el build context de Docker). Si alguna vez
@@ -509,7 +511,7 @@ no:
 | nginx | el panel en HTTPS (8084) | redespliegue — **recrear** el contenedor, no recargarlo (§10-AA) |
 | EMQX | certificado de su listener TLS (8883) | redespliegue |
 | worker MQTT + 3 tareas de Celery | `MQTT_CA_CERT` | redespliegue |
-| instalador del agente | lo copia a cada estación (`instalar-agente.ps1`) | rearmar el paquete de instalación |
+| instalador del agente | lo copia a cada estación (`instalar-servicio.ps1`, dentro del paquete) | rearmar el paquete con `armar_paquete_agente` |
 | **la app de campo** | lo **empaqueta adentro del APK** (`movil-campo/assets/certs/cert.pem`) | **compilar, firmar y distribuir un APK nuevo, a mano** |
 
 El quinto es el que duele. La copia vive dentro del APK ya instalado en los teléfonos:

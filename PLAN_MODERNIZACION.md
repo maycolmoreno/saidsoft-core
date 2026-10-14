@@ -6760,3 +6760,84 @@ trampa entre ellos.
 | **Suite completa** | **`Ran 2564 tests in 1323.075s` · `OK`** |
 
 De 2.560 a 2.564: nueve pruebas retiradas con el mecanismo que probaban, trece nuevas.
+
+
+## §10-CA — Fuera los scripts del agente C#, y las referencias que apuntaban a ellos (13-oct-2026)
+
+El agente C# se reemplazó por el de Python hace meses (§10-K), pero sus scripts seguían en el
+repo y —peor— había documentación viva que mandaba a usarlos. Salió de buscar cómo reinstalar el
+agente en `MC001-B`: la respuesta correcta estaba en un sitio y el repo apuntaba a otros tres.
+
+### Qué se borró
+
+`deploy/docs/` entera, seis archivos versionados:
+
+| Archivo | Qué era |
+|---|---|
+| `obsoleto/instalar-agente-csharp.ps1` | el instalador del agente C#, ya marcado obsoleto |
+| `prueba-agente/paquete-instalacion/instalar-agente.ps1` | instalador C# (`dotnet publish`, publish self-contained) |
+| `prueba-agente/paquete-instalacion/README.md` | su documentación |
+| `prueba-agente/paquete-instalacion/Instalar.bat` | su lanzador |
+| `prueba-agente/paquete-instalacion/config.ejemplo.txt` | su config de ejemplo |
+| `desplegar-agente-gpo.ps1` | wrapper de GPO que invocaba al primero — **estaba roto** |
+
+El wrapper de GPO llevaba roto desde que el instalador C# se movió a `obsoleto/`: hacía
+`& (Join-Path $PSScriptRoot 'instalar-agente.ps1')` y ese archivo ya no estaba en su carpeta. O
+sea, el único mecanismo documentado de despliegue masivo habría fallado en cada arranque de cada
+estación, y nadie lo habría notado hasta intentar usarlo.
+
+### Lo que ese GPO sabía, y conviene no redescubrir
+
+Se borra el script, no el razonamiento. Cuando haya que hacer el rollout grande —quedan ~1.700
+estaciones sin agente— un wrapper de GPO necesita, como mínimo, esto, que el anterior ya tenía
+resuelto:
+
+1. **Idempotencia.** Un *Computer Startup Script* corre en CADA arranque, no una sola vez. Sin un
+   `if (Get-Service SaidsoftAgente) { exit 0 }` al principio, cada reinicio para el servicio, lo
+   desregistra y lo reinstala: flapping en toda la flota y una ventana muerta de monitoreo en
+   cada boot.
+2. **Log persistente.** Un startup script no tiene consola visible. Sin `Start-Transcript` a una
+   ruta fija (`C:\ProgramData\Saidsoft\...`), un fallo en una estación entre cientos es invisible
+   hasta que alguien nota que esa estación nunca apareció en el panel.
+3. **El share, no SYSVOL.** El paquete pesa ~19 MB (eran ~76 MB en la época del publish de .NET):
+   demasiado para replicarlo por SYSVOL. Va en un share de solo lectura dedicado.
+4. **Permisos del share: `Domain Computers` + admins, nunca `Authenticated Users`.** El script
+   lleva la `MqttPassword` en texto plano, así que quien lea el share tiene la credencial de la
+   flota.
+5. **Corre como SYSTEM**, así que ya está elevado y cumple el chequeo de administrador del
+   instalador.
+
+Dos cosas que el wrapper viejo tenía y que **ya no harían falta**: pasar `-ComandoHmacSecret`
+(desde el agente 0.21 cada estación recibe el suyo en el enrolamiento, y el instalador lo deja
+vacío a propósito) y apuntar a una carpeta de `dotnet publish` (hoy el paquete es un zip con un
+solo `.exe` de PyInstaller, publicado en `/media/agente-instalador/`).
+
+### Las referencias rotas, que eran el problema de verdad
+
+Borrar archivos muertos es higiene. Lo que estaba haciendo daño era la documentación viva que
+mandaba a rutas inexistentes:
+
+| Dónde | Decía | Ahora |
+|---|---|---|
+| `deploy/verificar-certificado.sh` | "el instalador del agente (`deploy/docs/instalar-agente.ps1`)" | `agente-prueba/instalar-servicio.ps1`, dentro del paquete de `/media/` |
+| `deploy/README-produccion.md` (×2) | "se instalan con `deploy/instalar-agente.ps1` (repo `saidsoft-agente`)" | el paquete de `armar_paquete_agente` + `generar_script_instalacion` |
+| `deploy/.env.prod.example` | "`Agente:ComandoHmacSecret` en su appsettings… ver `deploy/instalar-agente.ps1`" | `ComandoHmacSecret` en su `config.json`, y se aclara que desde 0.21 es el camino viejo |
+| `apps/scripts/.../cambiar_nodo_pos.py` | "ver `saidsoft-agente/deploy/instalar-agente.ps1`" | el mismo valor que `PosCarpetaInstalacion` de `instalar-servicio.ps1` |
+| `agente-prueba/instalar-servicio.ps1` (×2) | punteros a `deploy/docs/...` | la comparación histórica se conserva, sin la ruta muerta |
+
+En `.gitignore` se fue el bloque de `deploy/docs/prueba-agente/*` —nueve reglas sobre rutas que
+ya no existen— y en su lugar queda lo que sí hace falta ignorar hoy: `Instalar-Saidsoft.ps1`, que
+`generar_script_instalacion` produce con la `MQTT_PASSWORD_AGENTE` escrita adentro y que no debe
+entrar al repo ni a `/media/`.
+
+### Lo que NO se tocó, a propósito
+
+Las menciones al agente C# en `PLAN_MODERNIZACION.md`, los dos README, `apps/catalogo/services.py`,
+`deploy/bootstrap-emqx.sh`, `seed_scripts_migracion_mqtt.py` y `docs/auditoria-capacidades.md`
+**se quedan**. No son código C#: son el motivo de decisiones vigentes —por qué el servicio se
+llama `SaidsoftAgente`, por qué el JSON se canonicaliza como se canonicaliza, por qué la política
+de reinicio es la que es—. Quitarlas dejaría el código con las decisiones y sin el porqué, que es
+justo lo contrario de lo que este repo viene haciendo.
+
+Y el historial del plan tampoco se reescribe: §10-K y las secciones de esa época narran lo que
+pasó entonces, con los nombres de archivo de entonces. Corregirlas sería falsear el diario.

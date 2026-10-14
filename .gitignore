@@ -41,22 +41,12 @@ db.sqlite3
 /agente-prueba/config.txt
 /agente-prueba/cert.pem
 
-# deploy/docs/prueba-agente: prueba real contra producción del agente .NET.
-# instalar-agente.ps1, desplegar-agente-gpo.ps1, README.md, Instalar.bat y
-# config.ejemplo.txt SÍ se versionan (documentación/scripts sin secretos). Lo
-# de abajo no: certs (mismo criterio que deploy/certs/*.pem), identidad real
-# de la estación de prueba, config.txt con secretos reales en texto plano
-# (MqttPassword/ComandoHmacSecret), y el publish self-contained del agente
-# .NET (binarios de ~76MB cada uno — no pertenece al historial de este repo).
-/deploy/docs/cert.pem
-/deploy/docs/prueba-agente/cert.pem
-/deploy/docs/prueba-agente/agente_prueba.exe
-/deploy/docs/prueba-agente/identidad.json
-/deploy/docs/prueba-agente/paquete-instalacion/cert.pem
-/deploy/docs/prueba-agente/paquete-instalacion/config.txt
-/deploy/docs/prueba-agente/paquete-instalacion/Saidsoft.Agente.exe
-/deploy/docs/prueba-agente/paquete-instalacion/agente/
-/deploy/docs/prueba-agente/Instalar.bat
+# El script que genera `manage.py generar_script_instalacion` lleva la
+# MQTT_PASSWORD_AGENTE escrita adentro. Se le entrega a cada técnico por un canal
+# privado y se borra al terminar: no entra al repo ni a /media/, que se sirve sin
+# autenticación. Acá por si alguien lo deja caer en el árbol por costumbre.
+/Instalar-Saidsoft.ps1
+/deploy/Instalar-Saidsoft.ps1
 
 # Bases SQLite descartables de pruebas locales (demo-local.sqlite3, test-smoke.sqlite3...).
 # db.sqlite3 ya estaba arriba; esto cubre las que se crean al probar con otro nombre.

@@ -8,8 +8,8 @@
 #   - nginx, para el panel en HTTPS (puerto 8084)
 #   - EMQX, como certificado de su listener TLS (puerto 8883)
 #   - el worker MQTT y las tres tareas de Celery, como CA (MQTT_CA_CERT)
-#   - el instalador del agente (deploy/docs/instalar-agente.ps1), que lo copia a cada
-#     estación
+#   - el instalador del agente (`agente-prueba/instalar-servicio.ps1`, que viaja dentro
+#     del paquete de /media/agente-instalador/), que lo copia a cada estación
 #   - la app de campo, que empaqueta UNA COPIA en movil-campo/assets/certs/cert.pem
 #
 # Los primeros cuatro se arreglan redesplegando. El quinto no: la copia vive DENTRO del
