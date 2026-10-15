@@ -7229,3 +7229,41 @@ hay ninguna; y **"no se pudo comprobar" no se pinta de verde**.
   arreglar el agente para que no ocurra es otro trabajo.
 - Si el número crece, el siguiente paso natural es que el agente **reporte sus suscripciones** en
   el latido, y así no haría falta preguntarle a EMQX desde el tablero.
+
+## §10-CF — Agente 0.34: ninguna estación nueva podía enrolarse como servicio (15-oct-2026)
+
+MNAJ1-B, recién instalada con `Instalar-Saidsoft.ps1`, quedaba conectada al broker sin
+suscripciones y nunca aparecía para aprobar. Su log terminaba en "Conectado al broker", sin
+error, y el proceso seguía vivo.
+
+### La causa
+
+`CAMPOS_CONFIG` —la lista con la que `servicio_windows.py` arma los argumentos desde
+`config.json`— no tenía `hardware_id`, que solo existía como opción de la CLI. Una estación ya
+enrolada nunca lo lee; una nueva no tiene identidad guardada, `_enrolar` evalúa
+`self.args.hardware_id` y revienta con `AttributeError` dentro de `_on_connect`.
+
+paho-mqtt 2.x no se traga las excepciones de los callbacks: la del `_on_connect` mató el hilo de
+red antes de que salieran los SUBSCRIBE y la solicitud de enrolamiento, y el servicio no deja
+traza de eso. Resultado: conectada, sorda, sin enrolarse y sin un solo error en el log. Afectaba
+a **toda instalación nueva con 0.33 como servicio**; la flota existente no, porque ya tenía token.
+Reproducido en local con un `Namespace` armado por `args_desde_config`.
+
+No se afirma que explique ML002-A / ML006-A (§10-CE): esas ya estaban enroladas.
+
+### Los cambios
+
+- `('hardware_id', '')` en `CAMPOS_CONFIG`.
+- `_on_connect` envuelve su cuerpo (`_al_conectar`) en `try/except` con `logging.exception`:
+  el próximo fallo ahí queda en `agente_prueba.log` en vez de dejar una estación sorda en
+  silencio.
+- `instalar-servicio.ps1` mata los procesos `Saidsoft.Agente` / `agente_prueba` que quedan
+  sueltos tras detener el servicio. En MNAJ1-B había seis: compartían client-id, se pateaban
+  con el agente nuevo en el broker y bloqueaban la copia del `.exe`.
+
+`Instalar-Saidsoft.ps1` no cambia: descarga el zip del instalador en cada ejecución, así que
+basta con regenerarlo (`armar_paquete_agente`).
+
+Solución sin reinstalar para una estación nueva con 0.33: crear
+`C:\ProgramData\Saidsoft\identidad.json` con `{"hardware_id": "<MachineGuid>"}` y reiniciar el
+servicio; con eso `_enrolar` no llega a leer el campo faltante.

@@ -56,7 +56,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.33'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.34'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -487,6 +487,15 @@ class AgentePrueba:
 
     # --- ciclo de conexión ---
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+        # paho-mqtt 2.x no se traga las excepciones de los callbacks: una sola mata el hilo
+        # de red sin dejar rastro en el log del servicio, y la estación queda conectada,
+        # sorda y sin enrolarse. Se registra con traceback para que el próximo fallo se vea.
+        try:
+            self._al_conectar(client, reason_code)
+        except Exception:
+            logging.exception('Error atendiendo la conexión al broker')
+
+    def _al_conectar(self, client, reason_code):
         if reason_code != 0:
             logging.error('Falló la conexión al broker: %s', reason_code)
             return
@@ -2840,6 +2849,11 @@ CAMPOS_CONFIG = [
     ('ca_cert', ''),
     ('hmac_secret', ''),
     ('token_apertura', ''),
+    # `_enrolar` lo lee siempre que no haya identidad guardada. Sin esta entrada el
+    # servicio arma un Namespace sin el atributo y la primera conexión de una estación
+    # nueva revienta en `_on_connect` con AttributeError: quedaba conectada, sin
+    # suscripciones y sin pedir enrolamiento (MNAJ1-B, 15-oct-2026).
+    ('hardware_id', ''),
     ('intervalo_heartbeat', 60),
     ('intervalo_metricas', 300),
     ('intervalo_log_pos', 300),

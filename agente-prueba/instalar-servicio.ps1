@@ -174,6 +174,13 @@ if (Get-Service -Name $NombreServicio -ErrorAction SilentlyContinue) {
     sc.exe delete $NombreServicio | Out-Null
     Start-Sleep -Seconds 1
 }
+# Detener el servicio no alcanza: el ejecutable de PyInstaller corre como par padre+hijo y
+# una instalación interrumpida o lanzada a mano deja procesos sueltos que el SCM ya no
+# controla. Siguen conectados con el mismo client-id, se patean con el agente nuevo en el
+# broker y bloquean la copia del .exe (MNAJ1-B, 15-oct-2026: había seis).
+Get-Process -Name "Saidsoft.Agente", "agente_prueba" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
 
 Write-Host "2) Copiando binarios a $InstallPath..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
