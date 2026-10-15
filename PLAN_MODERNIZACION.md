@@ -7123,3 +7123,109 @@ porque el patrón de reconstrucción de §10-CC sirve igual para "farmacias sin 
 `EventoEnlaceFarmacia`) y "alertas sin reconocer" (desde `abierta_en`/`reconocida_en`/
 `resuelta_en`); y **G** (histórico de eventos de Windows), que sigue sin recomendarse porque
 exige modelo nuevo y tocar el agente, y la aproximación mentiría un 42 %.
+
+
+## §10-CE — Estaciones vivas y sordas: el agujero que el panel no veía (14-oct-2026)
+
+Una estación puede estar conectada al broker, latiendo cada minuto, verde en el tablero, y
+**no recibir ninguna orden**. Ni la actualización del agente, ni un script, ni un despliegue de
+POS, ni la pausa de emergencia. Publica y no escucha. Hasta hoy ninguna pantalla distinguía ese
+caso de una estación sana.
+
+### Cómo apareció
+
+Investigando por qué el rollout del agente 0.33 llevaba semanas estancado en ~37 %. Se lanzó a
+45 estaciones: 16 aplicaron en minutos y cuatro recibieron la orden y nunca la ejecutaron.
+Tenían credencial propia, ACL correcta con `allow all` sobre sus tópicos, latido fresco… y
+**cero suscripciones** en EMQX:
+
+```
+MC003-ADM   conectada   8 suscripciones  -> se actualizó
+MCU01-ADM   conectada   0 suscripciones  -> sorda
+GSD11-A     conectada   0 suscripciones  -> sorda
+ML002-A     conectada   0 suscripciones  -> sorda
+ML006-A     conectada   0 suscripciones  -> sorda
+```
+
+La sesión MQTT es `clean_start=true`, así que el agente debe resuscribirse en cada reconexión;
+si eso falla, queda conectado y sordo. Reiniciar el servicio lo arregla —y la orden retenida le
+llega sola—, pero el problema real era que **nadie podía saber que estaba pasando**.
+
+### Dónde encaja
+
+En la Zona 0, que ya tenía el hueco declarado: el broker MQTT aparece ahí en gris con la palabra
+"sin verificar" porque no había mecanismo de comprobación, y la regla escrita de esa zona es que
+**ningún componente sin mecanismo se pinta de verde**. Esto es ese mecanismo para una de sus
+preguntas.
+
+`apps.mqtt_worker.emqx_admin.estaciones_sin_suscripciones` consulta la API de EMQX y devuelve
+los códigos de las estaciones conectadas sin suscripciones, o **`None` si no se pudo preguntar**
+— que no es lo mismo que "ninguna", y hay una prueba dedicada a esa distinción.
+
+**Una llamada HTTP, 18 ms medidos** contra el EMQX real, con `fields` para recortar la respuesta
+y `limit` alto para no paginar. Timeout de 3 s y fallo suave: una pantalla que se cuelga
+esperando a un servicio auxiliar es peor que una que dice "no pude comprobarlo". Si algún día la
+respuesta viene paginada, se avisa en el log en vez de devolver un número incompleto en
+silencio.
+
+El código de estación se resuelve **por sufijo** contra los códigos conocidos, no partiendo el
+`clientid`: el agente se conecta como `<nombre-agente>-<CÓDIGO>`, los códigos llevan guion
+adentro, y el prefijo depende de cómo se llame el agente mañana.
+
+### El título lleva lo accionable
+
+La señal dice cuántas son, y su `title` los códigos concretos. Con eso se sabe a cuál reiniciarle
+el agente, que es el arreglo.
+
+### Un defecto latente en las pruebas de la Fase D, corregido
+
+Al ejecutar la regresión aparecieron tres errores en `SerieDisponibilidad24hTests`, que el día
+anterior pasaban:
+
+```
+IntegrityError: new row for relation "_hyper_6_1_chunk" violates check constraint "constraint_1"
+```
+
+El helper creaba el evento y después corregía su `timestamp` con un `update()`. En un hypertable
+eso intenta **mover la fila a otro chunk**, y revienta en cuanto las dos fechas caen en semanas
+distintas — funcionó el 13 y falló solo al cambiar el día.
+
+El modelo ya lo anticipaba: `EventoMonitoreo.timestamp` usa `default=` y no `auto_now_add`
+*"por el hypertable"*, justamente para poder fijarlo al crear. Ahora la prueba lo hace así y
+lleva el motivo escrito, para que no vuelva por el camino de `Alerta` —que sí necesita el update,
+porque ahí `abierta_en` sí es `auto_now_add`—.
+
+### Archivos
+
+| Archivo | Qué |
+|---|---|
+| `apps/mqtt_worker/emqx_admin.py` | `estaciones_sin_suscripciones`, `TIMEOUT_CONSULTA_SEGUNDOS` |
+| `apps/panel/views/dashboard.py` | la señal al contexto (427 → 449 líneas, límite 550) |
+| `templates/panel/dashboard_vivo_partial.html` | décima señal de la franja de salud |
+| `apps/panel/tests.py` | `EstacionesSinSuscripcionesTests` (10), y el helper de la Fase D corregido |
+
+### Pruebas
+
+Detecta la conectada sin suscripciones; una desconectada **no** cuenta —eso es estar apagado, no
+sordo, y el tablero ya lo cuenta en "sin reportar"—; ignora clientes que no son estaciones (el
+worker, el panel); resuelve el código por sufijo aunque cambie el nombre del agente; **devuelve
+`None` y no lista vacía cuando no se puede preguntar**, y sin configuración de EMQX también; el
+tablero avisa con el número concordado y muestra los códigos; dice "todas escuchan" cuando no
+hay ninguna; y **"no se pudo comprobar" no se pinta de verde**.
+
+| Qué se ejecutó | Resultado |
+|---|---|
+| `EstacionesSinSuscripcionesTests` | 10 pruebas, OK |
+| Regresión del tablero (10 clases) | 90 pruebas, OK |
+| `apps.mqtt_worker` completa | 159 pruebas, OK |
+| `manage.py check` | `no issues (1 silenced)` |
+| `makemigrations --check --dry-run` | `No changes detected` |
+| **Suite completa** | **`Ran 2594 tests in 1365.680s` · `OK`** |
+
+### Lo que queda
+
+- **Reiniciar el agente en las sordas** es el arreglo, pero la causa de que se queden así no se
+  investigó: por qué falla la resuscripción tras una reconexión. El indicador las hace visibles;
+  arreglar el agente para que no ocurra es otro trabajo.
+- Si el número crece, el siguiente paso natural es que el agente **reporte sus suscripciones** en
+  el latido, y así no haría falta preguntarle a EMQX desde el tablero.

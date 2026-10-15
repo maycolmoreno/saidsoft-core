@@ -112,6 +112,36 @@ porque que falte esa comprobación es información útil — no un detalle a esc
         admin de Django, y son la prueba directa de "recibe pero no procesa" — el estado que
         el latido del worker no puede distinguir.
         {% endcomment %}
+        {% comment %}
+        Estaciones conectadas que NO escuchan. Publican su latido —así que esta misma
+        pantalla las cuenta en línea y las pinta verdes— pero no reciben la actualización
+        del agente, ni un script, ni un despliegue, ni la pausa de emergencia.
+
+        Apareció el 13-oct-2026: cuatro estaciones llevaban semanas sin aplicar el rollout
+        del agente, con credencial propia, ACL correcta y cero suscripciones. La sesión
+        MQTT es `clean_start=true`, así que el agente se resuscribe en cada reconexión y,
+        si eso falla, queda vivo y sordo.
+
+        `sin_dato` cuando no se pudo preguntar a EMQX, y NO verde: es la regla de esta
+        zona — un componente sin comprobación no se pinta de sano.
+        {% endcomment %}
+        <div class="salud-senal">
+            <div class="salud-senal-top">
+                {% if total_sordas is None %}
+                    {% include "panel/_estado_chip.html" with estado="sin_dato" solo_icono=True %}
+                {% elif total_sordas %}
+                    {% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}
+                {% else %}
+                    {% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}
+                {% endif %}
+                <span class="salud-senal-nombre">Estaciones sin escuchar</span>
+            </div>
+            <span class="salud-senal-detalle"
+                  title="{% if total_sordas %}{{ estaciones_sordas|join:', ' }} — conectadas al broker pero sin ninguna suscripción: no reciben comandos. Reiniciar el servicio del agente las vuelve a suscribir.{% else %}Conectadas al broker pero sin suscripciones: publican su latido y no reciben ninguna orden.{% endif %}">
+                {% if total_sordas is None %}no se pudo comprobar{% elif total_sordas %}{{ total_sordas }} no recibe{{ total_sordas|pluralize:"n" }} órdenes{% else %}todas escuchan{% endif %}
+            </span>
+        </div>
+
         <div class="salud-senal">
             <div class="salud-senal-top">
                 {% if mqtt_fallidos %}

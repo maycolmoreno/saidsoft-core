@@ -10457,13 +10457,21 @@ class SerieDisponibilidad24hTests(TestCase):
         )
 
     def _transicion(self, estacion, en_linea, hace_horas, fuente=None):
+        """El `timestamp` se pasa al CREAR, no se corrige después con un `update`.
+
+        `evento_monitoreo` es un hypertable y mover una fila a otro chunk viola el check
+        constraint del chunk que la contiene (`_hyper_N_M_chunk`) — un `create` + `update`
+        revienta en cuanto las dos fechas caen en semanas distintas, que es como esta
+        prueba empezó a fallar sola al cambiar el día.
+
+        El modelo ya lo anticipa: `timestamp` usa `default=` y no `auto_now_add`
+        justamente para poder fijarlo al crear (ver el comentario en `MuestraMetrica`).
+        """
         from apps.monitoreo.models import EstadoDispositivo, EventoMonitoreo
 
-        ev = EventoMonitoreo.objects.create(
-            estacion=estacion, fuente=fuente or EstadoDispositivo.Fuente.MQTT, en_linea=en_linea)
-        EventoMonitoreo.objects.filter(pk=ev.pk).update(
-            timestamp=self.ahora - timedelta(hours=hace_horas))
-        return ev
+        return EventoMonitoreo.objects.create(
+            estacion=estacion, fuente=fuente or EstadoDispositivo.Fuente.MQTT,
+            en_linea=en_linea, timestamp=self.ahora - timedelta(hours=hace_horas))
 
     def _serie(self, unidades=None):
         from apps.monitoreo.series import serie_disponibilidad
@@ -10714,3 +10722,142 @@ class MosaicoDeFarmaciasTests(TestCase):
         self.assertEqual(self._mosaico(), [])
         resp = self.client.get(reverse('panel:dashboard'))
         self.assertNotContains(resp, 'Estado por farmacia')
+
+
+class EstacionesSinSuscripcionesTests(TestCase):
+    """Estaciones conectadas al broker que no escuchan nada.
+
+    El caso que esto detecta apareció el 13-oct-2026: cuatro estaciones llevaban semanas
+    sin aplicar el rollout del agente. Tenían credencial propia, ACL correcta con `allow
+    all` sobre sus tópicos, latido fresco —el panel las pintaba verdes— y **cero
+    suscripciones**. Publicaban y no recibían: ni la actualización, ni un script, ni un
+    despliegue, ni la pausa de emergencia.
+
+    Lo que estas pruebas fijan, sobre todo: que "no se pudo preguntar" NO se confunda con
+    "ninguna", que es la regla que gobierna toda la Zona 0.
+    """
+
+    CONFIG = {'URL': 'http://emqx:18083/api/v5', 'API_KEY': 'k', 'API_SECRET': 's'}
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRXSOR')
+        farmacia = Farmacia.objects.create(codigo='SO001', grupo=grupo, unidad_negocio=self.sg)
+        for codigo in ('SO001-A', 'SO001-B'):
+            Estacion.objects.create(
+                codigo=codigo, farmacia=farmacia,
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+                ultimo_heartbeat=timezone.now())
+        self.codigos = ['SO001-A', 'SO001-B']
+
+        self.usuario = User.objects.create_user(username='u_sordas', password='x')
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def _respuesta(self, clientes, hasnext=False):
+        """Un stub de lo que devuelve la API de EMQX, con su context manager."""
+        import json
+        from contextlib import contextmanager
+
+        cuerpo = json.dumps({'data': clientes, 'meta': {'hasnext': hasnext}}).encode()
+
+        @contextmanager
+        def falso_urlopen(req, timeout=None):
+            class R:
+                def read(self):
+                    return cuerpo
+            yield R()
+
+        return falso_urlopen
+
+    def _consultar(self, clientes, **kwargs):
+        from unittest.mock import patch
+
+        from apps.mqtt_worker import emqx_admin
+
+        with override_settings(EMQX_ADMIN_CONFIG=self.CONFIG):
+            with patch.object(emqx_admin.urllib.request, 'urlopen',
+                              self._respuesta(clientes, **kwargs)):
+                return emqx_admin.estaciones_sin_suscripciones(self.codigos)
+
+    def test_detecta_la_conectada_sin_suscripciones(self):
+        sordas = self._consultar([
+            {'clientid': 'agente-prueba-SO001-A', 'connected': True, 'subscriptions_cnt': 0},
+            {'clientid': 'agente-prueba-SO001-B', 'connected': True, 'subscriptions_cnt': 8},
+        ])
+        self.assertEqual(sordas, ['SO001-A'])
+
+    def test_una_desconectada_no_cuenta(self):
+        """Sin conexión no hay suscripciones, y eso no es estar sordo: es estar apagado,
+        que el tablero ya cuenta en 'sin reportar'."""
+        sordas = self._consultar([
+            {'clientid': 'agente-prueba-SO001-A', 'connected': False, 'subscriptions_cnt': 0},
+        ])
+        self.assertEqual(sordas, [])
+
+    def test_ignora_clientes_que_no_son_estaciones(self):
+        """El worker y el panel también se conectan al broker."""
+        sordas = self._consultar([
+            {'clientid': 'saidsoft-worker', 'connected': True, 'subscriptions_cnt': 0},
+            {'clientid': 'panel-publicador', 'connected': True, 'subscriptions_cnt': 0},
+        ])
+        self.assertEqual(sordas, [])
+
+    def test_resuelve_el_codigo_por_sufijo_y_no_partiendo_el_clientid(self):
+        """Los códigos llevan guion adentro (ML001-A) y el prefijo depende de cómo se
+        llame el agente, así que partir la cadena sería frágil."""
+        sordas = self._consultar([
+            {'clientid': 'otro-nombre-de-agente-SO001-B', 'connected': True, 'subscriptions_cnt': 0},
+        ])
+        self.assertEqual(sordas, ['SO001-B'])
+
+    def test_si_no_se_puede_preguntar_devuelve_None_y_no_lista_vacia(self):
+        """La distinción que importa: "no lo sé" no es "no hay ninguna". Pintar de verde
+        algo que no se comprobó es justo lo que la Zona 0 existe para evitar."""
+        from unittest.mock import patch
+
+        from apps.mqtt_worker import emqx_admin
+
+        def explota(req, timeout=None):
+            raise OSError('timeout')
+
+        with override_settings(EMQX_ADMIN_CONFIG=self.CONFIG):
+            with patch.object(emqx_admin.urllib.request, 'urlopen', explota):
+                self.assertIsNone(emqx_admin.estaciones_sin_suscripciones(self.codigos))
+
+    def test_sin_configuracion_de_emqx_devuelve_None(self):
+        from apps.mqtt_worker import emqx_admin
+
+        with override_settings(EMQX_ADMIN_CONFIG={}):
+            self.assertIsNone(emqx_admin.estaciones_sin_suscripciones(self.codigos))
+
+    def _tablero(self, valor):
+        from unittest.mock import patch
+
+        with patch('apps.panel.views.dashboard.estaciones_sin_suscripciones', return_value=valor):
+            return self.client.get(reverse('panel:dashboard'))
+
+    def test_el_tablero_avisa_cuando_hay_sordas(self):
+        resp = self._tablero(['SO001-A'])
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['total_sordas'], 1)
+        self.assertContains(resp, 'Estaciones sin escuchar')
+        self.assertContains(resp, '1 no recibe órdenes')
+        # Y el código de la estación va en el title, que es lo accionable: con eso se
+        # sabe a cuál reiniciarle el agente.
+        self.assertContains(resp, 'SO001-A')
+
+    def test_el_aviso_concuerda_en_numero(self):
+        self.assertContains(self._tablero(['SO001-A', 'SO001-B']), '2 no reciben órdenes')
+
+    def test_el_tablero_dice_que_todas_escuchan_cuando_no_hay_ninguna(self):
+        resp = self._tablero([])
+        self.assertEqual(resp.context['total_sordas'], 0)
+        self.assertContains(resp, 'todas escuchan')
+
+    def test_no_se_pudo_comprobar_no_se_pinta_de_verde(self):
+        """La regla de la Zona 0, aplicada a esta señal."""
+        resp = self._tablero(None)
+        self.assertIsNone(resp.context['total_sordas'])
+        self.assertContains(resp, 'no se pudo comprobar')
+        self.assertNotContains(resp, 'todas escuchan')

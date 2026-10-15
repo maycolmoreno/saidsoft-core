@@ -295,3 +295,83 @@ def aprovisionar_credencial_estacion(estacion) -> tuple[str, str] | None:
         return None
 
     return username, password
+
+
+
+# --- Estaciones conectadas que no escuchan nada ------------------------------------
+
+# Cuánto se espera a EMQX antes de rendirse. Corto a propósito: esto lo consulta el
+# tablero en cada refresco, y una pantalla que se cuelga esperando a un servicio auxiliar
+# es peor que una que dice "no pude comprobarlo". Medido el 13-oct-2026 contra el EMQX
+# real: 18 ms para los 31 clientes conectados, en una sola llamada y sin paginar.
+TIMEOUT_CONSULTA_SEGUNDOS = 3
+
+
+def estaciones_sin_suscripciones(codigos_conocidos) -> list[str] | None:
+    """Las estaciones conectadas al broker que NO tienen ninguna suscripción.
+
+    Por qué importa, y por qué no se veía: una estación así **publica** su latido —así que
+    el panel la pinta en línea, fresca y verde— pero no **recibe** nada. Ni la
+    actualización del agente, ni un script, ni un despliegue de POS, ni la pausa de
+    emergencia. Está viva y sorda, y hasta ahora ninguna pantalla distinguía ese caso de
+    una estación sana.
+
+    Apareció el 13-oct-2026 investigando por qué el rollout del agente llevaba semanas
+    estancado: cuatro estaciones recibían la orden y nunca la aplicaban. Tenían credencial
+    propia, ACL correcta con `allow all` sobre sus tópicos, y cero suscripciones. La sesión
+    MQTT es `clean_start=true`, así que el agente debe resuscribirse en cada reconexión, y
+    si eso falla queda conectado sin escuchar.
+
+    Devuelve los CÓDIGOS de estación, o **None si no se pudo preguntar** — que no es lo
+    mismo que "ninguna". El llamador tiene que distinguirlos: pintar de verde un dato que
+    no se pudo comprobar es justo lo que la Zona 0 del tablero existe para evitar.
+
+    `codigos_conocidos` es el conjunto de códigos de estación contra el que se resuelve el
+    `clientid`. El agente se conecta como `<nombre-agente>-<CÓDIGO>` (hoy
+    `agente-prueba-ML001-A`), y los códigos llevan guion adentro, así que partir la cadena
+    sería frágil: se compara por sufijo contra lo que ya se conoce, que no depende de cómo
+    se llame el agente mañana.
+
+    **Una sola consulta HTTP.** `fields` recorta la respuesta a lo imprescindible y
+    `limit` se pide alto para no paginar: a 1.800 estaciones habría que paginar, y por eso
+    se avisa en el log en vez de devolver un número incompleto en silencio.
+    """
+    cfg = _config()
+    if cfg is None:
+        return None
+    url_base, api_key, api_secret = cfg
+
+    credenciales = base64.b64encode(f'{api_key}:{api_secret}'.encode('utf-8')).decode('ascii')
+    req = urllib.request.Request(
+        f'{url_base}/clients?limit=1000&fields=clientid,connected,subscriptions_cnt',
+        headers={'Authorization': f'Basic {credenciales}'},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_CONSULTA_SEGUNDOS) as resp:
+            datos = json.loads(resp.read().decode('utf-8'))
+    except Exception as exc:
+        # Sin ruido de traceback: esto corre en cada refresco del tablero y un EMQX que
+        # tarda no es un error del panel. El llamador lo muestra como "sin verificar".
+        logger.warning('EMQX: no se pudo consultar las suscripciones de los clientes: %s', exc)
+        return None
+
+    if datos.get('meta', {}).get('hasnext'):
+        logger.warning(
+            'EMQX: la lista de clientes viene paginada — el conteo de estaciones sin '
+            'suscripciones está incompleto. Hay que paginar esta consulta.',
+        )
+
+    por_sufijo = {}
+    for codigo in codigos_conocidos:
+        por_sufijo[str(codigo).upper()] = codigo
+
+    sordas = []
+    for fila in datos.get('data', []):
+        if not fila.get('connected') or fila.get('subscriptions_cnt'):
+            continue
+        clientid = str(fila.get('clientid') or '').upper()
+        for sufijo, codigo in por_sufijo.items():
+            if clientid.endswith(sufijo):
+                sordas.append(codigo)
+                break
+    return sorted(sordas)

@@ -31,6 +31,7 @@ from apps.monitoreo.umbrales import ONLINE_UMBRAL_MINUTOS
 # el dominio (apps.monitoreo.salud) y acá solo se lee el resultado. Es la misma direccion,
 # un paso mas: el panel no decide que es "sano".
 from apps.mqtt_worker.management.commands.registrar_latido import NOMBRE_RESPALDO
+from apps.mqtt_worker.emqx_admin import estaciones_sin_suscripciones
 from apps.mqtt_worker.models import EnrolamientoRechazado, MensajeMqttFallido
 from apps.mqtt_worker.services import NOMBRE_WORKER_MQTT
 
@@ -259,6 +260,25 @@ def _contexto_vivo(request):
     # el worker y solo se podía mirar desde el admin de Django (hallazgo D-11): es la
     # prueba directa de "recibe pero no procesa", que es justo lo que el latido no dice.
     mqtt_fallidos = MensajeMqttFallido.objects.filter(revisado=False).count()
+
+    # Estaciones conectadas al broker que NO escuchan nada. Publican su latido —así que
+    # esta misma pantalla las pinta en línea y verdes— pero no reciben la actualización
+    # del agente, ni un script, ni un despliegue, ni la pausa de emergencia.
+    #
+    # Apareció el 13-oct-2026 investigando por qué el rollout del agente llevaba semanas
+    # estancado: cuatro estaciones recibían la orden y nunca la aplicaban, con credencial
+    # propia, ACL correcta y cero suscripciones. La sesión es `clean_start=true`, así que
+    # el agente debe resuscribirse en cada reconexión y, si eso falla, queda sordo.
+    #
+    # Sin tenant, como el resto de la Zona 0: es salud de la plataforma. Una consulta a
+    # EMQX de 18 ms (medido) con timeout corto; si no se puede preguntar devuelve None y
+    # la franja lo dice, que es la regla de esta zona — nada se pinta de verde sin
+    # comprobarlo.
+    estaciones_sordas = estaciones_sin_suscripciones(
+        Estacion.objects
+        .filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+        .values_list('codigo', flat=True)
+    )
     # Agentes que intentaron enrolarse con un código cuyo sitio no existe. La pantalla que
     # los lista existe desde el 27-sep-2026 y NINGUNA plantilla la enlazaba (hallazgo
     # D-10): para llegar había que escribir la URL a mano. Es el caso de "se instaló el
@@ -290,6 +310,8 @@ def _contexto_vivo(request):
         'ultimo_latido_flota': ultimo_latido_flota,
         'latido_flota_vencido': fuente_desactualizada(ultimo_latido_flota, 'estaciones'),
         'mqtt_fallidos': mqtt_fallidos,
+        'estaciones_sordas': estaciones_sordas,
+        'total_sordas': len(estaciones_sordas) if estaciones_sordas is not None else None,
         'enrolamientos_rechazados': enrolamientos_rechazados,
         'ultimo_sondeo_enlaces': ultimo_sondeo_enlaces,
         'sondeo_enlaces_vencido': fuente_desactualizada(ultimo_sondeo_enlaces, 'enlaces'),
