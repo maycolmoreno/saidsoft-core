@@ -233,6 +233,12 @@ BITLOCKER_ENCRYPTION_KEY = env('BITLOCKER_ENCRYPTION_KEY')
 # (equivalente a GET_DOMAIN_FILE del sistema anterior)
 ARCHIVOS_BASE_URL = env('ARCHIVOS_BASE_URL', default='http://localhost:8000')
 
+# Clave del usuario MQTT compartido de enrolamiento. Solo la usa el enlace de un solo uso
+# del instalador (apps.catalogo.instalador) para armar Instalar-Saidsoft.ps1 al momento
+# de la descarga. Vacía = el panel no ofrece el enlace. No es una escalada para `web`: ya
+# tiene la API de administración de EMQX, que puede mucho más que esta credencial.
+MQTT_PASSWORD_AGENTE = env('MQTT_PASSWORD_AGENTE', default='')
+
 # Si los archivos protegidos (fotos e informes de mantenimiento) los entrega nginx
 # via X-Accel-Redirect en vez de Django. False acá para que runserver y las pruebas
 # funcionen sin proxy delante; produccion.py lo pone en True.

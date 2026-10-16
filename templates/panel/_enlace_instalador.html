@@ -1,0 +1,23 @@
+{% comment %}
+Resultado de pedir un enlace de instalador (apps/panel/views/instalador.py). El token solo
+existe en esta respuesta: no se guarda en claro y no se puede volver a mostrar.
+{% endcomment %}
+{% if error %}
+<div class="text-sm" style="color:var(--critical);">{{ error }}</div>
+{% else %}
+<div class="text-sm space-y-3">
+    <p>Vale <strong>una sola vez</strong> y vence a las <strong>{{ enlace.expira_en|time:"H:i" }}</strong> ({{ minutos }} min). Pega UNO de estos dos en <strong>PowerShell</strong> en la estación:</p>
+    <div>
+        <div class="text-xs text-[var(--text-faint)] mb-1">Sentado en la estación (instala también MeshCentral):</div>
+        <code class="text-sm mono px-3 py-2 rounded-md block" style="background:var(--bg);border:1px solid var(--border-soft);word-break:break-all;">cd $env:TEMP; curl.exe -k -fsS -o Instalar-Saidsoft.ps1 "{{ url }}"; if ($?) { powershell -ExecutionPolicy Bypass -File .\Instalar-Saidsoft.ps1 }</code>
+    </div>
+    <div>
+        <div class="text-xs text-[var(--text-faint)] mb-1">Desde la terminal de MeshCentral (no reinstala el agente que te mantiene conectado):</div>
+        <code class="text-sm mono px-3 py-2 rounded-md block" style="background:var(--bg);border:1px solid var(--border-soft);word-break:break-all;">cd $env:TEMP; curl.exe -k -fsS -o Instalar-Saidsoft.ps1 "{{ url }}"; if ($?) { powershell -ExecutionPolicy Bypass -File .\Instalar-Saidsoft.ps1 -SinMeshCentral }</code>
+    </div>
+    <p class="text-xs text-[var(--text-faint)]">
+        El instalador se borra solo al terminar. Si el nombre del equipo no sigue FARMACIA-SUFIJO, agrega <code>-Codigo ML001-A</code> después de <code>.ps1</code>.
+        Para otra estación, pide otro enlace.
+    </p>
+</div>
+{% endif %}

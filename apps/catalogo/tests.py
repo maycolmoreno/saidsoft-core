@@ -3801,7 +3801,7 @@ class InstaladorSeAutoelevaTests(SimpleTestCase):
     """
 
     def _plantilla(self):
-        from apps.catalogo.management.commands.generar_script_instalacion import PLANTILLA
+        from apps.catalogo.instalador import PLANTILLA
 
         return PLANTILLA.format(
             url_paquete='http://x/p.zip', central_host='10.0.0.1', mqtt_puerto=8081,

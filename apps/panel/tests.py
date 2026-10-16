@@ -10861,3 +10861,123 @@ class EstacionesSinSuscripcionesTests(TestCase):
         self.assertIsNone(resp.context['total_sordas'])
         self.assertContains(resp, 'no se pudo comprobar')
         self.assertNotContains(resp, 'todas escuchan')
+
+
+@override_settings(MQTT_PASSWORD_AGENTE='clave-de-prueba',
+                   CSRF_TRUSTED_ORIGINS=['http://otro', 'https://10.9.9.9:8084'])
+class EnlaceInstaladorTests(TestCase):
+    """El enlace de un solo uso para bajar Instalar-Saidsoft.ps1 desde la estación (§10-CG).
+
+    El script lleva la clave MQTT compartida. Lo que estas pruebas fijan es que el enlace
+    sea lo único que lo entrega, y solo una vez: un enlace reusable o que no vence sería lo
+    mismo que publicarlo en /media/, que es justo lo que esto vino a evitar.
+    """
+
+    def setUp(self):
+        creador = User.objects.create_user(username='creador_inst', password='x')
+        VersionAgente.objects.create(
+            version='agente-prueba-0.34', ejecutable=SimpleUploadedFile('agente.exe', b'MZ'),
+            creado_por=creador,
+        )
+        self.operador = User.objects.create_user(username='operador_inst', password='x')
+        self.operador.user_permissions.add(
+            Permission.objects.get(codename='aprobar_estacion'),
+            Permission.objects.get(codename='view_estacion'),
+        )
+        PerfilUsuario.objects.create(usuario=self.operador, acceso_todas_unidades=True)
+        self.client.force_login(self.operador)
+
+    def _emitir(self):
+        resp = self.client.post(reverse('panel:instalador_enlace_emitir'))
+        self.assertEqual(resp.status_code, 200)
+        url = re.search(r'curl\.exe .*?"(https://[^"]+)"', resp.content.decode()).group(1)
+        return url
+
+    def _bajar(self, url):
+        from django.test import Client
+
+        # Otro cliente, sin sesión: así lo baja curl.exe desde la estación.
+        return Client().get(url.split(':8084', 1)[1])
+
+    def test_el_enlace_apunta_al_panel_https_con_su_puerto(self):
+        """nginx reenvía Host sin el puerto: armarlo desde el request daría el 443."""
+        self.assertTrue(self._emitir().startswith('https://10.9.9.9:8084/instalador/'))
+
+    def test_entrega_el_script_con_la_clave_sin_pedir_login(self):
+        resp = self._bajar(self._emitir())
+        self.assertEqual(resp.status_code, 200)
+        cuerpo = resp.content.decode('utf-8-sig')
+        self.assertIn("-MqttPassword 'clave-de-prueba'", cuerpo)
+        self.assertIn('Instalar-Saidsoft.ps1', resp['Content-Disposition'])
+        self.assertIn('no-store', resp['Cache-Control'])
+
+    def test_lleva_bom_para_powershell_5(self):
+        """Sin BOM, PowerShell 5.1 lee el .ps1 como ANSI y rompe los acentos."""
+        self.assertTrue(self._bajar(self._emitir()).content.startswith(b'\xef\xbb\xbf'))
+
+    def test_sirve_una_sola_vez(self):
+        url = self._emitir()
+        self.assertEqual(self._bajar(url).status_code, 200)
+        segunda = self._bajar(url)
+        self.assertEqual(segunda.status_code, 410)
+        self.assertNotIn(b'clave-de-prueba', segunda.content)
+
+    def test_vence(self):
+        from apps.catalogo.models import EnlaceInstalador
+
+        url = self._emitir()
+        EnlaceInstalador.objects.update(expira_en=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(self._bajar(url).status_code, 410)
+
+    def test_un_token_inventado_no_entrega_nada(self):
+        resp = self.client.get(reverse('panel:instalador_descargar', args=['inventado']))
+        self.assertEqual(resp.status_code, 410)
+        self.assertNotIn(b'clave-de-prueba', resp.content)
+
+    def test_no_guarda_el_token_en_claro(self):
+        from apps.catalogo.models import EnlaceInstalador
+
+        token = self._emitir().rstrip('/').rsplit('/', 1)[1]
+        enlace = EnlaceInstalador.objects.get()
+        self.assertNotEqual(enlace.token_hash, token)
+        self.assertEqual(enlace.prefijo, token[:8])
+
+    def test_registra_quien_lo_pidio_y_desde_donde_se_bajo(self):
+        from apps.catalogo.models import EnlaceInstalador
+
+        self._bajar(self._emitir())
+        enlace = EnlaceInstalador.objects.get()
+        self.assertEqual(enlace.creado_por, self.operador)
+        self.assertIsNotNone(enlace.usado_en)
+        self.assertEqual(enlace.ip_uso, '127.0.0.1')
+        acciones = set(EventoAuditoria.objects.values_list('accion', flat=True))
+        self.assertTrue({'instalador.emitir', 'instalador.descargar'} <= acciones)
+
+    def test_sin_permiso_no_se_emite(self):
+        otro = User.objects.create_user(username='sin_perm_inst', password='x')
+        PerfilUsuario.objects.create(usuario=otro, acceso_todas_unidades=True)
+        self.client.force_login(otro)
+        self.assertEqual(self.client.post(reverse('panel:instalador_enlace_emitir')).status_code, 403)
+
+    def test_sin_clave_en_el_servidor_no_emite_ni_gasta_enlaces(self):
+        from apps.catalogo.models import EnlaceInstalador
+
+        url = self._emitir()
+        with override_settings(MQTT_PASSWORD_AGENTE=''):
+            resp = self.client.post(reverse('panel:instalador_enlace_emitir'))
+            self.assertContains(resp, 'MQTT_PASSWORD_AGENTE')
+            self.assertEqual(self._bajar(url).status_code, 503)
+        # El enlace que ya estaba emitido sigue sirviendo cuando vuelve la clave.
+        self.assertEqual(EnlaceInstalador.objects.count(), 1)
+        self.assertEqual(self._bajar(url).status_code, 200)
+
+    def test_la_pagina_de_estaciones_ofrece_el_boton_solo_con_permiso(self):
+        self.assertContains(self.client.get(reverse('panel:estaciones_lista')), 'Instalar estación nueva')
+        otro = User.objects.create_user(username='solo_ver_inst', password='x')
+        otro.user_permissions.add(Permission.objects.get(codename='view_estacion'))
+        PerfilUsuario.objects.create(usuario=otro, acceso_todas_unidades=True)
+        self.client.force_login(otro)
+        self.assertNotContains(self.client.get(reverse('panel:estaciones_lista')), 'Instalar estación nueva')
+
+    def test_el_script_se_borra_solo_al_terminar(self):
+        self.assertIn('Remove-Item -LiteralPath $PSCommandPath', self._bajar(self._emitir()).content.decode('utf-8-sig'))

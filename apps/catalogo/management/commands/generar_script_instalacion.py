@@ -34,139 +34,8 @@ import os
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.catalogo.instalador import generar_script
 from apps.catalogo.models import VersionAgente
-
-PLANTILLA = r'''# Instalador de estación SAIDSOFT — generado por `manage.py generar_script_instalacion`.
-#
-# CONTIENE UN SECRETO (MqttPassword). No lo subas al repo, a /media/ ni a un chat
-# abierto: se entrega a cada técnico por un canal privado y se borra al terminar.
-#
-# Uso, en PowerShell en la estación (NO hace falta abrirlo como Administrador: si no
-# lo está, se reabre solo y Windows pide la clave):
-#     .\Instalar-Saidsoft.ps1
-#     .\Instalar-Saidsoft.ps1 -Codigo ML123-A     # si el hostname no sigue FARMACIA-SUFIJO
-#
-# El código de estación sale del hostname, que tiene que respetar FARMACIA-SUFIJO
-# (ej. ML001-A). Si no lo respeta, pasalo con -Codigo: este script NO renombra el equipo.
-
-param(
-    [string]$Codigo = $env:COMPUTERNAME,
-    [switch]$SinMeshCentral
-)
-
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
-# --- 0. Autoelevacion -----------------------------------------------------------
-# Antes esto cortaba con "Hay que correr esto como Administrador" y el tecnico tenia
-# que cerrar, buscar PowerShell, abrirlo elevado y volver a navegar hasta la carpeta.
-# En una farmacia, con la caja ocupada, ese rebote es donde se abandona la instalacion.
-# Mismo patron que Instalar.bat, que se autoeleva desde el 6-ago-2026.
-if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
-        ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{
-    Write-Host 'Se necesitan permisos de administrador, reabriendo...' -ForegroundColor Yellow
-
-    # $PSCommandPath y no $MyInvocation: con -File el segundo puede venir vacio.
-    $argumentos = @(
-        '-NoProfile',
-        # La politica por defecto (RemoteSigned) bloquea un .ps1 que vino por descarga o
-        # por OneDrive, que es exactamente como le llega al tecnico. Sin esto la ventana
-        # elevada se abre y muere con "no esta firmado digitalmente".
-        '-ExecutionPolicy', 'Bypass',
-        # -NoExit deja la ventana abierta al terminar. Es lo unico que permite leer si
-        # el servicio quedo corriendo: sin esto la consola se cierra sola y el tecnico
-        # no ve ni el OK ni el error.
-        '-NoExit',
-        '-File', ('"{{0}}"' -f $PSCommandPath)
-    )
-    # Las comillas van SIEMPRE, no solo si hay espacios: la ruta real del tecnico suele
-    # ser "...\OneDrive - EMPRESA\Escritorio\Nueva carpeta (4)", con espacios Y
-    # parentesis, y sin comillas PowerShell parte el argumento en pedazos.
-    if ($Codigo -ne $env:COMPUTERNAME) {{ $argumentos += @('-Codigo', ('"{{0}}"' -f $Codigo)) }}
-    if ($SinMeshCentral) {{ $argumentos += '-SinMeshCentral' }}
-
-    try {{
-        Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentos -Verb RunAs
-    }} catch {{
-        # Cancelar el aviso de Windows tira una excepcion cruda que no dice nada util.
-        throw "Se cancelo el permiso de administrador. Volve a correrlo y acepta el aviso de Windows."
-    }}
-    exit
-}}
-
-if ($Codigo -notmatch '^[A-Z0-9]+-[A-Z0-9]+$') {{
-    throw "El codigo '$Codigo' no respeta FARMACIA-SUFIJO (ej. ML001-A). Pasalo con -Codigo."
-}}
-
-$carpeta = 'C:\Instalador-Saidsoft'
-Write-Host "== Estacion $Codigo ==" -ForegroundColor Cyan
-
-# --- 1. Paquete del agente -------------------------------------------------------
-New-Item -ItemType Directory -Force -Path $carpeta | Out-Null
-Set-Location $carpeta
-Write-Host '[1/4] Descargando el paquete...'
-curl.exe -sS -o agente-instalador.zip '{url_paquete}'
-if (-not (Test-Path 'agente-instalador.zip')) {{ throw "No se pudo descargar el paquete." }}
-Remove-Item 'Saidsoft.Agente.exe','instalar-servicio.ps1','cert.pem' -ErrorAction SilentlyContinue
-tar -xf agente-instalador.zip
-foreach ($f in @('Saidsoft.Agente.exe','instalar-servicio.ps1','cert.pem')) {{
-    if (-not (Test-Path $f)) {{ throw "El paquete no trajo $f." }}
-}}
-
-# --- 2. Instalar el servicio -----------------------------------------------------
-# La clave va por parametro, no por config.txt: asi no queda un archivo con el secreto
-# en disco mas tiempo del necesario. instalar-servicio.ps1 escribe el config.json final.
-Write-Host '[2/4] Instalando el servicio SaidsoftAgente...'
-& .\instalar-servicio.ps1 `
-    -PublishFolder $carpeta `
-    -CentralHost '{central_host}' `
-    -MqttPuerto {mqtt_puerto} `
-    -MqttPassword '{mqtt_password}' `
-    -CaCertPath (Join-Path $carpeta 'cert.pem') `
-    -Codigo $Codigo
-
-# --- 3. MeshCentral --------------------------------------------------------------
-if ($SinMeshCentral) {{
-    Write-Host '[3/4] MeshCentral omitido (-SinMeshCentral).'
-}} else {{
-    Write-Host '[3/4] Instalando el agente de MeshCentral...'
-    $rutaMesh = Join-Path $env:TEMP 'meshagent.exe'
-    # curl.exe y no Invoke-WebRequest: PowerShell 5.1 no completa la descarga contra el
-    # certificado autofirmado de MeshCentral (comprobado en ML006-A y MC001-B).
-    curl.exe -k -sS -o $rutaMesh '{url_mesh}'
-    if (-not (Test-Path $rutaMesh)) {{ throw "No se pudo descargar el agente de MeshCentral." }}
-    # -fullinstall es obligatorio: sin el, meshagent.exe no registra el servicio.
-    # --agentName hace que el nodo aparezca con el codigo de la estacion y se vincule
-    # solo, sin copiar el node_id a mano desde la consola web.
-    Start-Process -FilePath $rutaMesh -ArgumentList '-fullinstall',"--agentName=$Codigo" -Wait
-    Remove-Item $rutaMesh -Force -ErrorAction SilentlyContinue
-}}
-
-# --- 4. Comprobacion -------------------------------------------------------------
-Write-Host '[4/4] Comprobando...'
-Start-Sleep -Seconds 5
-$svc = Get-Service -Name 'SaidsoftAgente' -ErrorAction SilentlyContinue
-if ($svc -and $svc.Status -eq 'Running') {{
-    Write-Host "  OK  Servicio SaidsoftAgente corriendo." -ForegroundColor Green
-}} else {{
-    Write-Host "  FALLA  El servicio no esta corriendo. Mira C:\ProgramData\Saidsoft\agente_prueba.log" -ForegroundColor Red
-}}
-if (-not $SinMeshCentral) {{
-    $mesh = Get-Service -Name 'Mesh Agent' -ErrorAction SilentlyContinue
-    if ($mesh -and $mesh.Status -eq 'Running') {{
-        Write-Host "  OK  Mesh Agent corriendo." -ForegroundColor Green
-    }} else {{
-        Write-Host "  AVISO  Mesh Agent no quedo corriendo." -ForegroundColor Yellow
-    }}
-}}
-
-Write-Host ''
-Write-Host "Listo. $Codigo queda PENDIENTE DE APROBACION en el panel:" -ForegroundColor Cyan
-Write-Host '  {url_panel}'
-Write-Host 'Hasta aprobarla, la estacion se enrola pero no recibe comandos.'
-Write-Host ''
-Write-Host 'Borra esta carpeta cuando termines: el instalador lleva la clave MQTT.' -ForegroundColor Yellow
-'''
 
 
 class Command(BaseCommand):
@@ -195,27 +64,13 @@ class Command(BaseCommand):
         if version is None:
             raise CommandError('No hay ninguna VersionAgente cargada; no hay paquete que instalar.')
 
-        base = settings.ARCHIVOS_BASE_URL.rstrip('/')
-        central_host = opciones['central_host'] or base.split('//')[-1].split(':')[0]
-
-        conf = settings.MESHCENTRAL_CONFIG
-        if not conf.get('MESH_ID'):
+        if not settings.MESHCENTRAL_CONFIG.get('MESH_ID'):
             self.stderr.write(
                 'AVISO: MESHCENTRAL_MESH_ID no está configurado — el script va a quedar '
                 'sin la parte de MeshCentral utilizable.',
             )
-        url_mesh = (
-            f"{conf['SERVER_URL']}/meshagents?id={conf['AGENT_ARCH_ID']}"
-            f"&meshid={conf['MESH_ID']}&installflags={conf['INSTALL_FLAGS']}"
-        )
-
-        self.stdout.write(PLANTILLA.format(
-            url_paquete=f'{base}/media/agente-instalador/agente-instalador.zip',
-            central_host=central_host,
-            mqtt_puerto=opciones['mqtt_puerto'],
-            mqtt_password=password.replace("'", "''"),  # escape de PowerShell
-            url_mesh=url_mesh,
-            url_panel=f'{base}/estaciones/',
+        self.stdout.write(generar_script(
+            password, central_host=opciones['central_host'], mqtt_puerto=opciones['mqtt_puerto'],
         ))
         self.stderr.write(
             f'\nGenerado para {version.version}. CONTIENE LA CLAVE MQTT: entregalo por un '

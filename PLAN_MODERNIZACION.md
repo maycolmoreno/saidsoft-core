@@ -7267,3 +7267,46 @@ basta con regenerarlo (`armar_paquete_agente`).
 Solución sin reinstalar para una estación nueva con 0.33: crear
 `C:\ProgramData\Saidsoft\identidad.json` con `{"hardware_id": "<MachineGuid>"}` y reiniciar el
 servicio; con eso `_enrolar` no llega a leer el campo faltante.
+
+## §10-CG — El instalador se baja desde la estación con un enlace de un solo uso (15-oct-2026)
+
+`Instalar-Saidsoft.ps1` (§10-CF) llevaba la `MQTT_PASSWORD_AGENTE` adentro y había que hacerlo
+llegar a cada estación por un canal privado: USB, carpeta compartida, la pestaña de archivos
+de MeshCentral. Lo que se pidió es bajarlo del servidor. Publicarlo en `/media/` no se puede:
+se sirve sin autenticación, y con esa credencial se escucha la respuesta de enrolamiento de
+cualquier estación (ver el docstring de `generar_script_instalacion`).
+
+### Cómo queda
+
+En **Estaciones → Instalar estación nueva** (permiso `catalogo.aprobar_estacion`, el mismo que
+decide qué equipo entra a la flota) el panel emite un `EnlaceInstalador` y muestra un comando
+para pegar en PowerShell en la estación, con una variante `-SinMeshCentral` para la terminal de
+MeshCentral:
+
+```
+cd $env:TEMP; curl.exe -k -fsS -o Instalar-Saidsoft.ps1 "https://<panel>:8084/instalador/<token>/"; if ($?) { powershell -ExecutionPolicy Bypass -File .\Instalar-Saidsoft.ps1 }
+```
+
+- **Una sola vez y 30 minutos.** El consumo es un `UPDATE` condicional: dos descargas a la vez
+  no se llevan las dos el script. Vencido, usado o inventado responde lo mismo (410).
+- **El script se arma al descargarse** (`apps.catalogo.instalador.generar_script`, el mismo que
+  usa el comando) y no queda guardado en el servidor. Del token solo se guarda el hash.
+- **Por HTTPS** (8084), no por el 8080: el token en la URL es la clave. `-k` porque el
+  certificado es autofirmado, igual que la descarga de MeshCentral que el script ya hacía.
+- La URL sale del primer origen `https://` de `CSRF_TRUSTED_ORIGINS`: nginx reenvía `Host` sin
+  el puerto y `build_absolute_uri` daría el 443.
+- **Rastro:** quién lo pidió, cuándo se bajó y desde qué IP, en el enlace y en la auditoría
+  (`instalador.emitir`, `instalador.descargar`).
+- **El script se borra solo al terminar**, porque dejarlo en el equipo dependía de que alguien
+  se acordara de borrarlo.
+- Con BOM UTF-8: PowerShell 5.1 lee un `.ps1` sin BOM como ANSI.
+
+### Lo que cambia en el servidor
+
+`web` recibe ahora `MQTT_PASSWORD_AGENTE` (ya estaba en `deploy/.env`, la usaba
+`bootstrap-emqx.sh`). No es una escalada para ese contenedor: ya tenía la API de administración
+de EMQX, que puede mucho más que esta credencial. Sin la variable, el panel avisa y no emite, y
+un enlace ya emitido no se gasta (503).
+
+`generar_script_instalacion` sigue existiendo para el canal privado; la plantilla se mudó a
+`apps/catalogo/instalador.py`.

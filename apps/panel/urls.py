@@ -30,6 +30,9 @@ urlpatterns = [
     path('estaciones/', views.estaciones_lista, name='estaciones_lista'),
     path('estaciones/pendientes/', views.estaciones_pendientes_partial, name='estaciones_pendientes_partial'),
     path('estaciones/aprobar-lote/', views.estaciones_aprobar_lote, name='estaciones_aprobar_lote'),
+    path('estaciones/instalador/enlace/', views.instalador_enlace_emitir, name='instalador_enlace_emitir'),
+    # Sin login: lo baja curl.exe desde la estación y lo autoriza el token (§10-CG).
+    path('instalador/<str:token>/', views.instalador_descargar, name='instalador_descargar'),
     path('estaciones/<int:pk>/aprobar/', views.estacion_aprobar, name='estacion_aprobar'),
     path('estaciones/<int:pk>/rechazar/', views.estacion_rechazar, name='estacion_rechazar'),
     path('estaciones/<int:pk>/reiniciar/', views.estacion_reiniciar, name='estacion_reiniciar'),

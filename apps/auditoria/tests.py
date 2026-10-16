@@ -115,6 +115,9 @@ class ContratoTenantDeAuditoriaTests(TestCase):
             '(catálogo compartido). Hereda el criterio del padre.',
         'auth.User':
             'Los eventos de MFA son sobre la cuenta, no sobre datos de un cliente.',
+        'catalogo.EnlaceInstalador':
+            'El instalador es uno solo para toda la flota: el enlace no apunta a ninguna '
+            'farmacia (el código sale del hostname al instalar).',
     }
 
     # Resuelven a None pero NO porque sean compartidos: tienen un tenant único en los
@@ -199,8 +202,8 @@ class ContratoTenantDeAuditoriaTests(TestCase):
                     sitios.append(f'{archivo.name}:{nodo.lineno}')
 
         self.assertEqual(
-            len(sitios), 102,
-            'Cambió la cantidad de llamadas a registrar_evento (eran 102 el '
+            len(sitios), 104,
+            'Cambió la cantidad de llamadas a registrar_evento (eran 104 el 15-oct-2026; 102 el '
             '11-oct-2026; 101 el 1-oct). Si agregaste una sobre un modelo que todavía no figura en '
             'CON_TENANT / COMPARTIDOS_LEGITIMOS / SIN_TENANT_POR_NOMBRE_DEL_CAMPO, '
             'clasificalo ahí y actualizá este número. Un modelo sin clasificar se '

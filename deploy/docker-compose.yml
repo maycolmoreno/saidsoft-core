@@ -139,6 +139,8 @@ services:
       ARCHIVOS_BASE_URL: ${ARCHIVOS_BASE_URL}
       SECURE_SSL_REDIRECT: ${SECURE_SSL_REDIRECT:-True}
       COOKIES_SOLO_HTTPS: ${COOKIES_SOLO_HTTPS:-True}
+      # Solo para el enlace de un solo uso del instalador (§10-CG); ver config/settings/base.py.
+      MQTT_PASSWORD_AGENTE: ${MQTT_PASSWORD_AGENTE:-}
       MQTT_HOST: emqx
       MQTT_PORT: "8883"
       MQTT_USERNAME: ${MQTT_USERNAME_PANEL}

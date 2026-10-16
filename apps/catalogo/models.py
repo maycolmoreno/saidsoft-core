@@ -724,6 +724,43 @@ class VersionAgente(models.Model):
         super().save(*args, **kwargs)
 
 
+class EnlaceInstalador(models.Model):
+    """Enlace de un solo uso para bajar `Instalar-Saidsoft.ps1` desde la estación.
+
+    El script lleva la `MQTT_PASSWORD_AGENTE` escrita adentro, así que no puede vivir en
+    `/media/` (público sin autenticación) ni pasarse por chat. Con esto el técnico lo baja
+    con un `curl.exe` desde la propia estación: el script se arma en el momento de la
+    descarga, no se guarda en el servidor, y el enlace deja de servir apenas se usa o a los
+    pocos minutos. Detalle en PLAN_MODERNIZACION.md §10-CG.
+
+    Del token solo se guarda el hash, como en `TokenApertura`: quien lea la base no obtiene
+    enlaces utilizables.
+    """
+    token_hash = models.CharField(max_length=64, unique=True, editable=False)
+    prefijo = models.CharField(
+        max_length=8, editable=False,
+        help_text='Primeros caracteres del token, para identificarlo sin revelarlo.',
+    )
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='enlaces_instalador',
+    )
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+    expira_en = models.DateTimeField()
+    usado_en = models.DateTimeField(null=True, blank=True)
+    ip_uso = models.GenericIPAddressField(
+        null=True, blank=True, help_text='Desde dónde se descargó: la estación que lo usó.',
+    )
+
+    class Meta:
+        db_table = 'enlace_instalador'
+        ordering = ['-fecha_creacion']
+        verbose_name = 'Enlace de instalador'
+        verbose_name_plural = 'Enlaces de instalador'
+
+    def __str__(self):
+        return f'Enlace {self.prefijo}…'
+
+
 class ClaveRecuperacionBitLocker(models.Model):
     """Clave de recuperación de BitLocker de una estación, cifrada en reposo.
 

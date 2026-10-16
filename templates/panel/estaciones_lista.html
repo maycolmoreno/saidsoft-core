@@ -1,7 +1,19 @@
 {% extends "panel/base.html" %}
 {% block title %}Estaciones · SAIDSOFT{% endblock %}
 {% block content %}
-<h1 class="text-xl font-semibold mb-6">Estaciones</h1>
+<div class="flex items-center justify-between gap-3 mb-6 flex-wrap">
+    <h1 class="text-xl font-semibold">Estaciones</h1>
+    {% if perms.catalogo.aprobar_estacion %}
+    <button hx-post="{% url 'panel:instalador_enlace_emitir' %}"
+            hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+            hx-target="#enlace-instalador" hx-swap="innerHTML"
+            class="btn secondary text-xs"
+            title="Genera un comando de un solo uso para instalar el agente en una estación nueva">
+        Instalar estación nueva
+    </button>
+    {% endif %}
+</div>
+<div id="enlace-instalador" class="card p-4 mb-6 empty:hidden"></div>
 
 {% comment %}
 El refresco cada 15s reemplaza toda la tabla de pendientes, así que se pausa
