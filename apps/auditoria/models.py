@@ -87,6 +87,24 @@ def _resolver_unidad_negocio(objeto):
     return None
 
 
+def ip_cliente(request) -> str | None:
+    """La IP de quien hizo el request, no la del proxy.
+
+    En producción todo pasa por nginx, y `REMOTE_ADDR` es siempre la IP de ese contenedor:
+    hasta el 16-oct-2026 la auditoría, las firmas de mantenimiento y los enlaces del
+    instalador guardaban todos `172.18.0.4`. nginx manda la real en `X-Real-IP`.
+
+    Solo se le cree si `CONFIAR_X_REAL_IP` (activado en produccion.py): sin un proxy que la
+    pise, cualquiera la manda con el valor que quiera. `X-Forwarded-For` no se usa por eso
+    mismo: nginx le AGREGA la IP, y el primer valor lo escribe el cliente.
+    """
+    if getattr(settings, 'CONFIAR_X_REAL_IP', False):
+        real = request.META.get('HTTP_X_REAL_IP', '').strip()
+        if real:
+            return real
+    return request.META.get('REMOTE_ADDR')
+
+
 def registrar_evento(*, usuario, accion, objeto=None, detalle=None, request=None):
     """Helper central para dejar constancia de una acción administrativa.
 
@@ -94,7 +112,7 @@ def registrar_evento(*, usuario, accion, objeto=None, detalle=None, request=None
     """
     ip = None
     if request is not None:
-        ip = request.META.get('REMOTE_ADDR')
+        ip = ip_cliente(request)
 
     return EventoAuditoria.objects.create(
         usuario=usuario,

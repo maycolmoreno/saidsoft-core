@@ -10979,5 +10979,15 @@ class EnlaceInstaladorTests(TestCase):
         self.client.force_login(otro)
         self.assertNotContains(self.client.get(reverse('panel:estaciones_lista')), 'Instalar estación nueva')
 
+    @override_settings(CONFIAR_X_REAL_IP=True)
+    def test_guarda_la_ip_de_la_estacion_y_no_la_de_nginx(self):
+        from django.test import Client
+
+        from apps.catalogo.models import EnlaceInstalador
+
+        url = self._emitir()
+        Client().get(url.split(':8084', 1)[1], REMOTE_ADDR='172.18.0.4', HTTP_X_REAL_IP='10.111.50.7')
+        self.assertEqual(EnlaceInstalador.objects.get().ip_uso, '10.111.50.7')
+
     def test_el_script_se_borra_solo_al_terminar(self):
         self.assertIn('Remove-Item -LiteralPath $PSCommandPath', self._bajar(self._emitir()).content.decode('utf-8-sig'))

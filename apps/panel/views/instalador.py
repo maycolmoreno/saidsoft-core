@@ -13,7 +13,7 @@ from django.urls import reverse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_POST
 
-from apps.auditoria.models import registrar_evento
+from apps.auditoria.models import ip_cliente, registrar_evento
 from apps.catalogo.instalador import (
     MINUTOS_VIGENCIA_ENLACE, ScriptNoDisponible, consumir_enlace, emitir_enlace, generar_script,
 )
@@ -60,7 +60,7 @@ def instalador_descargar(request, token):
         # Antes de consumir: si el servidor no puede armar el script, el enlace no se gasta.
         return HttpResponse('El servidor no puede armar el instalador ahora.\n',
                             status=503, content_type='text/plain; charset=utf-8')
-    enlace = consumir_enlace(token, ip=request.META.get('REMOTE_ADDR'))
+    enlace = consumir_enlace(token, ip=ip_cliente(request))
     if enlace is None:
         return HttpResponse('Enlace vencido, ya usado o inexistente. Pedi otro en el panel.\n',
                             status=410, content_type='text/plain; charset=utf-8')

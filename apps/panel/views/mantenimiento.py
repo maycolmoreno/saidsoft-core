@@ -5,7 +5,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 from apps.activos.models import Activo, Colaborador
-from apps.auditoria.models import registrar_evento
+from apps.auditoria.models import ip_cliente, registrar_evento
 from ..paginacion import paginar
 from ..busqueda import buscar
 from apps.cuentas.services import (
@@ -364,7 +364,7 @@ def mantenimiento_firmar(request, pk):
             mantenimiento_services.firmar_mantenimiento(
                 mantenimiento=mantenimiento, tipo_firma=form.cleaned_data['tipo_firma'],
                 firma_base64=form.cleaned_data['firma_base64'], usuario=request.user,
-                ip_origen=request.META.get('REMOTE_ADDR'),
+                ip_origen=ip_cliente(request),
             )
             registrar_evento(
                 usuario=request.user, accion='mantenimiento.firmar', objeto=mantenimiento, request=request,

@@ -24,6 +24,11 @@ SECURE_HSTS_PRELOAD = True
 # El proxy TLS (traefik/nginx del despliegue) marca esta cabecera; Django confía en ella.
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])  # noqa: F405
+# Detrás de nginx, REMOTE_ADDR es la IP del contenedor de nginx (172.18.x), no la del
+# cliente. nginx pisa X-Real-IP con $remote_addr en cada request, y gunicorn no publica su
+# puerto al host, así que la cabecera no se puede falsificar desde afuera. Ver
+# apps.auditoria.models.ip_cliente.
+CONFIAR_X_REAL_IP = True
 
 # El stack siempre tiene nginx delante (servicio `nginx` del compose), que es quien
 # puede resolver la `location /media/mantenimiento/ internal`.

@@ -4,7 +4,7 @@ import pathlib
 from django.apps import apps as registro_de_apps
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 
 from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
 
@@ -252,3 +252,42 @@ class EventoAuditoriaInmutableTests(TestCase):
         evento = EventoAuditoria.objects.get(accion='sistema.prueba')
         with self.assertRaises(NotImplementedError):
             evento.delete()
+
+
+class IpClienteTests(SimpleTestCase):
+    """Detrás de nginx, REMOTE_ADDR es el contenedor del proxy: hasta el 16-oct-2026 la
+    auditoría, las firmas y los enlaces del instalador guardaban todos 172.18.0.4."""
+
+    def _request(self, **meta):
+        from django.test import RequestFactory
+
+        return RequestFactory().get('/', REMOTE_ADDR='172.18.0.4', **meta)
+
+    @override_settings(CONFIAR_X_REAL_IP=True)
+    def test_detras_de_nginx_usa_la_ip_real(self):
+        from apps.auditoria.models import ip_cliente
+
+        self.assertEqual(ip_cliente(self._request(HTTP_X_REAL_IP='10.20.30.40')), '10.20.30.40')
+
+    @override_settings(CONFIAR_X_REAL_IP=False)
+    def test_sin_proxy_no_le_cree_a_la_cabecera(self):
+        """Sin nginx que la pise, cualquiera manda X-Real-IP con el valor que quiera."""
+        from apps.auditoria.models import ip_cliente
+
+        self.assertEqual(ip_cliente(self._request(HTTP_X_REAL_IP='1.2.3.4')), '172.18.0.4')
+
+    @override_settings(CONFIAR_X_REAL_IP=True)
+    def test_ignora_x_forwarded_for(self):
+        """nginx le agrega la IP al final, pero el primer valor lo escribe el cliente."""
+        from apps.auditoria.models import ip_cliente
+
+        self.assertEqual(ip_cliente(self._request(HTTP_X_FORWARDED_FOR='6.6.6.6')), '172.18.0.4')
+
+    def test_produccion_le_cree_a_nginx(self):
+        # Por texto y no importando el módulo: produccion.py exige variables de entorno.
+        from pathlib import Path
+
+        from django.conf import settings
+
+        texto = (Path(settings.BASE_DIR) / 'config' / 'settings' / 'produccion.py').read_text(encoding='utf-8')
+        self.assertRegex(texto, r'(?m)^CONFIAR_X_REAL_IP = True$')

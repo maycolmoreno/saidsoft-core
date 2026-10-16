@@ -7310,3 +7310,16 @@ un enlace ya emitido no se gasta (503).
 
 `generar_script_instalacion` sigue existiendo para el canal privado; la plantilla se mudó a
 `apps/catalogo/instalador.py`.
+
+### Adenda (16-oct-2026): la IP guardada era la de nginx
+
+Las primeras descargas reales registraron todas `ip_uso = 172.18.0.4`: detrás de nginx,
+`REMOTE_ADDR` es el contenedor del proxy. No era solo del enlace: la auditoría
+(`registrar_evento`) y las firmas de mantenimiento (`ip_origen`, panel y API) guardaban lo
+mismo desde que nginx está delante (SEC-2, 22-ago-2026).
+
+`apps.auditoria.models.ip_cliente` toma `X-Real-IP`, que nginx pisa con `$remote_addr` en cada
+request, y solo si `CONFIAR_X_REAL_IP` (activado únicamente en `produccion.py`): sin proxy
+delante cualquiera manda esa cabecera. `X-Forwarded-For` no se usa porque su primer valor lo
+escribe el cliente. Los registros anteriores quedan con la IP del proxy; no hay forma de
+recuperar la real.

@@ -5,6 +5,8 @@ from rest_framework import generics, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.auditoria.models import ip_cliente
+
 from . import services
 from .api_permissions import PermisoDeclarado
 from .models import (
@@ -327,7 +329,7 @@ class MantenimientoViewSet(viewsets.ReadOnlyModelViewSet):
             firma = services.firmar_mantenimiento(
                 mantenimiento=mantenimiento, tipo_firma=serializer.validated_data['tipo_firma'],
                 firma_base64=serializer.validated_data['firma_base64'], usuario=request.user,
-                ip_origen=request.META.get('REMOTE_ADDR'),
+                ip_origen=ip_cliente(request),
                 ocurrido_en=serializer.validated_data.get('ocurrido_en'),
             )
             _auditar(request, 'mantenimiento.firmar', mantenimiento)
@@ -374,7 +376,7 @@ class ConsentimientoMonitoreoView(generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         consentimiento = ConsentimientoMonitoreo.objects.create(
-            usuario=request.user, ip=request.META.get('REMOTE_ADDR'), **serializer.validated_data,
+            usuario=request.user, ip=ip_cliente(request), **serializer.validated_data,
         )
         return Response(ConsentimientoMonitoreoSerializer(consentimiento).data, status=status.HTTP_201_CREATED)
 
