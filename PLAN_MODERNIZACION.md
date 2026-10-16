@@ -7323,3 +7323,44 @@ request, y solo si `CONFIAR_X_REAL_IP` (activado únicamente en `produccion.py`)
 delante cualquiera manda esa cabecera. `X-Forwarded-For` no se usa porque su primer valor lo
 escribe el cliente. Los registros anteriores quedan con la IP del proxy; no hay forma de
 recuperar la real.
+
+## §10-CH — El nodo de cada farmacia, desde la planilla de red (16-oct-2026)
+
+En 19 farmacias el POS de las estaciones apuntaba a un nodo distinto del que decía el panel:
+la farmacia se había movido y nadie actualizó el panel. Al cruzar con la planilla de red de
+operaciones ("DATOS DE FARMACIAS.xlsx", corregida por el usuario el 16-oct-2026, con columnas
+`Bdd pos`, `pos servidor`, `contraseña`, `PUERTO`) apareció que el desfase era mucho mayor:
+
+- **350 de 703 farmacias** tenían en el panel otro nodo que en la planilla.
+- En las 42 farmacias con agente, la planilla coincide con lo que reporta el POS en **41**. La
+  única que no (MM023) tiene el POS en el mismo nodo que el panel.
+- La planilla es coherente: cada nodo tiene un solo servidor, puerto y contraseña.
+
+### `cargar_nodos_planilla`
+
+`apps/catalogo/planilla_red.py` + comando. Lo que hace y, sobre todo, lo que no:
+
+- Solo cambia `Farmacia.grupo` **en el panel**. **No envía la configuración del nodo a
+  ninguna estación** —pedido explícito del usuario—, y una prueba lo fija.
+- Lo que reporta el POS manda sobre la planilla. Estaciones en desacuerdo entre sí: no se toca.
+- No crea nodos (`#N/A` se informa), no toca otros datos de red de las existentes (se
+  informan en el reporte), no crea lo que no es farmacia, y `--omitir` deja afuera códigos
+  no confirmados.
+- **No lee la columna de contraseñas.** Las columnas se buscan por nombre exacto.
+- Simula por defecto, audita cada cambio (`farmacia.nodo_desde_planilla`, con antes/después)
+  y deja un reporte CSV con todas las diferencias.
+
+### El importador anterior quedaba peligroso
+
+`importar_red_farmacias_xlsx` lee por **posición**. En la versión del 16-oct la hoja SAN
+GREGORIO llegó con `Id de Farmacia` una columna antes: habría tomado "RED LAN" como código y
+**la columna de contraseñas de los nodos como IP**. Ahora verifica el encabezado de la columna
+del código y corta si no es el esperado.
+
+### Pendiente
+
+- **Contraseñas de los nodos:** las de la planilla no coinciden con las del panel en TRX001-007,
+  y TRX002/TRX008 no tienen ninguna. No se sabe cuál es la vigente (el agente no la reporta).
+  Hasta aclararlo, "Aplicar nodo" desde la ficha de la estación puede dejar un POS sin base.
+- MAM02, MDG02, MRI21 (en la planilla, no en el directorio de RRHH) y GG014 (al revés), por
+  confirmar.

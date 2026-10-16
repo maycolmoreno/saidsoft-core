@@ -4337,3 +4337,161 @@ class ImportarCircuitosDesdeXlsxTests(TestCase):
         with self.assertRaises(CommandError):
             call_command('importar_circuitos_proveedor', str(ruta), '--aplicar',
                          stdout=StringIO())
+
+
+class CargarNodosPlanillaTests(TestCase):
+    """`cargar_nodos_planilla` (§10-CH): alinea el nodo del PANEL con la planilla de red.
+
+    Lo que más importa fijar es lo que NO hace: no envía la configuración del nodo a las
+    estaciones, no contradice lo que reporta el POS, no crea nodos y no lee contraseñas.
+    """
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.usuario = User.objects.create_user(username='op_nodos', password='x')
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.t1 = Grupo.objects.create(codigo='TRXN01', pos_bdd='trxn01')
+        self.t2 = Grupo.objects.create(codigo='TRXN02', pos_bdd='trxn02')
+        self.f1 = Farmacia.objects.create(codigo='GN001', grupo=self.t1, unidad_negocio=self.sg,
+                                          segmento_red='10.0.0.0/27')
+        self.f2 = Farmacia.objects.create(codigo='GN002', grupo=self.t1, unidad_negocio=self.sg)
+
+    def _planilla(self, filas_sg, filas_mia=()):
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        mia = wb.create_sheet('FARMAMIA')
+        mia.append(['item', 'Provincia', 'Ciudad', 'Id de Farmacia', 'Segmento de Red', 'Tipo de Enlace',
+                    'Login', 'Backup', 'IP-DNS', 'Correo', 'Bdd pos', 'pos servidor', 'contraseña', 'PUERTO'])
+        for f in filas_mia:
+            mia.append(f)
+        sg = wb.create_sheet('SAN GREGORIO')
+        # El formato del 16-oct-2026: 'Id de Farmacia' en la columna 4, no en la 5.
+        sg.append(['Item', 'Provincia', 'Canton', 'Id de Farmacia', 'RED LAN', 'Proveedor', 'Login',
+                   'Backup', 'Bdd pos', 'pos servidor', 'contraseña', 'PUERTO'])
+        for f in filas_sg:
+            sg.append(f)
+        ruta = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False).name
+        wb.save(ruta)
+        return ruta
+
+    def _fila(self, codigo, nodo, segmento='10.0.0.0/27', clave='secreta'):
+        return [1, 'GUAYAS', 'GUAYAQUIL', codigo, segmento, 'TELCONET', 'login', 'ACTIVO',
+                nodo, '192.168.111.9', clave, 5433]
+
+    def _correr(self, ruta, **opciones):
+        salida = io.StringIO()
+        call_command('cargar_nodos_planilla', ruta, usuario='op_nodos', stdout=salida, **opciones)
+        return salida.getvalue()
+
+    def test_simula_por_defecto(self):
+        salida = self._correr(self._planilla([self._fila('GN001', 'trxn02')]))
+        self.f1.refresh_from_db()
+        self.assertEqual(self.f1.grupo, self.t1)
+        self.assertIn('SIMULACIÓN', salida)
+        self.assertIn('GN001', salida)
+
+    def test_cambia_el_nodo_en_el_panel_y_lo_audita(self):
+        from apps.auditoria.models import EventoAuditoria
+
+        self._correr(self._planilla([self._fila('GN001', 'trxn02')]), aplicar=True)
+        self.f1.refresh_from_db()
+        self.assertEqual(self.f1.grupo, self.t2)
+        evento = EventoAuditoria.objects.get(accion='farmacia.nodo_desde_planilla')
+        self.assertEqual(evento.detalle['antes'], 'TRXN01')
+        self.assertEqual(evento.detalle['despues'], 'TRXN02')
+
+    def test_nunca_envia_la_configuracion_a_las_estaciones(self):
+        """El pedido explícito del usuario: el panel se alinea, el POS no se toca."""
+        Estacion.objects.create(codigo='GN001-A', farmacia=self.f1,
+                                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+                                estado_conexion=Estacion.EstadoConexion.ONLINE)
+        with patch('apps.catalogo.services.enviar_configurar_nodo_pos') as enviar, \
+                patch('apps.catalogo.services.publicar_mensaje', create=True) as publicar:
+            salida = self._correr(self._planilla([self._fila('GN001', 'trxn02')]), aplicar=True)
+        enviar.assert_not_called()
+        publicar.assert_not_called()
+        self.assertIn('No se envió nada a ninguna estación', salida)
+
+    def test_manda_lo_que_reporta_el_pos(self):
+        """MM023: la planilla dice un nodo y el POS reporta el que ya tiene el panel."""
+        Estacion.objects.create(codigo='GN001-A', farmacia=self.f1, pos_bdd='trxn01')
+        salida = self._correr(self._planilla([self._fila('GN001', 'trxn02')]), aplicar=True)
+        self.f1.refresh_from_db()
+        self.assertEqual(self.f1.grupo, self.t1)
+        self.assertIn('manda el POS', salida)
+
+    def test_si_el_pos_reporta_un_tercer_nodo_usa_el_del_pos(self):
+        t3 = Grupo.objects.create(codigo='TRXN03', pos_bdd='trxn03')
+        Estacion.objects.create(codigo='GN001-A', farmacia=self.f1, pos_bdd='TRXN03')
+        self._correr(self._planilla([self._fila('GN001', 'trxn02')]), aplicar=True)
+        self.f1.refresh_from_db()
+        self.assertEqual(self.f1.grupo, t3)
+
+    def test_estaciones_en_desacuerdo_no_se_tocan(self):
+        Estacion.objects.create(codigo='GN001-A', farmacia=self.f1, pos_bdd='trxn01')
+        Estacion.objects.create(codigo='GN001-B', farmacia=self.f1, pos_bdd='trxn02')
+        self._correr(self._planilla([self._fila('GN001', 'trxn02')]), aplicar=True)
+        self.f1.refresh_from_db()
+        self.assertEqual(self.f1.grupo, self.t1)
+
+    def test_no_crea_nodos(self):
+        salida = self._correr(self._planilla([self._fila('GN001', '#N/A')]), aplicar=True)
+        self.assertFalse(Grupo.objects.filter(codigo='#N/A').exists())
+        self.f1.refresh_from_db()
+        self.assertEqual(self.f1.grupo, self.t1)
+        self.assertIn('no existe en el panel', salida)
+
+    def test_crea_las_que_faltan_y_respeta_omitir(self):
+        self._correr(self._planilla([self._fila('GN009', 'trxn02'), self._fila('GN010', 'trxn02')]),
+                     aplicar=True, omitir='GN010')
+        nueva = Farmacia.objects.get(codigo='GN009')
+        self.assertEqual(nueva.grupo, self.t2)
+        self.assertEqual(nueva.unidad_negocio, self.sg)
+        self.assertEqual(nueva.ubicacion, 'GUAYAQUIL, GUAYAS')
+        self.assertFalse(Farmacia.objects.filter(codigo='GN010').exists())
+
+    def test_no_crea_lo_que_no_es_farmacia(self):
+        self._correr(self._planilla([self._fila('PRESIDENCIA', 'trxn02')]), aplicar=True)
+        self.assertFalse(Farmacia.objects.filter(codigo='PRESIDENCIA').exists())
+
+    def test_otros_datos_de_red_solo_se_informan(self):
+        ruta_reporte = tempfile.NamedTemporaryFile(suffix='.csv', delete=False).name
+        self._correr(self._planilla([self._fila('GN001', 'trxn01', segmento='10.9.9.0/27')]),
+                     aplicar=True, reporte=ruta_reporte)
+        self.f1.refresh_from_db()
+        self.assertEqual(self.f1.segmento_red, '10.0.0.0/27')
+        with open(ruta_reporte, encoding='utf-8-sig') as f:
+            self.assertIn('10.9.9.0/27', f.read())
+
+    def test_la_contrasena_no_aparece_en_ningun_lado(self):
+        from apps.auditoria.models import EventoAuditoria
+
+        secreto = 'SECRETO-DEL-NODO'
+        ruta_reporte = tempfile.NamedTemporaryFile(suffix='.csv', delete=False).name
+        planilla = self._planilla([self._fila('GN001', 'trxn02', clave=secreto),
+                                   self._fila('GN009', 'trxn02', clave=secreto)])
+        salida = self._correr(planilla, aplicar=True, reporte=ruta_reporte)
+        self.assertNotIn(secreto, salida)
+        with open(ruta_reporte, encoding='utf-8-sig') as f:
+            self.assertNotIn(secreto, f.read())
+        self.assertFalse(any(secreto in str(e.detalle) for e in EventoAuditoria.objects.all()))
+        self.assertEqual(Grupo.objects.get(pk=self.t2.pk).pos_password_cifrada, '')
+
+    def test_lee_por_nombre_aunque_las_columnas_cambien_de_lugar(self):
+        """Lo que hizo falta el 16-oct-2026: la hoja SAN GREGORIO llegó corrida una columna."""
+        fila_mia = [1, 'El Oro', 'Machala', 'GN002', '10.1.1.0/27', 'CNT', 'l', 'ACTIVO', None, None,
+                    'trxn02', '192.168.111.2', 'x', 5433]
+        self._correr(self._planilla([], filas_mia=[fila_mia]), aplicar=True)
+        self.f2.refresh_from_db()
+        self.assertEqual(self.f2.grupo, self.t2)
+
+    def test_el_importador_viejo_se_niega_con_las_columnas_corridas(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaisesMessage(CommandError, 'cambió de formato'):
+            call_command('importar_red_farmacias_xlsx', self._planilla([self._fila('GN001', 'trxn02')]),
+                         stdout=io.StringIO())
+        self.assertFalse(Farmacia.objects.filter(codigo='192.168.102.1').exists())

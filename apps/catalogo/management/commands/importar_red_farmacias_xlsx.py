@@ -89,6 +89,17 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING(f'Hoja "{nombre_hoja}" no encontrada en {ruta}, se omite.'))
                 continue
             hoja = libro[nombre_hoja]
+            # Las columnas van por POSICIÓN. El 16-oct-2026 la planilla llegó con la hoja SAN
+            # GREGORIO corrida una columna, y esto habría tomado "RED LAN" como código y la
+            # columna de contraseñas de los nodos como IP. Si el código no está donde se
+            # espera, se corta: para el nodo existe `cargar_nodos_planilla`, que lee por nombre.
+            titulo = _valor_columna(next(hoja.iter_rows(max_row=1, values_only=True)), c_codigo)
+            if titulo.strip().lower() != 'id de farmacia':
+                raise CommandError(
+                    f'Hoja "{nombre_hoja}": la columna {c_codigo} es "{titulo}", no "Id de Farmacia". '
+                    'La planilla cambió de formato; no se importa nada. Para cargar el nodo usá '
+                    '`cargar_nodos_planilla`, que lee las columnas por nombre.',
+                )
             for fila in hoja.iter_rows(min_row=2, values_only=True):
                 codigo = _valor_columna(fila, c_codigo).upper()
                 if not codigo or codigo in CODIGOS_EXCLUIDOS:

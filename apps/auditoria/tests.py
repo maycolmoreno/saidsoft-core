@@ -202,8 +202,8 @@ class ContratoTenantDeAuditoriaTests(TestCase):
                     sitios.append(f'{archivo.name}:{nodo.lineno}')
 
         self.assertEqual(
-            len(sitios), 104,
-            'Cambió la cantidad de llamadas a registrar_evento (eran 104 el 15-oct-2026; 102 el '
+            len(sitios), 106,
+            'Cambió la cantidad de llamadas a registrar_evento (eran 106 el 16-oct-2026; 104 el 15-oct-2026; 102 el '
             '11-oct-2026; 101 el 1-oct). Si agregaste una sobre un modelo que todavía no figura en '
             'CON_TENANT / COMPARTIDOS_LEGITIMOS / SIN_TENANT_POR_NOMBRE_DEL_CAMPO, '
             'clasificalo ahí y actualizá este número. Un modelo sin clasificar se '
