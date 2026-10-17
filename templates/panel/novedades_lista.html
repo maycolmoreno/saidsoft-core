@@ -1,0 +1,89 @@
+{% extends "panel/base.html" %}
+{% block title %}Mesa de ayuda · SAIDSOFT{% endblock %}
+{% block content %}
+{% comment %}
+Bandeja de la mesa de ayuda (apps/panel/views/novedades.py): lo que las farmacias reportaron
+por WhatsApp o no contestaron. Lo mismo llega al chat de Telegram de la mesa. La mesa trabaja
+en Odoo: por ahora el ticket allá se abre a mano (§10-CM).
+{% endcomment %}
+<div class="flex items-start justify-between gap-4 mb-5 flex-wrap">
+    <div>
+        <h1 class="text-xl font-semibold">Mesa de ayuda</h1>
+        <p class="text-sm text-[var(--text-faint)]">Novedades de las farmacias por WhatsApp</p>
+    </div>
+</div>
+
+<div class="flex gap-2 mb-4 flex-wrap">
+    <a href="?ver=mesa" class="btn {% if filtro == 'mesa' %}primary{% else %}secondary{% endif %} text-xs">Para la mesa ({{ conteos.mesa }})</a>
+    <a href="?ver=esperando" class="btn {% if filtro == 'esperando' %}primary{% else %}secondary{% endif %} text-xs">Esperando a la farmacia ({{ conteos.esperando }})</a>
+    <a href="?ver=registradas" class="btn {% if filtro == 'registradas' %}primary{% else %}secondary{% endif %} text-xs">Registradas ({{ conteos.registradas }})</a>
+    <a href="?ver=cerradas" class="btn {% if filtro == 'cerradas' %}primary{% else %}secondary{% endif %} text-xs">Cerradas ({{ conteos.cerradas }})</a>
+</div>
+
+<div class="card" style="overflow-x:auto;">
+    {% if not pagina.object_list %}
+    <div class="p-6 text-sm text-[var(--text-faint)] text-center">
+        {% if filtro == 'mesa' %}No hay casos pendientes para la mesa de ayuda.{% else %}Nada en esta pestaña.{% endif %}
+    </div>
+    {% else %}
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-3 py-2">Caso</th><th class="text-left px-3 py-2">Farmacia</th>
+                <th class="text-left px-3 py-2">Qué pasa</th><th class="text-left px-3 py-2">Contacto</th>
+                <th class="text-left px-3 py-2">Estado</th>{% if perms.whatsapp.change_novedad %}<th class="text-left px-3 py-2"></th>{% endif %}
+            </tr>
+        </thead>
+        <tbody>
+        {% for n in pagina.object_list %}
+            <tr style="border-top:1px solid var(--border-soft);" class="align-top">
+                <td class="px-3 py-2 num">N° {{ n.pk }}<div class="text-xs text-[var(--text-faint)]">{{ n.creado_en|date:"d/m H:i" }}</div></td>
+                <td class="px-3 py-2">
+                    <span class="font-medium mono">{{ n.farmacia.codigo }}</span>
+                    <div class="text-xs text-[var(--text-faint)]">{{ n.farmacia.ciudad|default:n.farmacia.ubicacion }}</div>
+                </td>
+                <td class="px-3 py-2">
+                    <div>{{ n.get_motivo_display }}{% if n.causa %} · <strong>{{ n.get_causa_display }}</strong>{% endif %}</div>
+                    {% if n.motivo_escalada %}<div class="text-xs" style="color:var(--warning);">{{ n.motivo_escalada_texto }}</div>{% endif %}
+                    {% if n.evento_enlace %}<div class="text-xs text-[var(--text-faint)]">Enlace caído desde {{ n.evento_enlace.inicio|date:"d/m H:i" }}{% if n.evento_enlace.fin %} · volvió {{ n.evento_enlace.fin|date:"H:i" }}{% else %} · <span style="color:var(--critical);">sigue caído</span>{% endif %} · {{ n.farmacia.tipo_enlace }}</div>{% endif %}
+                    {% if n.estacion %}<div class="text-xs text-[var(--text-faint)]">Caja {{ n.estacion.codigo }}</div>{% endif %}
+                    {% if n.equipo %}<div class="text-xs">Equipo: {{ n.equipo }}</div>{% endif %}
+                    {% if n.descripcion %}<div class="text-xs">«{{ n.descripcion|truncatechars:200 }}»</div>{% endif %}
+                    {% if n.foto_media_id %}<div class="text-xs text-[var(--text-faint)]">Mandó una foto (ver en WhatsApp Business)</div>{% endif %}
+                </td>
+                <td class="px-3 py-2 text-xs">
+                    <div class="mono">{{ n.farmacia.telefono|default:"sin teléfono" }}</div>
+                    {% if n.farmacia.tecnico_asignado %}<div class="text-[var(--text-faint)]">Técnico: {{ n.farmacia.tecnico_asignado }}</div>{% endif %}
+                </td>
+                <td class="px-3 py-2 text-xs">
+                    {{ n.get_estado_display }}
+                    {% if n.tomado_en %}<div class="text-[var(--text-faint)]">{{ n.tomado_por|default:n.tomado_por_texto }} · {{ n.tomado_en|date:"H:i" }}</div>{% endif %}
+                    {% if n.nota_cierre %}<div class="text-[var(--text-faint)]">{{ n.nota_cierre }}</div>{% endif %}
+                </td>
+                {% if perms.whatsapp.change_novedad %}
+                <td class="px-3 py-2">
+                    {% if n.abierta %}
+                    <form method="post" action="{% url 'panel:novedad_accion' n.pk %}" class="flex gap-1 flex-wrap">
+                        {% csrf_token %}<input type="hidden" name="ver" value="{{ filtro }}">
+                        {% if n.estado != 'en_atencion' %}<button name="accion" value="tomar" class="btn secondary text-xs">Tomo el caso</button>{% endif %}
+                        {% if n.motivo == 'enlace_caido' or n.motivo == 'reporte_internet' or n.motivo == 'mensaje' %}
+                        <button name="accion" value="luz" class="btn secondary text-xs">Era luz</button>
+                        <button name="accion" value="internet" class="btn secondary text-xs">Era internet</button>
+                        {% endif %}
+                        <button name="accion" value="cerrar" class="btn secondary text-xs">Cerrar</button>
+                    </form>
+                    {% endif %}
+                </td>
+                {% endif %}
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+{% include "panel/_paginador.html" %}
+<p class="text-xs text-[var(--text-faint)] mt-3">
+    La mesa de ayuda trabaja en Odoo: por ahora el ticket allá se abre a mano desde este caso. Un corte de luz
+    confirmado (por la farmacia o por la mesa) no cuenta en la disponibilidad del proveedor.
+</p>
+{% endblock %}

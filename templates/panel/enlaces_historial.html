@@ -83,6 +83,12 @@ proveedores a la vez) se muestra pero no se carga a la disponibilidad.
 </div>
 {% endif %}
 
+{% if historial.excluidas_por_luz %}
+<div class="card p-3 mb-4 text-xs text-[var(--text-faint)]" style="border-left:3px solid var(--border-strong,var(--border));">
+    {{ historial.excluidas_por_luz }} caída(s) del período fueron un corte de luz confirmado por la farmacia o la mesa de
+    ayuda (WhatsApp): no se cargan a la disponibilidad del proveedor.
+</div>
+{% endif %}
 {% if historial.excluidas_por_ceguera %}
 <div class="card p-3 mb-4 text-xs text-[var(--text-faint)]" style="border-left:3px solid var(--info);">
     {{ historial.excluidas_por_ceguera }} caída(s) del período no se cargan a la disponibilidad: cayeron sitios de varios
@@ -117,7 +123,8 @@ proveedores a la vez) se muestra pero no se carga a la disponibilidad.
                 <td class="px-3 py-2 num">{% if c.evento.fin %}{{ c.evento.fin|date:"d/m/Y H:i" }}{% else %}<span style="color:var(--critical);">en curso</span>{% endif %}</td>
                 <td class="px-3 py-2 text-right num">{{ c.minutos|floatformat:0 }} min</td>
                 <td class="px-3 py-2 text-xs">
-                    {% if c.clase == 'ceguera' %}<span class="pill info">{{ etiquetas.ceguera }}</span>
+                    {% if c.clase == 'luz' %}<span class="pill neutral">{{ etiquetas.luz }}</span>
+                    {% elif c.clase == 'ceguera' %}<span class="pill info">{{ etiquetas.ceguera }}</span>
                     {% elif c.clase == 'proveedor' %}<span class="pill warning">{{ etiquetas.proveedor }}</span>
                     {% else %}<span class="text-[var(--text-faint)]">{{ etiquetas.individual }}</span>{% endif %}
                 </td>

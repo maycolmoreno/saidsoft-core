@@ -7525,3 +7525,130 @@ Al hacer ese cambio, para cerrarlo: (1) quitar `-k` de los dos comandos de
 `.env` —el enlace arma su URL desde ahí (`_url_base_panel`), y con la IP el certificado del dominio
 no valida—; (3) la descarga de MeshCentral dentro del script (`PLANTILLA`) también usa `-k`: se
 puede quitar solo si MeshCentral pasa al dominio con certificado válido.
+
+## §10-CM — Chatbot de WhatsApp con las farmacias: qué se reporta y qué no (definición, 17-oct-2026)
+
+**Por qué.** No hay forma de distinguir un corte de luz de una caída de fibra (`enlaces.py`: los
+Mikrotik no tienen sensores de energía y no hay UPS). Solo la farmacia lo sabe, y casi todas
+tienen un número corporativo con WhatsApp: 673 de las 702 monitoreadas tienen celular válido
+cargado, y 692 tienen horario. Además, la farmacia ve fallas de equipos antes que cualquier señal.
+
+**El riesgo que esta definición evita:** notificaciones que nadie sigue. Cada mensaje tiene que
+pedir algo que solo la farmacia sabe, y tener a alguien que mire la respuesta.
+
+### Frecuencia medida (30 días al 17-oct-2026)
+
+| Señal | 30 días | Farmacias |
+|---|---|---|
+| Enlace caído SOLO (no corte masivo), ≥10 min, en horario | 259 (8,6/día; ≥30 min: 5,3/día) | 164 |
+| Enlace caído por corte del proveedor, en horario | 366 | — |
+| Caídas por problema del monitoreo | 194 | — |
+| Servicio del POS sin responder | 229 | 36 |
+| Estación sin reportar | 97 | 35 |
+| Reloj desfasado / agente caído con red viva / errores POS / BitLocker | 131 / 60 / 6 / 2 | — |
+
+Las de estación y POS existen solo en las 42 farmacias con agente; las de enlace, en las 702.
+
+### Nivel 1 — se le PREGUNTA a la farmacia
+
+1. **Enlace caído solo, > 15 min, en su horario.** *Se fue la luz / Hay luz, no hay internet /
+   Todo funciona.* ~6-7 por día en toda la cadena.
+2. **Estación sin reportar > 30 min, en su horario.** *¿La caja X está encendida?* ~3 por día.
+
+### Nivel 2 — solo se le AVISA
+
+3. La respuesta a lo que ella reportó (orden cerrada, enlace restablecido). Solo si escribió antes.
+4. *(Segunda etapa, apagado al inicio)* "El proveedor tiene un corte en tu zona, ya está reportado".
+
+### Nivel 3 — NUNCA se le notifica (lo ve y resuelve TI)
+
+Reloj, agente caído, BitLocker, errores del POS, servicio del POS sin responder (TI reintenta a
+distancia primero), cortes del proveedor y del monitoreo, y todo lo que pase fuera de su horario.
+
+### Lo que la farmacia reporta por iniciativa propia
+
+*Se fue la luz / Sin internet / Un equipo no funciona* (caja-PC, impresora, lector-balanza, otro),
+con texto o foto. Se identifica por su número. Un equipo abre una orden de mantenimiento de origen
+WhatsApp asignada a `Farmacia.tecnico_asignado`; luz e internet quedan como novedad, pegada a la
+caída de enlace si la hay.
+
+### Escalamiento a la mesa de ayuda
+
+- **La farmacia no responde en 15 min** → alerta a la mesa de ayuda con su número para llamarla y
+  botones *Tomo el caso / Era luz / Era internet*.
+- También escalan: *Todo funciona* con el enlace todavía caído (lo revisa TI); *Hay luz, no hay
+  internet* (reclamo al proveedor, con circuito y proveedor); una respuesta en texto que no se
+  entiende.
+- No escalan: *Se fue la luz* (se registra y se avisa al NOC; escala si vuelve la luz y no el
+  enlace) ni los cortes masivos (un aviso por corte).
+- Si nadie toma la alerta, escala con `ConfiguracionMonitoreo.minutos_escalamiento_alerta`.
+- **Canal:** la mesa de ayuda trabaja en Odoo Helpdesk, pero **por ahora no hay integración**
+  (decisión del usuario). Las alertas llegan a la bandeja del panel y al chat de Telegram del NOC;
+  el ticket en Odoo se crea a mano. Revisar la integración más adelante.
+
+### Reglas contra el ruido
+
+Un mensaje por incidente, sin recordatorios; máximo 2 preguntas por farmacia por día (el resto,
+solo al NOC); solo en su horario; cada respuesta llega a alguien (NOC o técnico). Arranque con 5 a
+10 farmacias piloto durante dos semanas, midiendo cuántas responden y qué contestan.
+
+### Efecto en el SLA
+
+Una caída con causa *Se fue la luz* (reportada por la farmacia o por la mesa de ayuda) sale de la
+disponibilidad del proveedor en el historial, igual que las del monitoreo.
+
+### Lo que hace falta del lado del usuario
+
+Cuenta Meta Business verificada, número dedicado al bot (distinto de los de las farmacias y fuera
+del WhatsApp normal), plantillas aprobadas para los mensajes que inicia el sistema, y token + ID
+del número en `deploy/.env`. Solo la API oficial: las librerías no oficiales bloquean el número.
+
+### Implementación (17-oct-2026)
+
+App `apps/whatsapp`: `Novedad` (el caso), `MensajeWhatsApp` (todo lo que entra y sale, con
+`wa_id` único contra los reintentos de Meta), `ConversacionWhatsApp` (el paso del menú).
+`cliente.py` (Cloud API oficial, modos `apagado`/`piloto`/`activo` y `WHATSAPP_REDIRIGIR_A` para
+probar en un celular propio), `bot.py` (lo que contesta), `reglas.py` (cada 5 min: preguntar,
+escalar, cerrar), `mesa.py` (aviso a Telegram con botones *Tomo el caso / Era luz / Era internet /
+Cerrar*). Bandeja en el panel: **Mesa de ayuda** (`/mesa/`), permisos `whatsapp.view/change_novedad`
+para los grupos Mesa de Ayuda y Soporte Técnico. Una caída con causa *luz* sale del SLA en el
+historial (`historial_enlaces`, clase `luz`).
+
+**Cambio respecto de la definición:** un equipo que falla NO abre una orden de mantenimiento
+automática. `crear_mantenimiento_manual` exige un equipo concreto del inventario, y "la impresora no
+funciona" no dice cuál. El reporte escala a la mesa de ayuda con el técnico asignado, la
+descripción y la foto, y la mesa abre el ticket en Odoo como hoy.
+
+**Horario para el bot:** un horario ilegible cuenta como abierta solo de 08:00 a 21:00. El tablero
+lo cuenta como abierta siempre, para no esconder problemas; para escribirle a una persona eso
+significaría mensajes a las 3 de la mañana.
+
+**Despliegue en modo `apagado`:** no le escribe a nadie hasta que se configure.
+
+### Requisito de infraestructura: el webhook tiene que ser público
+
+Meta entrega los mensajes entrantes a una URL **pública por internet, HTTPS con certificado
+válido** (`https://<dominio>/whatsapp/webhook/`). Hoy el servidor está en la red interna con
+certificado autofirmado: los mensajes que SALEN funcionan si el servidor tiene salida a internet,
+pero sin el webhook público **no llegan las respuestas** y todo escalaría como "no respondió".
+Se resuelve con el paso al dominio con HTTPS (el mismo de H-01), publicando SOLO
+`/whatsapp/webhook/` hacia afuera. El resto del panel no necesita estar expuesto.
+
+### Plantillas a aprobar en Meta (categoría "Utilidad", idioma español)
+
+`saidsoft_enlace_caido` — cuerpo: *"SAIDSOFT: la farmacia {{1}} no tiene conexión desde las {{2}}.
+¿Qué está pasando?"* — tres botones de respuesta rápida, en este orden: *Se fue la luz* /
+*Sin internet* / *Todo funciona*.
+
+`saidsoft_caja_sin_reportar` — cuerpo: *"SAIDSOFT: en la farmacia {{1}}, la caja {{2}} no reporta
+hace más de 30 minutos. ¿Está encendida?"* — botones: *Sí, encendida* / *Está apagada* / *No sé*.
+
+El orden de los botones importa: el sistema les asigna la causa por posición.
+
+### Variables de `deploy/.env` para activarlo
+
+`WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`
+(cualquier texto largo, el mismo que se carga al dar de alta el webhook en Meta),
+`MESA_AYUDA_TELEGRAM_CHAT_ID` (vacío = el chat de enlaces), y para el arranque
+`WHATSAPP_MODO=piloto` + `WHATSAPP_FARMACIAS_PILOTO=GBV07,ML001,...` (y opcionalmente
+`WHATSAPP_REDIRIGIR_A=5939XXXXXXXX` para ver todo en un celular propio primero).

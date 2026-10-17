@@ -989,6 +989,13 @@ def responder_a_callback(data: str, chat_id=None):
         return _pedir_confirmacion_sincronizar(data.split(':', 1)[1])
     if data.startswith('sync:'):
         return _ejecutar_sincronizar(data.split(':', 1)[1], chat_id), _TECLADO_PRINCIPAL
+    if data.startswith('mesa:'):
+        # Casos del chatbot de WhatsApp para la mesa de ayuda (§10-CM): tomar, registrar
+        # la causa que averiguó llamando, cerrar. El formato lo arma y lo interpreta
+        # apps.whatsapp.mesa, que es su único dueño.
+        from apps.whatsapp.mesa import responder_callback
+
+        return responder_callback(data, chat_id)
     if data == 'menu:mas':
         return 'Otras consultas:', _TECLADO_MAS
     if data == 'menu:farmacias':

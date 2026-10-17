@@ -57,6 +57,12 @@ class SeedPermisosTests(TestCase):
         de cierres de campo en conflicto sale en ese mismo Centro de Monitoreo. `view` y
         nada mas -- aplicar el cierre de un tecnico reabre y vuelve a cerrar un
         mantenimiento, y eso es intervencion, no diagnostico.
+
+        `view_novedad` y `change_novedad` se sumaron el 17-oct-2026 con el chatbot de
+        WhatsApp (§10-CM), y `change` es la UNICA escritura del rol, a proposito: lo que
+        modifica es el CASO —tomarlo, anotar si era luz o internet tras llamar a la
+        farmacia, cerrarlo—, nunca un equipo ni la flota. Es el seguimiento que el usuario
+        pidio que haga la mesa de ayuda cuando una farmacia no contesta.
         """
         call_command('seed_permisos')
         grupo = Group.objects.get(name='Mesa de Ayuda')
@@ -64,9 +70,11 @@ class SeedPermisosTests(TestCase):
         self.assertEqual(codenames, {
             'acceso_remoto_estacion', 'consultar_info_estacion', 'view_estacion',
             'view_alerta', 'view_estadoenlacefarmacia', 'view_cierreenconflicto',
+            'view_novedad', 'change_novedad',
         })
-        # La invariante de verdad, independiente de la lista de arriba: nada que escriba.
-        for codename in codenames:
+        # La invariante de verdad, independiente de la lista de arriba: nada que escriba,
+        # salvo el caso del chatbot (ver el docstring).
+        for codename in codenames - {'change_novedad'}:
             self.assertFalse(
                 codename.startswith(('add_', 'change_', 'delete_')),
                 f'{codename} le da escritura a primera linea',

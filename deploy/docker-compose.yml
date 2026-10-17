@@ -141,6 +141,11 @@ services:
       COOKIES_SOLO_HTTPS: ${COOKIES_SOLO_HTTPS:-True}
       # Solo para el enlace de un solo uso del instalador (§10-CG); ver config/settings/base.py.
       MQTT_PASSWORD_AGENTE: ${MQTT_PASSWORD_AGENTE:-}
+      # Chatbot de WhatsApp (§10-CM): `web` solo recibe el webhook, así que necesita el
+      # secreto con el que se valida la firma de Meta y el token del alta. El envío
+      # (token de la API) va en celery_worker.
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
       MQTT_HOST: emqx
       MQTT_PORT: "8883"
       MQTT_USERNAME: ${MQTT_USERNAME_PANEL}
@@ -505,6 +510,16 @@ services:
       # no manda nada -- el mismo fallo silencioso que ya mordio con MESHCENTRAL_* y con
       # EMAIL_*, por eso hay tests que atan estas variables al servicio que las usa.
       ENLACES_TELEGRAM_CHAT_ID: ${ENLACES_TELEGRAM_CHAT_ID:-}
+      # Chatbot de WhatsApp (§10-CM). Sin token ni ID de número no sale nada, y con
+      # WHATSAPP_MODO en 'apagado' (default) tampoco se le pregunta a nadie.
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_MODO: ${WHATSAPP_MODO:-apagado}
+      WHATSAPP_FARMACIAS_PILOTO: ${WHATSAPP_FARMACIAS_PILOTO:-}
+      WHATSAPP_REDIRIGIR_A: ${WHATSAPP_REDIRIGIR_A:-}
+      WHATSAPP_PLANTILLA_CAIDA: ${WHATSAPP_PLANTILLA_CAIDA:-saidsoft_enlace_caido}
+      WHATSAPP_PLANTILLA_ESTACION: ${WHATSAPP_PLANTILLA_ESTACION:-saidsoft_caja_sin_reportar}
+      MESA_AYUDA_TELEGRAM_CHAT_ID: ${MESA_AYUDA_TELEGRAM_CHAT_ID:-}
       TELEGRAM_CHAT_IDS_AUTORIZADOS: ${TELEGRAM_CHAT_IDS_AUTORIZADOS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CELERY_BROKER_URL: redis://redis:6379/0

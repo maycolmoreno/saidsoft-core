@@ -77,8 +77,13 @@ ROLES = {
         # cierra alertas.
         ('monitoreo', 'alerta', ['view']),
         ('monitoreo', 'estadoenlacefarmacia', ['view']),
+        # La bandeja del chatbot de WhatsApp (§10-CM): ACÁ sí interviene, porque atender
+        # lo que reportan o no contestan las farmacias es justamente su trabajo —tomar el
+        # caso, llamar, registrar si era luz o internet—. No toca ningún equipo.
+        ('whatsapp', 'novedad', ['view', 'change']),
     ],
     'Soporte Técnico': [
+        ('whatsapp', 'novedad', ['view', 'change']),
         ('scripts', 'script', ['view', 'add']),
         ('scripts', 'ejecucionscript', ['view', 'add']),
         ('scripts', 'scriptprogramado', ['view', 'add', 'change']),

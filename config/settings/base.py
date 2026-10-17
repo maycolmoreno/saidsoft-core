@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     'apps.software',
     'apps.facturacion',
     'apps.viaticos',
+    'apps.whatsapp',
     'apps.panel',
 ]
 
@@ -311,6 +312,26 @@ TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN', default='')
 # nueva no debe quedar contestando consultas sin que alguien lo decida.
 TELEGRAM_CHAT_IDS_AUTORIZADOS = env.list('TELEGRAM_CHAT_IDS_AUTORIZADOS', default=[])
 
+# --- Chatbot de WhatsApp con las farmacias (apps.whatsapp, PLAN_MODERNIZACION.md §10-CM) ---
+#
+# Token y app secret son secretos de Meta: viven solo en deploy/.env. Sin token ni ID de
+# número no sale nada; WHATSAPP_MODO en 'apagado' (el default) tampoco pregunta nada.
+WHATSAPP_TOKEN = env('WHATSAPP_TOKEN', default='')
+WHATSAPP_PHONE_NUMBER_ID = env('WHATSAPP_PHONE_NUMBER_ID', default='')
+WHATSAPP_APP_SECRET = env('WHATSAPP_APP_SECRET', default='')       # firma del webhook
+WHATSAPP_VERIFY_TOKEN = env('WHATSAPP_VERIFY_TOKEN', default='')   # alta del webhook en Meta
+WHATSAPP_API_VERSION = env('WHATSAPP_API_VERSION', default='v21.0')
+WHATSAPP_MODO = env('WHATSAPP_MODO', default='apagado')           # apagado | piloto | activo
+WHATSAPP_FARMACIAS_PILOTO = env.list('WHATSAPP_FARMACIAS_PILOTO', default=[])
+WHATSAPP_REDIRIGIR_A = env('WHATSAPP_REDIRIGIR_A', default='')    # prueba: todo a este número
+WHATSAPP_PLANTILLA_CAIDA = env('WHATSAPP_PLANTILLA_CAIDA', default='saidsoft_enlace_caido')
+WHATSAPP_PLANTILLA_ESTACION = env('WHATSAPP_PLANTILLA_ESTACION', default='saidsoft_caja_sin_reportar')
+WHATSAPP_IDIOMA_PLANTILLA = env('WHATSAPP_IDIOMA_PLANTILLA', default='es')
+# Chat de Telegram donde caen los casos para la mesa de ayuda. Vacío = el de enlaces
+# (ENLACES_TELEGRAM_CHAT_ID). La mesa trabaja en Odoo, pero por ahora no hay integración:
+# el ticket se crea a mano desde este aviso.
+MESA_AYUDA_TELEGRAM_CHAT_ID = env('MESA_AYUDA_TELEGRAM_CHAT_ID', default='')
+
 
 # Chat al que mandar el resumen agrupado de enlaces caídos/recuperados. Setting propio y
 # NO un CanalNotificacion global, a propósito: el volumen de enlaces es otro orden de
@@ -386,6 +407,12 @@ CELERY_TASK_TRACK_STARTED = True
 # pendiente desde la Fase 1 original del proyecto — nunca se había implementado). El
 # nombre de cada entrada es solo una etiqueta legible en el log/dashboard de Celery.
 CELERY_BEAT_SCHEDULE = {
+    # Chatbot de WhatsApp (§10-CM): preguntar a las farmacias, escalar lo que no
+    # contestan y cerrar lo que se resolvió. Cada 5 min, igual que el aviso de enlaces.
+    'evaluar-whatsapp': {
+        'task': 'apps.whatsapp.tasks.evaluar_whatsapp_task',
+        'schedule': 60.0 * 5,
+    },
     'marcar-estaciones-offline': {
         'task': 'apps.catalogo.tasks.marcar_estaciones_offline_task',
         'schedule': 60.0,  # cada minuto — mismo umbral que el comando manual (5 min sin heartbeat)

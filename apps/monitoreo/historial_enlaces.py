@@ -34,6 +34,7 @@ ETIQUETA_CLASE = {
     'individual': 'Del sitio',
     'proveedor': 'Corte del proveedor',
     'ceguera': 'Monitoreo sin visibilidad',
+    'luz': 'Corte de luz (confirmado)',
 }
 
 
@@ -51,7 +52,9 @@ class Caida:
 
     @property
     def cuenta_para_sla(self) -> bool:
-        return self.clase != 'ceguera'
+        # Ni lo que el monitoreo no vio, ni un corte de luz que confirmó la farmacia o la
+        # mesa de ayuda (§10-CM): ninguno de los dos es del enlace del proveedor.
+        return self.clase not in ('ceguera', 'luz')
 
 
 @dataclass
@@ -82,6 +85,7 @@ class Historial:
     por_farmacia: list
     por_proveedor: list
     excluidas_por_ceguera: int
+    excluidas_por_luz: int = 0
 
     @property
     def minutos_periodo(self) -> float:
@@ -132,6 +136,10 @@ def historial_enlaces(farmacias, desde, hasta, *, proveedor='', minimo_minutos=0
     )
     clases = _clasificar(contexto)
     permitidas = set(farmacias.values_list('pk', flat=True))
+    from apps.whatsapp.models import Novedad
+
+    con_luz = set(Novedad.objects.filter(evento_enlace__in=incluidos, causa=Novedad.Causa.LUZ)
+                  .values_list('evento_enlace_id', flat=True))
 
     todas = []
     for e in contexto:
@@ -143,6 +151,8 @@ def historial_enlaces(farmacias, desde, hasta, *, proveedor='', minimo_minutos=0
         fin = e.fin or ahora
         minutos = max(0.0, (min(fin, hasta_real) - max(e.inicio, desde)).total_seconds() / 60)
         clase, racimo = clases[e.pk]
+        if e.pk in con_luz:
+            clase = 'luz'
         todas.append(Caida(evento=e, clase=clase, minutos=minutos, proveedor=isp, racimo=racimo))
     todas.sort(key=lambda c: c.evento.inicio, reverse=True)
 
@@ -176,5 +186,6 @@ def historial_enlaces(farmacias, desde, hasta, *, proveedor='', minimo_minutos=0
         por_farmacia=sorted((r for r in resumen.values() if r.farmacia.pk in con_listadas),
                             key=lambda r: (r.disponibilidad_sla, -r.caidas_sla)),
         por_proveedor=sorted(proveedores.values(), key=lambda p: -p.minutos_sla),
-        excluidas_por_ceguera=sum(1 for c in todas if not c.cuenta_para_sla),
+        excluidas_por_ceguera=sum(1 for c in todas if c.clase == 'ceguera'),
+        excluidas_por_luz=sum(1 for c in todas if c.clase == 'luz'),
     )
