@@ -110,6 +110,75 @@ falta y cómo descartar que sea un problema de ruta desde este host.
 </div>
 {% endif %}
 
+{% if incidentes.masivos or incidentes.aisladas %}
+{% comment %}
+Qué atender primero (apps.monitoreo.enlaces.incidentes_de_enlace). Un corte del proveedor
+se ve como UN incidente —cuántas cayeron, cuántas volvieron, cuáles siguen— porque es un
+solo reclamo; y las caídas aisladas van aparte, sin respaldo primero, porque entre 16 de
+un corte una farmacia sola sin backup no se ve.
+{% endcomment %}
+<div class="card p-4 mb-5" style="border-left:3px solid var(--critical);">
+    <div class="text-sm font-medium mb-3">Qué atender primero</div>
+
+    {% for m in incidentes.masivos %}
+    <div class="mb-4">
+        <div class="flex items-center gap-2 flex-wrap text-sm">
+            {% if m.clase == 'ceguera' %}
+            <span class="pill info">¿el monitoreo perdió visibilidad?</span>
+            {% else %}
+            <span class="pill warning">Corte masivo</span>
+            {% endif %}
+            <span class="font-medium">{{ m.inicio|date:"d/m H:i" }}</span>
+            <span class="text-[var(--text-faint)]">·
+                {% for proveedor, n in m.proveedores %}{{ proveedor }}{% if m.proveedores|length > 1 %} ({{ n }}){% endif %}{% if not forloop.last %}, {% endif %}{% endfor %}
+            </span>
+            <span class="text-[var(--text-faint)]">· cayeron <span class="num">{{ m.cayeron }}</span>, volvieron <span class="num">{{ m.volvieron }}</span>,</span>
+            <span class="font-medium" style="color:var(--critical);">siguen caídas {{ m.siguen|length }}</span>
+        </div>
+        <p class="text-xs text-[var(--text-faint)] mt-1">
+            {% if m.clase == 'ceguera' %}
+            Cayeron sitios de varios proveedores a la vez: antes de reclamar, revisá la conexión del servidor de monitoreo.
+            {% elif m.volvieron %}
+            El resto del corte ya volvió solo: en estas puede haber un equipo que no levantó o un circuito pendiente. Un solo reclamo al proveedor con esta lista.
+            {% else %}
+            Un solo reclamo al proveedor con esta lista, en vez de un ticket por farmacia.
+            {% endif %}
+        </p>
+        <div class="mt-2 flex flex-wrap gap-1.5">
+            {% for s in m.siguen %}
+            <span class="text-xs px-2 py-1 rounded-md mono" style="background:var(--panel);"
+                  title="{{ s.farmacia.ciudad|default:s.farmacia.ubicacion }} · {{ s.caidas_30d }} caída(s) en 30 días{% if s.sin_backup %} · SIN respaldo{% endif %}">
+                {{ s.farmacia.codigo }}{% if s.sin_backup %} <span style="color:var(--critical);">sin respaldo</span>{% endif %}{% if s.caidas_30d >= 10 %} <span style="color:var(--warning);">{{ s.caidas_30d }}×/30d</span>{% endif %}
+            </span>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+
+    {% if incidentes.aisladas %}
+    <div class="text-xs uppercase tracking-wide text-[var(--text-faint)] mb-2">Caídas aisladas</div>
+    <table class="w-full text-sm">
+        <tbody>
+        {% for s in incidentes.aisladas %}
+        <tr style="border-top:1px solid var(--border-soft);">
+            <td class="py-1.5 pr-3 font-medium mono">{{ s.farmacia.codigo }}</td>
+            <td class="py-1.5 pr-3 text-[var(--text-faint)]">{{ s.farmacia.ciudad|default:s.farmacia.ubicacion }}</td>
+            <td class="py-1.5 pr-3 text-[var(--text-faint)]">{{ s.proveedor }}</td>
+            <td class="py-1.5 pr-3 num">desde {{ s.inicio|date:"d/m H:i" }} <span class="text-[var(--text-faint)]">({{ s.inicio|timesince }})</span></td>
+            <td class="py-1.5 text-xs">
+                {% if s.cronica %}<span class="text-[var(--text-faint)]">lleva días: ¿sigue operando?</span>
+                {% elif s.sin_backup %}<span style="color:var(--critical);">sin respaldo: probablemente sin sistema</span>
+                {% endif %}
+                {% if s.caidas_30d >= 10 %}<span style="color:var(--warning);">{{ s.caidas_30d }} caídas en 30 días</span>{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+{% endif %}
+
 {% if en_curso_total %}
 {% comment %}
 Colapsada por defecto: con 154 caídas abiertas, la lista empujaba la tabla fuera de la

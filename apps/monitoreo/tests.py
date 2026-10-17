@@ -8353,7 +8353,19 @@ class RetencionDeSeriesPorChunksTests(TestCase):
             self.skipTest('sin chunks la granularidad es la fila y esto no aplica')
 
         vieja = self._muestra_red(45)
-        en_el_borde = self._muestra_red(31)
+        # Una fila que superó los 30 días pero cae en el MISMO chunk que el instante del
+        # corte. Antes era "31 días" fijo, y eso solo compartía chunk según el día de la
+        # semana: los chunks de 7 días se alinean al epoch, y el 17-oct-2026 la fila de 31
+        # días cayó en un chunk entero más viejo y la prueba falló sin que nada cambiara.
+        from datetime import datetime, timezone as tz
+
+        corte = timezone.now() - timedelta(days=30)
+        semana = timedelta(days=7).total_seconds()
+        inicio_chunk = datetime.fromtimestamp((corte.timestamp() // semana) * semana, tz=tz.utc)
+        en_el_borde = MuestraRedFarmacia.objects.create(
+            farmacia=self.farmacia, bytes_recibidos=1, bytes_enviados=1,
+            timestamp=min(inicio_chunk + timedelta(seconds=1), corte - timedelta(seconds=1)),
+        )
         self._vaciar_eventos_diferidos()
         purgar_muestras_red_antiguas(dias=30)
 

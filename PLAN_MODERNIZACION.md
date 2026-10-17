@@ -7371,3 +7371,32 @@ del código y corta si no es el esperado.
 de septiembre, GLG01 habría perdido su horario y su dirección, y MGY01 y MGY02 su nombre y su
 dirección. Ahora una celda vacía deja el dato que ya tiene el panel (teléfono y correo ya se
 trataban así). Un técnico `N/D` tampoco desvincula al que estaba asignado.
+
+## §10-CI — "Qué atender primero": el corte del proveedor como UN incidente (17-oct-2026)
+
+Pedido: de las farmacias con enlace caído, separar las que se cayeron todas en el mismo
+momento de las que se cayeron solas, para atender primero lo urgente.
+
+Ese día, a las 06:05, cayeron 38 farmacias de Telconet a la vez; en tres horas habían vuelto
+32 y quedaban 6. Mientras tanto GBV07 se cayó **sola** a las 09:00 y **sin enlace de
+respaldo**, perdida entre las otras en una lista ordenada por código.
+
+`clasificar_caidas_simultaneas` ya etiquetaba cada fila ("probable corte del proveedor"),
+pero mira solo las caídas **abiertas**: no ve las que ya volvieron, y eso es justo lo que
+dice que en las que quedan hay algo más (un equipo que no levantó, un circuito pendiente).
+
+`apps.monitoreo.enlaces.incidentes_de_enlace` arma los racimos con **todos** los eventos de
+las últimas 48 h, abiertos o cerrados, con los mismos umbrales (10 min, mínimo 3, tres o más
+proveedores = ¿el monitoreo perdió visibilidad?). Devuelve:
+
+- **cortes** con algún sitio todavía caído: cuándo, de qué proveedor, cuántos cayeron,
+  cuántos volvieron y la lista de los que siguen — la lista para UN reclamo;
+- **caídas aisladas**: primero las sin respaldo, después las más recientes; las de más de 7
+  días al final, como "¿sigue operando?".
+
+Se muestra arriba de /enlaces/, en el bloque "Qué atender primero". Los sitios que nunca
+respondieron no entran: no son caídas.
+
+Contra los datos reales al escribirlo: el corte de las 06:05 (38 cayeron, 32 volvieron, 6
+siguen), el de las 02:54 (112 de tres proveedores, queda MM052 — marcado como probable
+pérdida de visibilidad del monitoreo), y como aisladas GBV07 (sin respaldo) y GP063 (23 días).

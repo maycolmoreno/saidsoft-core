@@ -10991,3 +10991,104 @@ class EnlaceInstaladorTests(TestCase):
 
     def test_el_script_se_borra_solo_al_terminar(self):
         self.assertIn('Remove-Item -LiteralPath $PSCommandPath', self._bajar(self._emitir()).content.decode('utf-8-sig'))
+
+
+class IncidentesDeEnlaceTests(TestCase):
+    """"Qué atender primero" en /enlaces/ (`incidentes_de_enlace`).
+
+    El caso que lo motivó, 17-oct-2026: a las 06:05 cayeron 36 farmacias de Telconet, 20
+    volvieron solas y 16 no; y mientras tanto GBV07 se cayó SOLA y sin respaldo, perdida
+    entre las otras. Esto fija que el corte se vea como UN incidente con su cuenta de
+    cayeron/volvieron/siguen, y que la aislada sin respaldo vaya primero.
+    """
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX960')
+        self.ahora = timezone.now()
+        self.n = 0
+        self.usuario = User.objects.create_user(username='u_incidentes', password='x')
+        self.usuario.user_permissions.add(Permission.objects.get(codename='view_estadoenlacefarmacia'))
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+
+    def _evento(self, isp='TELCONET', *, hace_min=0, volvio=False, backup=True, respondio=True, codigo=None):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
+
+        self.n += 1
+        f = Farmacia.objects.create(
+            codigo=codigo or f'GI{self.n:03d}', grupo=self.grupo, unidad_negocio=self.sg,
+            tipo_enlace=isp, tiene_backup=backup, ip_router=f'10.7.7.{self.n}',
+        )
+        EstadoEnlaceFarmacia.objects.create(farmacia=f, alcanzable=volvio, respondio_alguna_vez=respondio)
+        inicio = self.ahora - timedelta(minutes=hace_min)
+        return EventoEnlaceFarmacia.objects.create(
+            farmacia=f, inicio=inicio, fin=(inicio + timedelta(minutes=30)) if volvio else None,
+        )
+
+    def _incidentes(self):
+        from apps.monitoreo.enlaces import incidentes_de_enlace
+
+        return incidentes_de_enlace()
+
+    def test_el_corte_cuenta_tambien_los_que_ya_volvieron(self):
+        for i in range(4):
+            self._evento(hace_min=180, volvio=True)
+        siguen = [self._evento(hace_min=180) for _ in range(2)]
+        masivos = self._incidentes()['masivos']
+        self.assertEqual(len(masivos), 1)
+        m = masivos[0]
+        self.assertEqual((m['cayeron'], m['volvieron'], len(m['siguen'])), (6, 4, 2))
+        self.assertEqual({s['farmacia'] for s in m['siguen']}, {e.farmacia for e in siguen})
+        self.assertEqual(m['clase'], 'proveedor')
+
+    def test_un_corte_que_ya_volvio_entero_no_aparece(self):
+        for _ in range(5):
+            self._evento(hace_min=120, volvio=True)
+        self.assertEqual(self._incidentes()['masivos'], [])
+
+    def test_la_aislada_sin_respaldo_va_primero(self):
+        con = self._evento(hace_min=10, codigo='GI901')                 # más reciente
+        sin = self._evento(hace_min=200, backup=False, codigo='GI902')  # más vieja, sin backup
+        aisladas = self._incidentes()['aisladas']
+        self.assertEqual([s['farmacia'] for s in aisladas], [sin.farmacia, con.farmacia])
+
+    def test_la_que_lleva_dias_va_al_final(self):
+        vieja = self._evento(hace_min=60 * 24 * 23, backup=False, codigo='GI903')
+        nueva = self._evento(hace_min=30, codigo='GI904')
+        aisladas = self._incidentes()['aisladas']
+        self.assertEqual([s['farmacia'] for s in aisladas], [nueva.farmacia, vieja.farmacia])
+        self.assertTrue(aisladas[1]['cronica'])
+
+    def test_las_aisladas_no_repiten_las_del_corte(self):
+        for _ in range(3):
+            self._evento(hace_min=60)
+        sola = self._evento(hace_min=300, codigo='GI905')
+        r = self._incidentes()
+        self.assertEqual([s['farmacia'] for s in r['aisladas']], [sola.farmacia])
+
+    def test_varios_proveedores_a_la_vez_apuntan_al_monitoreo(self):
+        for isp in ('TELCONET', 'PUNTO NET', 'CLARO'):
+            self._evento(isp, hace_min=15)
+        self.assertEqual(self._incidentes()['masivos'][0]['clase'], 'ceguera')
+
+    def test_los_que_nunca_respondieron_no_son_caidas(self):
+        self._evento(hace_min=5, respondio=False)
+        r = self._incidentes()
+        self.assertEqual((r['masivos'], r['aisladas']), ([], []))
+
+    def test_la_pagina_de_enlaces_lo_muestra(self):
+        for _ in range(3):
+            self._evento(hace_min=60, volvio=True)
+        self._evento(hace_min=60, codigo='GI910')
+        self._evento(hace_min=5, backup=False, codigo='GI911')
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Qué atender primero')
+        self.assertContains(resp, 'Corte masivo')
+        self.assertContains(resp, 'siguen caídas 1')
+        self.assertContains(resp, 'sin respaldo: probablemente sin sistema')
+
+    def test_sin_caidas_no_se_dibuja(self):
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertNotContains(resp, 'Qué atender primero')

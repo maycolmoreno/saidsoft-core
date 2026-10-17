@@ -613,6 +613,113 @@ def clasificar_caidas_simultaneas(eventos):
     return clasificacion
 
 
+# --- Incidentes: el corte visto como UN evento, y lo que quedó suelto ----------------
+
+# Hasta dónde se mira hacia atrás para armar los racimos. 48 h y no 24: un corte de la
+# madrugada del día anterior con sitios que todavía no volvieron tiene que seguir
+# apareciendo como corte, no deshacerse en caídas sueltas al pasar la medianoche.
+VENTANA_INCIDENTES_HORAS = 48
+
+# Una caída aislada que lleva más que esto ya no es una urgencia del día: es un sitio
+# para revisar si sigue operando (GP063 llevaba 23 días el 17-oct-2026).
+DIAS_CAIDA_CRONICA = 7
+
+
+def incidentes_de_enlace(farmacias=None, *, horas=VENTANA_INCIDENTES_HORAS) -> dict:
+    """Las caídas en curso, ordenadas para decidir qué atender primero.
+
+    `clasificar_caidas_simultaneas` mira solo las caídas ABIERTAS, y eso esconde lo que más
+    ayuda a decidir: el 17-oct-2026 a las 06:05 cayeron 36 farmacias de Telconet a la vez,
+    20 volvieron solas en las 3 horas siguientes y 16 no. Viendo solo las 16 abiertas no se
+    sabe que el proveedor ya resolvió para las demás — que es justo lo que dice que en esas
+    16 hay algo más (el equipo de la farmacia no levantó solo, o un circuito pendiente).
+
+    Por eso los racimos se arman con TODOS los eventos que empezaron en la ventana,
+    abiertos o cerrados, con los mismos umbrales que `clasificar_caidas_simultaneas`.
+
+    Devuelve:
+      - `masivos`: un dict por corte con algún sitio todavía caído — cuándo empezó, de qué
+        proveedor(es), cuántos cayeron, cuántos volvieron y la lista de los que siguen.
+        Es la lista para UN reclamo al proveedor.
+      - `aisladas`: las caídas abiertas que no son parte de ningún corte. Primero las que
+        no tienen enlace de respaldo (probablemente sin sistema), después las más
+        recientes; las que llevan más de `DIAS_CAIDA_CRONICA` van al final.
+
+    Los sitios que nunca respondieron no entran: no son caídas (ver
+    `EstadoEnlaceFarmacia.respondio_alguna_vez`).
+    """
+    from collections import Counter
+    from datetime import timedelta
+
+    from django.db.models import Count
+
+    from apps.monitoreo.models import EventoEnlaceFarmacia
+
+    ahora = timezone.now()
+    recientes = EventoEnlaceFarmacia.objects.filter(
+        inicio__gte=ahora - timedelta(hours=horas), farmacia__estado_enlace__respondio_alguna_vez=True,
+    ).select_related('farmacia')
+    abiertas = EventoEnlaceFarmacia.objects.filter(
+        fin__isnull=True, farmacia__estado_enlace__respondio_alguna_vez=True,
+    ).select_related('farmacia')
+    if farmacias is not None:
+        recientes = recientes.filter(farmacia__in=farmacias)
+        abiertas = abiertas.filter(farmacia__in=farmacias)
+    abiertas = list(abiertas)
+
+    caidas_30d = dict(
+        EventoEnlaceFarmacia.objects.filter(
+            farmacia__in=[e.farmacia_id for e in abiertas], inicio__gte=ahora - timedelta(days=30),
+        ).values_list('farmacia').annotate(n=Count('id')),
+    )
+
+    def _sitio(evento):
+        return {
+            'farmacia': evento.farmacia, 'inicio': evento.inicio,
+            'proveedor': nombre_proveedor(evento.farmacia),
+            'sin_backup': not evento.farmacia.tiene_backup,
+            'caidas_30d': caidas_30d.get(evento.farmacia_id, 0),
+        }
+
+    ventana = timedelta(minutes=VENTANA_SIMULTANEAS_MINUTOS)
+    racimos, actual = [], []
+    for evento in sorted(recientes, key=lambda e: e.inicio):
+        if actual and (evento.inicio - actual[-1].inicio) > ventana:
+            racimos.append(actual)
+            actual = []
+        actual.append(evento)
+    if actual:
+        racimos.append(actual)
+
+    abiertas_por_id = {e.pk: e for e in abiertas}
+    en_masivo = set()
+    masivos = []
+    for racimo in racimos:
+        if len(racimo) < MINIMO_PARA_CORTE_DE_PROVEEDOR:
+            continue
+        siguen = [abiertas_por_id[e.pk] for e in racimo if e.pk in abiertas_por_id]
+        if not siguen:
+            continue
+        en_masivo.update(e.pk for e in siguen)
+        proveedores = Counter(nombre_proveedor(e.farmacia) for e in racimo)
+        masivos.append({
+            'inicio': racimo[0].inicio,
+            'clase': 'ceguera' if len(proveedores) >= PROVEEDORES_PARA_CEGUERA else 'proveedor',
+            'proveedores': proveedores.most_common(),
+            'cayeron': len(racimo),
+            'volvieron': len(racimo) - len(siguen),
+            'siguen': sorted((_sitio(e) for e in siguen), key=lambda s: s['farmacia'].codigo),
+        })
+    masivos.sort(key=lambda m: (-len(m['siguen']), m['inicio']))
+
+    cronica = ahora - timedelta(days=DIAS_CAIDA_CRONICA)
+    aisladas = [_sitio(e) for e in abiertas if e.pk not in en_masivo]
+    for sitio in aisladas:
+        sitio['cronica'] = sitio['inicio'] < cronica
+    aisladas.sort(key=lambda s: (s['cronica'], not s['sin_backup'], -s['inicio'].timestamp()))
+    return {'masivos': masivos, 'aisladas': aisladas}
+
+
 def notificar_cambios_enlaces() -> dict:
     """Manda UN correo con los enlaces que se cayeron y los que volvieron desde el
     último aviso. Devuelve cuántos de cada uno.
