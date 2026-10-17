@@ -11092,3 +11092,128 @@ class IncidentesDeEnlaceTests(TestCase):
     def test_sin_caidas_no_se_dibuja(self):
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertNotContains(resp, 'Qué atender primero')
+
+
+@override_settings(ENLACES_NOTIFICAR_A=['noc@x.test'], ENLACES_TELEGRAM_CHAT_ID='')
+class ReanudacionMonitoreoTests(TestCase):
+    """"No volvieron tras el apagón" (§10-CJ).
+
+    El 17-oct-2026 el monitoreo estuvo apagado de ~03:15 a 06:00 por un corte de luz en el
+    data center. Al volver, ~35 farmacias no respondían y se reiniciaron a mano recién al
+    abrir. Esto fija que el hueco se detecte, que se mida contra quién respondía ANTES, y
+    que se avise una sola vez, después de dar tiempo a las que vuelven solas.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX950')
+        self.ahora = timezone.now()
+        hace_3h = self.ahora - timedelta(hours=3)
+        self.farmacias = []
+        for i in range(10):
+            f = Farmacia.objects.create(codigo=f'GR{i:03d}', grupo=grupo, unidad_negocio=self.sg,
+                                        tipo_enlace='TELCONET', ip_router=f'10.6.6.{i + 1}')
+            EstadoEnlaceFarmacia.objects.create(farmacia=f, alcanzable=True, respondio_alguna_vez=True,
+                                                ultima_verificacion=hace_3h)
+            self.farmacias.append(f)
+
+    def _barrer(self, caidas=(), farmacias=None):
+        from apps.monitoreo import enlaces
+
+        caidas = {f.ip_router for f in caidas}
+        with patch.object(enlaces, 'verificar_ping_disponible'), \
+                patch.object(enlaces, 'sondear_enlace', side_effect=lambda ip, *a, **k: (ip not in caidas, 1.0 if ip not in caidas else None)):
+            return enlaces.sondear_enlaces_farmacias(farmacias)
+
+    def test_un_hueco_registra_la_reanudacion_con_quien_respondia(self):
+        from apps.monitoreo.models import ReanudacionMonitoreo
+
+        self._barrer(caidas=self.farmacias[:2])
+        r = ReanudacionMonitoreo.objects.get()
+        self.assertEqual(set(r.farmacias_previas), {f.pk for f in self.farmacias})
+        self.assertGreaterEqual(r.duracion_minutos, 179)
+
+    def test_sin_hueco_no_registra_nada(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, ReanudacionMonitoreo
+
+        EstadoEnlaceFarmacia.objects.update(ultima_verificacion=self.ahora - timedelta(minutes=2))
+        self._barrer()
+        self.assertFalse(ReanudacionMonitoreo.objects.exists())
+
+    def test_un_barrido_manual_de_unas_pocas_no_cuenta(self):
+        from apps.monitoreo.models import ReanudacionMonitoreo
+
+        self._barrer(farmacias=self.farmacias[:2])
+        self.assertFalse(ReanudacionMonitoreo.objects.exists())
+
+    def test_las_que_cayeron_justo_antes_del_hueco_cuentan_como_previas(self):
+        """La red del data center se degrada antes de apagarse: esas caídas son del corte."""
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia, ReanudacionMonitoreo
+
+        f = self.farmacias[0]
+        EstadoEnlaceFarmacia.objects.filter(farmacia=f).update(alcanzable=False)
+        EventoEnlaceFarmacia.objects.create(farmacia=f, inicio=self.ahora - timedelta(hours=3, minutes=10))
+        self._barrer()
+        self.assertIn(f.pk, ReanudacionMonitoreo.objects.get().farmacias_previas)
+
+    def _con_reanudacion(self, caidas, hace_min=20):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia, ReanudacionMonitoreo
+
+        r = ReanudacionMonitoreo.objects.create(
+            apagado_desde=self.ahora - timedelta(hours=3), reanudado_en=self.ahora - timedelta(minutes=hace_min),
+            farmacias_previas=[f.pk for f in self.farmacias])
+        EstadoEnlaceFarmacia.objects.filter(farmacia__in=caidas).update(alcanzable=False, fallas_consecutivas=5)
+        return r
+
+    def test_avisa_una_vez_con_las_que_no_volvieron(self):
+        from django.core import mail
+
+        from apps.monitoreo.enlaces import avisar_reanudacion_monitoreo
+
+        self._con_reanudacion(self.farmacias[:3])
+        resumen = avisar_reanudacion_monitoreo()
+        self.assertTrue(resumen['enviado'])
+        self.assertEqual(resumen['pendientes'], 3)
+        self.assertEqual(len(mail.outbox), 1)
+        cuerpo = mail.outbox[0].body
+        for f in self.farmacias[:3]:
+            self.assertIn(f.codigo, cuerpo)
+        self.assertNotIn(self.farmacias[5].codigo, cuerpo)
+        self.assertIn('7 volvieron solas', cuerpo)
+        self.assertFalse(avisar_reanudacion_monitoreo()['enviado'])
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_espera_antes_de_avisar(self):
+        """Las que vuelven solas lo hacen en los primeros minutos: avisar antes mandaría a
+        reiniciar routers que iban a volver."""
+        from django.core import mail
+
+        from apps.monitoreo.enlaces import avisar_reanudacion_monitoreo
+
+        self._con_reanudacion(self.farmacias[:3], hace_min=5)
+        self.assertFalse(avisar_reanudacion_monitoreo()['enviado'])
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_si_volvieron_todas_no_avisa(self):
+        from django.core import mail
+
+        from apps.monitoreo.enlaces import avisar_reanudacion_monitoreo
+        from apps.monitoreo.models import ReanudacionMonitoreo
+
+        self._con_reanudacion([])
+        self.assertFalse(avisar_reanudacion_monitoreo()['enviado'])
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertIsNotNone(ReanudacionMonitoreo.objects.get().avisado_en)
+
+    def test_la_pagina_de_enlaces_lo_muestra(self):
+        self._con_reanudacion(self.farmacias[:2])
+        usuario = User.objects.create_user(username='u_reanudacion', password='x')
+        usuario.user_permissions.add(Permission.objects.get(codename='view_estadoenlacefarmacia'))
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        self.client.force_login(usuario)
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
+        self.assertContains(resp, 'No volvieron tras el apagón')
+        self.assertContains(resp, '2 no volvieron')
+        self.assertContains(resp, self.farmacias[0].codigo)

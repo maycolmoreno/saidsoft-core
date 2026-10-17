@@ -110,7 +110,7 @@ falta y cómo descartar que sea un problema de ruta desde este host.
 </div>
 {% endif %}
 
-{% if incidentes.masivos or incidentes.aisladas %}
+{% if incidentes.masivos or incidentes.aisladas or reanudacion %}
 {% comment %}
 Qué atender primero (apps.monitoreo.enlaces.incidentes_de_enlace). Un corte del proveedor
 se ve como UN incidente —cuántas cayeron, cuántas volvieron, cuáles siguen— porque es un
@@ -119,6 +119,33 @@ un corte una farmacia sola sin backup no se ve.
 {% endcomment %}
 <div class="card p-4 mb-5" style="border-left:3px solid var(--critical);">
     <div class="text-sm font-medium mb-3">Qué atender primero</div>
+
+    {% if reanudacion %}
+    {% comment %}
+    El monitoreo estuvo ciego (servidor apagado o sin ruta) y volvió: las que respondían
+    antes y no volvieron necesitan, casi siempre, un reinicio del router (§10-CJ).
+    {% endcomment %}
+    <div class="mb-4 p-3 rounded-md" style="background:var(--panel);">
+        <div class="flex items-center gap-2 flex-wrap text-sm">
+            <span class="pill critical">No volvieron tras el apagón</span>
+            <span class="text-[var(--text-faint)]">el monitoreo no miró de
+                <span class="num">{{ reanudacion.reanudacion.apagado_desde|date:"d/m H:i" }}</span> a
+                <span class="num">{{ reanudacion.reanudacion.reanudado_en|date:"H:i" }}</span> ·
+                de <span class="num">{{ reanudacion.previas }}</span> que respondían,</span>
+            <span class="font-medium" style="color:var(--critical);">{{ reanudacion.pendientes|length }} no volvieron</span>
+        </div>
+        <p class="text-xs text-[var(--text-faint)] mt-1">
+            Lo más probable es que necesiten reiniciar el router: el 17-oct, tras el corte de luz en el
+            data center, las que no volvieron solas se recuperaron recién con un reinicio manual.
+        </p>
+        <div class="mt-2 flex flex-wrap gap-1.5">
+            {% for f in reanudacion.pendientes %}
+            <span class="text-xs px-2 py-1 rounded-md mono" style="background:var(--bg);"
+                  title="{{ f.ciudad|default:f.ubicacion }} · {{ f.tipo_enlace }}">{{ f.codigo }}</span>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
 
     {% for m in incidentes.masivos %}
     <div class="mb-4">

@@ -341,6 +341,7 @@ def sondear_enlaces_farmacias(farmacias=None) -> dict:
     """
     from apps.catalogo.models import Farmacia
 
+    es_flota_entera = farmacias is None
     if farmacias is None:
         # __isnull=True alcanza solo: GenericIPAddressField normaliza '' a None, y un
         # .exclude(ip_router='') encadenado excluye TODAS las filas (bug real ya
@@ -382,6 +383,12 @@ def sondear_enlaces_farmacias(farmacias=None) -> dict:
         )
         resumen.update(abortado=True, sondeadas=len(resultados), caidas=fallidos)
         return resumen
+
+    # Antes de registrar: los estados de ahora son todavía los de antes del hueco, que es
+    # contra lo que se mide quién no volvió. Solo en el barrido de la flota entera; uno
+    # manual de unas pocas no dice nada del monitoreo.
+    if es_flota_entera:
+        _registrar_reanudacion_si_hubo_hueco()
 
     for farmacia, alcanzable, latencia_ms in resultados:
         registrar_sondeo(farmacia, alcanzable, latencia_ms)
@@ -718,6 +725,162 @@ def incidentes_de_enlace(farmacias=None, *, horas=VENTANA_INCIDENTES_HORAS) -> d
         sitio['cronica'] = sitio['inicio'] < cronica
     aisladas.sort(key=lambda s: (s['cronica'], not s['sin_backup'], -s['inicio'].timestamp()))
     return {'masivos': masivos, 'aisladas': aisladas}
+
+
+# --- El monitoreo estuvo ciego y volvió: quién no se recuperó ------------------------
+
+# Con barridos cada 2 min, 15 sin ninguno válido es que el monitoreo no estuvo mirando:
+# el servidor apagado, o barridos abortados porque perdió la ruta (ver
+# `sondear_enlaces_farmacias`). Holgado a propósito para no saltar por un worker lento.
+HUECO_REANUDACION_MINUTOS = 15
+
+# Cuánto se espera antes de avisar. Las que se recuperan solas lo hacen en los primeros
+# minutos (el 17-oct-2026, 89 de 112 en el primer barrido) y una caída se declara recién
+# al tercer sondeo fallido: avisar antes mandaría a reiniciar equipos que iban a volver.
+ESPERA_AVISO_REANUDACION_MINUTOS = 15
+
+# Las que cayeron en la hora anterior al hueco cuentan como "respondían antes". El
+# 17-oct la red del data center se degradó de 02:54 a 03:09 antes de apagarse del todo,
+# y 112 farmacias cayeron en ese tramo: por el corte, no por ellas.
+MARGEN_PREVIO_AL_HUECO_MINUTOS = 60
+
+# Pasado esto, un aviso que nunca salió (canales sin configurar, worker caído) ya no
+# sirve: mandar "reiniciá estas" de un apagón de ayer confunde más de lo que ayuda.
+VIGENCIA_REANUDACION_HORAS = 24
+
+
+def _registrar_reanudacion_si_hubo_hueco():
+    from datetime import timedelta
+
+    from django.db.models import Max
+
+    from .models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia, ReanudacionMonitoreo
+
+    ahora = timezone.now()
+    ultimo = EstadoEnlaceFarmacia.objects.aggregate(m=Max('ultima_verificacion'))['m']
+    if ultimo is None or ahora - ultimo < timedelta(minutes=HUECO_REANUDACION_MINUTOS):
+        return None
+    respondian = set(
+        EstadoEnlaceFarmacia.objects.filter(alcanzable=True).values_list('farmacia_id', flat=True),
+    )
+    degradadas = set(
+        EventoEnlaceFarmacia.objects.filter(
+            fin__isnull=True, inicio__gte=ultimo - timedelta(minutes=MARGEN_PREVIO_AL_HUECO_MINUTOS),
+        ).values_list('farmacia_id', flat=True),
+    )
+    logger.warning(
+        'Enlaces: el monitoreo no barrió desde %s (%d min). Se registra la reanudación para '
+        'avisar qué farmacias no vuelven.', ultimo, (ahora - ultimo).total_seconds() // 60,
+    )
+    return ReanudacionMonitoreo.objects.create(
+        apagado_desde=ultimo, reanudado_en=ahora, farmacias_previas=sorted(respondian | degradadas),
+    )
+
+
+def farmacias_sin_volver(reanudacion):
+    """Las que respondían antes del hueco y todavía no contestan. Cuenta también las que
+    fallan pero aún no cruzaron el umbral de caída: para esto da igual."""
+    from django.db.models import Q
+
+    from .models import EstadoEnlaceFarmacia
+
+    estados = EstadoEnlaceFarmacia.objects.filter(
+        farmacia_id__in=reanudacion.farmacias_previas, farmacia__activa=True,
+    ).filter(Q(alcanzable=False) | Q(fallas_consecutivas__gt=0)).select_related('farmacia')
+    return sorted((e.farmacia for e in estados), key=lambda f: (nombre_proveedor(f), f.codigo))
+
+
+def reanudacion_vigente(farmacias=None):
+    """La última reanudación de las últimas 24 h con farmacias que no volvieron, para el
+    panel; None si no hay. `farmacias` limita a las del alcance del usuario."""
+    from datetime import timedelta
+
+    from .models import ReanudacionMonitoreo
+
+    r = ReanudacionMonitoreo.objects.filter(
+        reanudado_en__gte=timezone.now() - timedelta(hours=VIGENCIA_REANUDACION_HORAS),
+    ).first()
+    if r is None:
+        return None
+    pendientes = farmacias_sin_volver(r)
+    if farmacias is not None:
+        permitidas = set(farmacias)
+        pendientes = [f for f in pendientes if f.pk in permitidas]
+    if not pendientes:
+        return None
+    return {'reanudacion': r, 'pendientes': pendientes,
+            'previas': len(r.farmacias_previas)}
+
+
+def avisar_reanudacion_monitoreo() -> dict:
+    """Un solo aviso, a los mismos canales que las caídas, con las farmacias que no
+    volvieron después de que el monitoreo estuvo ciego. Corre con
+    `notificar_cambios_enlaces_task`."""
+    from datetime import timedelta
+
+    from django.conf import settings
+    from django.core.mail import send_mail
+
+    from .models import ReanudacionMonitoreo
+
+    resumen = {'pendientes': 0, 'enviado': False}
+    ahora = timezone.now()
+    r = ReanudacionMonitoreo.objects.filter(
+        avisado_en__isnull=True,
+        reanudado_en__lte=ahora - timedelta(minutes=ESPERA_AVISO_REANUDACION_MINUTOS),
+    ).first()
+    if r is None:
+        return resumen
+    if ahora - r.reanudado_en > timedelta(hours=VIGENCIA_REANUDACION_HORAS):
+        ReanudacionMonitoreo.objects.filter(pk=r.pk).update(avisado_en=ahora)
+        return resumen
+
+    pendientes = farmacias_sin_volver(r)
+    resumen['pendientes'] = len(pendientes)
+    if not pendientes:
+        # Volvieron todas: no hay nada que pedirle a nadie.
+        ReanudacionMonitoreo.objects.filter(pk=r.pk).update(avisado_en=ahora)
+        return resumen
+
+    destinatarios = list(getattr(settings, 'ENLACES_NOTIFICAR_A', []) or [])
+    chat_telegram = getattr(settings, 'ENLACES_TELEGRAM_CHAT_ID', '')
+    if not destinatarios and not chat_telegram:
+        return resumen
+
+    previas = len(r.farmacias_previas)
+    horas, minutos = divmod(r.duracion_minutos, 60)
+    asunto = f'[Enlaces] {len(pendientes)} farmacia(s) no volvieron tras el apagón del monitoreo'
+    lineas = [
+        f'El monitoreo de enlaces no estuvo mirando de {timezone.localtime(r.apagado_desde):%d/%m %H:%M} '
+        f'a {timezone.localtime(r.reanudado_en):%H:%M} ({horas} h {minutos} min).',
+        f'De {previas} farmacias que respondían antes, {previas - len(pendientes)} volvieron solas '
+        f'y {len(pendientes)} NO:',
+        '',
+        'Lo más probable es que necesiten reiniciar el equipo de borde (router): el 17-oct-2026, '
+        'tras un corte de luz en el data center, las que no volvieron solas se recuperaron recién '
+        'con un reinicio manual.',
+    ]
+    por_proveedor = {}
+    for f in pendientes:
+        por_proveedor.setdefault(nombre_proveedor(f), []).append(f)
+    for proveedor, fs in por_proveedor.items():
+        lineas.append(f'\n  {proveedor} ({len(fs)})')
+        for f in fs:
+            lineas.append(f'    {f.codigo:<10} {f.ip_router}  {f.ciudad or f.ubicacion}'
+                          f'{"  SIN respaldo" if not f.tiene_backup else ""}')
+    cuerpo = '\n'.join(lineas)
+
+    if destinatarios:
+        send_mail(asunto, cuerpo, None, destinatarios, fail_silently=True)
+    if chat_telegram:
+        from .services import _enviar_telegram
+        from .telegram_bot import teclado_para_farmacias
+
+        _enviar_telegram(chat_telegram, f'{asunto}\n\n{cuerpo}',
+                         teclado=teclado_para_farmacias([f.codigo for f in pendientes]) or None)
+    ReanudacionMonitoreo.objects.filter(pk=r.pk).update(avisado_en=ahora)
+    resumen['enviado'] = True
+    return resumen
 
 
 def notificar_cambios_enlaces() -> dict:

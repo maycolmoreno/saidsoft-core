@@ -937,6 +937,43 @@ class EventoEnlaceFarmacia(models.Model):
         return int((self.fin - self.inicio).total_seconds() // 60)
 
 
+class ReanudacionMonitoreo(models.Model):
+    """El monitoreo de enlaces estuvo ciego y volvió: cuándo, y quién respondía antes.
+
+    El 17-oct-2026 se cortó la luz en el data center: el servidor dejó de sondear de ~03:15
+    a 06:00. Al volver, 38 farmacias no respondían, y unas 35 necesitaron que alguien
+    reiniciara el router a mano — recién en horario de apertura, 08:00 a 09:40, porque nada
+    las distinguía de una caída cualquiera. Las demás se recuperaron porque su router se
+    reinició solo justo antes de que volviera el data center (ver PLAN_MODERNIZACION.md
+    §10-CJ).
+
+    Una fila se crea en el primer barrido VÁLIDO después de un hueco: si el anterior fue
+    hace más de `apps.monitoreo.enlaces.HUECO_REANUDACION_MINUTOS`, el monitoreo no estuvo
+    mirando (servidor apagado, o barridos abortados porque perdió la ruta).
+    `farmacias_previas` es quién respondía justo antes del hueco: contra eso se mide quién
+    no volvió.
+    """
+    apagado_desde = models.DateTimeField(help_text='Último barrido válido antes del hueco.')
+    reanudado_en = models.DateTimeField(db_index=True)
+    farmacias_previas = models.JSONField(
+        default=list, help_text='IDs de las farmacias que respondían antes del hueco.',
+    )
+    avisado_en = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'reanudacion_monitoreo'
+        ordering = ['-reanudado_en']
+        verbose_name = 'Reanudación del monitoreo'
+        verbose_name_plural = 'Reanudaciones del monitoreo'
+
+    def __str__(self):
+        return f'Monitoreo ciego {self.apagado_desde:%d/%m %H:%M} → {self.reanudado_en:%H:%M}'
+
+    @property
+    def duracion_minutos(self) -> int:
+        return int((self.reanudado_en - self.apagado_desde).total_seconds() // 60)
+
+
 class EstadoRedActivo(models.Model):
     """Si un activo SIN agente responde en la red de su farmacia, y cuándo se lo vio.
 

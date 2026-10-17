@@ -7400,3 +7400,45 @@ respondieron no entran: no son caídas.
 Contra los datos reales al escribirlo: el corte de las 06:05 (38 cayeron, 32 volvieron, 6
 siguen), el de las 02:54 (112 de tres proveedores, queda MM052 — marcado como probable
 pérdida de visibilidad del monitoreo), y como aisladas GBV07 (sin respaldo) y GP063 (23 días).
+
+## §10-CJ — Apagón del data center: por qué ~35 farmacias necesitaron reinicio, y el aviso (17-oct-2026)
+
+**Qué pasó.** Corte de luz en el data center. La red se degradó de 02:54 a 03:09 (112
+farmacias de tres proveedores cayeron en ese tramo), el servidor de monitoreo dejó de
+funcionar de ~03:15 a 06:00 (las lecturas SNMP se cortan en ese hueco), y al volver 38
+farmacias no respondían. Unas 35 se recuperaron recién cuando alguien reinició el router,
+de 08:00 a 09:40, en horario de apertura.
+
+**Lo que distingue a las que volvieron solas** (cruzando `ReinicioEquipoBorde` con la
+recuperación, solo routers con SNMP):
+
+| | su router arrancó solo 05:43-06:02 | reinicio manual después | no se reinició |
+|---|---|---|---|
+| se recuperaron solas (21, Telconet con respaldo) | 18 | 3 | 0 |
+| quedaron trabadas (12) | 1 | 9 | 2 |
+
+54 de los 57 routers con SNMP que cayeron esa noche arrancaron solos entre 05:43 y 06:02 —
+22 en el mismo minuto, 05:53—, de Punto Net y Telconet, en ciudades distintas: no fue luz
+en las farmacias sino algo configurado en el router (watchdog o script que reinicia al no
+alcanzar el data center). Los routers quedan con un estado viejo de la conexión con el
+data center que solo un reinicio limpia; los que se reinician solos lo resuelven al volver
+el data center, los demás esperan a alguien.
+
+**Descartado:** que el router haya pasado a un enlace de respaldo — leído por SNMP en 33
+routers, ninguno tiene una segunda salida (todos salen solo por `ether3` a Telconet); el
+"respaldo" de la planilla no está en el Mikrotik. Tampoco es un modelo ni una versión de
+RouterOS (mezclados en ambos grupos).
+
+**Por confirmar** (no se ve por SNMP): qué es ese estado viejo. Candidato: IPsec sin DPD.
+Comparar `/system watchdog`, `/ip ipsec peer print detail`, `/system scheduler` y
+`/tool netwatch` entre un router que volvió solo (ME001, MM006) y uno trabado (MCU06,
+MDG01). Limitación: en San Gregorio solo 8 de 366 routers tienen SNMP.
+
+### El aviso
+
+`ReanudacionMonitoreo`: el primer barrido válido después de 15 min sin ninguno registra el
+hueco y quién respondía antes (más las que cayeron en la hora previa, que son del corte).
+15 min después, `avisar_reanudacion_monitoreo` —con `notificar_cambios_enlaces_task`, a los
+mismos canales— manda UNA vez la lista de las que no volvieron, por proveedor, para
+reiniciarlas a primera hora. En /enlaces/, el bloque "No volvieron tras el apagón" dentro de
+"Qué atender primero" mientras queden pendientes (24 h).

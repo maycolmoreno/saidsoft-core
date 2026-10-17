@@ -2,7 +2,7 @@ import logging
 
 from celery import shared_task
 
-from .enlaces import notificar_cambios_enlaces, sondear_enlaces_farmacias
+from .enlaces import avisar_reanudacion_monitoreo, notificar_cambios_enlaces, sondear_enlaces_farmacias
 from .mikrotik import sincronizar_ancho_banda_farmacias, solicitar_sondeo_red_farmacias_via_agente
 from .services import (
     escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
@@ -139,7 +139,12 @@ def notificar_cambios_enlaces_task():
 
     Tampoco va dentro de registrar_sondeo: eso lo llaman tambien el comando manual y la
     API de ingesta, y ninguno de los dos deberia mandar correo por su cuenta."""
+    # Las que no volvieron tras un apagón del propio monitoreo (§10-CJ): un aviso aparte,
+    # una sola vez por apagón. Va acá y no en el barrido por la misma razón que el resto.
+    reanudacion = avisar_reanudacion_monitoreo()
     resumen = notificar_cambios_enlaces()
+    if reanudacion['enviado']:
+        return f'{reanudacion["pendientes"]} farmacia(s) sin volver tras el apagón del monitoreo — avisado.'
     if not resumen['caidos'] and not resumen['recuperados']:
         return 'Sin novedades de enlaces.'
     estado = 'avisado' if resumen['enviado'] else 'SIN avisar (revisar ENLACES_NOTIFICAR_A)'

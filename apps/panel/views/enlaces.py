@@ -221,11 +221,12 @@ def enlaces_farmacias_lista(request):
         fin__isnull=True, farmacia__in=base.values('pk'),
     ).select_related('farmacia').order_by('inicio')
 
-    from apps.monitoreo.enlaces import incidentes_de_enlace
+    from apps.monitoreo.enlaces import incidentes_de_enlace, reanudacion_vigente
 
     return render(request, 'panel/enlaces_farmacias_lista.html', {
         # Qué atender primero: cortes masivos como un incidente, y las aisladas aparte.
         'incidentes': incidentes_de_enlace(base.values('pk')),
+        'reanudacion': reanudacion_vigente(base.values_list('pk', flat=True)),
         'filas': filas,
         'activas': activas,
         'caidas': caidas,
