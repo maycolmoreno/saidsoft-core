@@ -7442,3 +7442,27 @@ hueco y quién respondía antes (más las que cayeron en la hora previa, que son
 mismos canales— manda UNA vez la lista de las que no volvieron, por proveedor, para
 reiniciarlas a primera hora. En /enlaces/, el bloque "No volvieron tras el apagón" dentro de
 "Qué atender primero" mientras queden pendientes (24 h).
+
+## §10-CK — Historial de enlaces y disponibilidad para el SLA (17-oct-2026)
+
+Antes el historial de caídas se veía de a una farmacia (las últimas 5, en su ficha) o en el
+Admin, sin exportar y sin disponibilidad. Para reclamarle un SLA a un proveedor hace falta el
+período entero, por proveedor, con el % de cada sitio.
+
+**Monitoreo → Enlaces → "Historial y disponibilidad"** (`/monitoreo/enlaces/historial/`), y
+la tarjeta "Disponibilidad de enlaces" en Reportes. Filtros por fechas (30 días por defecto),
+farmacia, proveedor, nodo y duración mínima; vista por farmacia (disponibilidad, peores
+primero) o por evento; exportación CSV de las dos.
+
+- **Lo que el monitoreo no vio no cuenta para la disponibilidad.** Caídas de varios
+  proveedores a la vez se clasifican `ceguera` (mismos racimos que
+  `clasificar_caidas_simultaneas`) y se muestran, pero no se cargan al proveedor. En los 30
+  días a la fecha fueron 768 de 2.938: un cuarto del historial, que sin esto inflaba el
+  reclamo con cosas que no eran del enlace.
+- Un corte del mismo proveedor (`proveedor`) sí cuenta, y se cuenta una vez como corte
+  masivo. Se clasifica mirando la flota entera aunque se filtre una farmacia.
+- La duración se recorta al período: una caída de 23 días no suma 23 días en un informe de
+  una semana.
+
+Primera foto (30 días al 17-oct): Telconet 1.992 caídas en 526 farmacias y 142 cortes
+masivos; Punto Net 165 en 109 y 3 cortes. Peor sitio: GP063 (22,9 %, caída desde el 24-sep).

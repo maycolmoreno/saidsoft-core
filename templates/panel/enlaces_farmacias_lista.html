@@ -14,6 +14,8 @@ todo y solo se lee una vez.
         <h1 class="text-xl font-semibold">Estado de enlaces</h1>
         <p class="text-sm text-[var(--text-faint)]">Monitoreo de conectividad de las farmacias</p>
     </div>
+    <div class="flex items-start gap-2 flex-wrap">
+    <a href="{% url 'panel:enlaces_historial' %}" class="btn secondary text-xs" style="padding:6px 12px;">Historial y disponibilidad</a>
     <details class="relative">
         <summary class="btn secondary text-xs cursor-pointer list-none" style="padding:6px 12px;">
             ? Información del monitoreo
@@ -41,6 +43,7 @@ todo y solo se lee una vez.
             </p>
         </div>
     </details>
+    </div>
 </div>
 
 {% comment %}

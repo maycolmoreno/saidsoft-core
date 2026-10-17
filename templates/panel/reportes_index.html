@@ -17,6 +17,27 @@
     </div>
     {% endif %}
 
+    {# --- Enlaces (§10-CK) --- #}
+    {% if perms.monitoreo.view_estadoenlacefarmacia %}
+    <div class="card p-5">
+        <h2 class="font-medium mb-1">Disponibilidad de enlaces</h2>
+        <p class="text-sm text-[var(--text-faint)] mb-4">Caídas y % de disponibilidad por farmacia en un período, para el reclamo del SLA al proveedor.</p>
+        <form method="get" action="{% url 'panel:enlaces_historial' %}" class="space-y-3">
+            <input type="hidden" name="formato" value="csv">
+            <div class="grid grid-cols-2 gap-2">
+                <input type="date" name="desde" class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);" aria-label="Desde">
+                <input type="date" name="hasta" class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);" aria-label="Hasta">
+            </div>
+            <select name="vista" class="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+                <option value="farmacias">Resumen por farmacia</option>
+                <option value="eventos">Cada caída</option>
+            </select>
+            <button type="submit" class="btn primary w-full justify-center">Descargar CSV</button>
+            <a href="{% url 'panel:enlaces_historial' %}" class="block text-center text-xs text-[var(--text-faint)] hover:underline">Ver en pantalla</a>
+        </form>
+    </div>
+    {% endif %}
+
     {# --- Cumplimiento --- #}
     <div class="card p-5">
         <h2 class="font-medium mb-1">Cumplimiento de versión</h2>

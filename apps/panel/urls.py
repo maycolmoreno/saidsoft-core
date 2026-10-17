@@ -115,6 +115,7 @@ urlpatterns = [
     path('monitoreo/mantenimiento/nueva/', views.ventana_mantenimiento_crear, name='ventana_mantenimiento_crear'),
     path('monitoreo/red-farmacias/', views.red_farmacias_lista, name='red_farmacias_lista'),
     path('monitoreo/enlaces/', views.enlaces_farmacias_lista, name='enlaces_farmacias_lista'),
+    path('monitoreo/enlaces/historial/', views.enlaces_historial, name='enlaces_historial'),
     path('monitoreo/enlaces/<int:pk>/', views.enlace_farmacia_modal, name='enlace_farmacia_modal'),
     path(
         'monitoreo/enlaces/<int:pk>/solicitar/', views.enlace_farmacia_solicitar,

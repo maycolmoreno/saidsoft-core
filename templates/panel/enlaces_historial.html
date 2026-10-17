@@ -1,0 +1,164 @@
+{% extends "panel/base.html" %}
+{% load l10n %}
+{% block title %}Historial de enlaces · SAIDSOFT{% endblock %}
+{% block content %}
+{% comment %}
+Historial de caídas de un período (apps.monitoreo.historial_enlaces). Arriba lo que se
+lleva a la reunión con el proveedor —por proveedor y por farmacia, con disponibilidad—, y
+el detalle evento a evento en la otra vista. Lo que el monitoreo no vio (caídas de varios
+proveedores a la vez) se muestra pero no se carga a la disponibilidad.
+{% endcomment %}
+{% with campo="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" %}
+
+<div class="flex items-start justify-between gap-4 mb-5 flex-wrap">
+    <div>
+        <h1 class="text-xl font-semibold">Historial de enlaces</h1>
+        <p class="text-sm text-[var(--text-faint)]">
+            Caídas del {{ filtros.desde|date:"d/m/Y" }} al {{ filtros.hasta|date:"d/m/Y" }} y disponibilidad para el reclamo del SLA
+        </p>
+    </div>
+    <div class="flex gap-2 flex-wrap">
+        <a href="{% url 'panel:enlaces_farmacias_lista' %}" class="btn secondary text-xs">← Estado actual</a>
+        <a href="?{{ query_filtros }}{% if query_filtros %}&{% endif %}formato=csv" class="btn primary text-xs">Exportar CSV</a>
+    </div>
+</div>
+
+<form method="get" class="card p-4 mb-4">
+    <input type="hidden" name="vista" value="{{ filtros.vista }}">
+    <div class="grid gap-3" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="desde">Desde</label>
+            <input type="date" name="desde" id="desde" value="{{ filtros.desde|date:'Y-m-d' }}" class="{{ campo }}" style="border:1px solid var(--border);">
+        </div>
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="hasta">Hasta</label>
+            <input type="date" name="hasta" id="hasta" value="{{ filtros.hasta|date:'Y-m-d' }}" class="{{ campo }}" style="border:1px solid var(--border);">
+        </div>
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="q">Farmacia</label>
+            <input type="search" name="q" id="q" value="{{ filtros.q }}" placeholder="Código o nombre…" class="{{ campo }}" style="border:1px solid var(--border);">
+        </div>
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="proveedor">Proveedor</label>
+            <select name="proveedor" id="proveedor" class="{{ campo }}" style="border:1px solid var(--border);">
+                <option value="">Todos</option>
+                {% for p in proveedores %}<option value="{{ p }}" {% if filtros.proveedor == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="grupo">Nodo</label>
+            <select name="grupo" id="grupo" class="{{ campo }}" style="border:1px solid var(--border);">
+                <option value="">Todos</option>
+                {% for g in grupos %}<option value="{{ g.codigo }}" {% if filtros.grupo == g.codigo %}selected{% endif %}>{{ g.codigo }}</option>{% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="minimo">Duración mínima</label>
+            <select name="minimo" id="minimo" class="{{ campo }}" style="border:1px solid var(--border);">
+                <option value="0" {% if filtros.minimo == 0 %}selected{% endif %}>Todas</option>
+                <option value="15" {% if filtros.minimo == 15 %}selected{% endif %}>15 min o más</option>
+                <option value="60" {% if filtros.minimo == 60 %}selected{% endif %}>1 hora o más</option>
+                <option value="240" {% if filtros.minimo == 240 %}selected{% endif %}>4 horas o más</option>
+            </select>
+        </div>
+        <div class="flex items-end">
+            <button type="submit" class="btn primary w-full justify-center">Aplicar</button>
+        </div>
+    </div>
+</form>
+
+{% if historial.por_proveedor %}
+<div class="grid gap-3 mb-5" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));">
+    {% for p in historial.por_proveedor %}
+    <a href="?{% if filtros.proveedor == p.proveedor %}{% else %}proveedor={{ p.proveedor|urlencode }}&{% endif %}desde={{ filtros.desde|date:'Y-m-d' }}&hasta={{ filtros.hasta|date:'Y-m-d' }}&vista={{ filtros.vista }}"
+       class="card p-4 block hover:opacity-80 transition-opacity" {% if filtros.proveedor == p.proveedor %}style="outline:2px solid var(--border-strong,var(--border));"{% endif %}>
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">{{ p.proveedor }}</div>
+        <div class="text-2xl font-semibold num">{{ p.caidas }} <span class="text-sm font-normal text-[var(--text-faint)]">caídas</span></div>
+        <div class="text-xs text-[var(--text-faint)]">
+            {{ p.farmacias|length }} farmacia(s) · {{ p.minutos_sla|floatformat:0 }} min caídos
+            {% if p.cortes_masivos %}· {{ p.cortes_masivos }} corte(s) masivo(s){% endif %}
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if historial.excluidas_por_ceguera %}
+<div class="card p-3 mb-4 text-xs text-[var(--text-faint)]" style="border-left:3px solid var(--info);">
+    {{ historial.excluidas_por_ceguera }} caída(s) del período no se cargan a la disponibilidad: cayeron sitios de varios
+    proveedores a la vez, que es lo que pasa cuando el que pierde la visibilidad es el monitoreo (por ejemplo, el corte
+    de luz del data center del 17-oct). Se listan igual en la vista por evento, marcadas como «Monitoreo sin visibilidad».
+</div>
+{% endif %}
+
+<div class="flex gap-2 mb-3">
+    <a href="?{{ query_filtros|cut:'vista=eventos'|cut:'vista=farmacias' }}&vista=farmacias" class="btn {% if filtros.vista == 'farmacias' %}primary{% else %}secondary{% endif %} text-xs">Por farmacia</a>
+    <a href="?{{ query_filtros|cut:'vista=eventos'|cut:'vista=farmacias' }}&vista=eventos" class="btn {% if filtros.vista == 'eventos' %}primary{% else %}secondary{% endif %} text-xs">Por evento ({{ total_caidas }})</a>
+</div>
+
+<div class="card" style="overflow-x:auto;">
+    {% if not pagina.object_list %}
+    <div class="p-6 text-sm text-[var(--text-faint)] text-center">Sin caídas en el período con estos filtros.</div>
+    {% elif filtros.vista == 'eventos' %}
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-3 py-2">Farmacia</th><th class="text-left px-3 py-2">Proveedor</th>
+                <th class="text-left px-3 py-2">Inicio</th><th class="text-left px-3 py-2">Fin</th>
+                <th class="text-right px-3 py-2">Duración</th><th class="text-left px-3 py-2">Tipo</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for c in pagina.object_list %}
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-3 py-2 font-medium mono">{{ c.farmacia.codigo }}</td>
+                <td class="px-3 py-2 text-[var(--text-faint)]">{{ c.proveedor }}</td>
+                <td class="px-3 py-2 num">{{ c.evento.inicio|date:"d/m/Y H:i" }}</td>
+                <td class="px-3 py-2 num">{% if c.evento.fin %}{{ c.evento.fin|date:"d/m/Y H:i" }}{% else %}<span style="color:var(--critical);">en curso</span>{% endif %}</td>
+                <td class="px-3 py-2 text-right num">{{ c.minutos|floatformat:0 }} min</td>
+                <td class="px-3 py-2 text-xs">
+                    {% if c.clase == 'ceguera' %}<span class="pill info">{{ etiquetas.ceguera }}</span>
+                    {% elif c.clase == 'proveedor' %}<span class="pill warning">{{ etiquetas.proveedor }}</span>
+                    {% else %}<span class="text-[var(--text-faint)]">{{ etiquetas.individual }}</span>{% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <table class="w-full text-sm">
+        <thead style="background:var(--panel);">
+            <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                <th class="text-left px-3 py-2">Farmacia</th><th class="text-left px-3 py-2">Proveedor</th>
+                <th class="text-left px-3 py-2">Nodo</th><th class="text-right px-3 py-2">Caídas</th>
+                <th class="text-right px-3 py-2">Tiempo caído</th><th class="text-right px-3 py-2">Disponibilidad</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in pagina.object_list %}
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-3 py-2">
+                    <a href="?{{ query_filtros|cut:'vista=farmacias' }}&q={{ r.farmacia.codigo }}&vista=eventos" class="font-medium mono hover:underline">{{ r.farmacia.codigo }}</a>
+                    <div class="text-xs text-[var(--text-faint)]">{{ r.farmacia.ciudad|default:r.farmacia.ubicacion }}</div>
+                </td>
+                <td class="px-3 py-2 text-[var(--text-faint)]">{{ r.proveedor }}</td>
+                <td class="px-3 py-2 text-[var(--text-faint)]">{{ r.farmacia.grupo.codigo }}</td>
+                <td class="px-3 py-2 text-right num">{{ r.caidas_sla }}{% if r.caidas != r.caidas_sla %} <span class="text-xs text-[var(--text-faint)]" title="{{ r.caidas }} en total, contando las que el monitoreo no vio">({{ r.caidas }})</span>{% endif %}</td>
+                <td class="px-3 py-2 text-right num">{{ r.minutos_sla|floatformat:0 }} min</td>
+                <td class="px-3 py-2 text-right num font-medium"
+                    style="color:{% if r.disponibilidad_sla < 99 %}var(--critical){% elif r.disponibilidad_sla < 99.5 %}var(--warning){% else %}var(--text){% endif %};">
+                    {% localize off %}{{ r.disponibilidad_sla|floatformat:2 }}{% endlocalize %} %
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+{% include "panel/_paginador.html" %}
+<p class="text-xs text-[var(--text-faint)] mt-3">
+    La disponibilidad es la del período, sin contar las caídas del monitoreo. Las farmacias sin caídas no se listan:
+    su disponibilidad fue del 100 %. Una caída que empezó antes o sigue abierta cuenta solo los minutos dentro del período.
+</p>
+{% endwith %}
+{% endblock %}

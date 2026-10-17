@@ -11217,3 +11217,140 @@ class ReanudacionMonitoreoTests(TestCase):
         self.assertContains(resp, 'No volvieron tras el apagón')
         self.assertContains(resp, '2 no volvieron')
         self.assertContains(resp, self.farmacias[0].codigo)
+
+
+class HistorialEnlacesTests(TestCase):
+    """Historial y disponibilidad de enlaces (§10-CK).
+
+    Lo que fija: que la duración se recorte al período, que lo que el monitoreo no vio
+    (varios proveedores a la vez) se muestre pero no cuente para la disponibilidad, que un
+    corte masivo se reconozca aunque se filtre una sola farmacia, y que el CSV salga.
+    """
+
+    def setUp(self):
+        from apps.monitoreo.models import EstadoEnlaceFarmacia
+
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.grupo = Grupo.objects.create(codigo='TRX940')
+        self.hoy = timezone.localdate()
+        self.n = 0
+        self.usuario = User.objects.create_user(username='u_hist', password='x')
+        self.usuario.user_permissions.add(Permission.objects.get(codename='view_estadoenlacefarmacia'))
+        PerfilUsuario.objects.create(usuario=self.usuario, acceso_todas_unidades=True)
+        self.client.force_login(self.usuario)
+        self._estado = EstadoEnlaceFarmacia
+
+    def _farmacia(self, isp='TELCONET'):
+        self.n += 1
+        f = Farmacia.objects.create(codigo=f'GH{self.n:03d}', grupo=self.grupo, unidad_negocio=self.sg,
+                                    tipo_enlace=isp, ip_router=f'10.5.5.{self.n}')
+        self._estado.objects.create(farmacia=f, alcanzable=True, respondio_alguna_vez=True)
+        return f
+
+    def _caida(self, farmacia, inicio, minutos):
+        from apps.monitoreo.models import EventoEnlaceFarmacia
+
+        return EventoEnlaceFarmacia.objects.create(
+            farmacia=farmacia, inicio=inicio, fin=inicio + timedelta(minutes=minutos) if minutos is not None else None)
+
+    def _historial(self, dias=7, **kw):
+        from apps.monitoreo.historial_enlaces import historial_enlaces
+
+        hasta = timezone.now()
+        return historial_enlaces(Farmacia.objects.all(), hasta - timedelta(days=dias), hasta, **kw)
+
+    def test_disponibilidad_de_una_caida_del_sitio(self):
+        f = self._farmacia()
+        self._caida(f, timezone.now() - timedelta(days=2), 60)
+        r = self._historial(dias=1 + 6)
+        fila = r.por_farmacia[0]
+        self.assertEqual((fila.caidas_sla, round(fila.minutos_sla)), (1, 60))
+        self.assertAlmostEqual(fila.disponibilidad_sla, round(100 * (1 - 60 / (7 * 24 * 60)), 2), places=1)
+
+    def test_la_duracion_se_recorta_al_periodo(self):
+        """Una caída de 23 días no suma 23 días en un informe de una semana."""
+        f = self._farmacia()
+        self._caida(f, timezone.now() - timedelta(days=23), None)
+        fila = self._historial(dias=7).por_farmacia[0]
+        self.assertAlmostEqual(fila.minutos_sla, 7 * 24 * 60, delta=2)
+        self.assertEqual(fila.disponibilidad_sla, 0.0)
+
+    def test_lo_que_el_monitoreo_no_vio_no_cuenta_para_la_disponibilidad(self):
+        inicio = timezone.now() - timedelta(days=1)
+        afectadas = [self._farmacia(isp) for isp in ('TELCONET', 'PUNTO NET', 'CLARO')]
+        for f in afectadas:
+            self._caida(f, inicio, 120)
+        r = self._historial()
+        self.assertEqual(r.excluidas_por_ceguera, 3)
+        self.assertTrue(all(fila.minutos_sla == 0 and fila.disponibilidad_sla == 100 for fila in r.por_farmacia))
+        self.assertEqual({c.clase for c in r.caidas}, {'ceguera'})
+
+    def test_un_corte_del_proveedor_si_cuenta_y_se_cuenta_una_vez(self):
+        inicio = timezone.now() - timedelta(days=1)
+        for _ in range(4):
+            self._caida(self._farmacia(), inicio, 30)
+        r = self._historial()
+        self.assertEqual({c.clase for c in r.caidas}, {'proveedor'})
+        self.assertEqual(r.por_proveedor[0].cortes_masivos, 1)
+        self.assertEqual(r.por_proveedor[0].caidas, 4)
+
+    def test_filtrar_una_farmacia_no_convierte_el_corte_en_caida_del_sitio(self):
+        from apps.monitoreo.historial_enlaces import historial_enlaces
+
+        inicio = timezone.now() - timedelta(days=1)
+        fs = [self._farmacia() for _ in range(3)]
+        for f in fs:
+            self._caida(f, inicio, 30)
+        hasta = timezone.now()
+        r = historial_enlaces(Farmacia.objects.filter(pk=fs[0].pk), hasta - timedelta(days=7), hasta)
+        self.assertEqual([c.clase for c in r.caidas], ['proveedor'])
+
+    def test_filtro_por_duracion_minima(self):
+        f = self._farmacia()
+        self._caida(f, timezone.now() - timedelta(days=1), 5)
+        self._caida(f, timezone.now() - timedelta(days=2), 90)
+        self.assertEqual(len(self._historial(minimo_minutos=60).caidas), 1)
+
+    def test_los_que_nunca_respondieron_no_entran(self):
+        f = self._farmacia()
+        self._estado.objects.filter(farmacia=f).update(respondio_alguna_vez=False)
+        self._caida(f, timezone.now() - timedelta(days=1), None)
+        self.assertEqual(self._historial().caidas, [])
+
+    def test_la_pagina_y_sus_dos_vistas(self):
+        f = self._farmacia()
+        self._caida(f, timezone.now() - timedelta(days=1), 45)
+        url = reverse('panel:enlaces_historial')
+        resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Historial de enlaces')
+        self.assertContains(resp, f.codigo)
+        self.assertContains(resp, 'TELCONET')
+        resp = self.client.get(url, {'vista': 'eventos'})
+        self.assertContains(resp, 'Del sitio')
+
+    def test_exporta_csv_por_farmacia_y_por_evento(self):
+        f = self._farmacia()
+        self._caida(f, timezone.now() - timedelta(days=1), 45)
+        url = reverse('panel:enlaces_historial')
+        resp = self.client.get(url, {'formato': 'csv'})
+        self.assertEqual(resp['Content-Type'], 'text/csv; charset=utf-8')
+        cuerpo = resp.content.decode('utf-8-sig')
+        self.assertIn('disponibilidad_sla_pct', cuerpo)
+        self.assertIn(f.codigo, cuerpo)
+        cuerpo = self.client.get(url, {'formato': 'csv', 'vista': 'eventos'}).content.decode('utf-8-sig')
+        self.assertIn('cuenta_para_sla', cuerpo)
+        self.assertIn('45', cuerpo)
+
+    def test_sin_permiso_no_entra(self):
+        otro = User.objects.create_user(username='u_hist_no', password='x')
+        PerfilUsuario.objects.create(usuario=otro, acceso_todas_unidades=True)
+        self.client.force_login(otro)
+        self.assertEqual(self.client.get(reverse('panel:enlaces_historial')).status_code, 403)
+
+    def test_reportes_lo_ofrece_solo_a_quien_puede_verlo(self):
+        self.assertContains(self.client.get(reverse('panel:reportes_index')), 'Disponibilidad de enlaces')
+        otro = User.objects.create_user(username='u_hist_rep', password='x')
+        PerfilUsuario.objects.create(usuario=otro, acceso_todas_unidades=True)
+        self.client.force_login(otro)
+        self.assertNotContains(self.client.get(reverse('panel:reportes_index')), 'Disponibilidad de enlaces')
