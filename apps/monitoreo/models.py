@@ -918,6 +918,11 @@ class EventoEnlaceFarmacia(models.Model):
         ordering = ['-inicio']
         indexes = [
             models.Index(fields=['farmacia', '-inicio']),
+            # Las caídas ABIERTAS se consultan en cada carga de /enlaces/ y cada 5 min en el
+            # aviso, y la tabla no se purga (es la evidencia del SLA): sin esto es un
+            # recorrido entero que crece sin techo. Mismo criterio que el de alertas (0039).
+            models.Index(fields=['farmacia'], condition=models.Q(fin__isnull=True),
+                         name='evento_enlace_abierto'),
         ]
         verbose_name = 'Caída de enlace'
         verbose_name_plural = 'Caídas de enlace'
@@ -963,6 +968,16 @@ class ReanudacionMonitoreo(models.Model):
     class Meta:
         db_table = 'reanudacion_monitoreo'
         ordering = ['-reanudado_en']
+        constraints = [
+            # Un apagón, una fila. Sin esto, dos barridos que arrancan juntos al volver el
+            # worker —o uno que muere después de registrar y antes de guardar estados—
+            # creaban dos filas del mismo hueco y salían dos avisos.
+            models.UniqueConstraint(fields=['apagado_desde'], name='reanudacion_unica_por_hueco'),
+            models.CheckConstraint(
+                condition=models.Q(reanudado_en__gt=models.F('apagado_desde')),
+                name='reanudacion_despues_del_apagado',
+            ),
+        ]
         verbose_name = 'Reanudación del monitoreo'
         verbose_name_plural = 'Reanudaciones del monitoreo'
 
@@ -972,6 +987,25 @@ class ReanudacionMonitoreo(models.Model):
     @property
     def duracion_minutos(self) -> int:
         return int((self.reanudado_en - self.apagado_desde).total_seconds() // 60)
+
+
+class BarridoEnlaces(models.Model):
+    """Cuándo terminó el último barrido COMPLETO y válido de la flota. Una sola fila.
+
+    El hueco del monitoreo se medía con `Max(EstadoEnlaceFarmacia.ultima_verificacion)`, y
+    cualquier lectura suelta lo actualiza: probar una farmacia a mano o un reporte de la
+    sonda externa durante el apagón lo tapaban, y justo ese apagón no se avisaba. Esta marca
+    solo la mueve un barrido de la flota entera que no abortó.
+    """
+    ultimo_completo = models.DateTimeField()
+
+    class Meta:
+        db_table = 'barrido_enlaces'
+        verbose_name = 'Barrido de enlaces'
+        verbose_name_plural = 'Barrido de enlaces'
+
+    def __str__(self):
+        return f'Último barrido completo: {self.ultimo_completo:%d/%m %H:%M}'
 
 
 class EstadoRedActivo(models.Model):

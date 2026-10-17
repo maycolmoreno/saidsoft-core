@@ -7474,3 +7474,54 @@ las guarda **cifradas** en cada nodo del panel (`establecer_password_nodo`): exi
 por nodo en toda la planilla (dos distintas frenan todo), no muestra ninguna —ni en la
 salida ni en la auditoría, que solo dice si el nodo ya tenía una— y **no envía nada a las
 estaciones**: reapuntar un POS sigue siendo "Aplicar nodo", y el usuario pidió no hacerlo.
+
+## §10-CL — Correcciones de la revisión por agentes (cazador-bugs + revisor-bd) (17-oct-2026)
+
+Dos agentes de solo lectura revisaron todo lo de esta sesión (847ee13..5e143c5). No hubo
+fuga entre clientes ni de contraseñas, y se confirmó que nada de la carga de nodos y claves
+envía configuración a las estaciones. Se corrigió todo menos H-01 (`curl -k`), que necesita
+una decisión de diseño sobre cómo confiar en el certificado autofirmado.
+
+### La clasificación de caídas (lo que más importa: es la evidencia del SLA)
+
+Había tres reglas distintas —tablero, tabla de enlaces, historial— y no coincidían. Ahora hay
+una: `armar_racimos` + `clase_en_racimo` en `apps/monitoreo/enlaces.py`.
+
+- **"El monitoreo no vio" exige dos o más proveedores con 3+ caídas cada uno** (antes alcanzaba
+  con TOCAR tres ISP). Un corte de Telconet de 31 sitios con una caída suelta de Punto Net y otra
+  de Fibromark salía entero del reclamo.
+- **Tope de 30 min por racimo**: sin tope, un día cargado encadenaba caídas sin relación.
+- **Siempre con la flota entera**: el bloque "Qué atender primero" armaba los racimos solo con las
+  farmacias del cliente del usuario (BD-02), y el historial solo con lo que tocaba el período
+  (BD-01) — la misma caída cambiaba de clase según el "desde".
+
+Medido sobre los 30 días a la fecha (3.690 eventos): excluidas del SLA 768 → 646; Telconet que
+cuentan para el SLA 1.994 → 2.100; 393 que figuraban "del sitio" pasan a "corte del proveedor".
+
+### El resto
+
+| Hallazgo | Corrección |
+|---|---|
+| H-03 el script quedaba en %TEMP% con la clave si fallaba | todo dentro de `try/finally`; también se borra si se cancela el UAC |
+| H-02 el paquete se bajaba sin verificar | el servidor calcula el SHA-256 del zip publicado al armar el script; el script lo compara con `Get-FileHash` antes de `tar` |
+| H-09 / BD-06 el enlace se gastaba sin entregar nada | el script se arma antes de consumir el enlace |
+| H-10 comillas tipográficas | se escapan las cuatro comillas simples de PowerShell |
+| H-04 "duración mínima" alteraba la disponibilidad | solo achica lo que se lista |
+| BD-12 sin tope de rango | 400 días |
+| H-07 / BD-03 / BD-07 aviso de apagón duplicado | `UniqueConstraint(apagado_desde)` + `get_or_create`; el aviso se reserva con UPDATE condicional antes de enviar; los viejos sin enviar se descartan |
+| BD-04 una lectura suelta tapaba el hueco | `BarridoEnlaces`: marca del último barrido COMPLETO válido; el comando manual sin `--farmacia` también cuenta |
+| H-08 / BD-05 "de N que respondían" | solo las del alcance y activas |
+| H-06 importador viejo | valida los ocho encabezados (y la IP por prefijo: "ip" está dentro de "tipo") |
+| H-11 / H-12 / BD-08 / BD-09 planilla | contraseñas con `strip` y sin errores de Excel; código con nodos distintos en las dos hojas, o dos nodos con el mismo nombre de base, frenan todo; lectura de farmacias dentro de la transacción con `select_for_update` |
+| BD-10 directorio | una celda larga se recorta y una coordenada inválida se informa, en vez de abortar todo |
+| BD-11 caídas abiertas sin índice | índice parcial `evento_enlace_abierto` |
+
+Migración `monitoreo/0045`.
+
+**H-01 (`curl -k` en el enlace del instalador) queda como está, por decisión del usuario (17-oct-2026):**
+se va a pasar a un dominio con certificado HTTPS válido, y con eso `curl` puede verificar sin `-k`.
+Al hacer ese cambio, para cerrarlo: (1) quitar `-k` de los dos comandos de
+`templates/panel/_enlace_instalador.html`; (2) poner el dominio en `CSRF_TRUSTED_ORIGINS` del
+`.env` —el enlace arma su URL desde ahí (`_url_base_panel`), y con la IP el certificado del dominio
+no valida—; (3) la descarga de MeshCentral dentro del script (`PLANTILLA`) también usa `-k`: se
+puede quitar solo si MeshCentral pasa al dominio con certificado válido.

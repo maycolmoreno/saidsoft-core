@@ -75,10 +75,13 @@ class Command(BaseCommand):
         if options['solo_probar']:
             return self._solo_probar(farmacias)
 
+        self._una_sola = bool(options['farmacia'])
         if options['intervalo']:
             return self._bucle(farmacias, options['intervalo'])
 
-        resumen = sondear_enlaces_farmacias(farmacias)
+        # Sin --farmacia es la flota entera: cuenta como barrido completo para detectar un
+        # apagón del monitoreo (§10-CJ), igual que el de Beat.
+        resumen = sondear_enlaces_farmacias(farmacias, flota_entera=not options['farmacia'])
         if resumen['abortado']:
             self.stderr.write(self.style.ERROR(
                 f'Barrido abortado: {resumen["caidas"]} de {resumen["sondeadas"]} farmacias no '
@@ -120,10 +123,11 @@ class Command(BaseCommand):
                     pass
 
         codigos = [f.codigo for f in farmacias]
+        flota_entera = not self._una_sola
         self.stdout.write(f'Sondeando {len(codigos)} enlace(s) cada {intervalo}s. Ctrl+C para terminar.')
         while not self._parar:
             frescas = list(Farmacia.objects.filter(codigo__in=codigos).exclude(ip_router__isnull=True))
-            resumen = sondear_enlaces_farmacias(frescas)
+            resumen = sondear_enlaces_farmacias(frescas, flota_entera=flota_entera)
             marca = timezone.localtime().strftime('%H:%M:%S')
             if resumen['abortado']:
                 self.stderr.write(self.style.ERROR(

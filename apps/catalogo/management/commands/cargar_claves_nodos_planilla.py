@@ -33,7 +33,11 @@ class Command(BaseCommand):
         except (OSError, PlanillaInvalida) as exc:
             raise CommandError(str(exc))
 
-        for nodo, estado in cargar_claves_nodos(claves, usuario=usuario, aplicar=opciones['aplicar']):
+        try:
+            resultado = cargar_claves_nodos(claves, usuario=usuario, aplicar=opciones['aplicar'])
+        except PlanillaInvalida as exc:
+            raise CommandError(str(exc))
+        for nodo, estado in resultado:
             self.stdout.write(f'  {nodo:<10} {estado}')
         self.stdout.write('\nNo se mostró ninguna contraseña ni se envió nada a ninguna estación.')
         if opciones['aplicar']:

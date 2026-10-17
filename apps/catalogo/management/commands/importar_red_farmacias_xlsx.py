@@ -54,6 +54,19 @@ CODIGOS_EXCLUIDOS = {'MPREV1'}
 
 ENCABEZADOS = ['codigo', 'ciudad', 'provincia', 'nodo', 'segmento', 'tipo_enlace', 'backup', 'ip']
 
+# Qué tiene que decir el encabezado de cada columna leída (en minúscula, "contiene"). Si no
+# coincide, la planilla cambió de formato y leer por posición guardaría basura.
+PISTAS_ENCABEZADO = {
+    'codigo': ('id de farmacia',),
+    'ciudad': ('ciudad', 'canton', 'cantón'),
+    'provincia': ('provincia',),
+    'nodo': ('nodo',),
+    'segmento': ('segmento', 'red lan'),
+    'tipo_enlace': ('enlace', 'proveedor'),
+    'backup': ('backup',),
+    'ip': ('ip',),
+}
+
 
 def _valor_columna(fila, indice_1based):
     valor = fila[indice_1based - 1] if indice_1based - 1 < len(fila) else None
@@ -93,13 +106,23 @@ class Command(BaseCommand):
             # GREGORIO corrida una columna, y esto habría tomado "RED LAN" como código y la
             # columna de contraseñas de los nodos como IP. Si el código no está donde se
             # espera, se corta: para el nodo existe `cargar_nodos_planilla`, que lee por nombre.
-            titulo = _valor_columna(next(hoja.iter_rows(max_row=1, values_only=True)), c_codigo)
-            if titulo.strip().lower() != 'id de farmacia':
-                raise CommandError(
-                    f'Hoja "{nombre_hoja}": la columna {c_codigo} es "{titulo}", no "Id de Farmacia". '
-                    'La planilla cambió de formato; no se importa nada. Para cargar el nodo usá '
-                    '`cargar_nodos_planilla`, que lee las columnas por nombre.',
-                )
+            # Se validan las OCHO columnas que se leen, no solo la del código: con una
+            # columna corrida a la derecha del código la guarda no saltaba, y la de
+            # contraseñas podía caer en la IP y salir impresa en el error de "IP inválida".
+            cabecera = next(hoja.iter_rows(max_row=1, values_only=True))
+            for campo, indice in zip(PISTAS_ENCABEZADO, (c_codigo, c_ciudad, c_provincia, c_nodo,
+                                                         c_segmento, c_enlace, c_backup, c_ip)):
+                titulo = _valor_columna(cabecera, indice).lower()
+                # La IP por prefijo: "ip" también está adentro de "t-ip-o de enlace".
+                coincide = titulo.startswith('ip') if campo == 'ip' else any(
+                    p in titulo for p in PISTAS_ENCABEZADO[campo])
+                if not coincide or any(
+                        x in titulo for x in ('contrase', 'clave', 'password')):
+                    raise CommandError(
+                        f'Hoja "{nombre_hoja}": la columna {indice} ({campo}) es "{titulo}". La '
+                        'planilla cambió de formato; no se importa nada. Para cargar el nodo usá '
+                        '`cargar_nodos_planilla`, que lee las columnas por nombre.',
+                    )
             for fila in hoja.iter_rows(min_row=2, values_only=True):
                 codigo = _valor_columna(fila, c_codigo).upper()
                 if not codigo or codigo in CODIGOS_EXCLUIDOS:

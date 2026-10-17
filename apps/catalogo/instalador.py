@@ -13,6 +13,7 @@ obtenerlo, y las dos arman el mismo texto con `generar_script`:
 import hashlib
 import secrets
 from datetime import timedelta
+from pathlib import Path
 
 from django.conf import settings
 from django.db import transaction
@@ -77,12 +78,18 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     try {{
         Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentos -Verb RunAs
     }} catch {{
-        # Cancelar el aviso de Windows tira una excepcion cruda que no dice nada util.
-        throw "Se cancelo el permiso de administrador. Volve a correrlo y acepta el aviso de Windows."
+        # Cancelar el aviso de Windows tira una excepcion cruda que no dice nada util. El
+        # script se borra igual: lleva la clave, y para reintentar hace falta otro enlace.
+        Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+        throw "Se cancelo el permiso de administrador. Pedi otro enlace y acepta el aviso de Windows."
     }}
     exit
 }}
 
+# Todo lo que sigue va dentro de try/finally: el script lleva la clave MQTT y tiene que
+# borrarse aunque la instalacion falle a mitad. Antes el borrado era la ultima linea, y un
+# hostname fuera de FARMACIA-SUFIJO -el error mas comun en campo- lo dejaba en %TEMP%.
+try {{
 if ($Codigo -notmatch '^[A-Z0-9]+-[A-Z0-9]+$') {{
     throw "El codigo '$Codigo' no respeta FARMACIA-SUFIJO (ej. ML001-A). Pasalo con -Codigo."
 }}
@@ -96,6 +103,12 @@ Set-Location $carpeta
 Write-Host '[1/4] Descargando el paquete...'
 curl.exe -sS -o agente-instalador.zip '{url_paquete}'
 if (-not (Test-Path 'agente-instalador.zip')) {{ throw "No se pudo descargar el paquete." }}
+# El paquete viaja por HTTP (lo bajan todas las estaciones sin credenciales). Se compara
+# contra el SHA-256 que calculo el servidor al armar este script: del zip salen el
+# ejecutable que queda como servicio y la CA con la que el agente valida al broker.
+if ((Get-FileHash 'agente-instalador.zip' -Algorithm SHA256).Hash -ne '{sha_paquete}') {{
+    throw "El paquete descargado no coincide con el publicado (SHA-256). No se instala nada: pedi otro enlace."
+}}
 Remove-Item 'Saidsoft.Agente.exe','instalar-servicio.ps1','cert.pem' -ErrorAction SilentlyContinue
 tar -xf agente-instalador.zip
 foreach ($f in @('Saidsoft.Agente.exe','instalar-servicio.ps1','cert.pem')) {{
@@ -154,10 +167,12 @@ Write-Host "Listo. $Codigo queda PENDIENTE DE APROBACION en el panel:" -Foregrou
 Write-Host '  {url_panel}'
 Write-Host 'Hasta aprobarla, la estacion se enrola pero no recibe comandos.'
 Write-Host ''
-# Se borra solo: lleva la clave MQTT y dejarlo en el equipo depende de que alguien se
-# acuerde de borrarlo. El paquete del agente que queda en la carpeta no tiene secretos.
-Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
-Write-Host 'El instalador se borro solo (llevaba la clave MQTT).' -ForegroundColor Yellow
+}} finally {{
+    # Se borra solo: lleva la clave MQTT y dejarlo en el equipo depende de que alguien se
+    # acuerde de borrarlo. El paquete del agente que queda en la carpeta no tiene secretos.
+    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+    Write-Host 'El instalador se borro solo (llevaba la clave MQTT).' -ForegroundColor Yellow
+}}
 '''
 
 
@@ -174,6 +189,11 @@ def generar_script(password: str, *, central_host: str = '', mqtt_puerto: int = 
     if not VersionAgente.objects.exists():
         raise ScriptNoDisponible('No hay ninguna VersionAgente cargada; no hay paquete que instalar.')
 
+    paquete = Path(settings.MEDIA_ROOT) / 'agente-instalador' / 'agente-instalador.zip'
+    if not paquete.is_file():
+        raise ScriptNoDisponible('No está publicado el paquete del agente (correr armar_paquete_agente).')
+    sha_paquete = hashlib.sha256(paquete.read_bytes()).hexdigest()
+
     base = settings.ARCHIVOS_BASE_URL.rstrip('/')
     conf = settings.MESHCENTRAL_CONFIG
     url_mesh = (
@@ -184,10 +204,23 @@ def generar_script(password: str, *, central_host: str = '', mqtt_puerto: int = 
         url_paquete=f'{base}/media/agente-instalador/agente-instalador.zip',
         central_host=central_host or base.split('//')[-1].split(':')[0],
         mqtt_puerto=mqtt_puerto,
-        mqtt_password=password.replace("'", "''"),  # escape de PowerShell
+        mqtt_password=_escapar_comillas_powershell(password),
+        sha_paquete=sha_paquete,
         url_mesh=url_mesh,
         url_panel=f'{base}/estaciones/',
     )
+
+
+# PowerShell cierra una cadena entre comillas simples no solo con ' sino también con las
+# tipográficas ‘ ’ ‚ ‛, y en las cuatro se escapa duplicándolas. Escapar solo la recta
+# dejaba que una clave con ’ cortara la cadena e inyectara código en el script.
+_COMILLAS_SIMPLES_POWERSHELL = "'‘’‚‛"
+
+
+def _escapar_comillas_powershell(texto: str) -> str:
+    for comilla in _COMILLAS_SIMPLES_POWERSHELL:
+        texto = texto.replace(comilla, comilla * 2)
+    return texto
 
 
 def _hash(token: str) -> str:

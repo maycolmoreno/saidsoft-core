@@ -60,14 +60,17 @@ def instalador_descargar(request, token):
         # Antes de consumir: si el servidor no puede armar el script, el enlace no se gasta.
         return HttpResponse('El servidor no puede armar el instalador ahora.\n',
                             status=503, content_type='text/plain; charset=utf-8')
-    enlace = consumir_enlace(token, ip=ip_cliente(request))
-    if enlace is None:
-        return HttpResponse('Enlace vencido, ya usado o inexistente. Pedi otro en el panel.\n',
-                            status=410, content_type='text/plain; charset=utf-8')
+    # El script se arma ANTES de gastar el enlace: si falta el paquete o la versión del
+    # agente, el técnico recibe el 503 y su enlace sigue sirviendo cuando se arregle.
+    # Antes se consumía primero y el enlace quedaba gastado sin haber entregado nada.
     try:
         script = generar_script(settings.MQTT_PASSWORD_AGENTE)
     except ScriptNoDisponible as exc:
         return HttpResponse(f'{exc}\n', status=503, content_type='text/plain; charset=utf-8')
+    enlace = consumir_enlace(token, ip=ip_cliente(request))
+    if enlace is None:
+        return HttpResponse('Enlace vencido, ya usado o inexistente. Pedi otro en el panel.\n',
+                            status=410, content_type='text/plain; charset=utf-8')
 
     registrar_evento(usuario=enlace.creado_por, accion='instalador.descargar', objeto=enlace,
                      request=request)

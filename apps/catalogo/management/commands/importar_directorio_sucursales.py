@@ -54,6 +54,18 @@ def _normalizar_choice(valor):
     return _limpiar_texto(valor).upper().replace(' ', '_').lower()
 
 
+def _a_numero(valor, campo, fila_num, codigo, errores):
+    """Coordenada como float, o None si viene vacía o no es un número. Antes un texto en la
+    celda tiraba ValueError y abortaba toda la importación."""
+    if valor in (None, ''):
+        return None
+    try:
+        return float(valor)
+    except (TypeError, ValueError):
+        errores.append(f'fila {fila_num} ({codigo}): {campo} "{valor}" no es un número, se ignora.')
+        return None
+
+
 def _a_fecha(valor):
     if isinstance(valor, datetime.datetime):
         return valor.date()
@@ -102,6 +114,8 @@ class Command(BaseCommand):
         colaboradores_por_cedula = {c.cedula: c for c in Colaborador.objects.all()}
 
         actualizadas, sin_farmacia, sin_tecnico, errores = [], [], [], []
+        # Una consulta para todas, no una por fila.
+        farmacias = {f.codigo: f for f in Farmacia.objects.all()}
 
         with transaction.atomic():
             sp = transaction.savepoint()
@@ -114,7 +128,7 @@ class Command(BaseCommand):
                 if not codigo:
                     continue
 
-                farmacia = Farmacia.objects.filter(codigo=codigo).first()
+                farmacia = farmacias.get(codigo)
                 if farmacia is None:
                     sin_farmacia.append(codigo)
                     continue
@@ -142,6 +156,8 @@ class Command(BaseCommand):
                 extension = _col('extension')
                 try:
                     extension = int(extension) if extension not in (None, '') else None
+                    if extension is not None and extension < 0:
+                        extension = None
                 except (TypeError, ValueError):
                     extension = None
 
@@ -161,8 +177,8 @@ class Command(BaseCommand):
                     'horario': _limpiar_texto(_col('horario')),
                     'tipo_sucursal': tipo_sucursal,
                     'formato_farmacia': formato_farmacia,
-                    'latitud': float(_col('latitud')) if _col('latitud') not in (None, '') else None,
-                    'longitud': float(_col('longitud')) if _col('longitud') not in (None, '') else None,
+                    'latitud': _a_numero(_col('latitud'), 'latitud', fila_num, codigo, errores),
+                    'longitud': _a_numero(_col('longitud'), 'longitud', fila_num, codigo, errores),
                     'fecha_inicio_operacion': _a_fecha(_col('fecha_inicio_op')),
                     'fecha_inicio_ruc': _a_fecha(_col('fecha_inicio_ruc')),
                     'extension_telefonica': extension,
@@ -171,8 +187,15 @@ class Command(BaseCommand):
                     'tecnico_asignado': tecnico,
                 }
                 for campo, valor in nuevos.items():
-                    if valor not in (None, ''):
-                        setattr(farmacia, campo, valor)
+                    if valor in (None, ''):
+                        continue
+                    # Una celda más larga que la columna abortaba la importación ENTERA con
+                    # un DataError de PostgreSQL. Se recorta y se avisa.
+                    largo = getattr(Farmacia._meta.get_field(campo), 'max_length', None)
+                    if largo and isinstance(valor, str) and len(valor) > largo:
+                        errores.append(f'fila {fila_num} ({codigo}): {campo} recortado a {largo} caracteres.')
+                        valor = valor[:largo]
+                    setattr(farmacia, campo, valor)
 
                 if not dry_run:
                     farmacia.save(update_fields=CAMPOS_ACTUALIZABLES)

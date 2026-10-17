@@ -71,6 +71,7 @@ class PlanillaInvalida(Exception):
 def leer_planilla(libro) -> dict[str, dict]:
     """`{codigo: {'nodo', 'ciudad', 'provincia', 'segmento', 'tipo_enlace', 'backup', 'hoja'}}`."""
     filas = {}
+    conflictos = []
     for nombre_hoja in HOJAS:
         if nombre_hoja not in libro.sheetnames:
             raise PlanillaInvalida(f'Falta la hoja "{nombre_hoja}".')
@@ -94,7 +95,15 @@ def leer_planilla(libro) -> dict[str, dict]:
                 continue
             valores['nodo'] = valores['nodo'].lower()
             valores['hoja'] = nombre_hoja
+            previo = filas.get(codigo)
+            if previo and previo['nodo'] != valores['nodo']:
+                # Antes la segunda hoja pisaba a la primera sin aviso.
+                conflictos.append(f'{codigo} ({previo["hoja"]}: {previo["nodo"]}, {nombre_hoja}: {valores["nodo"]})')
             filas[codigo] = valores
+    if conflictos:
+        raise PlanillaInvalida(
+            f'Farmacias con nodos distintos en las dos hojas: {", ".join(conflictos)}. No se carga nada.',
+        )
     return filas
 
 
@@ -117,6 +126,21 @@ class Resultado:
         return [c for c in self.cambios if c.accion == accion]
 
 
+def _grupos_por_bdd() -> dict:
+    """`{bdd: Grupo}` de los nodos activos. Si dos nodos tienen el mismo nombre de base
+    efectivo (uno con `pos_bdd` explícito y otro por su código), elegir uno sería
+    adivinar: se corta."""
+    por_bdd, repetidos = {}, set()
+    for g in Grupo.objects.filter(activo=True):
+        clave = g.bdd_pos.strip().lower()
+        if clave in por_bdd:
+            repetidos.add(clave)
+        por_bdd[clave] = g
+    if repetidos:
+        raise PlanillaInvalida(f'Hay nodos con el mismo nombre de base: {sorted(repetidos)}. No se carga nada.')
+    return por_bdd
+
+
 def _nodos_reportados() -> dict[str, set[str]]:
     reportados = defaultdict(set)
     for codigo_farmacia, bdd in Estacion.objects.exclude(pos_bdd='').values_list('farmacia__codigo', 'pos_bdd'):
@@ -128,12 +152,15 @@ def cargar_nodos(filas: dict[str, dict], *, usuario, aplicar=False, omitir=(), r
     """Alinea el nodo del panel con la planilla. Simula salvo `aplicar=True`."""
     resultado = Resultado()
     omitir = {c.upper() for c in omitir}
-    grupos_por_bdd = {g.bdd_pos.strip().lower(): g for g in Grupo.objects.all()}
+    grupos_por_bdd = _grupos_por_bdd()
     unidades = {u.codigo: u for u in UnidadNegocio.objects.all()}
-    existentes = {f.codigo: f for f in Farmacia.objects.select_related('grupo')}
-    reportados = _nodos_reportados()
 
     with transaction.atomic():
+        # Adentro de la transacción y bloqueadas: si alguien mueve una farmacia mientras
+        # corre esto, la planilla no la pisa con un "antes" viejo en la auditoría.
+        existentes = {f.codigo: f for f in Farmacia.objects.select_related('grupo', 'unidad_negocio')
+                      .select_for_update(of=('self',))}
+        reportados = _nodos_reportados()
         for codigo, fila in sorted(filas.items()):
             if codigo in NO_SON_FARMACIAS:
                 continue
@@ -244,10 +271,15 @@ def _comparar_otros(farmacia, fila, resultado):
 ENCABEZADO_CLAVE = 'contrasena'
 
 
+def _es_error_de_excel(valor: str) -> bool:
+    return valor.upper() in {'#N/A', '#VALUE!', '#REF!', '#DIV/0!', '#NAME?', '#NUM!', '#NULL!'}
+
+
 def leer_claves_planilla(libro) -> dict[str, str]:
     """`{bdd_pos: contraseña}`. Exige UNA sola por nodo en toda la planilla: dos distintas
     para el mismo nodo es un error de la planilla, y elegir una sería adivinar."""
     claves = defaultdict(set)
+    errores = []
     for nombre_hoja in HOJAS:
         if nombre_hoja not in libro.sheetnames:
             raise PlanillaInvalida(f'Falta la hoja "{nombre_hoja}".')
@@ -259,9 +291,17 @@ def leer_claves_planilla(libro) -> dict[str, str]:
             raise PlanillaInvalida(f'Hoja "{nombre_hoja}": faltan las columnas "Bdd pos" o "contraseña".')
         for fila in iterador:
             nodo = _texto(fila[i_nodo] if i_nodo < len(fila) else '').lower()
-            clave = '' if i_clave >= len(fila) or fila[i_clave] is None else str(fila[i_clave])
-            if nodo and clave and nodo not in ('#n/a',):
-                claves[nodo].add(clave)
+            clave = '' if i_clave >= len(fila) or fila[i_clave] is None else str(fila[i_clave]).strip()
+            if not nodo or nodo == '#n/a' or not clave:
+                continue
+            if _es_error_de_excel(clave):
+                # Con data_only=True un error de fórmula llega como texto: guardarlo dejaría
+                # al nodo con una contraseña que no sirve para nada.
+                errores.append(nodo)
+                continue
+            claves[nodo].add(clave)
+    if errores:
+        raise PlanillaInvalida(f'Celdas de contraseña con error de Excel en los nodos {sorted(set(errores))}. No se carga nada.')
     dobles = sorted(n for n, cs in claves.items() if len(cs) > 1)
     if dobles:
         raise PlanillaInvalida(f'Nodos con más de una contraseña en la planilla: {dobles}. No se carga nada.')
@@ -273,7 +313,7 @@ def cargar_claves_nodos(claves: dict[str, str], *, usuario, aplicar=False) -> li
     `sin nodo en el panel`. Simula salvo `aplicar=True`."""
     from apps.catalogo.services import establecer_password_nodo, obtener_password_nodo
 
-    por_bdd = {g.bdd_pos.strip().lower(): g for g in Grupo.objects.all()}
+    por_bdd = _grupos_por_bdd()
     resultado = []
     with transaction.atomic():
         for bdd, clave in sorted(claves.items()):

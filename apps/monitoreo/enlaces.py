@@ -312,7 +312,7 @@ def dar_de_baja_enlace(farmacia) -> dict:
     return {'caidas_cerradas': cerrados, 'estados_limpiados': estados}
 
 
-def sondear_enlaces_farmacias(farmacias=None) -> dict:
+def sondear_enlaces_farmacias(farmacias=None, *, flota_entera=None) -> dict:
     """Sondea el enlace de cada farmacia con `ip_router` cargada. Devuelve un resumen.
 
     **Corre en Celery Beat cada 2 minutos** (`sondear-enlaces-farmacias`), y también a
@@ -341,7 +341,9 @@ def sondear_enlaces_farmacias(farmacias=None) -> dict:
     """
     from apps.catalogo.models import Farmacia
 
-    es_flota_entera = farmacias is None
+    # `flota_entera`: el comando manual pasa la flota como lista y también es un barrido
+    # completo. Por defecto, solo cuando no se pasó una selección.
+    es_flota_entera = (farmacias is None) if flota_entera is None else flota_entera
     if farmacias is None:
         # __isnull=True alcanza solo: GenericIPAddressField normaliza '' a None, y un
         # .exclude(ip_router='') encadenado excluye TODAS las filas (bug real ya
@@ -394,6 +396,8 @@ def sondear_enlaces_farmacias(farmacias=None) -> dict:
         registrar_sondeo(farmacia, alcanzable, latencia_ms)
         resumen['sondeadas'] += 1
         resumen['activas' if alcanzable else 'caidas'] += 1
+    if es_flota_entera:
+        _marcar_barrido_completo()
     return resumen
 
 
@@ -556,66 +560,89 @@ def linea_tiempo_caidas_en_curso(unidades=None, *, horas=VENTANA_LINEA_TIEMPO_HO
 #   dos y con 30 se pegan cosas que no tienen que ver.
 # - MÍNIMO de 3: dos farmacias cayendo juntas pasa por casualidad; de las 166 tandas con
 #   2+ caídas, 162 (98%) comparten un solo proveedor, así que el agrupado discrimina.
-# - PROVEEDORES_PARA_CEGUERA en 3: una tanda que toca tres ISP distintos a la vez no es
-#   una coincidencia, es que el que dejó de ver fue el servidor. Pasó de verdad: 194
-#   caídas en 8 minutos abarcando 6 proveedores y 39 ciudades — el 17% de TODOS los
-#   eventos del mes en un solo episodio. Sin esta regla, esos 194 se reportan como 194
-#   farmacias caídas y el número del mes queda inflado.
+# - PROVEEDORES_PARA_CEGUERA en 2, contando solo los proveedores con al menos MÍNIMO
+#   caídas en el racimo. Hasta el 17-oct-2026 alcanzaba con que el racimo TOCARA tres ISP,
+#   y eso descontaba del SLA cortes que eran del proveedor: un corte de Telconet de 31
+#   sitios en el que coincidían una caída de Punto Net y una de Fibromark se clasificaba
+#   "el monitoreo no vio". Cuando el que deja de ver es el servidor, caen varios
+#   proveedores EN CANTIDAD (17-oct: Telconet 80, Punto Net 31). Medido sobre 30 días: 228
+#   caídas volvieron al reclamo y 106 que eran del monitoreo dejaron de cargarse al ISP.
+# - TOPE de 30 min por racimo: sin tope, un día con muchas caídas encadena eventos sin
+#   relación de diez en diez minutos.
 VENTANA_SIMULTANEAS_MINUTOS = 10
+TOPE_RACIMO_MINUTOS = 30
 MINIMO_PARA_CORTE_DE_PROVEEDOR = 3
-PROVEEDORES_PARA_CEGUERA = 3
+PROVEEDORES_PARA_CEGUERA = 2
 
 
-def clasificar_caidas_simultaneas(eventos):
-    """`{farmacia_id: (clase, detalle)}` para un conjunto de caídas abiertas.
-
-    `clase` es una de:
-      - `'proveedor'`  — varias del MISMO ISP cayeron juntas: probable corte del proveedor.
-      - `'ceguera'`    — cayeron de varios ISP a la vez: lo más probable es que el que
-                         perdió visibilidad sea este servidor, no las farmacias.
-      - `'individual'` — nada alrededor: es ese sitio.
-
-    Es una INFERENCIA, no una lectura. Nada de esto mide el estado del enlace ni de la
-    energía: mira cuándo empezaron las caídas y de qué proveedor es cada una. Por eso las
-    etiquetas dicen "probable" y no afirman una causa.
-
-    Los eventos tienen que venir con `select_related('farmacia')`.
-    """
+def armar_racimos(eventos) -> list[list]:
+    """Agrupa caídas que empezaron juntas: cada una a no más de VENTANA de la anterior y
+    a no más de TOPE de la primera del racimo."""
     from datetime import timedelta
 
-    ordenados = sorted(eventos, key=lambda e: e.inicio)
     ventana = timedelta(minutes=VENTANA_SIMULTANEAS_MINUTOS)
-
+    tope = timedelta(minutes=TOPE_RACIMO_MINUTOS)
     racimos, actual = [], []
-    for evento in ordenados:
-        if actual and (evento.inicio - actual[-1].inicio) > ventana:
+    for evento in sorted(eventos, key=lambda e: e.inicio):
+        if actual and (evento.inicio - actual[-1].inicio > ventana or evento.inicio - actual[0].inicio > tope):
             racimos.append(actual)
             actual = []
         actual.append(evento)
     if actual:
         racimos.append(actual)
+    return racimos
+
+
+def clase_en_racimo(racimo) -> dict:
+    """`{evento.pk: clase}` dentro de un racimo. LA regla de clasificación del proyecto:
+    la usan el tablero, la tabla de enlaces y el historial, para que el mismo corte diga
+    lo mismo en las tres pantallas (antes eran tres reglas y no coincidían).
+
+      - `ceguera`    — dos o más proveedores con MÍNIMO caídas cada uno: lo más probable
+                       es que el que perdió visibilidad sea este servidor.
+      - `proveedor`  — el proveedor de ESTA caída tiene MÍNIMO caídas en el racimo.
+      - `individual` — lo demás: es ese sitio (incluida la caída suelta de otro ISP que
+                       coincidió con un corte ajeno).
+    """
+    from collections import Counter
+
+    cuenta = Counter(nombre_proveedor(e.farmacia) for e in racimo)
+    fuertes = {p for p, n in cuenta.items() if n >= MINIMO_PARA_CORTE_DE_PROVEEDOR}
+    if len(fuertes) >= PROVEEDORES_PARA_CEGUERA:
+        return {e.pk: 'ceguera' for e in racimo}
+    return {e.pk: ('proveedor' if nombre_proveedor(e.farmacia) in fuertes else 'individual') for e in racimo}
+
+
+def clasificar_caidas_simultaneas(eventos):
+    """`{farmacia_id: (clase, detalle)}` para un conjunto de caídas.
+
+    Es una INFERENCIA, no una lectura: mira cuándo empezaron las caídas y de qué proveedor
+    es cada una. Por eso las etiquetas dicen "probable" y no afirman una causa. Los eventos
+    tienen que venir con `select_related('farmacia')`, y conviene pasar la FLOTA ENTERA
+    (abiertos y cerrados recientes): un corte se reconoce por lo que pasó alrededor.
+    """
+    from collections import Counter
 
     clasificacion = {}
-    for racimo in racimos:
-        proveedores = {nombre_proveedor(e.farmacia) for e in racimo}
-        if len(racimo) >= MINIMO_PARA_CORTE_DE_PROVEEDOR and len(proveedores) >= PROVEEDORES_PARA_CEGUERA:
-            detalle = (
-                f'{len(racimo)} sitios de {len(proveedores)} proveedores distintos cayeron '
-                'en minutos. Que varios ISP fallen a la vez es muy improbable: revisá '
-                'primero la conexión del servidor de monitoreo.'
-            )
-            clase = 'ceguera'
-        elif len(racimo) >= MINIMO_PARA_CORTE_DE_PROVEEDOR and len(proveedores) == 1:
-            proveedor = next(iter(proveedores))
-            detalle = (
-                f'{len(racimo)} sitios de {proveedor} cayeron en minutos. Conviene un solo '
-                'reclamo al proveedor en vez de un ticket por farmacia.'
-            )
-            clase = 'proveedor'
-        else:
-            detalle = ''
-            clase = 'individual'
+    for racimo in armar_racimos(eventos):
+        clases = clase_en_racimo(racimo)
+        cuenta = Counter(nombre_proveedor(e.farmacia) for e in racimo)
         for evento in racimo:
+            clase = clases[evento.pk]
+            if clase == 'ceguera':
+                detalle = (
+                    f'{len(racimo)} sitios de {len(cuenta)} proveedores cayeron en minutos, varios '
+                    'en cantidad. Que varios ISP fallen a la vez es muy improbable: revisá '
+                    'primero la conexión del servidor de monitoreo.'
+                )
+            elif clase == 'proveedor':
+                proveedor = nombre_proveedor(evento.farmacia)
+                detalle = (
+                    f'{cuenta[proveedor]} sitios de {proveedor} cayeron en minutos. Conviene un '
+                    'solo reclamo al proveedor en vez de un ticket por farmacia.'
+                )
+            else:
+                detalle = ''
             clasificacion[evento.farmacia_id] = (clase, detalle)
     return clasificacion
 
@@ -663,16 +690,23 @@ def incidentes_de_enlace(farmacias=None, *, horas=VENTANA_INCIDENTES_HORAS) -> d
     from apps.monitoreo.models import EventoEnlaceFarmacia
 
     ahora = timezone.now()
-    recientes = EventoEnlaceFarmacia.objects.filter(
+    # Los racimos se arman con la FLOTA ENTERA y el alcance se aplica recién al mostrar:
+    # un corte se reconoce por lo que pasó alrededor, y armarlo solo con las farmacias de un
+    # cliente convertía en "corte masivo de su proveedor" algo que fue del monitoreo, o lo
+    # hacía desaparecer si en su alcance cayeron menos de tres (17-oct-2026).
+    recientes = list(EventoEnlaceFarmacia.objects.filter(
         inicio__gte=ahora - timedelta(hours=horas), farmacia__estado_enlace__respondio_alguna_vez=True,
-    ).select_related('farmacia')
+    ).select_related('farmacia'))
     abiertas = EventoEnlaceFarmacia.objects.filter(
         fin__isnull=True, farmacia__estado_enlace__respondio_alguna_vez=True,
     ).select_related('farmacia')
-    if farmacias is not None:
-        recientes = recientes.filter(farmacia__in=farmacias)
-        abiertas = abiertas.filter(farmacia__in=farmacias)
+    permitidas = None if farmacias is None else set(farmacias)
+    if permitidas is not None:
+        abiertas = abiertas.filter(farmacia__in=permitidas)
     abiertas = list(abiertas)
+
+    def _en_alcance(evento):
+        return permitidas is None or evento.farmacia_id in permitidas
 
     caidas_30d = dict(
         EventoEnlaceFarmacia.objects.filter(
@@ -688,35 +722,35 @@ def incidentes_de_enlace(farmacias=None, *, horas=VENTANA_INCIDENTES_HORAS) -> d
             'caidas_30d': caidas_30d.get(evento.farmacia_id, 0),
         }
 
-    ventana = timedelta(minutes=VENTANA_SIMULTANEAS_MINUTOS)
-    racimos, actual = [], []
-    for evento in sorted(recientes, key=lambda e: e.inicio):
-        if actual and (evento.inicio - actual[-1].inicio) > ventana:
-            racimos.append(actual)
-            actual = []
-        actual.append(evento)
-    if actual:
-        racimos.append(actual)
-
     abiertas_por_id = {e.pk: e for e in abiertas}
     en_masivo = set()
     masivos = []
-    for racimo in racimos:
-        if len(racimo) < MINIMO_PARA_CORTE_DE_PROVEEDOR:
-            continue
-        siguen = [abiertas_por_id[e.pk] for e in racimo if e.pk in abiertas_por_id]
-        if not siguen:
-            continue
-        en_masivo.update(e.pk for e in siguen)
-        proveedores = Counter(nombre_proveedor(e.farmacia) for e in racimo)
-        masivos.append({
-            'inicio': racimo[0].inicio,
-            'clase': 'ceguera' if len(proveedores) >= PROVEEDORES_PARA_CEGUERA else 'proveedor',
-            'proveedores': proveedores.most_common(),
-            'cayeron': len(racimo),
-            'volvieron': len(racimo) - len(siguen),
-            'siguen': sorted((_sitio(e) for e in siguen), key=lambda s: s['farmacia'].codigo),
-        })
+    for racimo in armar_racimos(recientes):
+        clases = clase_en_racimo(racimo)
+        if set(clases.values()) == {'ceguera'}:
+            grupos = [('ceguera', racimo)]
+        else:
+            # Un corte por proveedor fuerte: la caída suelta de otro ISP que coincidió no
+            # es parte de ese reclamo y queda como aislada.
+            por_isp = {}
+            for e in racimo:
+                if clases[e.pk] == 'proveedor':
+                    por_isp.setdefault(nombre_proveedor(e.farmacia), []).append(e)
+            grupos = [('proveedor', es) for es in por_isp.values()]
+        for clase, eventos in grupos:
+            visibles = [e for e in eventos if _en_alcance(e)]
+            siguen = [abiertas_por_id[e.pk] for e in visibles if e.pk in abiertas_por_id]
+            if not siguen:
+                continue
+            en_masivo.update(e.pk for e in siguen)
+            masivos.append({
+                'inicio': eventos[0].inicio,
+                'clase': clase,
+                'proveedores': Counter(nombre_proveedor(e.farmacia) for e in visibles).most_common(),
+                'cayeron': len(visibles),
+                'volvieron': len(visibles) - len(siguen),
+                'siguen': sorted((_sitio(e) for e in siguen), key=lambda s: s['farmacia'].codigo),
+            })
     masivos.sort(key=lambda m: (-len(m['siguen']), m['inicio']))
 
     cronica = ahora - timedelta(days=DIAS_CAIDA_CRONICA)
@@ -724,7 +758,13 @@ def incidentes_de_enlace(farmacias=None, *, horas=VENTANA_INCIDENTES_HORAS) -> d
     for sitio in aisladas:
         sitio['cronica'] = sitio['inicio'] < cronica
     aisladas.sort(key=lambda s: (s['cronica'], not s['sin_backup'], -s['inicio'].timestamp()))
-    return {'masivos': masivos, 'aisladas': aisladas}
+
+    # La etiqueta por fila de la tabla de enlaces, con la misma regla y la misma población
+    # que los cortes de arriba: antes la tabla clasificaba aparte, y podían contradecirse.
+    por_farmacia = clasificar_caidas_simultaneas(
+        recientes + [e for e in abiertas if e.pk not in {r.pk for r in recientes}],
+    )
+    return {'masivos': masivos, 'aisladas': aisladas, 'clase_por_farmacia': por_farmacia}
 
 
 # --- El monitoreo estuvo ciego y volvió: quién no se recuperó ------------------------
@@ -756,8 +796,16 @@ def _registrar_reanudacion_si_hubo_hueco():
 
     from .models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia, ReanudacionMonitoreo
 
+    from django.db import IntegrityError
+
+    from .models import BarridoEnlaces
+
     ahora = timezone.now()
-    ultimo = EstadoEnlaceFarmacia.objects.aggregate(m=Max('ultima_verificacion'))['m']
+    # Contra el último barrido COMPLETO, no contra cualquier lectura: una farmacia probada a
+    # mano durante el apagón, o la sonda externa, movían el Max y tapaban el hueco. El Max
+    # queda solo como respaldo para la primera vez, antes de que exista la marca.
+    marca = BarridoEnlaces.objects.filter(pk=1).values_list('ultimo_completo', flat=True).first()
+    ultimo = marca or EstadoEnlaceFarmacia.objects.aggregate(m=Max('ultima_verificacion'))['m']
     if ultimo is None or ahora - ultimo < timedelta(minutes=HUECO_REANUDACION_MINUTOS):
         return None
     respondian = set(
@@ -772,9 +820,22 @@ def _registrar_reanudacion_si_hubo_hueco():
         'Enlaces: el monitoreo no barrió desde %s (%d min). Se registra la reanudación para '
         'avisar qué farmacias no vuelven.', ultimo, (ahora - ultimo).total_seconds() // 60,
     )
-    return ReanudacionMonitoreo.objects.create(
-        apagado_desde=ultimo, reanudado_en=ahora, farmacias_previas=sorted(respondian | degradadas),
-    )
+    # Un apagón, una fila (UniqueConstraint): si dos barridos arrancan juntos al volver el
+    # worker, el segundo encuentra la del primero en vez de duplicar el aviso.
+    try:
+        reanudacion, _creada = ReanudacionMonitoreo.objects.get_or_create(
+            apagado_desde=ultimo,
+            defaults={'reanudado_en': ahora, 'farmacias_previas': sorted(respondian | degradadas)},
+        )
+    except IntegrityError:
+        reanudacion = ReanudacionMonitoreo.objects.filter(apagado_desde=ultimo).first()
+    return reanudacion
+
+
+def _marcar_barrido_completo():
+    from .models import BarridoEnlaces
+
+    BarridoEnlaces.objects.update_or_create(pk=1, defaults={'ultimo_completo': timezone.now()})
 
 
 def farmacias_sin_volver(reanudacion):
@@ -802,14 +863,26 @@ def reanudacion_vigente(farmacias=None):
     ).first()
     if r is None:
         return None
+    permitidas = None if farmacias is None else set(farmacias)
     pendientes = farmacias_sin_volver(r)
-    if farmacias is not None:
-        permitidas = set(farmacias)
+    if permitidas is not None:
         pendientes = [f for f in pendientes if f.pk in permitidas]
     if not pendientes:
         return None
-    return {'reanudacion': r, 'pendientes': pendientes,
-            'previas': len(r.farmacias_previas)}
+    return {'reanudacion': r, 'pendientes': pendientes, 'previas': _previas_vigentes(r, permitidas)}
+
+
+def _previas_vigentes(reanudacion, permitidas=None) -> int:
+    """Cuántas de las que respondían antes siguen activas (y están en el alcance). El total
+    crudo contaba farmacias de otros clientes y dadas de baja: el usuario veía "de 650"
+    con un número que no era el suyo, y el aviso contaba como "volvió sola" a una dada de
+    baja."""
+    from apps.catalogo.models import Farmacia
+
+    ids = set(reanudacion.farmacias_previas)
+    if permitidas is not None:
+        ids &= permitidas
+    return Farmacia.objects.filter(pk__in=ids, activa=True).count()
 
 
 def avisar_reanudacion_monitoreo() -> dict:
@@ -825,12 +898,16 @@ def avisar_reanudacion_monitoreo() -> dict:
 
     resumen = {'pendientes': 0, 'enviado': False}
     ahora = timezone.now()
-    r = ReanudacionMonitoreo.objects.filter(
+    listas = ReanudacionMonitoreo.objects.filter(
         avisado_en__isnull=True,
         reanudado_en__lte=ahora - timedelta(minutes=ESPERA_AVISO_REANUDACION_MINUTOS),
-    ).first()
+    )
+    r = listas.first()  # la más reciente
     if r is None:
         return resumen
+    # Las anteriores sin avisar ya no sirven: avisar después de la vigente un apagón más
+    # viejo es un mensaje fuera de orden. Se descartan.
+    listas.exclude(pk=r.pk).update(avisado_en=ahora)
     if ahora - r.reanudado_en > timedelta(hours=VIGENCIA_REANUDACION_HORAS):
         ReanudacionMonitoreo.objects.filter(pk=r.pk).update(avisado_en=ahora)
         return resumen
@@ -846,8 +923,13 @@ def avisar_reanudacion_monitoreo() -> dict:
     chat_telegram = getattr(settings, 'ENLACES_TELEGRAM_CHAT_ID', '')
     if not destinatarios and not chat_telegram:
         return resumen
+    # Se RESERVA antes de enviar, con un UPDATE condicional (mismo patrón que
+    # `consumir_enlace`): si un envío se cuelga más de 5 min en el SMTP, la corrida
+    # siguiente no encuentra la fila libre y no manda el aviso de nuevo.
+    if not ReanudacionMonitoreo.objects.filter(pk=r.pk, avisado_en__isnull=True).update(avisado_en=ahora):
+        return resumen
 
-    previas = len(r.farmacias_previas)
+    previas = _previas_vigentes(r)
     horas, minutos = divmod(r.duracion_minutos, 60)
     asunto = f'[Enlaces] {len(pendientes)} farmacia(s) no volvieron tras el apagón del monitoreo'
     lineas = [
@@ -878,7 +960,6 @@ def avisar_reanudacion_monitoreo() -> dict:
 
         _enviar_telegram(chat_telegram, f'{asunto}\n\n{cuerpo}',
                          teclado=teclado_para_farmacias([f.codigo for f in pendientes]) or None)
-    ReanudacionMonitoreo.objects.filter(pk=r.pk).update(avisado_en=ahora)
     resumen['enviado'] = True
     return resumen
 

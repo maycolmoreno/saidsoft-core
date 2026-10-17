@@ -18,6 +18,7 @@ from apps.monitoreo.historial_enlaces import ETIQUETA_CLASE, historial_enlaces
 from apps.panel.paginacion import paginar
 
 DIAS_POR_DEFECTO = 30
+DIAS_MAXIMOS = 400
 
 
 def _fecha(texto, por_defecto):
@@ -33,6 +34,10 @@ def _filtros(request):
     hasta = _fecha(request.GET.get('hasta'), hoy)
     if hasta < desde:
         desde, hasta = hasta, desde
+    # Tope: el cálculo carga en memoria todos los eventos del período. Un año son ~36.000
+    # objetos por request; más que eso no es una consulta de pantalla.
+    if (hasta - desde).days > DIAS_MAXIMOS:
+        desde = hasta - timedelta(days=DIAS_MAXIMOS)
     try:
         minimo = max(int(request.GET.get('minimo') or 0), 0)
     except ValueError:

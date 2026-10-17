@@ -722,6 +722,24 @@ class ImportarDirectorioSucursalesTests(TestCase):
         self.farmacia.refresh_from_db()
         self.assertEqual(self.farmacia.tipo_sucursal, Farmacia.TipoSucursal.ASOCIADO)  # sin cambios
 
+    def test_una_celda_rara_no_aborta_toda_la_importacion(self):
+        """Una coordenada con texto o una dirección más larga que la columna abortaban todo."""
+        import openpyxl
+
+        ruta = self._libro_de_prueba()
+        wb = openpyxl.load_workbook(ruta)
+        fila = wb['Directorio Personal'][2]
+        fila[14].value = 'sin dato'          # Latitud
+        fila[12].value = 'X' * 400           # Direccion (max 255)
+        wb.save(ruta)
+        salida = io.StringIO()
+        call_command('importar_directorio_sucursales', ruta, '--aplicar', stdout=salida)
+        self.farmacia.refresh_from_db()
+        self.assertEqual(len(self.farmacia.direccion), 255)
+        self.assertIsNone(self.farmacia.latitud)
+        self.assertEqual(self.farmacia.administrador, 'SASINTUÑA BONE MARTHA')
+        self.assertIn('no es un número', salida.getvalue())
+
     def test_una_celda_vacia_no_borra_lo_que_el_panel_ya_tiene(self):
         """El directorio de septiembre traía GLG01 sin horario ni dirección y MGY01 sin
         dirección: copiar el vacío borraba datos buenos (16-oct-2026)."""
@@ -3828,6 +3846,7 @@ class InstaladorSeAutoelevaTests(SimpleTestCase):
         return PLANTILLA.format(
             url_paquete='http://x/p.zip', central_host='10.0.0.1', mqtt_puerto=8081,
             mqtt_password='clave', url_mesh='https://x/m', url_panel='http://x/estaciones/',
+            sha_paquete='ab' * 32,
         )
 
     def test_se_reabre_elevado_en_vez_de_cortar(self):
@@ -4510,6 +4529,40 @@ class CargarNodosPlanillaTests(TestCase):
         self.f2.refresh_from_db()
         self.assertEqual(self.f2.grupo, self.t2)
 
+    def test_un_codigo_con_nodos_distintos_en_las_dos_hojas_frena_todo(self):
+        from django.core.management.base import CommandError
+
+        fila_mia = [1, 'El Oro', 'Machala', 'GN001', '10.1.1.0/27', 'CNT', 'l', 'ACTIVO', None, None,
+                    'trxn01', '192.168.111.1', 'x', 5433]
+        with self.assertRaisesMessage(CommandError, 'nodos distintos en las dos hojas'):
+            self._correr(self._planilla([self._fila('GN001', 'trxn02')], filas_mia=[fila_mia]), aplicar=True)
+
+    def test_dos_nodos_con_el_mismo_nombre_de_base_frenan_todo(self):
+        from django.core.management.base import CommandError
+
+        Grupo.objects.create(codigo='TRXN99', pos_bdd='trxn02')
+        with self.assertRaisesMessage(CommandError, 'mismo nombre de base'):
+            self._correr(self._planilla([self._fila('GN001', 'trxn02')]), aplicar=True)
+
+    def test_el_importador_viejo_valida_todas_las_columnas_no_solo_el_codigo(self):
+        """Con el código en su lugar pero otra columna corrida, la guarda vieja no saltaba y la
+        columna de contraseñas podía caer en la IP."""
+        import openpyxl
+        from django.core.management.base import CommandError
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        hoja = wb.create_sheet('SAN GREGORIO')
+        hoja.append(['Item', 'Provincia', 'Canton', 'Direccion', 'Id de Farmacia', 'Login', 'Backup',
+                     'Proveedor', 'RED LAN', 'NODO', 'CLAVE', 'IP'])
+        hoja.append([1, 'X', 'Y', 'Z', 'GN050', 'l', None, 'TELCONET', '10.0.0.1', 'trxn01', 'secreto', '1.1.1.1'])
+        ruta = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False).name
+        wb.save(ruta)
+        salida = io.StringIO()
+        with self.assertRaisesMessage(CommandError, 'cambió de formato'):
+            call_command('importar_red_farmacias_xlsx', ruta, stdout=salida)
+        self.assertNotIn('secreto', salida.getvalue())
+
     def test_el_importador_viejo_se_niega_con_las_columnas_corridas(self):
         from django.core.management.base import CommandError
 
@@ -4598,6 +4651,19 @@ class CargarClavesNodosPlanillaTests(TestCase):
             salida = self._correr(self._planilla([[1, 'GC001', 'trxc01', 'x', self.SECRETO, 5433]]), aplicar=True)
         enviar.assert_not_called()
         self.assertIn('ni se envió nada a ninguna estación', salida)
+
+    def test_limpia_espacios_y_rechaza_errores_de_excel(self):
+        from django.core.management.base import CommandError
+
+        from apps.catalogo.services import obtener_password_nodo
+
+        self._correr(self._planilla([[1, 'GC001', 'trxc01', 'x', '  ' + self.SECRETO + ' ', 5433]]), aplicar=True)
+        self.t1.refresh_from_db()
+        self.assertEqual(obtener_password_nodo(self.t1), self.SECRETO)
+        with self.assertRaisesMessage(CommandError, 'error de Excel'):
+            self._correr(self._planilla([[1, 'GC002', 'trxc02', 'x', '#N/A', 5433]]), aplicar=True)
+        self.t2.refresh_from_db()
+        self.assertEqual(self.t2.pos_password_cifrada, '')
 
     def test_un_nodo_que_no_existe_no_se_crea(self):
         salida = self._correr(self._planilla([[1, 'GC009', 'trxc99', 'x', self.SECRETO, 5433]]), aplicar=True)

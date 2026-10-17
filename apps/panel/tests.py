@@ -7292,19 +7292,43 @@ class CaidasSimultaneasTests(TestCase):
             self.assertEqual(clase, 'proveedor')
             self.assertIn('TELCONET', detalle)
 
-    def test_tres_de_proveedores_distintos_apuntan_al_propio_monitoreo(self):
-        """Que tres ISP fallen en el mismo minuto no es coincidencia. Pasó de verdad: 194
-        caídas en 8 minutos abarcando 6 proveedores y 39 ciudades — el 17% de todos los
-        eventos del mes en un solo episodio, que no eran 194 farmacias caídas."""
+    def test_varios_proveedores_en_cantidad_apuntan_al_propio_monitoreo(self):
+        """Cuando el que deja de ver es el servidor, caen varios ISP EN CANTIDAD: el 17-oct
+        fueron Telconet 80 y Punto Net 31. Pasó también con 194 caídas en 8 minutos de 6
+        proveedores, que no eran 194 farmacias caídas."""
+        eventos = [self._caida(f'ML99{i}', 'TELCONET', minutos_atras=i, ip_sufijo=30 + i) for i in range(3)]
+        eventos += [self._caida(f'ML98{i}', 'PUNTO NET', minutos_atras=i, ip_sufijo=40 + i) for i in range(3)]
+        for e in eventos:
+            clase, detalle = self._clasificar(eventos)[e.farmacia_id]
+            self.assertEqual(clase, 'ceguera')
+            self.assertIn('servidor', detalle)
+
+    def test_tres_sueltas_de_tres_proveedores_no_son_el_monitoreo(self):
+        """La regla vieja: tocar tres ISP alcanzaba para "el monitoreo no vio", y tres caídas
+        sueltas que coincidían salían del SLA (§10-CL)."""
         eventos = [
             self._caida('ML990', 'TELCONET', ip_sufijo=30),
             self._caida('ML991', 'PUNTO NET', minutos_atras=1, ip_sufijo=31),
             self._caida('ML992', 'FIBROMARK', minutos_atras=2, ip_sufijo=32),
         ]
-        for e in eventos:
-            clase, detalle = self._clasificar(eventos)[e.farmacia_id]
-            self.assertEqual(clase, 'ceguera')
-            self.assertIn('servidor', detalle)
+        self.assertEqual({self._clasificar(eventos)[e.farmacia_id][0] for e in eventos}, {'individual'})
+
+    def test_un_corte_de_telconet_con_una_coincidencia_ajena_sigue_siendo_de_telconet(self):
+        """Telconet 31 + una de Punto Net + una de Fibromark se clasificaba "el monitoreo no
+        vio" y las 31 de Telconet salían del reclamo."""
+        telconet = [self._caida(f'MT{i:03d}', 'TELCONET', minutos_atras=i % 5, ip_sufijo=100 + i) for i in range(5)]
+        otra = self._caida('MP001', 'PUNTO NET', minutos_atras=1, ip_sufijo=90)
+        clases = self._clasificar(telconet + [otra])
+        self.assertEqual({clases[e.farmacia_id][0] for e in telconet}, {'proveedor'})
+        self.assertEqual(clases[otra.farmacia_id][0], 'individual')
+
+    def test_un_racimo_no_encadena_mas_de_treinta_minutos(self):
+        """Sin tope, un día con muchas caídas encadenaba eventos sin relación de diez en diez."""
+        eventos = [self._caida(f'MC{i:03d}', 'TELCONET', minutos_atras=i * 8, ip_sufijo=150 + i) for i in range(8)]
+        clases = {self._clasificar(eventos)[e.farmacia_id][0] for e in eventos}
+        self.assertIn('proveedor', clases)
+        from apps.monitoreo.enlaces import armar_racimos
+        self.assertGreater(len(armar_racimos(eventos)), 1)
 
     def test_caidas_separadas_en_el_tiempo_no_se_juntan(self):
         """Tres del mismo proveedor pero con horas de diferencia son tres incidentes."""
@@ -10874,6 +10898,20 @@ class EnlaceInstaladorTests(TestCase):
     """
 
     def setUp(self):
+        import tempfile as _tempfile
+        from pathlib import Path as _Path
+
+        # Un MEDIA_ROOT propio con el paquete publicado: el servidor calcula su SHA-256 al
+        # armar el script y sin paquete no entrega nada (§10-CL).
+        self._media = _tempfile.mkdtemp()
+        ajuste = override_settings(MEDIA_ROOT=self._media)
+        ajuste.enable()
+        self.addCleanup(ajuste.disable)
+        carpeta = _Path(self._media) / 'agente-instalador'
+        carpeta.mkdir(parents=True)
+        self.paquete = carpeta / 'agente-instalador.zip'
+        self.paquete.write_bytes(b'PK-paquete-de-prueba')
+
         creador = User.objects.create_user(username='creador_inst', password='x')
         VersionAgente.objects.create(
             version='agente-prueba-0.34', ejecutable=SimpleUploadedFile('agente.exe', b'MZ'),
@@ -10989,6 +11027,39 @@ class EnlaceInstaladorTests(TestCase):
         Client().get(url.split(':8084', 1)[1], REMOTE_ADDR='172.18.0.4', HTTP_X_REAL_IP='10.111.50.7')
         self.assertEqual(EnlaceInstalador.objects.get().ip_uso, '10.111.50.7')
 
+    def test_verifica_el_sha256_del_paquete(self):
+        import hashlib
+
+        cuerpo = self._bajar(self._emitir()).content.decode('utf-8-sig')
+        self.assertIn(hashlib.sha256(b'PK-paquete-de-prueba').hexdigest(), cuerpo)
+        self.assertIn("Get-FileHash 'agente-instalador.zip' -Algorithm SHA256", cuerpo)
+
+    def test_se_borra_aunque_la_instalacion_falle(self):
+        """El borrado era la última línea: un hostname fuera de FARMACIA-SUFIJO dejaba el
+        script con la clave en %TEMP%. Ahora todo va dentro de try/finally."""
+        cuerpo = self._bajar(self._emitir()).content.decode('utf-8-sig')
+        inicio_try = cuerpo.index('try {\nif ($Codigo -notmatch')
+        finally_ = cuerpo.index('} finally {')
+        self.assertLess(inicio_try, cuerpo.index("throw \"El codigo '$Codigo'"))
+        self.assertIn('Remove-Item -LiteralPath $PSCommandPath', cuerpo[finally_:])
+
+    def test_sin_paquete_publicado_el_enlace_no_se_gasta(self):
+        from apps.catalogo.models import EnlaceInstalador
+
+        url = self._emitir()
+        self.paquete.unlink()
+        self.assertEqual(self._bajar(url).status_code, 503)
+        self.assertIsNone(EnlaceInstalador.objects.get().usado_en)
+        self.paquete.write_bytes(b'PK-paquete-de-prueba')
+        self.assertEqual(self._bajar(url).status_code, 200)
+
+    @override_settings(MQTT_PASSWORD_AGENTE="cla've’; Remove-Item C:/x -Recurse #")
+    def test_escapa_tambien_las_comillas_tipograficas(self):
+        """PowerShell también cierra una cadena simple con ’: escapar solo la recta dejaba
+        inyectar código desde la clave."""
+        cuerpo = self._bajar(self._emitir()).content.decode('utf-8-sig')
+        self.assertIn("-MqttPassword 'cla''ve’’; Remove-Item", cuerpo)
+
     def test_el_script_se_borra_solo_al_terminar(self):
         self.assertIn('Remove-Item -LiteralPath $PSCommandPath', self._bajar(self._emitir()).content.decode('utf-8-sig'))
 
@@ -11068,9 +11139,22 @@ class IncidentesDeEnlaceTests(TestCase):
         self.assertEqual([s['farmacia'] for s in r['aisladas']], [sola.farmacia])
 
     def test_varios_proveedores_a_la_vez_apuntan_al_monitoreo(self):
-        for isp in ('TELCONET', 'PUNTO NET', 'CLARO'):
-            self._evento(isp, hace_min=15)
+        for isp in ('TELCONET', 'PUNTO NET'):
+            for _ in range(3):
+                self._evento(isp, hace_min=15)
         self.assertEqual(self._incidentes()['masivos'][0]['clase'], 'ceguera')
+
+    def test_el_corte_se_reconoce_aunque_el_usuario_vea_una_sola_farmacia(self):
+        """Los racimos se arman con la flota entera: con el alcance de un cliente, un corte
+        ajeno se volvía "caída del sitio" o desaparecía (§10-CL)."""
+        from apps.monitoreo.enlaces import incidentes_de_enlace
+
+        eventos = [self._evento(hace_min=30) for _ in range(4)]
+        r = incidentes_de_enlace([eventos[0].farmacia_id])
+        self.assertEqual(len(r['masivos']), 1)
+        self.assertEqual(r['masivos'][0]['cayeron'], 1)  # solo lo suyo, no el total ajeno
+        self.assertEqual(r['aisladas'], [])
+        self.assertEqual(r['clase_por_farmacia'][eventos[0].farmacia_id][0], 'proveedor')
 
     def test_los_que_nunca_respondieron_no_son_caidas(self):
         self._evento(hace_min=5, respondio=False)
@@ -11207,6 +11291,62 @@ class ReanudacionMonitoreoTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
         self.assertIsNotNone(ReanudacionMonitoreo.objects.get().avisado_en)
 
+    def test_dos_barridos_juntos_no_duplican_el_apagon(self):
+        from apps.monitoreo.enlaces import _registrar_reanudacion_si_hubo_hueco
+        from apps.monitoreo.models import ReanudacionMonitoreo
+
+        primera = _registrar_reanudacion_si_hubo_hueco()
+        segunda = _registrar_reanudacion_si_hubo_hueco()
+        self.assertEqual(ReanudacionMonitoreo.objects.count(), 1)
+        self.assertEqual(primera.pk, segunda.pk)
+
+    def test_una_lectura_suelta_durante_el_apagon_no_tapa_el_hueco(self):
+        """Probar una farmacia a mano o un reporte de la sonda externa movían el Max de
+        `ultima_verificacion` y el apagón no se avisaba. Ahora cuenta el último barrido completo."""
+        from apps.monitoreo.models import BarridoEnlaces, EstadoEnlaceFarmacia, ReanudacionMonitoreo
+
+        BarridoEnlaces.objects.create(pk=1, ultimo_completo=self.ahora - timedelta(hours=3))
+        EstadoEnlaceFarmacia.objects.filter(farmacia=self.farmacias[0]).update(
+            ultima_verificacion=self.ahora - timedelta(minutes=1))
+        self._barrer()
+        self.assertTrue(ReanudacionMonitoreo.objects.exists())
+        self.assertGreater(BarridoEnlaces.objects.get().ultimo_completo, self.ahora - timedelta(minutes=1))
+
+    def test_el_barrido_manual_de_la_flota_tambien_cuenta(self):
+        from apps.monitoreo import enlaces
+        from apps.monitoreo.models import ReanudacionMonitoreo
+
+        # `manage.py sondear_enlaces` sin --farmacia pasa la flota como lista: antes eso no
+        # contaba como barrido completo y nunca detectaba un apagón.
+        with patch.object(enlaces, 'verificar_ping_disponible'), \
+                patch.object(enlaces, 'sondear_enlace', return_value=(True, 1.0)):
+            enlaces.sondear_enlaces_farmacias(self.farmacias, flota_entera=True)
+        self.assertTrue(ReanudacionMonitoreo.objects.exists())
+
+    def test_previas_cuenta_solo_las_del_cliente_y_activas(self):
+        from apps.monitoreo.enlaces import reanudacion_vigente
+
+        self._con_reanudacion(self.farmacias[:2])
+        Farmacia.objects.filter(pk=self.farmacias[9].pk).update(activa=False)
+        alcance = [f.pk for f in self.farmacias[:5]]
+        self.assertEqual(reanudacion_vigente(alcance)['previas'], 5)
+        self.assertEqual(reanudacion_vigente()['previas'], 9)
+
+    def test_un_aviso_viejo_sin_mandar_no_sale_despues_del_nuevo(self):
+        from django.core import mail
+
+        from apps.monitoreo.enlaces import avisar_reanudacion_monitoreo
+        from apps.monitoreo.models import ReanudacionMonitoreo
+
+        ReanudacionMonitoreo.objects.create(
+            apagado_desde=self.ahora - timedelta(hours=10), reanudado_en=self.ahora - timedelta(hours=9),
+            farmacias_previas=[f.pk for f in self.farmacias])
+        self._con_reanudacion(self.farmacias[:2])
+        avisar_reanudacion_monitoreo()
+        self.assertFalse(avisar_reanudacion_monitoreo()['enviado'])
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertFalse(ReanudacionMonitoreo.objects.filter(avisado_en__isnull=True).exists())
+
     def test_la_pagina_de_enlaces_lo_muestra(self):
         self._con_reanudacion(self.farmacias[:2])
         usuario = User.objects.create_user(username='u_reanudacion', password='x')
@@ -11277,11 +11417,11 @@ class HistorialEnlacesTests(TestCase):
 
     def test_lo_que_el_monitoreo_no_vio_no_cuenta_para_la_disponibilidad(self):
         inicio = timezone.now() - timedelta(days=1)
-        afectadas = [self._farmacia(isp) for isp in ('TELCONET', 'PUNTO NET', 'CLARO')]
+        afectadas = [self._farmacia(isp) for isp in ('TELCONET', 'PUNTO NET') for _ in range(3)]
         for f in afectadas:
             self._caida(f, inicio, 120)
         r = self._historial()
-        self.assertEqual(r.excluidas_por_ceguera, 3)
+        self.assertEqual(r.excluidas_por_ceguera, 6)
         self.assertTrue(all(fila.minutos_sla == 0 and fila.disponibilidad_sla == 100 for fila in r.por_farmacia))
         self.assertEqual({c.clase for c in r.caidas}, {'ceguera'})
 
@@ -11304,6 +11444,38 @@ class HistorialEnlacesTests(TestCase):
         hasta = timezone.now()
         r = historial_enlaces(Farmacia.objects.filter(pk=fs[0].pk), hasta - timedelta(days=7), hasta)
         self.assertEqual([c.clase for c in r.caidas], ['proveedor'])
+
+    def test_la_duracion_minima_no_cambia_la_disponibilidad(self):
+        """40 caídas de 45 min con "1 hora o más" salían al 100 %: el filtro achicaba la suma."""
+        f = self._farmacia()
+        for i in range(4):
+            self._caida(f, timezone.now() - timedelta(days=1, hours=i * 3), 45)
+        self._caida(f, timezone.now() - timedelta(days=3), 90)
+        todas = self._historial()
+        filtrada = self._historial(minimo_minutos=60)
+        self.assertEqual(len(filtrada.caidas), 1)
+        self.assertEqual(filtrada.por_farmacia[0].disponibilidad_sla, todas.por_farmacia[0].disponibilidad_sla)
+        self.assertEqual(round(filtrada.por_farmacia[0].minutos_sla), 4 * 45 + 90)
+
+    def test_la_clase_no_depende_del_desde_pedido(self):
+        """Una caída abierta de un corte que ya volvió no queda sola al mover el "desde"
+        después del corte: se clasifica con lo que pasó alrededor (§10-CL)."""
+        from apps.monitoreo.historial_enlaces import historial_enlaces
+
+        inicio = timezone.now() - timedelta(days=3)
+        sigue = self._farmacia()
+        self._caida(sigue, inicio, None)
+        for _ in range(3):
+            self._caida(self._farmacia(), inicio, 20)
+        hasta = timezone.now()
+        amplio = historial_enlaces(Farmacia.objects.all(), hasta - timedelta(days=7), hasta)
+        despues = historial_enlaces(Farmacia.objects.all(), hasta - timedelta(days=1), hasta)
+
+        def clase(h):
+            return next(c.clase for c in h.caidas if c.farmacia == sigue)
+
+        self.assertEqual(clase(amplio), 'proveedor')
+        self.assertEqual(clase(despues), 'proveedor')
 
     def test_filtro_por_duracion_minima(self):
         f = self._farmacia()

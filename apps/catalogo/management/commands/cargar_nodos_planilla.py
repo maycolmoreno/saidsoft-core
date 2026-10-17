@@ -48,7 +48,10 @@ class Command(BaseCommand):
             raise CommandError(str(exc))
 
         omitir = [c.strip() for c in opciones['omitir'].split(',') if c.strip()]
-        resultado = cargar_nodos(filas, usuario=usuario, aplicar=opciones['aplicar'], omitir=omitir)
+        try:
+            resultado = cargar_nodos(filas, usuario=usuario, aplicar=opciones['aplicar'], omitir=omitir)
+        except PlanillaInvalida as exc:
+            raise CommandError(str(exc))
 
         self.stdout.write(f'{len(filas)} filas leídas. Sin cambios: {len(resultado.por_accion("igual"))}.')
         for accion, etiqueta in ETIQUETAS.items():

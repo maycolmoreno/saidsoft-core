@@ -168,16 +168,14 @@ def enlaces_farmacias_lista(request):
 
     pagina, query_filtros = paginar(listado, request)
 
-    # Se clasifican TODAS las caidas abiertas (no solo las de esta pagina): una tanda
-    # simultanea se reconoce por lo que paso alrededor, y mirar 25 filas no alcanza para
-    # ver que cayeron 30 sitios del mismo proveedor.
-    from apps.monitoreo.enlaces import clasificar_caidas_simultaneas
+    # La clasificacion sale de la FLOTA ENTERA (no solo de esta pagina ni de este cliente):
+    # una tanda simultanea se reconoce por lo que paso alrededor. Es la misma que usan los
+    # cortes de "Que atender primero", para que la fila y el bloque no se contradigan.
+    from apps.monitoreo.enlaces import incidentes_de_enlace, reanudacion_vigente
 
-    abiertas = list(
-        EventoEnlaceFarmacia.objects.filter(fin__isnull=True)
-        .select_related('farmacia')
-    )
-    simultaneas = clasificar_caidas_simultaneas(abiertas)
+    alcance = list(base.values_list('pk', flat=True))
+    incidentes = incidentes_de_enlace(alcance)
+    simultaneas = incidentes['clase_por_farmacia']
 
     filas = []
     for farmacia in pagina.object_list:
@@ -221,12 +219,10 @@ def enlaces_farmacias_lista(request):
         fin__isnull=True, farmacia__in=base.values('pk'),
     ).select_related('farmacia').order_by('inicio')
 
-    from apps.monitoreo.enlaces import incidentes_de_enlace, reanudacion_vigente
-
     return render(request, 'panel/enlaces_farmacias_lista.html', {
         # Qué atender primero: cortes masivos como un incidente, y las aisladas aparte.
-        'incidentes': incidentes_de_enlace(base.values('pk')),
-        'reanudacion': reanudacion_vigente(base.values_list('pk', flat=True)),
+        'incidentes': incidentes,
+        'reanudacion': reanudacion_vigente(alcance),
         'filas': filas,
         'activas': activas,
         'caidas': caidas,
