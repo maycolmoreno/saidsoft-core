@@ -145,29 +145,34 @@ class Command(BaseCommand):
                 except (TypeError, ValueError):
                     extension = None
 
-                farmacia.nombre = _limpiar_texto(_col('nombre_sucursal'))
-                farmacia.administrador = _limpiar_texto(_col('administrador'))
-                farmacia.coordinador_zonal = _limpiar_texto(_col('coordinador_zonal'))
-                farmacia.coordinador_regional = _limpiar_texto(_col('coordinador_regional'))
-                farmacia.ciudad = _limpiar_texto(_col('ciudad'))
-                farmacia.provincia = _limpiar_texto(_col('provincia'))
-                farmacia.parroquia = _limpiar_texto(_col('parroquia'))
-                farmacia.direccion = _limpiar_texto(_col('direccion'))
-                farmacia.horario = _limpiar_texto(_col('horario'))
-                farmacia.tipo_sucursal = tipo_sucursal
-                farmacia.formato_farmacia = formato_farmacia
-                farmacia.latitud = float(_col('latitud')) if _col('latitud') not in (None, '') else None
-                farmacia.longitud = float(_col('longitud')) if _col('longitud') not in (None, '') else None
-                farmacia.fecha_inicio_operacion = _a_fecha(_col('fecha_inicio_op'))
-                farmacia.fecha_inicio_ruc = _a_fecha(_col('fecha_inicio_ruc'))
-                farmacia.extension_telefonica = extension
-                telefono = _limpiar_texto(_col('celular'))
-                if telefono:
-                    farmacia.telefono = telefono
-                correo = _limpiar_texto(_col('correo'))
-                if correo:
-                    farmacia.email = correo
-                farmacia.tecnico_asignado = tecnico
+                # Una celda vacía en el directorio es "RRHH no lo cargó", no "borrarlo". Antes
+                # se copiaba el vacío encima: con el de septiembre, GLG01 perdía su horario
+                # (y con él el corte de horario de atención del tablero NOC) y MGY01 su
+                # dirección (16-oct-2026). Teléfono y correo ya se trataban así.
+                nuevos = {
+                    'nombre': _limpiar_texto(_col('nombre_sucursal')),
+                    'administrador': _limpiar_texto(_col('administrador')),
+                    'coordinador_zonal': _limpiar_texto(_col('coordinador_zonal')),
+                    'coordinador_regional': _limpiar_texto(_col('coordinador_regional')),
+                    'ciudad': _limpiar_texto(_col('ciudad')),
+                    'provincia': _limpiar_texto(_col('provincia')),
+                    'parroquia': _limpiar_texto(_col('parroquia')),
+                    'direccion': _limpiar_texto(_col('direccion')),
+                    'horario': _limpiar_texto(_col('horario')),
+                    'tipo_sucursal': tipo_sucursal,
+                    'formato_farmacia': formato_farmacia,
+                    'latitud': float(_col('latitud')) if _col('latitud') not in (None, '') else None,
+                    'longitud': float(_col('longitud')) if _col('longitud') not in (None, '') else None,
+                    'fecha_inicio_operacion': _a_fecha(_col('fecha_inicio_op')),
+                    'fecha_inicio_ruc': _a_fecha(_col('fecha_inicio_ruc')),
+                    'extension_telefonica': extension,
+                    'telefono': _limpiar_texto(_col('celular')),
+                    'email': _limpiar_texto(_col('correo')),
+                    'tecnico_asignado': tecnico,
+                }
+                for campo, valor in nuevos.items():
+                    if valor not in (None, ''):
+                        setattr(farmacia, campo, valor)
 
                 if not dry_run:
                     farmacia.save(update_fields=CAMPOS_ACTUALIZABLES)

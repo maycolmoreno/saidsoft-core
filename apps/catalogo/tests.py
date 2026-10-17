@@ -722,6 +722,28 @@ class ImportarDirectorioSucursalesTests(TestCase):
         self.farmacia.refresh_from_db()
         self.assertEqual(self.farmacia.tipo_sucursal, Farmacia.TipoSucursal.ASOCIADO)  # sin cambios
 
+    def test_una_celda_vacia_no_borra_lo_que_el_panel_ya_tiene(self):
+        """El directorio de septiembre traía GLG01 sin horario ni dirección y MGY01 sin
+        dirección: copiar el vacío borraba datos buenos (16-oct-2026)."""
+        import openpyxl
+
+        self.farmacia.horario = '07H00 a 21H00'
+        self.farmacia.direccion = 'CALLE REAL'
+        self.farmacia.tecnico_asignado = self.tecnico
+        self.farmacia.save()
+        ruta = self._libro_de_prueba(tecnico='N/D')
+        wb = openpyxl.load_workbook(ruta)
+        fila = wb['Directorio Personal'][2]
+        fila[4].value = None    # Horario
+        fila[12].value = ''     # Direccion
+        wb.save(ruta)
+        call_command('importar_directorio_sucursales', ruta, '--aplicar', stdout=io.StringIO())
+        self.farmacia.refresh_from_db()
+        self.assertEqual(self.farmacia.horario, '07H00 a 21H00')
+        self.assertEqual(self.farmacia.direccion, 'CALLE REAL')
+        self.assertEqual(self.farmacia.tecnico_asignado, self.tecnico)
+        self.assertEqual(self.farmacia.administrador, 'SASINTUÑA BONE MARTHA')  # lo que sí vino
+
 
 class ComandoFirmadoTests(TestCase):
     """SEC-1 (auditoría 22-ago-2026): la firma HMAC de un comando sin parámetros

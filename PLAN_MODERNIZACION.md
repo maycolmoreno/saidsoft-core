@@ -7364,3 +7364,10 @@ del código y corta si no es el esperado.
   Hasta aclararlo, "Aplicar nodo" desde la ficha de la estación puede dejar un POS sin base.
 - MAM02, MDG02, MRI21 (en la planilla, no en el directorio de RRHH) y GG014 (al revés), por
   confirmar.
+
+### Adenda (16-oct-2026): el directorio de RRHH borraba datos con sus celdas vacías
+
+`importar_directorio_sucursales` copiaba cada celda tal cual, vacía incluida. Con el directorio
+de septiembre, GLG01 habría perdido su horario y su dirección, y MGY01 y MGY02 su nombre y su
+dirección. Ahora una celda vacía deja el dato que ya tiene el panel (teléfono y correo ya se
+trataban así). Un técnico `N/D` tampoco desvincula al que estaba asignado.
