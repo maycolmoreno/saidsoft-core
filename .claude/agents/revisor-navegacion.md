@@ -21,7 +21,9 @@ pantalla donde el problema se acciona.
 - **No uses los informes de auditorías anteriores para descubrir hallazgos**
   (`docs/auditoria/fase4-hallazgos.md` y cualquier otro informe de `docs/auditoria/` que
   no sea `fase1-descubrimiento.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, los
-  pendientes de `PLAN_MODERNIZACION.md`). Analizá el código por tu cuenta.
+  pendientes de `PLAN_MODERNIZACION.md`). Analizá el código por tu cuenta. **Sí los usás al
+  final, para cotejar:** con cada hallazgo ya armado desde el código, buscá con Grep si ya
+  estaba registrado y completá `¿Ya documentado?` y `¿Ya corregido?` con la cita exacta.
 
 ## Contexto
 
@@ -150,8 +152,10 @@ Como no podés ejecutar nada ni ver datos, **nada se marca CONFIRMADO por infere
 enlace roto sí se puede confirmar leyendo: el filtro de la vista y el queryset del origen
 están los dos en el código, y su desacuerdo es un hecho, no una hipótesis.
 
-Separá **problemas preexistentes** de **cambios legítimos en progreso** y de
-**modificaciones de la propia auditoría**.
+Separá **problemas preexistentes** de **cambios legítimos en progreso**. Como no tenés `Bash`,
+no podés ver qué está sin commitear: si quien te invoca te pasó el `git diff` o la lista de
+archivos modificados, usalos para esa distinción; si no, decí en el informe que no la pudiste
+hacer y tratá todo como código vigente.
 
 ## Formato obligatorio de cada hallazgo
 

@@ -231,10 +231,28 @@ base de datos; no hacen commits ni operaciones de git que escriban. Entregan hal
 evidencia (archivo, línea, función) para que un humano decida. Ningún hallazgo se marca
 CONFIRMADO por inferencia: si hace falta ejecutar algo, se marca pendiente de reproducción.
 
+**Única excepción: `disenador`.** Es el único agente que escribe (`tools:` con `Edit` y
+`Write`), y solo sobre la interfaz: `templates/**`, `static_src/*.css` y
+`movil-campo/lib/`. Por eso `settings.json` no bloquea `templates/` ni `movil-campo/lib/`
+(17-oct-2026): esas reglas de bloqueo valen para todo el proyecto, subagentes incluidos, y
+lo dejaban sin poder trabajar. Que ningún otro agente edite esas carpetas depende de su
+`tools:` —ninguno recibe `Edit` ni `Write`—, así que **un agente nuevo con `Edit`/`Write`
+hereda acceso a ellas**. `movil-campo/android/` (keystore, `key.properties`) sigue
+bloqueado.
+
 Las restricciones de lectura y de shell están en `.claude/settings.json`. Las reglas `deny`
 sobre `Bash` son una **lista negra, no un sandbox**: acotan los comandos escritos de la
 forma habitual, no cierran toda vía posible. El control estructural real es el `tools:` de
-cada agente — `revisor-bd` y `revisor-inventario` no reciben `Bash` en absoluto.
+cada agente. Hoy (17-oct-2026): `consultor`, `revisor-bd`, `revisor-inventario` y
+`revisor-navegacion` no reciben `Bash` en absoluto; `arquitecto`, `cazador-bugs` y
+`revisor-arquitectura` sí, solo para Git de lectura y búsqueda, y `disenador` además para
+compilar el CSS. Para esos cuatro, lo que no pueden hacer por shell depende de la lista
+negra, no de una barrera. Desde el 17-oct-2026 `settings.json` bloquea también `Write` sobre
+las mismas carpetas que `Edit`, los comandos de shell que escriben archivos (`sed -i`, `tee`,
+`cp`, `Set-Content`…) y cualquier comando que nombre un archivo secreto (`*.env*`, `*.jks*`,
+`*.xlsx*`…). **Sigue abierto:** la redirección `>` y un intérprete (`python -c`, `node -e`)
+escriben donde quieran — bloquear `>` rompería `2>/dev/null` en todos los comandos. Cerrarlo
+de verdad pide un hook `PreToolUse` con lista blanca de comandos, no más reglas `deny`.
 
 ## Mantener la documentación al día
 

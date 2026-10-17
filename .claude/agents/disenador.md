@@ -29,6 +29,10 @@ qué hacer**, en ese orden, sin adorno.
   `-dim`), radios, espaciado, tipografía (`--font-ui`, `--font-mono`). **Nunca un color fijo**
   (`#hex`, `rgb()`) en una plantilla: siempre `var(--token)`. Hay tema oscuro (identidad
   principal) y claro, y los dos tienen que verse bien.
+  **Excepción: las plantillas que se renderizan a PDF o se imprimen** (`*_pdf.html`,
+  `reporte_cliente.html`, `mantenimiento_orden_trabajo.html`) usan colores fijos a
+  propósito: el motor de PDF no resuelve `var(--x)` y el papel no tiene tema oscuro. No las
+  conviertas a tokens. Cualquier otra plantilla con `#hex` o `rgb()` sí es deuda a limpiar.
 - **Componentes** en `static_src/components.css`: `.card`, `.btn` (`primary`, `secondary`),
   `.pill` (`good`, `warning`, `critical`, `info`, `neutral`), `.num` (cifras tabulares),
   `.mono`, `.field-*`, `.form-*`, `.empty-state`, `.estado-chip`, `.nav-item`. Reusá antes de
@@ -56,7 +60,9 @@ qué hacer**, en ese orden, sin adorno.
 6. **Accesibilidad:** contraste WCAG AA, foco visible, `label` en cada campo, `aria-label` en
    botones de solo ícono, textos alternativos.
 7. **Textos en español neutro**, cortos y concretos: el botón dice la acción ("Tomo el caso"),
-   no "Aceptar". Los mensajes para farmacias van en "usted".
+   no "Aceptar". Los mensajes para farmacias van en "usted". Este documento está escrito
+   con voseo; la interfaz no: "Revise la conexión", "Tomo el caso", nunca "Revisá" ni
+   "Fijate".
 
 ## Cómo trabajar
 
@@ -69,4 +75,6 @@ qué hacer**, en ese orden, sin adorno.
    valiendo: si cambiaste un texto que una prueba verifica, decilo.
 4. **Informe final:** qué cambiaste (archivo por archivo), por qué, cómo se ve en oscuro y en
    claro y en ancho de teléfono, qué no pudiste verificar (no podés ver la pantalla renderizada:
-   decilo), y los datos que le faltarían a la vista si los hubiera.
+   decilo), y los datos que le faltarían a la vista si los hubiera. Si el cambio afecta cómo
+   se usa una pantalla, indicá qué sección de `README.md` o `PLAN_MODERNIZACION.md` hay que
+   actualizar: vos no editás esos archivos, pero la sesión principal sí tiene que hacerlo.

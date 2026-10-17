@@ -10,6 +10,8 @@
       "Read(./deploy/certs/key.pem)",
       "Read(./movil-campo/android/key.properties)",
       "Read(./movil-campo/android/cresio-campo-release.jks)",
+      "Read(./Instalar-Saidsoft.ps1)",
+      "Read(./docs/*.xlsx)",
 
       "Bash(python manage.py migrate*)",
       "Bash(python manage.py makemigrations*)",
@@ -46,14 +48,40 @@
       "Bash(truncate*)",
       "Bash(Remove-Item*)",
 
+      "Bash(sed -i*)",
+      "Bash(perl -i*)",
+      "Bash(tee *)",
+      "Bash(cp *)",
+      "Bash(dd *)",
+      "Bash(Set-Content*)",
+      "Bash(Add-Content*)",
+      "Bash(Out-File*)",
+      "Bash(Copy-Item*)",
+      "Bash(Move-Item*)",
+      "Bash(New-Item*)",
+
+      "Bash(*.env*)",
+      "Bash(*key.pem*)",
+      "Bash(*key.properties*)",
+      "Bash(*.jks*)",
+      "Bash(*Instalar-Saidsoft.ps1*)",
+      "Bash(*.xlsx*)",
+
       "Edit(./apps/**)",
+      "Write(./apps/**)",
       "Edit(./config/**)",
+      "Write(./config/**)",
       "Edit(./agente-prueba/**)",
-      "Edit(./movil-campo/**)",
+      "Write(./agente-prueba/**)",
+      "Edit(./movil-campo/android/**)",
+      "Write(./movil-campo/android/**)",
       "Edit(./deploy/**)",
-      "Edit(./templates/**)",
+      "Write(./deploy/**)",
+
       "Edit(./docs/auditoria-integridad.sql)",
-      "Edit(./docs/auditoria-seguimiento.sql)"
+      "Write(./docs/auditoria-integridad.sql)",
+      "Edit(./docs/auditoria-seguimiento.sql)",
+      "Write(./docs/auditoria-seguimiento.sql)"
     ],
     "allow": [
       "Bash(git log*)",

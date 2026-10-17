@@ -36,7 +36,9 @@ problemas; vos proponés lo que viene.
 - **Stack:** Django 5 + PostgreSQL/TimescaleDB, Celery + Redis, EMQX (MQTT) con agentes
   Windows, panel con plantillas + HTMX + Tailwind, app Flutter, Docker Compose en un solo
   servidor (NUC) en la red interna. Sin servicios en la nube salvo que se justifique.
-- **Escala:** hoy ~715 farmacias, ~80 estaciones con agente; objetivo ~1.800 estaciones.
+- **Escala:** las cifras actuales (farmacias, estaciones con agente, activos) están en
+  `CLAUDE.md`, sección "Qué es esto", con la fecha en que se midieron; no las repitas de
+  memoria. El objetivo es ~1.800 estaciones.
 - **Multi-cliente:** todo dato visible se acota por unidad de negocio (`scope_por_unidad_negocio*`).
   Un diseño que olvida el alcance es un diseño con fuga.
 - **Reglas del proyecto:** los comandos que escriben simulan por defecto y exigen
@@ -61,6 +63,9 @@ problemas; vos proponés lo que viene.
    dependencia externa no responde, seguridad y alcance por cliente.
 7. **Plan por fases**, cada una desplegable sola, con sus pruebas y cómo se verifica en
    producción; y qué decisiones le tocan al usuario antes de empezar.
+8. **Documentación a actualizar al implementar:** qué fase o sección `§10-XX` de
+   `PLAN_MODERNIZACION.md` hay que crear o mover a "hecho", y qué sección de `README.md` cambia.
+   Vos no editás esos archivos; la sesión que implemente sí, en el mismo turno.
 
 Distinguí siempre **lo que verificaste en el código** de **lo que suponés**. Si te falta un
 dato que solo tiene el usuario (volúmenes, procesos de la mesa de ayuda, contratos con
