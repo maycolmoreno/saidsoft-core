@@ -4517,3 +4517,89 @@ class CargarNodosPlanillaTests(TestCase):
             call_command('importar_red_farmacias_xlsx', self._planilla([self._fila('GN001', 'trxn02')]),
                          stdout=io.StringIO())
         self.assertFalse(Farmacia.objects.filter(codigo='192.168.102.1').exists())
+
+
+class CargarClavesNodosPlanillaTests(TestCase):
+    """`cargar_claves_nodos_planilla`: contraseñas de los nodos desde la planilla, cifradas.
+
+    Lo que fija: que se guarden cifradas, que no aparezcan en ninguna salida ni en la
+    auditoría, que no se envíe nada a las estaciones, y que dos contraseñas distintas para
+    el mismo nodo frenen todo en vez de elegir una.
+    """
+
+    SECRETO = 'Clave-Nodo-1!'
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        User.objects.create_user(username='op_claves', password='x')
+        self.t1 = Grupo.objects.create(codigo='TRXC01', pos_bdd='trxc01')
+        self.t2 = Grupo.objects.create(codigo='TRXC02', pos_bdd='trxc02')
+
+    def _planilla(self, filas):
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        for hoja in ('FARMAMIA', 'SAN GREGORIO'):
+            ws = wb.create_sheet(hoja)
+            ws.append(['item', 'Id de Farmacia', 'Bdd pos', 'pos servidor', 'contraseña', 'PUERTO'])
+            for f in filas:
+                ws.append(f)
+        ruta = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False).name
+        wb.save(ruta)
+        return ruta
+
+    def _correr(self, ruta, **opciones):
+        salida = io.StringIO()
+        call_command('cargar_claves_nodos_planilla', ruta, usuario='op_claves', stdout=salida, **opciones)
+        return salida.getvalue()
+
+    def test_guarda_cifrada_y_no_la_muestra(self):
+        from apps.auditoria.models import EventoAuditoria
+        from apps.catalogo.services import obtener_password_nodo
+
+        salida = self._correr(self._planilla([[1, 'GC001', 'trxc01', '192.168.111.1', self.SECRETO, 5433]]), aplicar=True)
+        self.t1.refresh_from_db()
+        self.assertEqual(obtener_password_nodo(self.t1), self.SECRETO)
+        self.assertNotIn(self.SECRETO, self.t1.pos_password_cifrada)
+        self.assertNotIn(self.SECRETO, salida)
+        self.assertIn('TRXC01', salida)
+        self.assertIn('nueva', salida)
+        self.assertFalse(any(self.SECRETO in str(e.detalle) for e in EventoAuditoria.objects.all()))
+        self.assertTrue(EventoAuditoria.objects.filter(accion='grupo.clave_nodo_desde_planilla').exists())
+
+    def test_simula_por_defecto(self):
+        self._correr(self._planilla([[1, 'GC001', 'trxc01', 'x', self.SECRETO, 5433]]))
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.pos_password_cifrada, '')
+
+    def test_distingue_igual_de_cambia(self):
+        from apps.catalogo.services import establecer_password_nodo
+
+        establecer_password_nodo(self.t1, self.SECRETO)
+        establecer_password_nodo(self.t2, 'vieja')
+        salida = self._correr(self._planilla([[1, 'GC001', 'trxc01', 'x', self.SECRETO, 5433],
+                                              [2, 'GC002', 'trxc02', 'x', 'nueva-clave', 5433]]))
+        self.assertRegex(salida, r'TRXC01\s+igual')
+        self.assertRegex(salida, r'TRXC02\s+cambia')
+
+    def test_dos_claves_para_el_mismo_nodo_frenan_todo(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaisesMessage(CommandError, 'más de una contraseña'):
+            self._correr(self._planilla([[1, 'GC001', 'trxc01', 'x', 'una', 5433],
+                                         [2, 'GC002', 'trxc01', 'x', 'otra', 5433]]), aplicar=True)
+        self.t1.refresh_from_db()
+        self.assertEqual(self.t1.pos_password_cifrada, '')
+
+    def test_no_envia_nada_a_las_estaciones(self):
+        with patch('apps.catalogo.services.enviar_configurar_nodo_pos') as enviar:
+            salida = self._correr(self._planilla([[1, 'GC001', 'trxc01', 'x', self.SECRETO, 5433]]), aplicar=True)
+        enviar.assert_not_called()
+        self.assertIn('ni se envió nada a ninguna estación', salida)
+
+    def test_un_nodo_que_no_existe_no_se_crea(self):
+        salida = self._correr(self._planilla([[1, 'GC009', 'trxc99', 'x', self.SECRETO, 5433]]), aplicar=True)
+        self.assertIn('sin nodo en el panel', salida)
+        self.assertFalse(Grupo.objects.filter(codigo='TRXC99').exists())

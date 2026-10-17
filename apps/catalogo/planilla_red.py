@@ -20,6 +20,7 @@ Lo que esto hace, y sobre todo lo que NO hace:
   informa y la fila se salta.
 - **No lee la columna de contraseñas.** Las columnas se buscan por nombre exacto y esa no
   está entre ellas.
+  Las contraseñas las carga aparte `cargar_claves_nodos`, al final de este módulo.
 - Lee los encabezados por NOMBRE, no por posición: el importador anterior
   (`importar_red_farmacias_xlsx`) usaba posiciones, y con una columna movida habría
   guardado la columna de contraseñas como IP.
@@ -228,3 +229,65 @@ def _comparar_otros(farmacia, fila, resultado):
     ):
         if _normalizar(en_panel) != _normalizar(en_planilla):
             resultado.otras_diferencias.append((farmacia.codigo, etiqueta, en_panel, en_planilla))
+
+
+# --- Contraseñas de los nodos -------------------------------------------------------
+#
+# Aparte de `cargar_nodos` a propósito, que NO lee esta columna. El 16-oct-2026 las de la
+# planilla no coincidían con las del panel en TRX001-007 y TRX002/TRX008 no tenían
+# ninguna; el usuario confirmó el 17-oct que las vigentes son las de la planilla.
+#
+# Solo se guardan CIFRADAS en el nodo del panel (`establecer_password_nodo`). No se
+# muestran en ningún lado —ni salida, ni auditoría—, y no se envía nada a las estaciones:
+# eso lo hace "Aplicar nodo", que es otra decisión.
+
+ENCABEZADO_CLAVE = 'contrasena'
+
+
+def leer_claves_planilla(libro) -> dict[str, str]:
+    """`{bdd_pos: contraseña}`. Exige UNA sola por nodo en toda la planilla: dos distintas
+    para el mismo nodo es un error de la planilla, y elegir una sería adivinar."""
+    claves = defaultdict(set)
+    for nombre_hoja in HOJAS:
+        if nombre_hoja not in libro.sheetnames:
+            raise PlanillaInvalida(f'Falta la hoja "{nombre_hoja}".')
+        iterador = libro[nombre_hoja].iter_rows(values_only=True)
+        cabecera = [_normalizar(t) for t in next(iterador, ())]
+        try:
+            i_nodo, i_clave = cabecera.index('bdd pos'), cabecera.index(ENCABEZADO_CLAVE)
+        except ValueError:
+            raise PlanillaInvalida(f'Hoja "{nombre_hoja}": faltan las columnas "Bdd pos" o "contraseña".')
+        for fila in iterador:
+            nodo = _texto(fila[i_nodo] if i_nodo < len(fila) else '').lower()
+            clave = '' if i_clave >= len(fila) or fila[i_clave] is None else str(fila[i_clave])
+            if nodo and clave and nodo not in ('#n/a',):
+                claves[nodo].add(clave)
+    dobles = sorted(n for n, cs in claves.items() if len(cs) > 1)
+    if dobles:
+        raise PlanillaInvalida(f'Nodos con más de una contraseña en la planilla: {dobles}. No se carga nada.')
+    return {n: next(iter(cs)) for n, cs in claves.items()}
+
+
+def cargar_claves_nodos(claves: dict[str, str], *, usuario, aplicar=False) -> list[tuple[str, str]]:
+    """`[(codigo_nodo, resultado)]` con resultado `igual`, `cambia`, `nueva` o
+    `sin nodo en el panel`. Simula salvo `aplicar=True`."""
+    from apps.catalogo.services import establecer_password_nodo, obtener_password_nodo
+
+    por_bdd = {g.bdd_pos.strip().lower(): g for g in Grupo.objects.all()}
+    resultado = []
+    with transaction.atomic():
+        for bdd, clave in sorted(claves.items()):
+            grupo = por_bdd.get(bdd)
+            if grupo is None:
+                resultado.append((bdd.upper(), 'sin nodo en el panel'))
+                continue
+            actual = obtener_password_nodo(grupo)
+            estado = 'igual' if actual == clave else ('cambia' if actual else 'nueva')
+            resultado.append((grupo.codigo, estado))
+            if aplicar and estado != 'igual':
+                establecer_password_nodo(grupo, clave)
+                registrar_evento(
+                    usuario=usuario, accion='grupo.clave_nodo_desde_planilla', objeto=grupo,
+                    detalle={'tenia_clave': bool(actual)},
+                )
+    return resultado

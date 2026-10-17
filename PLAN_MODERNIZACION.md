@@ -7466,3 +7466,11 @@ primero) o por evento; exportación CSV de las dos.
 
 Primera foto (30 días al 17-oct): Telconet 1.992 caídas en 526 farmacias y 142 cortes
 masivos; Punto Net 165 en 109 y 3 cortes. Peor sitio: GP063 (22,9 %, caída desde el 24-sep).
+
+### Adenda (17-oct-2026): las contraseñas de los nodos, desde la planilla
+
+El usuario confirmó que las vigentes son las de la planilla. `cargar_claves_nodos_planilla`
+las guarda **cifradas** en cada nodo del panel (`establecer_password_nodo`): exige una sola
+por nodo en toda la planilla (dos distintas frenan todo), no muestra ninguna —ni en la
+salida ni en la auditoría, que solo dice si el nodo ya tenía una— y **no envía nada a las
+estaciones**: reapuntar un POS sigue siendo "Aplicar nodo", y el usuario pidió no hacerlo.
