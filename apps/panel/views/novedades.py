@@ -5,6 +5,7 @@ botones: tomar el caso, registrar la causa que se averiguó llamando, cerrar. Ve
 PLAN_MODERNIZACION.md §10-CM.
 """
 from django.contrib.auth.decorators import login_required, permission_required
+from django.db.models import Case, Value, When
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -35,8 +36,16 @@ def novedades_lista(request):
         request, 'farmacia__unidad_negocio',
     )
     conteos = {clave: base.filter(estado__in=estados).count() for clave, estados in FILTROS.items()}
-    # Lo que espera a la mesa: primero lo que nadie tomó, y lo más viejo arriba.
-    orden = ('estado', 'escalado_en') if filtro == 'mesa' else ('-creado_en',)
+    # Lo que espera a la mesa: primero lo que nadie tomó, y lo más viejo arriba. Con un
+    # `Case` y no `order_by('estado')`: alfabéticamente 'en_atencion' va antes que
+    # 'escalada', así que lo ya tomado quedaba arriba (auditoría 17-oct-2026, BD-11).
+    if filtro == 'mesa':
+        orden = (
+            Case(When(estado=Novedad.Estado.ESCALADA, then=Value(0)), default=Value(1)),
+            'escalado_en',
+        )
+    else:
+        orden = ('-creado_en',)
     pagina, query_filtros = paginar(base.filter(estado__in=FILTROS[filtro]).order_by(*orden), request)
     return render(request, 'panel/novedades_lista.html', {
         'pagina': pagina, 'query_filtros': query_filtros, 'filtro': filtro, 'conteos': conteos,

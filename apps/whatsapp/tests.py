@@ -409,6 +409,19 @@ class MesaTests(_Base):
         n.refresh_from_db()
         self.assertEqual((n.causa, n.estado, n.tomado_por), (Causa.INTERNET, Estado.EN_ATENCION, u))
 
+    def test_la_bandeja_pone_primero_lo_que_nadie_tomo(self):
+        """Ordenaba por `estado` alfabético: 'en_atencion' < 'escalada', así que lo ya
+        tomado salía arriba aunque fuera más nuevo (auditoría 17-oct-2026, BD-11)."""
+        tomada = self._novedad(escalado_en=timezone.now() - timedelta(hours=2))
+        Novedad.objects.filter(pk=tomada.pk).update(estado=Estado.EN_ATENCION)
+        sin_tomar = self._novedad(escalado_en=timezone.now() - timedelta(minutes=5))
+        u = User.objects.create_user(username='mesa3', password='x')
+        u.user_permissions.add(*Permission.objects.filter(codename__in=['view_novedad']))
+        PerfilUsuario.objects.create(usuario=u, acceso_todas_unidades=True)
+        self.client.force_login(u)
+        filas = list(self.client.get(reverse('panel:novedades_lista')).context['pagina'])
+        self.assertEqual([n.pk for n in filas], [sin_tomar.pk, tomada.pk])
+
     def test_la_bandeja_no_redirige_a_una_url_ajena(self):
         n = self._novedad()
         u = User.objects.create_user(username='mesa2', password='x')

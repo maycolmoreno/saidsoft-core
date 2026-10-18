@@ -178,7 +178,11 @@ services:
       MESHCENTRAL_MESH_ID: ${MESHCENTRAL_MESH_ID:-}
       MESHCENTRAL_AGENT_ARCH_ID: ${MESHCENTRAL_AGENT_ARCH_ID:-4}
       MESHCENTRAL_INSTALL_FLAGS: ${MESHCENTRAL_INSTALL_FLAGS:-2}
-      MESHCENTRAL_VIEWMODE_ESCRITORIO: ${MESHCENTRAL_VIEWMODE_ESCRITORIO:-11}
+      # 10, verificado contra la instancia real (ac832e7, 5-ago-2026). Decía 11 —el valor
+      # sin verificar de antes—, y el 17-oct-2026 producción corría con 11: el botón de
+      # escritorio remoto abría otra vista (auditoría ARQ-11). Si deploy/.env la define,
+      # ese valor gana sobre este default: revisarlo también.
+      MESHCENTRAL_VIEWMODE_ESCRITORIO: ${MESHCENTRAL_VIEWMODE_ESCRITORIO:-10}
       MESHCENTRAL_VIEWMODE_TERMINAL: ${MESHCENTRAL_VIEWMODE_TERMINAL:-12}
       # Fundación async (Fase 1 del roadmap) — sin esto, Django usa el default
       # (redis://localhost:6379/0, no existe acá) y cualquier llamada a una tarea Celery

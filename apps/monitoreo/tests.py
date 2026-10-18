@@ -4578,9 +4578,16 @@ class BotConsultasTests(TestCase):
         self.assertIn('hace 5 h', responder_a('/enlaces'))
 
     def test_enlaces_agrupa_por_proveedor(self):
+        """Por el ISP (`tipo_enlace`), no por el primer segmento del circuito: en la
+        flota real ese segmento es la cadena (`sangregorio-...`), y el bot agrupaba las
+        caídas bajo `sangregorio (N)` (auditoría 17-oct-2026, ARQ-06)."""
         from apps.monitoreo.telegram_bot import responder_a
 
-        self.assertIn('telconet', responder_a('/enlaces'))
+        Farmacia.objects.filter(pk=self.caida.pk).update(
+            tipo_enlace='TELCONET', circuito_proveedor='sangregorio-sitio-dos')
+        texto = responder_a('/enlaces')
+        self.assertIn('TELCONET (1)', texto, texto)
+        self.assertNotIn('sangregorio (1)', texto)
 
     def test_sin_caidas_lo_dice_y_no_inventa_una_lista(self):
         from apps.monitoreo.enlaces import registrar_sondeo

@@ -127,11 +127,14 @@ def _comando_enlaces() -> str:
     caidas.sort(key=lambda e: desde_de(e) or timezone.now())
 
     lineas = [f'🔴 {len(caidas)} enlace(s) caído(s)', '']
+    # `nombre_proveedor` y no el circuito cortado en el primer guion: el primer segmento del
+    # circuito es la CADENA (`sangregorio-...`), no el ISP. El correo y el panel ya usaban
+    # el criterio bueno desde el 20-sep-2026; el bot quedó atrás (auditoría 17-oct, ARQ-06).
+    from .enlaces import nombre_proveedor
+
     por_proveedor: dict = {}
     for estado in caidas:
-        circuito = estado.farmacia.circuito_proveedor or ''
-        proveedor = circuito.split('-')[0].strip() or '(sin circuito)'
-        por_proveedor.setdefault(proveedor, []).append(estado)
+        por_proveedor.setdefault(nombre_proveedor(estado.farmacia), []).append(estado)
 
     mostradas = 0
     for proveedor, items in sorted(por_proveedor.items()):

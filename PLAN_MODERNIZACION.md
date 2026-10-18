@@ -7726,3 +7726,17 @@ versión, y después tandas de hasta 15 (`AGENTE_CANARIO_MAXIMO` / `AGENTE_TANDA
 `apps/catalogo/services.py`). El criterio de a quién le falta (`estaciones_para_actualizar_agente`)
 pasó a ser uno solo, compartido con el comando. Audita cada orden; scope por unidad de negocio
 del usuario. Pruebas: `EstacionesAgenteTandasTests` (panel).
+
+## §10-CO — Tres arreglos chicos de la auditoría por agentes (17-oct-2026)
+
+- **`/enlaces` de Telegram agrupaba por cadena, no por proveedor (ARQ-06).** Cortaba
+  `circuito_proveedor` en el primer guion, el criterio que `nombre_proveedor()` abandonó el
+  20-sep porque ese segmento es la cadena (`sangregorio`). Ahora usa `nombre_proveedor`. La
+  prueba vieja (`test_enlaces_agrupa_por_proveedor`) validaba el comportamiento malo.
+- **Escritorio remoto de MeshCentral con `viewmode` 11 (ARQ-11).** El valor verificado contra
+  la instancia real es 10 (ac832e7, 5-ago); `base.py` y `.env.prod.example` ya decían 10, pero
+  el default de `docker-compose.yml` y `.env.example` seguían en 11, y producción corría con
+  11 (`printenv` en `web`, 17-oct). Si `deploy/.env` la define, hay que corregirla ahí también.
+- **La bandeja de la mesa ordenaba al revés (BD-11).** `order_by('estado')` es alfabético:
+  `en_atencion` antes que `escalada`, así que lo ya tomado salía arriba. Ahora un `Case` pone
+  primero lo escalado sin tomar (`apps/panel/views/novedades.py`).
