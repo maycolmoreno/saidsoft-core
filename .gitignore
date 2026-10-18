@@ -20,6 +20,12 @@ db.sqlite3
 # git (comprobado en el historial el 13-oct-2026), pero nada lo impedia.
 /deploy/.env.*
 !/deploy/.env.prod.example
+# Archivos temporales de editores. Abrir el .env con vim en el servidor dejó un
+# `deploy/..env.swp` que git NO ignoraba (17-oct-2026): el swap puede llevar el
+# contenido del .env, y un `git add -A` lo habría subido.
+*.swp
+*.swo
+*~
 
 # Datos reales de RRHH/operaciones (PII: cédulas, teléfonos, direcciones de sucursales
 # y colaboradores de CRESIO) usados para importar apps.catalogo.Farmacia/apps.activos.
