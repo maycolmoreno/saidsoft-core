@@ -1,0 +1,105 @@
+{% extends "panel/base.html" %}
+{% block title %}Actualizar agente · SAIDSOFT{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+    <h1 class="text-xl font-semibold">Actualizar agente</h1>
+    <a href="{% url 'panel:estaciones_lista' %}" class="btn secondary text-xs">← Estaciones</a>
+</div>
+
+{% if not version %}
+<div class="card p-4">
+    {% include "panel/_estado_vacio.html" with titulo="No hay ninguna versión de agente cargada" pista="Compilá el agente (agente-prueba/build.ps1) y subí el ejecutable en Admin → Versiones de agente. Después volvé acá." %}
+</div>
+{% else %}
+
+<p class="text-sm text-[var(--text-faint)] mb-4" style="max-width:74ch;">
+    Versión a desplegar: <span class="mono">{{ version.version }}</span>
+    <span class="mono text-xs">(sha256 {{ version.sha256|slice:":12" }}…)</span>.
+    Cada estación baja el ejecutable, lo verifica, reemplaza el suyo y reinicia el servicio.
+    Si el ejecutable estuviera mal, la estación queda <strong>sin agente</strong> y hay que ir al
+    equipo: por eso se despliega por tandas.
+</p>
+
+<div class="grid gap-3 mb-5" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));">
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Al día</div>
+        <div class="text-2xl font-semibold num">{{ al_dia }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Faltan, en línea</div>
+        <div class="text-2xl font-semibold num">{{ en_linea }}</div>
+    </div>
+    <div class="card p-4">
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Faltan, apagadas</div>
+        <div class="text-2xl font-semibold num">{{ apagadas }}</div>
+    </div>
+</div>
+
+{% if es_canario %}
+<div class="card p-4 mb-4" style="border-left:3px solid var(--warning);">
+    <div class="text-sm font-medium mb-1">Primera tanda: canario de {{ tope }}</div>
+    <p class="text-sm text-[var(--text-faint)]" style="max-width:74ch;">
+        Ninguna estación reporta todavía esta versión, así que no se sabe si el ejecutable sirve.
+        Elegí hasta {{ tope }} estaciones <strong>en línea</strong>, esperá unos minutos y confirmá
+        que aparecen arriba como "al día". Recién ahí se habilitan tandas de hasta {{ tope_tanda }}.
+    </p>
+</div>
+{% else %}
+<p class="text-sm text-[var(--text-faint)] mb-4">
+    Hasta <strong>{{ tope }}</strong> estaciones por tanda. Confirmá que la tanda anterior aparece
+    como "al día" antes de mandar la siguiente.
+</p>
+{% endif %}
+
+{% if filas %}
+<form method="post" action="{% url 'panel:estaciones_agente_actualizar' %}"
+      onsubmit="return confirm('Se va a reemplazar el agente de las estaciones seleccionadas por {{ version.version }}. ¿Confirmás?');">
+    {% csrf_token %}
+    <div class="card overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead style="background:var(--panel);">
+                <tr>
+                    <th class="text-left px-4 py-3" style="width:2rem;"></th>
+                    <th class="text-left px-4 py-3">Estación</th>
+                    <th class="text-left px-4 py-3">Farmacia</th>
+                    <th class="text-left px-4 py-3">Versión actual</th>
+                    <th class="text-left px-4 py-3">Estado</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for e in filas %}
+                <tr style="border-top:1px solid var(--border-soft);">
+                    <td class="px-4 py-3">
+                        <input type="checkbox" name="estacion_ids" value="{{ e.pk }}" aria-label="Seleccionar {{ e.codigo }}">
+                    </td>
+                    <td class="px-4 py-3 mono">{{ e.codigo }}</td>
+                    <td class="px-4 py-3 mono">{{ e.farmacia.codigo }}</td>
+                    <td class="px-4 py-3 mono">{{ e.version_agente|default:"—" }}</td>
+                    <td class="px-4 py-3">
+                        {% if e.en_linea %}
+                        <span class="pill good">En línea</span>
+                        {% else %}
+                        <span class="pill neutral"
+                              title="La orden le queda guardada en el broker y la aplica al encender.">
+                            Apagada{% if e.ultimo_heartbeat %} · último latido hace {{ e.ultimo_heartbeat|timesince }}{% endif %}
+                        </span>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="flex items-center gap-3 mt-4">
+        <button type="submit" class="btn">Actualizar las seleccionadas (máx. {{ tope }})</button>
+        <span class="text-xs text-[var(--text-faint)]">Cada orden queda en la auditoría con tu usuario.</span>
+    </div>
+</form>
+{% else %}
+<div class="card p-4">
+    {% include "panel/_estado_vacio.html" with titulo="Todas las estaciones están al día" pista="Todas las estaciones aprobadas que ves reportan la última versión del agente." %}
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

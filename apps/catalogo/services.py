@@ -301,6 +301,37 @@ def enviar_actualizacion_agente(estacion, version_agente) -> bool:
     return _publicar_mqtt(_topico_actualizar_agente(estacion), json.dumps(payload), retain=True)
 
 
+# Tope de estaciones por tanda en el rollout del agente desde el panel, y tope del canario:
+# mientras NINGUNA estación reporta la versión nueva, no se sabe si el build sirve, y un
+# build malo deja a cada estación que lo recibe SIN agente (hay que ir al equipo). El
+# comando `actualizar_agente_flota` lo recomienda; el panel lo impone, porque ahí no hay
+# una salida de texto que alguien lea antes de apretar el botón.
+AGENTE_TANDA_MAXIMA = 15
+AGENTE_CANARIO_MAXIMO = 3
+
+
+def estaciones_para_actualizar_agente(version_agente, estaciones=None):
+    """(desactualizadas, cuantas_ya_la_reportan) para desplegar `version_agente`.
+
+    `desactualizadas` son las estaciones APROBADAS que todavía no reportan esa versión, en
+    orden de código; `estaciones` acota el universo (p.ej. al scope de unidad de negocio del
+    usuario). Las que ya la reportan no se tocan: republicarles el retenido les haría
+    reemplazar el ejecutable por el mismo. Es el único criterio de "a quién le falta",
+    compartido por `actualizar_agente_flota` y la pantalla del panel.
+    """
+    from apps.catalogo.models import Estacion
+
+    if estaciones is None:
+        estaciones = Estacion.objects.all()
+    aprobadas = estaciones.filter(estado_aprobacion=Estacion.EstadoAprobacion.APROBADA)
+    ya_estaban = aprobadas.filter(version_agente=version_agente.version).count()
+    desactualizadas = (
+        aprobadas.exclude(version_agente=version_agente.version)
+        .select_related('farmacia__unidad_negocio').order_by('codigo')
+    )
+    return desactualizadas, ya_estaban
+
+
 def limpiar_actualizacion_pendiente(estacion) -> bool:
     """Borra el mensaje retenido de actualizar_agente de `estacion` (payload vacío +
     retain=True es, en MQTT, la forma de borrar un retenido -- no de retener uno

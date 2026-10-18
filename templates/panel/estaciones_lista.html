@@ -3,6 +3,13 @@
 {% block content %}
 <div class="flex items-center justify-between gap-3 mb-6 flex-wrap">
     <h1 class="text-xl font-semibold">Estaciones</h1>
+    <div class="flex items-center gap-2 flex-wrap">
+    {% if perms.catalogo.actualizar_agente_estacion %}
+    <a href="{% url 'panel:estaciones_agente' %}" class="btn secondary text-xs"
+       title="Desplegar la última versión del agente a la flota, por tandas">
+        Actualizar agente
+    </a>
+    {% endif %}
     {% if perms.catalogo.aprobar_estacion %}
     <button hx-post="{% url 'panel:instalador_enlace_emitir' %}"
             hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
@@ -12,6 +19,7 @@
         Instalar estación nueva
     </button>
     {% endif %}
+    </div>
 </div>
 <div id="enlace-instalador" class="card p-4 mb-6 empty:hidden"></div>
 

@@ -7708,3 +7708,21 @@ ARP del Mikrotik como "equipo que nadie inventarió".
 **Orden de despliegue:** primero el servidor (la migración), después el agente. Al revés no se
 rompe nada —el worker viejo ignora `mac_lan`—, pero la MAC se pierde hasta que el servidor
 tenga el campo. La IP ya la guardaba el worker existente.
+
+**Desplegado el 17-oct-2026.** Canario de 3 por `--estaciones`: GSD03-A y GSD11-A aplicaron la
+0.35 y reportaron IP y MAC en el primer latido; GSD09-ADM no la aplicó (sigue latiendo con la
+0.34). GSD04-A tampoco había aplicado la 0.34 publicada antes. Ninguna quedó sin agente. Las
+fallas de auto-actualización quedan solo en el log local de la estación
+(`C:\ProgramData\Saidsoft\agente_prueba.log`): el servidor no se entera de por qué.
+
+### Rollout del agente desde el panel
+
+El canario mostró que desplegar requería SSH al servidor (`actualizar_agente_flota`) o un clic
+por estación en su ficha. Nueva pantalla Estaciones → **Actualizar agente**
+(`panel:estaciones_agente`, `apps/panel/views/agente_flota.py`): lista las aprobadas que no
+reportan la última `VersionAgente` y despliega por tandas de las marcadas. Impone lo que el
+comando solo recomienda: **canario de 3** mientras ninguna estación de la flota reporta la
+versión, y después tandas de hasta 15 (`AGENTE_CANARIO_MAXIMO` / `AGENTE_TANDA_MAXIMA` en
+`apps/catalogo/services.py`). El criterio de a quién le falta (`estaciones_para_actualizar_agente`)
+pasó a ser uno solo, compartido con el comando. Audita cada orden; scope por unidad de negocio
+del usuario. Pruebas: `EstacionesAgenteTandasTests` (panel).

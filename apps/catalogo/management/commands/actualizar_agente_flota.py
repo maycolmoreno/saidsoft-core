@@ -10,7 +10,10 @@
 **Por qué un comando y no el botón del panel.** El botón existe y está bien para una
 estación (`/estaciones/<pk>/agente/actualizar/`), pero el rollout de una versión nueva son
 66 estaciones hoy y ~1.800 proyectadas: con el botón son 66 clics, y nadie los da. Mismo
-argumento que `pausar_flota`, y el mismo molde.
+argumento que `pausar_flota`, y el mismo molde. Desde el 17-oct-2026 también existe la
+pantalla Estaciones → Actualizar agente (`panel:estaciones_agente`), que despliega por
+tandas con el mismo criterio (`estaciones_para_actualizar_agente`) e impone el canario que
+acá solo se recomienda.
 
 **Empezar con `--limite`, siempre.** El agente se actualiza reemplazando su propio
 ejecutable, así que un build malo no deja una estación con una versión vieja: la deja **sin
@@ -39,7 +42,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from apps.catalogo.models import Estacion, UnidadNegocio, VersionAgente
-from apps.catalogo.services import enviar_actualizacion_agente
+from apps.catalogo.services import enviar_actualizacion_agente, estaciones_para_actualizar_agente
 from apps.monitoreo.umbrales import ONLINE_UMBRAL_MINUTOS
 
 
@@ -94,9 +97,7 @@ class Command(BaseCommand):
                 )
                 return
 
-        qs = Estacion.objects.filter(
-            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
-        ).select_related('farmacia__unidad_negocio').order_by('codigo')
+        qs = Estacion.objects.all()
 
         if opciones['unidad']:
             unidad = UnidadNegocio.objects.filter(codigo=opciones['unidad'].upper()).first()
@@ -109,11 +110,10 @@ class Command(BaseCommand):
             codigos = [c.strip().upper() for c in opciones['estaciones'].split(',') if c.strip()]
             qs = qs.filter(codigo__in=codigos)
 
-        # Las que ya reportan esta versión no se tocan: republicarles el retenido no cambia
-        # nada, les haría reemplazar el ejecutable por el mismo y ensucia el resumen de lo
-        # que de verdad se movió. Mismo criterio que `pausar_flota`.
-        ya_estaban = qs.filter(version_agente=version.version).count()
-        objetivo = list(qs.exclude(version_agente=version.version))
+        # Las que ya reportan esta versión no se tocan (ver el servicio). El criterio vive en
+        # un solo lugar porque la pantalla del panel despliega por tandas con el mismo.
+        desactualizadas, ya_estaban = estaciones_para_actualizar_agente(version, qs)
+        objetivo = list(desactualizadas)
 
         if opciones['limite'] > 0:
             objetivo = objetivo[:opciones['limite']]

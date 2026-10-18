@@ -1925,6 +1925,15 @@ python manage.py actualizar_agente_flota --limite 3 --aplicar   # canario: tres 
 python manage.py actualizar_agente_flota --aplicar              # el resto
 ```
 
+**Desde el panel (17-oct-2026):** Estaciones → **Actualizar agente** hace los pasos 3 en
+adelante sin SSH. Lista las estaciones aprobadas que no reportan la última versión (en línea
+primero), y despliega por tandas de las que se marquen: **3 como máximo mientras ninguna
+estación reporta la versión** (canario obligatorio) y hasta 15 después. Acepta estaciones
+apagadas, igual que el comando, y audita cada orden con el usuario. Requiere el permiso
+`catalogo.actualizar_agente_estacion`. Lógica en `apps/panel/views/agente_flota.py`; el
+criterio de "a quién le falta" es `estaciones_para_actualizar_agente`, compartido con el
+comando. Para elegir estaciones puntuales por línea de comandos está `--estaciones`.
+
 **Empezar siempre con `--limite`.** El agente se reemplaza a sí mismo, así que un build malo
 no deja una estación con la versión vieja: la deja **sin agente**, y recuperarla es ir al
 equipo (queda un `.bak` junto al ejecutable para revertir a mano). Tres estaciones, confirmar

@@ -928,6 +928,131 @@ class EstacionActualizarAgenteTests(TestCase):
         mock_enviar.assert_not_called()
 
 
+class EstacionesAgenteTandasTests(TestCase):
+    """Rollout del agente desde el panel, por tandas (Estaciones → Actualizar agente).
+
+    Lo que tiene que ser cierto: mientras ninguna estación reporta la versión nueva, la tanda
+    es un canario de 3 (un build malo deja sin agente a cada estación que lo recibe); después,
+    tandas de hasta 15. Y nunca una orden a una estación de otra unidad de negocio.
+    """
+
+    ENVIAR = 'apps.panel.views.agente_flota.enviar_actualizacion_agente'
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia_sg = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=self.sg)
+        self.farmacia_mia = Farmacia.objects.create(codigo='MM001', grupo=grupo, unidad_negocio=self.mia)
+        self.estaciones = [
+            Estacion.objects.create(
+                codigo=f'ML001-{letra}', farmacia=self.farmacia_sg, version_agente='agente-prueba-0.34',
+                estado_aprobacion=Estacion.EstadoAprobacion.APROBADA, ultimo_heartbeat=timezone.now(),
+            )
+            for letra in 'ABCDE'
+        ]
+        self.de_mia = Estacion.objects.create(
+            codigo='MM001-A', farmacia=self.farmacia_mia, version_agente='agente-prueba-0.34',
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.pendiente = Estacion.objects.create(
+            codigo='ML001-Z', farmacia=self.farmacia_sg, version_agente='agente-prueba-0.34',
+            estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
+        )
+        self.version = VersionAgente.objects.create(
+            version='agente-prueba-0.35', ejecutable=SimpleUploadedFile('agente.exe', b'MZ-falso'),
+            creado_por=User.objects.create_user(username='creador_tandas', password='x'),
+        )
+        permisos = [
+            Permission.objects.get(content_type__app_label='catalogo', codename='actualizar_agente_estacion'),
+            Permission.objects.get(content_type__app_label='catalogo', codename='view_estacion'),
+        ]
+        self.operador = User.objects.create_user(username='operador_tandas', password='x')
+        PerfilUsuario.objects.create(usuario=self.operador, acceso_todas_unidades=True)
+        self.operador.user_permissions.add(*permisos)
+        self.operador_sg = User.objects.create_user(username='operador_sg_tandas', password='x')
+        PerfilUsuario.objects.create(usuario=self.operador_sg).unidades_negocio.add(self.sg)
+        self.operador_sg.user_permissions.add(*permisos)
+
+    def _enviar(self, estaciones, usuario=None):
+        self.client.force_login(usuario or self.operador)
+        with patch(self.ENVIAR, return_value=True) as enviar:
+            resp = self.client.post(
+                reverse('panel:estaciones_agente_actualizar'),
+                {'estacion_ids': [e.pk for e in estaciones]},
+            )
+        return resp, enviar
+
+    def test_sin_el_permiso_devuelve_403(self):
+        sin_permiso = User.objects.create_user(username='sin_permiso_tandas', password='x')
+        PerfilUsuario.objects.create(usuario=sin_permiso, acceso_todas_unidades=True)
+        self.client.force_login(sin_permiso)
+        self.assertEqual(self.client.get(reverse('panel:estaciones_agente')).status_code, 403)
+        self.assertEqual(self.client.post(reverse('panel:estaciones_agente_actualizar')).status_code, 403)
+
+    def test_lista_las_aprobadas_que_faltan_y_avisa_el_canario(self):
+        self.client.force_login(self.operador)
+        resp = self.client.get(reverse('panel:estaciones_agente'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'ML001-A')
+        self.assertContains(resp, 'MM001-A')
+        self.assertNotContains(resp, 'ML001-Z')  # pendiente de aprobación
+        self.assertContains(resp, 'canario de 3')
+
+    def test_el_canario_no_acepta_mas_de_3(self):
+        resp, enviar = self._enviar(self.estaciones[:4])
+        self.assertRedirects(resp, reverse('panel:estaciones_agente'))
+        enviar.assert_not_called()
+
+    def test_el_canario_envia_y_audita_cada_estacion(self):
+        _, enviar = self._enviar(self.estaciones[:3])
+        self.assertEqual(enviar.call_count, 3)
+        self.assertEqual(
+            EventoAuditoria.objects.filter(accion='estacion.actualizar_agente').count(), 3,
+        )
+
+    def test_con_la_version_ya_probada_la_tanda_pasa_a_15(self):
+        self.estaciones[0].version_agente = 'agente-prueba-0.35'
+        self.estaciones[0].save(update_fields=['version_agente'])
+        _, enviar = self._enviar(self.estaciones[1:5])
+        self.assertEqual(enviar.call_count, 4)
+
+    def test_no_reenvia_a_la_que_ya_reporta_la_version(self):
+        self.estaciones[0].version_agente = 'agente-prueba-0.35'
+        self.estaciones[0].save(update_fields=['version_agente'])
+        _, enviar = self._enviar(self.estaciones[:2])
+        self.assertEqual(enviar.call_count, 1)
+
+    def test_no_envia_a_una_estacion_de_otra_unidad(self):
+        """El scope se aplica sobre el usuario: un id de otra unidad en el POST se ignora."""
+        _, enviar = self._enviar([self.estaciones[0], self.de_mia], usuario=self.operador_sg)
+        enviar.assert_called_once()
+        self.assertEqual(enviar.call_args.args[0], self.estaciones[0])
+
+    def test_un_id_que_no_es_numero_no_da_500(self):
+        self.client.force_login(self.operador)
+        with patch(self.ENVIAR) as enviar:
+            resp = self.client.post(reverse('panel:estaciones_agente_actualizar'), {'estacion_ids': ['1 OR 1=1']})
+        self.assertEqual(resp.status_code, 302)
+        enviar.assert_not_called()
+
+    def test_sin_version_cargada_no_envia_nada(self):
+        self.version.delete()
+        self.client.force_login(self.operador)
+        self.assertContains(self.client.get(reverse('panel:estaciones_agente')), 'No hay ninguna versión')
+        _, enviar = self._enviar(self.estaciones[:1])
+        enviar.assert_not_called()
+
+    def test_el_comando_usa_el_mismo_criterio(self):
+        """`actualizar_agente_flota` y la pantalla comparten `estaciones_para_actualizar_agente`:
+        el comando no debe ver una estación pendiente ni las que ya están al día."""
+        self.estaciones[0].version_agente = 'agente-prueba-0.35'
+        self.estaciones[0].save(update_fields=['version_agente'])
+        salida = io.StringIO()
+        call_command('actualizar_agente_flota', stdout=salida)
+        self.assertIn('Alcance: 5 estación(es); 1 ya la reportan.', salida.getvalue())
+
+
 class CumplimientoViewsTests(TestCase):
     def setUp(self):
         self.usuario = User.objects.create_user(username='u', password='x')
