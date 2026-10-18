@@ -998,6 +998,10 @@ class EstacionesAgenteTandasTests(TestCase):
         self.assertContains(resp, 'MM001-A')
         self.assertNotContains(resp, 'ML001-Z')  # pendiente de aprobación
         self.assertContains(resp, 'canario de 3')
+        # La primera versión tenía el botón de enviar al final de 79 filas y con `class="btn"`
+        # sin variante (transparente): estaba, pero nadie lo veía.
+        self.assertContains(resp, 'class="btn primary" id="enviar-tanda"')
+        self.assertContains(resp, 'Marcar las primeras 3')
 
     def test_el_canario_no_acepta_mas_de_3(self):
         resp, enviar = self._enviar(self.estaciones[:4])

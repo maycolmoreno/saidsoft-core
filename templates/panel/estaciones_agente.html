@@ -52,9 +52,23 @@
 {% endif %}
 
 {% if filas %}
-<form method="post" action="{% url 'panel:estaciones_agente_actualizar' %}"
-      onsubmit="return confirm('Se va a reemplazar el agente de las estaciones seleccionadas por {{ version.version }}. ¿Confirmás?');">
+{% comment %}
+La barra de acción va ARRIBA de la tabla: con 79 filas, un botón al final no se ve, y la
+primera versión de esta pantalla lo tenía ahí (además con `class="btn"` sin variante, que en
+components.css es transparente). "Marcar las primeras N" hace de una tanda un solo clic: las
+filas vienen con las en línea primero, así que marca las que confirman en minutos.
+{% endcomment %}
+<form method="post" action="{% url 'panel:estaciones_agente_actualizar' %}" id="form-tanda"
+      onsubmit="return confirm('Se va a reemplazar el agente de ' + document.querySelectorAll('.chk-tanda:checked').length + ' estación(es) por {{ version.version }}. ¿Confirmás?');">
     {% csrf_token %}
+    <div class="card p-3 mb-3 flex items-center gap-3 flex-wrap">
+        <button type="button" class="btn secondary" id="marcar-tanda">Marcar las primeras {{ tope }}</button>
+        <button type="button" class="btn secondary" id="desmarcar-tanda">Desmarcar todas</button>
+        <span class="text-sm" id="contador-tanda">0 de {{ tope }} seleccionadas</span>
+        <button type="submit" class="btn primary" id="enviar-tanda" disabled style="margin-left:auto;">
+            Enviar actualización a {{ version.version }}
+        </button>
+    </div>
     <div class="card overflow-x-auto">
         <table class="w-full text-sm">
             <thead style="background:var(--panel);">
@@ -70,7 +84,7 @@
             {% for e in filas %}
                 <tr style="border-top:1px solid var(--border-soft);">
                     <td class="px-4 py-3">
-                        <input type="checkbox" name="estacion_ids" value="{{ e.pk }}" aria-label="Seleccionar {{ e.codigo }}">
+                        <input type="checkbox" class="chk-tanda" name="estacion_ids" value="{{ e.pk }}" aria-label="Seleccionar {{ e.codigo }}">
                     </td>
                     <td class="px-4 py-3 mono">{{ e.codigo }}</td>
                     <td class="px-4 py-3 mono">{{ e.farmacia.codigo }}</td>
@@ -90,11 +104,36 @@
             </tbody>
         </table>
     </div>
-    <div class="flex items-center gap-3 mt-4">
-        <button type="submit" class="btn">Actualizar las seleccionadas (máx. {{ tope }})</button>
-        <span class="text-xs text-[var(--text-faint)]">Cada orden queda en la auditoría con tu usuario.</span>
-    </div>
+    <p class="text-xs text-[var(--text-faint)] mt-3">Cada orden queda en la auditoría con tu usuario.</p>
 </form>
+<script>
+(function () {
+    // El tope lo impone el servidor de todos modos; esto solo evita que el operador arme
+    // una tanda que después le rechazan entera.
+    var tope = {{ tope }};
+    var casillas = Array.prototype.slice.call(document.querySelectorAll('.chk-tanda'));
+    var contador = document.getElementById('contador-tanda');
+    var enviar = document.getElementById('enviar-tanda');
+
+    function actualizar() {
+        var marcadas = casillas.filter(function (c) { return c.checked; }).length;
+        contador.textContent = marcadas + ' de ' + tope + ' seleccionadas';
+        enviar.disabled = marcadas === 0;
+        casillas.forEach(function (c) { c.disabled = !c.checked && marcadas >= tope; });
+    }
+
+    document.getElementById('marcar-tanda').addEventListener('click', function () {
+        casillas.forEach(function (c, i) { c.checked = i < tope; });
+        actualizar();
+    });
+    document.getElementById('desmarcar-tanda').addEventListener('click', function () {
+        casillas.forEach(function (c) { c.checked = false; });
+        actualizar();
+    });
+    casillas.forEach(function (c) { c.addEventListener('change', actualizar); });
+    actualizar();
+})();
+</script>
 {% else %}
 <div class="card p-4">
     {% include "panel/_estado_vacio.html" with titulo="Todas las estaciones están al día" pista="Todas las estaciones aprobadas que ves reportan la última versión del agente." %}
