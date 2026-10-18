@@ -358,6 +358,27 @@ def manejar_enrolamiento(payload: dict) -> dict:
     return _respuesta_aceptado(estacion, payload.get('version_agente', ''))
 
 
+def _ip_lan_valida(valor) -> str | None:
+    """`valor` si es una IP utilizable como dirección de la estación en su LAN; si no, None.
+
+    Se descartan loopback, 0.0.0.0 y link-local (169.254.x.x, la que Windows se asigna sola
+    cuando no consiguió DHCP): son lo que el agente ve en un equipo sin red de verdad, y
+    guardarlas pisaría la última IP buena con una que no sirve para llegar a la caja.
+    """
+    import ipaddress
+
+    if not valor:
+        return None
+    try:
+        ip = ipaddress.ip_address(str(valor).strip())
+    except ValueError:
+        logger.warning('ip_lan ilegible en un latido: %r', valor)
+        return None
+    if ip.is_loopback or ip.is_unspecified or ip.is_link_local:
+        return None
+    return str(ip)
+
+
 def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
     # `select_related` porque este latido termina en `evaluar_regla_reloj` y
     # `evaluar_regla_autocorrecciones_reloj`, y las dos arrancan con
@@ -420,8 +441,22 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
             logger.warning('Heartbeat de %s con offset_utc_minutos ilegible: %r', codigo_estacion, offset)
     estacion.zona_horaria = payload.get('zona_horaria', estacion.zona_horaria)
 
-    if payload.get('ip_lan'):
-        estacion.ip_lan = payload['ip_lan']
+    # IP y MAC de la placa con la que la estación sale a la red (agente 0.35+; hasta la 0.34
+    # el agente Python no las mandaba y `ip_lan` quedó vacía en 78 de 79 estaciones, medido
+    # el 17-oct-2026). Se validan antes de guardar: un valor ilegible en el `inet` de
+    # PostgreSQL haría fallar el save() del latido entero, no solo este campo. Un agente
+    # que no manda la clave no borra lo que ya se sabía.
+    ip_lan = _ip_lan_valida(payload.get('ip_lan'))
+    if ip_lan:
+        estacion.ip_lan = ip_lan
+    if payload.get('mac_lan'):
+        from apps.monitoreo.mikrotik import _normalizar_mac
+
+        mac_lan = _normalizar_mac(payload['mac_lan'])
+        if mac_lan:
+            estacion.mac_lan = mac_lan
+        else:
+            logger.warning('Heartbeat de %s con mac_lan ilegible: %r', codigo_estacion, payload['mac_lan'])
     if payload.get('puerto_cache'):
         estacion.puerto_cache = payload['puerto_cache']
     # Cuántas veces la estación se corrigió el reloj sola (agente 0.30+). Se guarda el

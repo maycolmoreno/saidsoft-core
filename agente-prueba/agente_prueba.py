@@ -34,6 +34,7 @@ documenta que hace el agente real.
 import argparse
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -56,7 +57,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.34'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.35'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -188,6 +189,25 @@ def leer_numero_serie() -> str:
             or 'SN-DESCONOCIDO'
     except Exception:
         return 'SN-DESCONOCIDO'
+
+
+def leer_mac_de_ip(ip: str) -> str:
+    """MAC (AA:BB:CC:DD:EE:FF) de la placa que tiene asignada `ip`, o '' si no se pudo
+    leer. Mejor vacía que inventada: una MAC de relleno compartida rompería el cruce con
+    la tabla ARP igual que 'SN-DESCONOCIDO' rompe el cruce por serial."""
+    try:
+        ipaddress.ip_address(ip)  # se interpola en el script: solo una IP válida entra
+        salida = correr_powershell(
+            f"(Get-NetAdapter -InterfaceIndex (Get-NetIPAddress -IPAddress '{ip}' "
+            f"-ErrorAction Stop).InterfaceIndex).MacAddress",
+            timeout=15,
+        )
+    except Exception:
+        return ''
+    crudo = salida.strip().replace('-', '').replace(':', '').upper()
+    if len(crudo) != 12 or not all(c in '0123456789ABCDEF' for c in crudo):
+        return ''
+    return ':'.join(crudo[i:i + 2] for i in range(0, 12, 2))
 
 
 def firmar(secreto: str, **campos) -> str:
@@ -688,9 +708,10 @@ class AgentePrueba:
             # _manejar_despliegue despacha a un hilo en vez de bloquear el loop de MQTT.
             threading.Thread(target=self.client.reconnect, daemon=True).start()
 
-    def _ya_procesado(self, clave: str, identificador) -> bool:
-        """True si este agente ya atendió `identificador` para `clave` ("instalacion" /
-        "despliegue"). Se persiste en identidad.json (igual que pos_log_posicion).
+    def _ya_procesado(self, clave: str, identificador, timestamp) -> bool:
+        """True si este agente ya atendió ESTA publicación de `identificador` para `clave`
+        ("instalacion" / "despliegue"). Solo consulta: la marca la pone
+        `_marcar_procesado`, y únicamente después de validar la firma.
 
         Hace falta porque software y despliegue se publican RETENIDOS (ver
         apps.software.services / apps.despliegues.services) y nadie los borra del
@@ -698,17 +719,68 @@ class AgentePrueba:
         y reinstalaría el software una y otra vez. La ventana de timestamp "tapaba"
         esto rechazándolos, pero a costa de que una estación que estaba apagada al
         publicar nunca recibiera la instalación (que es justo el motivo de retenerlos).
+
+        La identidad de una publicación es (id, timestamp firmado), no el id solo.
+        Hasta la 0.34 era el id solo, y eso dejaba muerto el "Reanudar" del panel:
+        `reintentar_despliegue` reenvía el MISMO despliegue_id (con timestamp nuevo) y el
+        agente lo descartaba como "ya procesado", así que la estación que había fallado
+        quedaba en PENDIENTE para siempre (auditoría 17-oct-2026, ARQ-03/BH-02). Ahora el
+        retenido repetido (mismo timestamp) se sigue ignorando y el reintento (timestamp
+        mayor) se atiende.
         """
         if identificador is None:
             return False
-        vistos = self.identidad.setdefault(f'{clave}_procesados', [])
-        if identificador in vistos:
+        marcas = self.identidad.get(f'{clave}_procesados_ts', {})
+        clave_id = str(identificador)
+        if clave_id not in marcas:
+            return False
+        try:
+            return int(timestamp) <= marcas[clave_id]
+        except (TypeError, ValueError):
+            # Sin timestamp legible no hay forma de saber si es una publicación nueva:
+            # se trata como repetida, que es lo que hacía la 0.34 con cualquier id visto.
             return True
-        vistos.append(identificador)
+
+    def _procesado_antes_de_actualizar(self, clave: str, identificador) -> bool:
+        """True si `identificador` figura en la lista de la 0.34 o anterior, que guardaba
+        solo el id (sin timestamp).
+
+        Esos ids se atendieron con una publicación cuyo timestamp no quedó guardado. El
+        retenido que llega ahora puede ser esa misma publicación, y reaplicarla cerraría
+        y reinstalaría el POS en una estación donde ya se aplicó. Por eso el primer
+        mensaje que llega para un id heredado se toma como "ya visto" y su timestamp pasa
+        a ser la marca: desde ahí, solo un reintento posterior se atiende. No se usa el
+        reloj local para decidirlo porque en las farmacias no es confiable (ver
+        timestamp_en_ventana).
+        """
+        if identificador is None:
+            return False
+        if str(identificador) in self.identidad.get(f'{clave}_procesados_ts', {}):
+            # Ya tiene marca con timestamp: de acá en adelante manda `_ya_procesado`.
+            return False
+        return identificador in self.identidad.get(f'{clave}_procesados', [])
+
+    def _marcar_procesado(self, clave: str, identificador, timestamp) -> None:
+        """Registra que se atendió la publicación (`identificador`, `timestamp`). Se llama
+        solo con la firma ya validada: si se marcara antes, un mensaje con firma inválida
+        y un id predecible inutilizaría el legítimo que llegue después (auditoría
+        17-oct-2026, BH-03)."""
+        if identificador is None:
+            return
+        try:
+            timestamp = int(timestamp)
+        except (TypeError, ValueError):
+            timestamp = 0
+        marcas = self.identidad.setdefault(f'{clave}_procesados_ts', {})
+        clave_id = str(identificador)
+        # Se reinserta para que quede al final: el orden del dict es el de "más reciente",
+        # y el recorte de abajo descarta los más viejos.
+        marcas.pop(clave_id, None)
+        marcas[clave_id] = timestamp
         # Se acota para que identidad.json no crezca sin límite.
-        del vistos[:-200]
+        for vieja in list(marcas)[:-200]:
+            del marcas[vieja]
         self._guardar_identidad()
-        return False
 
     def _en_hilo(self, funcion, payload):
         """Corre `funcion(payload)` en un hilo daemon, logueando cualquier excepción.
@@ -1538,8 +1610,44 @@ class AgentePrueba:
             # se mantenga solo, sin depender de que alguien apriete un botón.
             **self._version_pos_reportable(),
             **self._leer_config_pos(),
+            # IP y MAC con las que sale a la red. Van en el latido para que se
+            # mantengan solas si DHCP le cambia la dirección.
+            **self._red_lan(),
         })
         logging.info('Heartbeat enviado')
+
+    # La MAC no cambia mientras la IP sea la misma, y leerla cuesta un PowerShell: se
+    # vuelve a leer solo si cambió la IP o si pasó este tiempo desde la última lectura
+    # (que cubre el caso de una lectura que falló).
+    RELEER_MAC_SEGUNDOS = 3600
+
+    def _red_lan(self) -> dict:
+        """{'ip_lan': ..., 'mac_lan': ...} de la placa con la que este agente llega al
+        broker, o {} si no se pudo saber. Nunca lanza: corre dentro del latido.
+
+        La IP es la dirección LOCAL del socket MQTT ya conectado, no la primera placa que
+        liste Windows: una caja con WiFi y cable, o con un adaptador virtual, tiene varias,
+        y la que importa es la que efectivamente usa para salir. Detrás del NAT del
+        Mikrotik es su IP en la LAN de la farmacia, que es la que ve la tabla ARP.
+
+        Hasta la 0.34 el agente no mandaba ninguna de las dos, y la regla "la IP de un
+        equipo con agente la reporta el agente" (Activo.ip_efectiva) se apoyaba en un dato
+        que nadie producía: 78 de 79 estaciones sin IP, medido el 17-oct-2026.
+        """
+        try:
+            sock = self.client.socket()
+            if sock is None:
+                return {}
+            ip = sock.getsockname()[0]
+        except Exception:
+            return {}
+        cache = getattr(self, '_red_lan_cache', None)
+        if cache and cache[0] == ip and time.time() - cache[2] < self.RELEER_MAC_SEGUNDOS:
+            mac = cache[1]
+        else:
+            mac = leer_mac_de_ip(ip)
+            self._red_lan_cache = (ip, mac, time.time())
+        return {'ip_lan': ip, **({'mac_lan': mac} if mac else {})}
 
     # --- métricas periódicas (CPU/RAM/disco) ---
     def bucle_metricas(self):
@@ -2456,7 +2564,7 @@ del "%~f0"
     # --- software (catálogo) ---
     def _manejar_software(self, payload):
         solicitud_id = payload.get('solicitud_id')
-        if self._ya_procesado('instalacion', solicitud_id):
+        if self._ya_procesado('instalacion', solicitud_id, payload.get('timestamp')):
             logging.info('Instalación #%s ya procesada antes — se ignora el retenido.', solicitud_id)
             return
         # verificar_ventana=False: este mensaje se publica RETENIDO para que una
@@ -2480,6 +2588,11 @@ del "%~f0"
             if solicitud_id is not None:
                 self._reportar_instalacion(solicitud_id, 'error', detalle='Firma HMAC inválida o mensaje expirado.')
             return
+        if self._procesado_antes_de_actualizar('instalacion', solicitud_id):
+            self._marcar_procesado('instalacion', solicitud_id, payload.get('timestamp'))
+            logging.info('Instalación #%s ya procesada por una versión anterior del agente — se ignora.', solicitud_id)
+            return
+        self._marcar_procesado('instalacion', solicitud_id, payload.get('timestamp'))
 
         accion = payload.get('accion', 'instalar')
 
@@ -2574,7 +2687,7 @@ del "%~f0"
     # --- despliegues de POS ---
     def _manejar_despliegue(self, payload):
         despliegue_id = payload.get('despliegue_id')
-        if self._ya_procesado('despliegue', despliegue_id):
+        if self._ya_procesado('despliegue', despliegue_id, payload.get('timestamp')):
             logging.info('Despliegue #%s ya procesado antes — se ignora el retenido.', despliegue_id)
             return
         # verificar_ventana=False + _ya_procesado: mismo motivo que en
@@ -2588,6 +2701,11 @@ del "%~f0"
             if despliegue_id is not None:
                 self._reportar_despliegue(despliegue_id, 'error', detalle='Firma HMAC inválida o mensaje expirado.')
             return
+        if self._procesado_antes_de_actualizar('despliegue', despliegue_id):
+            self._marcar_procesado('despliegue', despliegue_id, payload.get('timestamp'))
+            logging.info('Despliegue #%s ya procesado por una versión anterior del agente — se ignora.', despliegue_id)
+            return
+        self._marcar_procesado('despliegue', despliegue_id, payload.get('timestamp'))
 
         if not (self.args.pos_carpeta_instalacion and self.args.pos_nombre_proceso
                 and self.args.pos_comando_iniciar):

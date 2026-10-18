@@ -763,15 +763,26 @@ def sincronizar_dispositivos_detectados(farmacias=None) -> dict:
             )
             resumen['nuevos' if creado else 'actualizados'] += 1
 
-    # El cruce contra lo declarado se hace con DOS consultas y no llamando a
+    # El cruce contra lo declarado se hace con TRES consultas y no llamando a
     # `activo_declarado` por dispositivo: a 700 farmacias con decenas de equipos cada una
     # serían miles de consultas (el mismo N+1 que la auditoría sacó de monitoreo_lista).
+    #
+    # Las estaciones cuentan como conocidas por la MAC que reporta su agente (0.35+): una caja
+    # enrolada y aprobada no es "algo enchufado que nadie inventarió", y antes aparecía así
+    # para siempre porque su MAC no estaba en ningún lado (auditoría 17-oct-2026, INV-A4).
     from apps.activos.models import Activo
+    from apps.catalogo.models import Estacion
 
     declaradas = {
         (farmacia_id, (mac or '').upper())
         for farmacia_id, mac in Activo.objects.filter(farmacia__in=farmacias)
         .exclude(mac='').values_list('farmacia_id', 'mac')
+    }
+    declaradas |= {
+        (farmacia_id, mac.upper())
+        for farmacia_id, mac in Estacion.objects.filter(
+            farmacia__in=farmacias, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        ).exclude(mac_lan='').values_list('farmacia_id', 'mac_lan')
     }
     for dispositivo in DispositivoDetectado.objects.filter(
         farmacia__in=farmacias,

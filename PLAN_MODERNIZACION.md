@@ -7652,3 +7652,59 @@ El orden de los botones importa: el sistema les asigna la causa por posición.
 `MESA_AYUDA_TELEGRAM_CHAT_ID` (vacío = el chat de enlaces), y para el arranque
 `WHATSAPP_MODO=piloto` + `WHATSAPP_FARMACIAS_PILOTO=GBV07,ML001,...` (y opcionalmente
 `WHATSAPP_REDIRIGIR_A=5939XXXXXXXX` para ver todo en un celular propio primero).
+
+## §10-CN — Agente 0.35: "Reanudar" volvía a no hacer nada, y la IP y MAC de cada caja (17-oct-2026)
+
+Encontrado por la auditoría por agentes del 17-oct-2026 (ARQ-03, BH-02, BH-03). Es una
+regresión: el reintento entró en `508df81` (07-ago) y la deduplicación del agente en `332cb31`
+(26-ago), y la segunda anuló a la primera sin que nadie lo notara.
+
+**El problema.** El agente marcaba el `despliegue_id` como visto **antes** de validar la firma y
+no lo desmarcaba nunca. `reintentar_despliegue` reenvía el MISMO id, así que la estación que
+había fallado lo descartaba ("ya procesado antes — se ignora el retenido"), su
+`ResultadoDespliegue` quedaba en PENDIENTE para siempre y el despliegue no llegaba a
+COMPLETADO. De yapa, un mensaje con firma inválida y un id predecible quemaba el id legítimo.
+
+**El arreglo (solo agente, el contrato con el servidor no cambia).**
+- La identidad de una publicación pasa a ser `(id, timestamp firmado)`. El retenido que se
+  repite en cada reconexión trae el mismo timestamp y se sigue ignorando; el reintento trae uno
+  mayor y se atiende. Vale igual para software (`solicitud_id`).
+- La marca se pone **después** de validar la firma (`_marcar_procesado`).
+- Compatibilidad con lo que dejó la 0.34 en `identidad.json` (`despliegue_procesados`, solo
+  ids): el primer mensaje que llega para un id heredado se toma como visto y su timestamp pasa a
+  ser la marca, para no reaplicar un POS ya aplicado. No se decide con el reloj local porque en
+  las farmacias no es confiable. Consecuencia: un despliegue que **hoy** está trabado en
+  PENDIENTE necesita un "Reanudar" más **después** de que la estación tenga la 0.35.
+- Lógica en `agente-prueba/agente_prueba.py` (`_ya_procesado`, `_procesado_antes_de_actualizar`,
+  `_marcar_procesado`); pruebas en `apps/catalogo/tests.py` → `AgenteDeduplicaDespliegueTests`.
+
+**Lo que queda abierto.** Un mensaje con firma inválida que quede retenido se reporta como
+error en cada reconexión hasta que una publicación válida lo reemplace en el tópico. Es el
+estado real, así que se deja así; no reportar al servidor mensajes no autenticados (BH-03 lo
+sugiere) es una decisión aparte.
+
+### IP y MAC de cada caja en el latido (ARQ-02 / INV-A1 / INV-A4)
+
+**El problema, medido el 17-oct-2026 contra producción:** 78 de 79 estaciones aprobadas sin
+`ip_lan`, y 7 de los 8 activos vinculados a una estación sin IP por ninguna vía. El agente
+Python nunca la mandó (`git log -S ip_lan -- agente-prueba` vacío; el lector del worker se
+escribió para el agente C#), mientras `Activo.clean()` prohíbe cargarla a mano porque "la
+reporta el agente". Y como `Estacion` no tenía MAC, cada caja con agente aparecía en la tabla
+ARP del Mikrotik como "equipo que nadie inventarió".
+
+**El arreglo.**
+- Agente: `_red_lan()` manda en el latido `ip_lan` (la dirección local del socket MQTT ya
+  conectado, o sea la placa que efectivamente usa para salir) y `mac_lan`
+  (`leer_mac_de_ip`, un PowerShell que se repite solo si cambia la IP o cada hora).
+- Servidor: campo nuevo `Estacion.mac_lan` (migración `catalogo.0038`). `manejar_heartbeat`
+  valida las dos antes de guardar (`_ip_lan_valida` descarta loopback, 0.0.0.0 y 169.254.x.x;
+  la MAC pasa por `_normalizar_mac`): antes un `ip_lan` ilegible hacía fallar el save() del
+  latido entero.
+- Cruce ARP (`sincronizar_dispositivos_detectados` y el admin de dispositivos detectados): una
+  estación **aprobada** con esa MAC cuenta como equipo conocido.
+- Pruebas: `AgenteReportaRedLanTests` (catalogo), las de IP/MAC en `ManejarHeartbeatTests`
+  (mqtt_worker) y las del cruce en monitoreo.
+
+**Orden de despliegue:** primero el servidor (la migración), después el agente. Al revés no se
+rompe nada —el worker viejo ignora `mac_lan`—, pero la MAC se pierde hasta que el servidor
+tenga el campo. La IP ya la guardaba el worker existente.

@@ -486,6 +486,14 @@ class Estacion(models.Model):
         help_text='Si está activo, el agente sirve los paquetes de despliegue por LAN a su farmacia.',
     )
     ip_lan = models.GenericIPAddressField(null=True, blank=True, help_text='IP LAN reportada por el agente.')
+    # La MAC de la placa con la que la estación sale a la red, reportada por el agente (0.35+)
+    # junto con `ip_lan`. Existe para el cruce declarado/observado: sin ella, cada caja con
+    # agente aparecía en la tabla ARP del Mikrotik como "equipo que nadie inventarió"
+    # (auditoría 17-oct-2026, INV-A4). Mismo formato que `DispositivoDetectado.mac`.
+    mac_lan = models.CharField(
+        max_length=17, blank=True,
+        help_text='MAC de la placa de red con la que sale la estación (AA:BB:CC:DD:EE:FF), reportada por el agente.',
+    )
     puerto_cache = models.PositiveIntegerField(null=True, blank=True)
 
     # Acceso remoto interactivo (MeshCentral) — bolt-on independiente del canal MQTT/HMAC.

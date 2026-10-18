@@ -296,9 +296,16 @@ class DispositivoDetectadoAdmin(admin.ModelAdmin):
         from django.db.models import Exists, OuterRef
 
         from apps.activos.models import Activo
+        from apps.catalogo.models import Estacion
 
         declarado = Activo.objects.filter(
             farmacia=OuterRef('farmacia'), mac__iexact=OuterRef('mac'),
+        )
+        # Mismo criterio que `sincronizar_dispositivos_detectados`: una estación aprobada
+        # cuyo agente reporta esa MAC es un equipo conocido, no algo sin inventariar.
+        estacion_conocida = Estacion.objects.filter(
+            farmacia=OuterRef('farmacia'), mac_lan__iexact=OuterRef('mac'),
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
         )
         # `farmacia__grupo` además de la unidad: `Farmacia.__str__` devuelve
         # "ML001 (TRX001)", así que mostrar la farmacia en el listado toca `grupo` en
@@ -307,7 +314,7 @@ class DispositivoDetectadoAdmin(admin.ModelAdmin):
         return scope_por_unidad_negocio(
             super().get_queryset(request)
             .select_related('farmacia__unidad_negocio', 'farmacia__grupo')
-            .annotate(esta_declarado=Exists(declarado)),
+            .annotate(esta_declarado=Exists(declarado), es_estacion_conocida=Exists(estacion_conocida)),
             request.user, 'farmacia__unidad_negocio',
         )
 
@@ -316,7 +323,7 @@ class DispositivoDetectadoAdmin(admin.ModelAdmin):
 
     @admin.display(description='Declarado', boolean=True, ordering='esta_declarado')
     def declarado(self, obj):
-        return obj.esta_declarado
+        return obj.esta_declarado or obj.es_estacion_conocida
 
 
 @admin.register(EstadoServicioPos)

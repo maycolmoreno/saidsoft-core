@@ -181,11 +181,11 @@ class EstacionAdmin(admin.ModelAdmin):
         'version_pos', 'desactualizada_badge', 'hostname', 'ip_lan',
         'es_cache_farmacia', 'monitorear_recursos', 'ultimo_heartbeat',
     )
-    search_fields = ('codigo', 'numero_serie', 'hostname')
+    search_fields = ('codigo', 'numero_serie', 'hostname', 'mac_lan')
     list_filter = ('estado_aprobacion', 'estado_conexion', 'farmacia__grupo', 'es_cache_farmacia', 'monitorear_recursos')
     list_editable = ('es_cache_farmacia', 'monitorear_recursos')
     autocomplete_fields = ('farmacia',)
-    readonly_fields = ('token_enrolamiento', 'ip_lan', 'puerto_cache', 'ultimo_heartbeat', 'fecha_creacion')
+    readonly_fields = ('token_enrolamiento', 'ip_lan', 'mac_lan', 'puerto_cache', 'ultimo_heartbeat', 'fecha_creacion')
     actions = ['activar_monitoreo_recursos', 'desactivar_monitoreo_recursos']
 
     def get_queryset(self, request):

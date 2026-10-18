@@ -2045,6 +2045,27 @@ class DescubrimientoPorArpTests(TestCase):
         resumen = self._sincronizar(self._parseadas())
         self.assertEqual(len(resumen['sin_declarar']), 3)
 
+    def test_una_estacion_con_agente_no_figura_como_sin_declarar(self):
+        """La MAC la reporta el agente (0.35+). Antes cada caja con agente aparecía para
+        siempre como "equipo que nadie inventarió" (auditoría 17-oct-2026, INV-A4)."""
+        Estacion.objects.create(
+            codigo='MCAR3-A', farmacia=self.farmacia, mac_lan='D0:AD:08:58:61:65',
+            estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        resumen = self._sincronizar(self._parseadas())
+        self.assertNotIn('D0:AD:08:58:61:65', ' '.join(resumen['sin_declarar']))
+        self.assertEqual(len(resumen['sin_declarar']), 3)
+
+    def test_una_estacion_sin_aprobar_no_cuenta_como_conocida(self):
+        """El enrolamiento lo puede pedir cualquiera con la credencial de enrolamiento: una
+        estación pendiente no es todavía un equipo que alguien reconoció."""
+        Estacion.objects.create(
+            codigo='MCAR3-A', farmacia=self.farmacia, mac_lan='D0:AD:08:58:61:65',
+            estado_aprobacion=Estacion.EstadoAprobacion.PENDIENTE,
+        )
+        resumen = self._sincronizar(self._parseadas())
+        self.assertEqual(len(resumen['sin_declarar']), 4)
+
     def test_el_activo_declarado_se_puede_consultar_desde_el_dispositivo(self):
         from apps.activos.models import Activo
         from apps.activos.services import generar_codigo_activo

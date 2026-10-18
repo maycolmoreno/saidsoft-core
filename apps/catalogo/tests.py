@@ -2237,6 +2237,187 @@ class AgenteAceptaAmbosSecretosTests(TestCase):
         )
 
 
+class CargaAgenteRealMixin:
+    """Carga `agente-prueba/agente_prueba.py` en `cls.agente_mod`, por ruta: mismo motivo
+    que en AgenteAceptaAmbosSecretosTests (el guion del nombre impide importarlo)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import importlib.util
+        from pathlib import Path
+
+        from django.conf import settings
+
+        ruta = Path(settings.BASE_DIR) / 'agente-prueba' / 'agente_prueba.py'
+        spec = importlib.util.spec_from_file_location('agente_prueba_bajo_prueba', ruta)
+        cls.agente_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.agente_mod)
+
+
+class AgenteDeduplicaDespliegueTests(CargaAgenteRealMixin, TestCase):
+    """Qué publicaciones de un despliegue atiende el agente y cuáles descarta.
+
+    Hasta la 0.34 el agente marcaba el `despliegue_id` como visto ANTES de validar la
+    firma y nunca lo desmarcaba. Dos efectos (auditoría 17-oct-2026, ARQ-03/BH-02/BH-03):
+    "Reanudar" en el panel reenviaba el mismo id y la estación que había fallado lo
+    ignoraba, quedando en PENDIENTE para siempre; y un mensaje con firma inválida
+    inutilizaba el legítimo que llegara después.
+
+    Se ejercita `_manejar_despliegue` del módulo real. El agente de prueba no tiene el POS
+    configurado, así que todo mensaje que pasa la deduplicación y la firma termina en el
+    reporte "no tiene configurado el POS": ese reporte es la señal de "lo atendió".
+    """
+
+    SECRETO = 'secreto-propio-de-ml001a'
+
+    def _agente_desplegable(self, identidad=None):
+        from types import SimpleNamespace
+
+        agente = self.agente_mod.AgentePrueba.__new__(self.agente_mod.AgentePrueba)
+        agente.identidad = {'hmac_secret': self.SECRETO, **(identidad or {})}
+        agente.args = SimpleNamespace(
+            hmac_secret='', codigo='ML001-A',
+            pos_carpeta_instalacion='', pos_nombre_proceso='', pos_comando_iniciar='',
+        )
+        agente.reportes = []
+        agente._guardar_identidad = lambda: None
+        agente._reportar_despliegue = lambda despliegue_id, paso, detalle='': agente.reportes.append(
+            (despliegue_id, paso, detalle),
+        )
+        return agente
+
+    def _publicacion(self, despliegue_id, timestamp, secreto=None):
+        # Mismos campos y mismo orden que `apps.despliegues.services._payload`.
+        campos = {
+            'despliegue_id': despliegue_id, 'version': '2.5.0',
+            'url': 'https://central/media/despliegues/pos-2.5.0.zip', 'sha256': 'ab' * 32,
+            'modo_aplicacion': 'inmediato', 'ventana_fecha_hora': None,
+        }
+        firma = firmar_payload(secreto or self.SECRETO, comando='desplegar', **campos, timestamp=timestamp)
+        return {**campos, 'timestamp': timestamp, 'firma': firma}
+
+    def _atendidas(self, agente):
+        return [r for r in agente.reportes if 'POS' in r[2]]
+
+    def test_el_retenido_repetido_se_atiende_una_sola_vez(self):
+        """Cada reconexión vuelve a entregar el retenido: no puede reinstalar el POS."""
+        agente = self._agente_desplegable()
+        agente._manejar_despliegue(self._publicacion(7, 1_000))
+        agente._manejar_despliegue(self._publicacion(7, 1_000))
+        self.assertEqual(len(self._atendidas(agente)), 1)
+
+    def test_el_reintento_del_panel_se_atiende(self):
+        """`reintentar_despliegue` reenvía el mismo id con un timestamp nuevo."""
+        agente = self._agente_desplegable()
+        agente._manejar_despliegue(self._publicacion(7, 1_000))
+        agente._manejar_despliegue(self._publicacion(7, 2_000))
+        self.assertEqual(len(self._atendidas(agente)), 2)
+
+    def test_una_publicacion_mas_vieja_que_la_atendida_se_descarta(self):
+        agente = self._agente_desplegable()
+        agente._manejar_despliegue(self._publicacion(7, 2_000))
+        agente._manejar_despliegue(self._publicacion(7, 1_000))
+        self.assertEqual(len(self._atendidas(agente)), 1)
+
+    def test_una_firma_invalida_no_inutiliza_el_mensaje_legitimo(self):
+        agente = self._agente_desplegable()
+        agente._manejar_despliegue(self._publicacion(7, 1_000, secreto='secreto-de-otro'))
+        self.assertEqual(self._atendidas(agente), [])
+        agente._manejar_despliegue(self._publicacion(7, 1_000))
+        self.assertEqual(len(self._atendidas(agente)), 1)
+
+    def test_un_id_atendido_por_la_034_no_se_reaplica_al_actualizar(self):
+        """La 0.34 guardaba solo el id. El retenido que llega después de actualizar puede
+        ser la misma publicación que ya se aplicó: se toma como vista. Un reintento
+        posterior sí se atiende."""
+        agente = self._agente_desplegable({'despliegue_procesados': [7]})
+        agente._manejar_despliegue(self._publicacion(7, 1_000))
+        self.assertEqual(self._atendidas(agente), [])
+        agente._manejar_despliegue(self._publicacion(7, 1_000))
+        self.assertEqual(self._atendidas(agente), [])
+        agente._manejar_despliegue(self._publicacion(7, 2_000))
+        self.assertEqual(len(self._atendidas(agente)), 1)
+
+    def test_las_marcas_se_acotan_a_200(self):
+        agente = self._agente_desplegable()
+        for despliegue_id in range(250):
+            agente._marcar_procesado('despliegue', despliegue_id, 1_000)
+        marcas = agente.identidad['despliegue_procesados_ts']
+        self.assertEqual(len(marcas), 200)
+        self.assertNotIn('0', marcas)
+        self.assertIn('249', marcas)
+
+
+class AgenteReportaRedLanTests(CargaAgenteRealMixin, SimpleTestCase):
+    """El agente manda en el latido la IP y la MAC con las que sale a la red (0.35+).
+
+    Hasta la 0.34 no las mandaba y 78 de 79 estaciones quedaron sin IP (medido el
+    17-oct-2026, auditoría ARQ-02): la regla de `Activo.ip_efectiva` se apoyaba en un dato
+    que nadie producía.
+    """
+
+    def _agente(self, ip='10.101.41.197'):
+        from types import SimpleNamespace
+
+        agente = self.agente_mod.AgentePrueba.__new__(self.agente_mod.AgentePrueba)
+        socket_falso = SimpleNamespace(getsockname=lambda: (ip, 50123))
+        agente.client = SimpleNamespace(socket=lambda: socket_falso)
+        return agente
+
+    def test_reporta_la_ip_del_socket_mqtt_y_su_mac(self):
+        agente = self._agente()
+        with patch.object(self.agente_mod, 'leer_mac_de_ip', return_value='D0:AD:08:58:61:66') as leer:
+            self.assertEqual(agente._red_lan(), {'ip_lan': '10.101.41.197', 'mac_lan': 'D0:AD:08:58:61:66'})
+        leer.assert_called_once_with('10.101.41.197')
+
+    def test_no_relee_la_mac_en_cada_latido(self):
+        """Leerla cuesta un PowerShell y el latido es cada 60 s."""
+        agente = self._agente()
+        with patch.object(self.agente_mod, 'leer_mac_de_ip', return_value='D0:AD:08:58:61:66') as leer:
+            agente._red_lan()
+            agente._red_lan()
+        self.assertEqual(leer.call_count, 1)
+
+    def test_si_cambia_la_ip_vuelve_a_leer_la_mac(self):
+        agente = self._agente()
+        with patch.object(self.agente_mod, 'leer_mac_de_ip', return_value='D0:AD:08:58:61:66') as leer:
+            agente._red_lan()
+            agente.client.socket().getsockname = lambda: ('10.101.41.230', 50123)
+            self.assertEqual(agente._red_lan()['ip_lan'], '10.101.41.230')
+        self.assertEqual(leer.call_count, 2)
+
+    def test_sin_mac_manda_solo_la_ip(self):
+        agente = self._agente()
+        with patch.object(self.agente_mod, 'leer_mac_de_ip', return_value=''):
+            self.assertEqual(agente._red_lan(), {'ip_lan': '10.101.41.197'})
+
+    def test_desconectado_no_manda_nada_y_no_lanza(self):
+        from types import SimpleNamespace
+
+        agente = self._agente()
+        agente.client = SimpleNamespace(socket=lambda: None)
+        self.assertEqual(agente._red_lan(), {})
+
+    def test_leer_mac_normaliza_lo_que_devuelve_windows(self):
+        with patch.object(self.agente_mod, 'correr_powershell', return_value='D0-AD-08-58-61-66\r\n'):
+            self.assertEqual(self.agente_mod.leer_mac_de_ip('10.101.41.197'), 'D0:AD:08:58:61:66')
+
+    def test_leer_mac_devuelve_vacio_ante_basura_o_error(self):
+        """Mejor vacía que inventada."""
+        for salida in ('', 'no-es-una-mac', 'D0-AD-08-58-61-66\r\nAA-BB-CC-DD-EE-FF'):
+            with patch.object(self.agente_mod, 'correr_powershell', return_value=salida):
+                self.assertEqual(self.agente_mod.leer_mac_de_ip('10.101.41.197'), '')
+        with patch.object(self.agente_mod, 'correr_powershell', side_effect=OSError('sin PowerShell')):
+            self.assertEqual(self.agente_mod.leer_mac_de_ip('10.101.41.197'), '')
+
+    def test_leer_mac_no_interpola_algo_que_no_sea_una_ip(self):
+        """La IP se mete dentro del script de PowerShell: nada que no sea una IP llega ahí."""
+        with patch.object(self.agente_mod, 'correr_powershell') as correr:
+            self.assertEqual(self.agente_mod.leer_mac_de_ip("1.2.3.4'; Remove-Item C:\\ -Recurse; '"), '')
+        correr.assert_not_called()
+
+
 class CorregirIpRouterProveedorTests(TestCase):
     """La IP del borde en las redes del proveedor es .254, no .1.
 

@@ -1014,6 +1014,52 @@ class ManejarHeartbeatTests(TestCase):
         self.assertEqual(self.estacion.version_pos, '4.2.1')
         self.assertIsNotNone(self.estacion.ultimo_heartbeat)
 
+    # --- IP y MAC de la LAN (agente 0.35+, auditoría 17-oct-2026 ARQ-02) ---
+
+    def test_guarda_la_ip_y_la_mac_que_reporta_el_agente(self):
+        manejar_heartbeat(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'ip_lan': '10.101.41.197', 'mac_lan': 'd0-ad-08-58-61-66',
+        })
+        self.estacion.refresh_from_db()
+        self.assertEqual(str(self.estacion.ip_lan), '10.101.41.197')
+        self.assertEqual(self.estacion.mac_lan, 'D0:AD:08:58:61:66')
+
+    def test_un_valor_ilegible_no_tumba_el_latido(self):
+        """Un `ip_lan` que el `inet` de PostgreSQL rechaza hacía fallar el save() entero:
+        la estación quedaba sin latido por un campo accesorio."""
+        manejar_heartbeat(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'ip_lan': 'localhost', 'mac_lan': 'no-es-una-mac', 'version_pos': '4.2.1',
+        })
+        self.estacion.refresh_from_db()
+        self.assertEqual(self.estacion.estado_conexion, Estacion.EstadoConexion.ONLINE)
+        self.assertEqual(self.estacion.version_pos, '4.2.1')
+        self.assertIsNone(self.estacion.ip_lan)
+        self.assertEqual(self.estacion.mac_lan, '')
+
+    def test_una_ip_sin_red_no_pisa_la_ultima_buena(self):
+        """169.254.x.x es la que Windows se pone solo cuando no consiguió DHCP."""
+        manejar_heartbeat(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento, 'ip_lan': '10.101.41.197',
+        })
+        for sin_red in ('169.254.12.7', '127.0.0.1', '0.0.0.0'):
+            manejar_heartbeat(self.estacion.codigo, {
+                'token': self.estacion.token_enrolamiento, 'ip_lan': sin_red,
+            })
+        self.estacion.refresh_from_db()
+        self.assertEqual(str(self.estacion.ip_lan), '10.101.41.197')
+
+    def test_un_agente_que_no_las_manda_no_borra_lo_que_se_sabia(self):
+        manejar_heartbeat(self.estacion.codigo, {
+            'token': self.estacion.token_enrolamiento,
+            'ip_lan': '10.101.41.197', 'mac_lan': 'D0:AD:08:58:61:66',
+        })
+        manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento})
+        self.estacion.refresh_from_db()
+        self.assertEqual(str(self.estacion.ip_lan), '10.101.41.197')
+        self.assertEqual(self.estacion.mac_lan, 'D0:AD:08:58:61:66')
+
     def test_heartbeat_valido_registra_actividad_mensual_de_facturacion(self):
         ahora = timezone.now()
         manejar_heartbeat(self.estacion.codigo, {'token': self.estacion.token_enrolamiento})
