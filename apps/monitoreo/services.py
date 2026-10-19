@@ -972,6 +972,32 @@ def notificar_alerta(alerta, *, escalamiento=False):
         _enviar_telegram(canal.destino, texto_telegram, teclado=teclado_alerta)
 
 
+def resolver_alertas_de_reglas_que_no_aplican() -> int:
+    """Resuelve las alertas activas cuya regla ya no se evalúa para esa estación: la
+    regla se desactivó, o se acotó a otra unidad de negocio.
+
+    Toda alerta se cierra por la misma vía que la abrió (`resolver_condicion`, llamada
+    desde la evaluación de su regla), y esa evaluación recorre `reglas_aplicables_a`, que
+    solo trae reglas activas y de la unidad. Una alerta de una regla que deja de aplicar
+    no tenía quién la cerrara: quedaba abierta para siempre aunque la condición se hubiera
+    ido. Caso real (18-oct-2026): "Reloj por quedar incomunicado (90 s)" se desactivó con
+    una alerta abierta de MSI01-E, que el tablero siguió mostrando como crítica durante
+    16 días con la estación latiendo y el reloj en 0 s. Y `escalar_alertas_abiertas` la
+    habría vuelto a notificar.
+
+    Un UPDATE y no la vuelta por `resolver_condicion`: no hay nada que decidir por alerta.
+    Se apaga una regla desde el panel, el admin o un `update()` en lote, así que se barre
+    acá en vez de engancharlo a cada una de esas vías.
+    """
+    return Alerta.objects.filter(
+        estado__in=[Alerta.Estado.ABIERTA, Alerta.Estado.RECONOCIDA],
+    ).filter(
+        Q(regla__activo=False)
+        | (Q(regla__unidad_negocio__isnull=False)
+           & ~Q(regla__unidad_negocio=F('estacion__farmacia__unidad_negocio'))),
+    ).update(estado=Alerta.Estado.RESUELTA, resuelta_en=timezone.now())
+
+
 def escalar_alertas_abiertas() -> int:
     """Celery Beat periódico (mismo mecanismo que marcar_estaciones_offline): reenvía
     la notificación de cualquier Alerta en estado ABIERTA (nunca reconocida —

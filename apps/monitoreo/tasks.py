@@ -6,7 +6,8 @@ from .enlaces import avisar_reanudacion_monitoreo, notificar_cambios_enlaces, so
 from .mikrotik import sincronizar_ancho_banda_farmacias, solicitar_sondeo_red_farmacias_via_agente
 from .services import (
     escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
-    purgar_muestras_red_antiguas, purgar_muestras_servicio_pos_antiguas, solicitar_sondeo_activos_via_agente,
+    purgar_muestras_red_antiguas, purgar_muestras_servicio_pos_antiguas, resolver_alertas_de_reglas_que_no_aplican,
+    solicitar_sondeo_activos_via_agente,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,9 +72,13 @@ def evaluar_cruce_monitoreo_task():
 @shared_task(name='apps.monitoreo.tasks.escalar_alertas_task')
 def escalar_alertas_task():
     """Cada 10 min (ver CELERY_BEAT_SCHEDULE) — reenvía alertas ABIERTAS que nadie
-    reconoció a tiempo (ver UMBRAL_ESCALAMIENTO_MINUTOS en services.py)."""
+    reconoció a tiempo (ver UMBRAL_ESCALAMIENTO_MINUTOS en services.py).
+
+    Antes de escalar cierra las alertas cuya regla ya no aplica: si no, se reenviaría el
+    aviso de una regla que alguien apagó a propósito."""
+    huerfanas = resolver_alertas_de_reglas_que_no_aplican()
     escaladas = escalar_alertas_abiertas()
-    return f'{escaladas} alerta(s) escalada(s).'
+    return f'{huerfanas} alerta(s) de reglas que ya no aplican resuelta(s); {escaladas} escalada(s).'
 
 
 @shared_task(name='apps.monitoreo.tasks.sincronizar_ancho_banda_farmacias_task')

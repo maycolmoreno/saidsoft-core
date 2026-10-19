@@ -598,6 +598,73 @@ class NotificarAlertaWebhookTeamsTests(TestCase):
         self.assertIn('SIN ATENDER', mail.outbox[-1].subject)
 
 
+class ResolverAlertasDeReglasQueNoAplicanTests(TestCase):
+    """Una alerta se cierra cuando su regla la vuelve a evaluar, y una regla apagada o
+    acotada a otra unidad ya no se evalúa. MSI01-E (18-oct-2026): alerta crítica de reloj
+    abierta 16 días después de desactivar la regla, con el reloj en 0 s."""
+
+    def setUp(self):
+        self.sg = UnidadNegocio.objects.get(codigo='SG')
+        self.mia = UnidadNegocio.objects.get(codigo='MIA')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        farmacia = Farmacia.objects.create(codigo='MSI01', grupo=grupo, unidad_negocio=self.mia)
+        self.estacion = Estacion.objects.create(
+            codigo='MSI01-E', farmacia=farmacia, estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
+        )
+        self.usuario = User.objects.create_user(username='u_huerfanas', password='x')
+
+    def _alerta(self, *, estado=Alerta.Estado.ABIERTA, **regla):
+        regla = ReglaAlerta.objects.create(
+            nombre='Reloj por quedar incomunicado (90 s)', metrica=Metrica.DESFASE_RELOJ,
+            umbral=90, creado_por=self.usuario, **regla,
+        )
+        return Alerta.objects.create(regla=regla, estacion=self.estacion, valor_disparador=95, estado=estado)
+
+    def _resolver(self):
+        from apps.monitoreo.services import resolver_alertas_de_reglas_que_no_aplican
+
+        return resolver_alertas_de_reglas_que_no_aplican()
+
+    def test_resuelve_la_de_una_regla_desactivada(self):
+        alerta = self._alerta(activo=False)
+        self.assertEqual(self._resolver(), 1)
+        alerta.refresh_from_db()
+        self.assertEqual(alerta.estado, Alerta.Estado.RESUELTA)
+        self.assertIsNotNone(alerta.resuelta_en)
+
+    def test_resuelve_tambien_una_reconocida(self):
+        alerta = self._alerta(activo=False, estado=Alerta.Estado.RECONOCIDA)
+        self._resolver()
+        alerta.refresh_from_db()
+        self.assertEqual(alerta.estado, Alerta.Estado.RESUELTA)
+
+    def test_resuelve_la_de_una_regla_acotada_a_otra_unidad(self):
+        alerta = self._alerta(unidad_negocio=self.sg)
+        self._resolver()
+        alerta.refresh_from_db()
+        self.assertEqual(alerta.estado, Alerta.Estado.RESUELTA)
+
+    def test_no_toca_las_de_reglas_que_siguen_aplicando(self):
+        global_ = self._alerta()
+        de_su_unidad = self._alerta(unidad_negocio=self.mia)
+        self.assertEqual(self._resolver(), 0)
+        for alerta in (global_, de_su_unidad):
+            alerta.refresh_from_db()
+            self.assertEqual(alerta.estado, Alerta.Estado.ABIERTA)
+
+    def test_la_tarea_de_escalar_no_renotifica_una_de_regla_apagada(self):
+        from apps.monitoreo.tasks import escalar_alertas_task
+
+        alerta = self._alerta(activo=False)
+        Alerta.objects.filter(pk=alerta.pk).update(abierta_en=timezone.now() - timedelta(days=16))
+        with patch('apps.monitoreo.services.encolar_notificacion_alerta') as notificar:
+            escalar_alertas_task()
+        notificar.assert_not_called()
+        alerta.refresh_from_db()
+        self.assertEqual(alerta.estado, Alerta.Estado.RESUELTA)
+        self.assertIsNone(alerta.escalada_en)
+
+
 class EscalarAlertasAbiertasTests(TestCase):
     """Reenvía la notificación de una Alerta ABIERTA que nadie reconoció a tiempo —
     una sola vez por alerta (escalada_en), y solo mientras siga ABIERTA (M3)."""

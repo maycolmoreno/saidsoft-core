@@ -7780,3 +7780,15 @@ Pruebas: `InstaladorComprobacionFinalTests`.
 - **Puede haber más estaciones como GSD13-ADM**: aprobadas, sin latido desde hace días, con el
   servicio sin poder arrancar. La 0.36 no les llega (no se conectan); hay que entrar por
   MeshCentral, mirar `Format-Hex` de `identidad.json` y apartarlo a mano.
+
+### De paso: alertas que no se cerraban nunca porque su regla se había apagado
+
+MSI01-E salía en el tablero con "Reloj por quedar incomunicado (90 s)" crítica, abierta hacía 16
+días, con el reloj en 0 s y latiendo cada minuto. La regla 15 estaba desactivada: una alerta solo
+se cierra cuando su regla la vuelve a evaluar, y `reglas_aplicables_a` no trae reglas inactivas
+ni acotadas a otra unidad, así que nada la cerraba (y `escalar_alertas_abiertas` la podía
+volver a notificar). Es la alerta de reloj "crónica" que ya figuraba en la medición del NOC.
+
+`resolver_alertas_de_reglas_que_no_aplican` (`apps/monitoreo/services.py`) las resuelve en un
+UPDATE, y corre al inicio de `escalar_alertas_task` (cada 10 min), así cubre el panel, el admin
+y cualquier `update()` en lote. Pruebas: `ResolverAlertasDeReglasQueNoAplicanTests`.
