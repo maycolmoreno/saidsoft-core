@@ -7763,6 +7763,17 @@ hardware_id y volvió aprobada.
 - `servicio_windows.py` escribe en `agente_prueba.log` cualquier excepción al crear el agente y
   la relanza (el SCM la sigue viendo como arranque fallido).
 - Pruebas: `AgenteIdentidadResistenteTests` y `ServicioRegistraElFalloDeArranqueTests`.
+- **Descargas (agregado el 19-oct-2026, misma 0.36).** Instalando Firefox 158 (95 MB) en
+  varias farmacias, una estación quedó en "descargando" para siempre y MCU01-ADM falló con
+  "retrieval incomplete: got only 7814764 out of 95131488 bytes". Las dos salían de
+  `urllib.request.urlretrieve`: sin timeout (una conexión colgada no termina nunca) y sin
+  reintento (un corte es error final y el siguiente intento baja desde cero).
+  `bajar_archivo` la reemplaza en `_descargar` (instalaciones, despliegues y
+  auto-actualización): timeout de 60 s por lectura, 6 intentos y retoma con `Range`, que
+  nginx ya sirve para /media/. Pruebas: `AgenteDescargaRetomaTests`, contra un servidor HTTP
+  real que corta a mitad del primer pedido.
+  **Hasta que la flota tenga la 0.36**, una estación colgada en "descargando" no se destraba
+  sola: hay que reiniciar su servicio y volver a lanzar la instalación desde el panel.
 
 **MSI01-E: FALLA con el agente sano.** El instalador miró el servicio una sola vez a los 5 s.
 El paquete traía la 0.34 y la estación ya tenía retenida la 0.35: al conectarse se reemplazó

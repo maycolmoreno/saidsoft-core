@@ -4179,6 +4179,82 @@ class AgenteIdentidadResistenteTests(CargaAgenteRealMixin, SimpleTestCase):
         self.assertEqual(json.loads(Path('identidad.json').read_text(encoding='utf-8')), {'token': 'bueno'})
 
 
+class AgenteDescargaRetomaTests(CargaAgenteRealMixin, SimpleTestCase):
+    """La descarga del agente sobrevive a un corte y no se cuelga.
+
+    18-oct-2026, Firefox 158 (95 MB) a varias farmacias: una estación quedó en
+    "descargando" para siempre (urlretrieve sin timeout) y MCU01-ADM falló con
+    "retrieval incomplete: got only 7814764 out of 95131488 bytes" (sin reintento).
+
+    Servidor HTTP real en un hilo: corta la conexión a mitad del primer pedido y atiende
+    `Range` en los siguientes, como nginx con /media/.
+    """
+
+    CONTENIDO = bytes(range(256)) * 400  # 102.400 bytes
+
+    def setUp(self):
+        import http.server
+        import threading
+
+        contenido = self.CONTENIDO
+        self.pedidos = pedidos = []
+
+        class Manejador(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                rango = self.headers.get('Range')
+                pedidos.append(rango)
+                if rango is None:
+                    # Anuncia el archivo entero y corta a los 30.000 bytes.
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(contenido)))
+                    self.end_headers()
+                    self.wfile.write(contenido[:30_000])
+                    self.wfile.flush()
+                    self.connection.close()
+                    return
+                desde = int(rango.split('=')[1].rstrip('-'))
+                self.send_response(206)
+                self.send_header('Content-Range', f'bytes {desde}-{len(contenido) - 1}/{len(contenido)}')
+                self.send_header('Content-Length', str(len(contenido) - desde))
+                self.end_headers()
+                self.wfile.write(contenido[desde:])
+
+        self.servidor = http.server.HTTPServer(('127.0.0.1', 0), Manejador)
+        threading.Thread(target=self.servidor.serve_forever, daemon=True).start()
+        self.url = f'http://127.0.0.1:{self.servidor.server_port}/media/firefox.exe'
+        self._tmp = tempfile.TemporaryDirectory()
+        self.ruta = str(Path(self._tmp.name) / 'firefox.exe')
+
+    def tearDown(self):
+        self.servidor.shutdown()
+        self.servidor.server_close()
+        self._tmp.cleanup()
+
+    def test_retoma_desde_donde_se_corto(self):
+        with self.assertLogs(level='WARNING'):
+            self.agente_mod.bajar_archivo(self.url, self.ruta, espera_base=0)
+        self.assertEqual(Path(self.ruta).read_bytes(), self.CONTENIDO)
+        self.assertEqual(self.pedidos, [None, 'bytes=30000-'], 'el segundo pedido no vuelve a bajar lo que ya tenía')
+
+    def test_con_un_solo_intento_el_corte_es_un_error(self):
+        """El caché de farmacia usa intentos=1: si falla, cae al central."""
+        with self.assertRaises(Exception):
+            self.agente_mod.bajar_archivo(self.url, self.ruta, intentos=1)
+
+    def test_la_descarga_tiene_timeout(self):
+        """Sin timeout, una conexión colgada deja la instalación en "descargando" para
+        siempre. Se mira la fuente: probarlo de verdad es esperar un minuto."""
+        import inspect
+
+        fuente = inspect.getsource(self.agente_mod.bajar_archivo)
+        self.assertIn('timeout=timeout', fuente)
+        self.assertGreater(self.agente_mod.TIMEOUT_LECTURA_DESCARGA, 0)
+        self.assertNotIn('urlretrieve(', inspect.getsource(self.agente_mod.AgentePrueba._descargar))
+
+
 class ServicioRegistraElFalloDeArranqueTests(SimpleTestCase):
     """servicio_windows.py importa pywin32, que no existe en CI: se mira la fuente."""
 

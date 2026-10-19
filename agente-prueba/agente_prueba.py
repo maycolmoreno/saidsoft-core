@@ -265,6 +265,68 @@ def timestamp_en_ventana(timestamp, ventana_segundos: int = VENTANA_TIMESTAMP_SE
         return False
 
 
+INTENTOS_DESCARGA = 6
+# Por operación de socket, no por descarga entera: si en 60 s no llega un solo byte, la
+# conexión se da por muerta y se reintenta. Un instalador grande por un enlace lento puede
+# tardar media hora y eso está bien mientras siga llegando algo.
+TIMEOUT_LECTURA_DESCARGA = 60
+
+
+def bajar_archivo(url: str, ruta: str, *, intentos: int = INTENTOS_DESCARGA,
+                  timeout: float = TIMEOUT_LECTURA_DESCARGA, espera_base: float = 5) -> None:
+    """Descarga `url` en `ruta`, retomando desde donde se cortó.
+
+    Reemplaza a `urllib.request.urlretrieve`, que tenía los dos defectos que aparecieron
+    al instalar Firefox 158 (95 MB) en varias farmacias a la vez (18-oct-2026):
+    - Sin timeout: una conexión que se quedaba colgada dejaba la instalación en
+      "descargando" para siempre, sin error y sin reintento.
+    - Sin reintento: un corte a mitad (MCU01-ADM: "retrieval incomplete: got only
+      7814764 out of 95131488 bytes") era un error final, y el siguiente intento manual
+      volvía a bajar desde el byte cero.
+
+    Retoma con `Range`, que nginx sirve para los archivos de /media/. Si el servidor no
+    lo respeta (responde 200 en vez de 206), vuelve a empezar el archivo. El tamaño final
+    se compara contra el que anunció el servidor; el SHA-256 lo verifica quien llama."""
+    import http.client
+    import urllib.error
+
+    total = None
+    for intento in range(1, intentos + 1):
+        ya = os.path.getsize(ruta) if intento > 1 and os.path.exists(ruta) else 0
+        cabeceras = {'Range': f'bytes={ya}-'} if ya else {}
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=cabeceras), timeout=timeout) as resp:
+                if resp.status == 206:
+                    total = int(resp.headers['Content-Range'].rsplit('/', 1)[1])
+                    modo = 'ab'
+                else:
+                    largo = resp.headers.get('Content-Length')
+                    total = int(largo) if largo else None
+                    modo = 'wb'
+                with open(ruta, modo) as f:
+                    shutil.copyfileobj(resp, f, 1 << 16)
+            if total is None or os.path.getsize(ruta) == total:
+                return
+            raise http.client.IncompleteRead(b'', total - os.path.getsize(ruta))
+        except urllib.error.HTTPError as exc:
+            # 416: se pidió desde el final, o sea que ya estaba completo.
+            if exc.code == 416 and total is not None and os.path.exists(ruta) and os.path.getsize(ruta) == total:
+                return
+            if intento == intentos or exc.code < 500 and exc.code != 416:
+                raise
+            error = exc
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            if intento == intentos:
+                raise
+            error = exc
+        bajado = os.path.getsize(ruta) if os.path.exists(ruta) else 0
+        logging.warning(
+            'Descarga de %s cortada en %s de %s bytes (intento %s/%s: %s). Se retoma.',
+            url, bajado, total if total is not None else '?', intento, intentos, error,
+        )
+        time.sleep(min(60, espera_base * intento))
+
+
 def _version_mayor_o_igual(version_actual: str, version_candidata: str) -> bool:
     """True si `version_actual` >= `version_candidata`, comparando el sufijo numérico
     ("agente-prueba-0.7" -> (0, 7)). Usada para nunca aplicar un downgrade automático
@@ -2693,12 +2755,13 @@ del "%~f0"
             ruta_relativa = urllib.parse.urlparse(url).path
             url_cache = self.identidad['cache_url_base'].rstrip('/') + ruta_relativa
             try:
-                urllib.request.urlretrieve(url_cache, ruta)
+                # Un solo intento: si el caché falla, el central es el respaldo.
+                bajar_archivo(url_cache, ruta, intentos=1)
                 logging.info('Descargado del caché de farmacia: %s', url_cache)
                 return ruta
             except Exception as exc:
                 logging.warning('Caché de farmacia no disponible (%s: %s), cae al central.', url_cache, exc)
-        urllib.request.urlretrieve(url, ruta)
+        bajar_archivo(url, ruta)
         return ruta
 
     def _sha256_de(self, ruta: str) -> str:
