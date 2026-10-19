@@ -4065,6 +4065,134 @@ class InstaladorSeAutoelevaTests(SimpleTestCase):
         self.assertIn('Se cancelo el permiso de administrador', self._plantilla())
 
 
+class InstaladorComprobacionFinalTests(SimpleTestCase):
+    """El paso 4 del instalador no da FALLA por una auto-actualización, y el mensaje final
+    dice el estado de enrolamiento real en vez de "PENDIENTE" siempre.
+
+    MSI01-E (18-oct-2026): el paquete traía la 0.34, la estación tenía retenida la 0.35 y
+    se reemplazó sola justo cuando el instalador miraba el servicio, una sola vez a los
+    5 s. El técnico vio FALLA con el agente sano. Esa misma estación, y GSD13-ADM, salieron
+    con "PENDIENTE DE APROBACION" estando ya aprobadas.
+
+    Miran el texto generado, igual que InstaladorSeAutoelevaTests: no hay Windows en CI.
+    """
+
+    def _plantilla(self):
+        return InstaladorSeAutoelevaTests._plantilla(self)
+
+    def test_espera_al_servicio_en_un_bucle_y_no_una_sola_vez(self):
+        guion = self._plantilla()
+        comprobacion = guion[guion.index("'[4/4] Comprobando...'"):]
+        self.assertIn('for ($i = 0; $i -lt 10; $i++)', comprobacion)
+        self.assertIn('if ($corriendo -and $enrolamiento) { break }', comprobacion)
+
+    def test_solo_mira_lo_que_escribio_el_agente_recien_instalado(self):
+        """Un "Enrolado. estado_aprobacion=aprobada" de hace semanas en el mismo log no
+        puede contar como el resultado de esta instalación."""
+        guion = self._plantilla()
+        self.assertLess(guion.index('$lineasLogAntes = @(Get-Content'), guion.index("'[2/4] Instalando"))
+        self.assertIn('Select-Object -Skip $lineasLogAntes', guion)
+
+    def test_reconoce_las_lineas_que_escribe_el_agente(self):
+        """Si alguien cambia el texto del log en el agente, el instalador deja de ver el
+        enrolamiento y cae siempre en el AVISO. Esto lo ata a la fuente real."""
+        fuente = (Path(__file__).resolve().parents[2] / 'agente-prueba' / 'agente_prueba.py').read_text(
+            encoding='utf-8',
+        )
+        self.assertIn("'Enrolado. estado_aprobacion=%s ", fuente)
+        self.assertIn("'Ya tengo identidad guardada", fuente)
+        self.assertIn(r"'Enrolado\. estado_aprobacion=|Ya tengo identidad guardada'", self._plantilla())
+
+    def test_pendiente_solo_cuando_el_agente_lo_dice(self):
+        guion = self._plantilla()
+        self.assertEqual(guion.count('PENDIENTE DE APROBACION'), 1)
+        bloque = guion[guion.index("'pendiente' {"):]
+        self.assertLess(bloque.index('PENDIENTE DE APROBACION'), bloque.index('default {'))
+        self.assertIn("'aprobada' {", guion)
+        self.assertIn("'ya_enrolada' {", guion)
+
+
+class AgenteIdentidadResistenteTests(CargaAgenteRealMixin, SimpleTestCase):
+    """identidad.json no puede tumbar el servicio ni quedar a medias por un corte de luz.
+
+    GSD13-ADM (18-oct-2026) estuvo 15 días sin latir: identidad.json tenía 501 bytes en
+    cero, `json.load` reventaba en el constructor del agente, el servicio no arrancaba
+    (error 0x20000001 del SCM) y agente_prueba.log no recibía una sola línea.
+    """
+
+    def setUp(self):
+        import os
+
+        self._cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        # ARCHIVO_IDENTIDAD es relativo: el servicio hace chdir a ProgramData\Saidsoft.
+        os.chdir(self._tmp.name)
+
+    def tearDown(self):
+        import os
+
+        os.chdir(self._cwd)
+        self._tmp.cleanup()
+
+    def _agente(self):
+        return self.agente_mod.AgentePrueba.__new__(self.agente_mod.AgentePrueba)
+
+    def test_un_archivo_lleno_de_ceros_se_aparta_y_arranca_sin_identidad(self):
+        Path('identidad.json').write_bytes(b'\x00' * 501)
+        with self.assertLogs(level='ERROR'):
+            self.assertEqual(self._agente()._cargar_identidad(), {})
+        self.assertFalse(Path('identidad.json').exists())
+        apartados = list(Path('.').glob('identidad.json.corrupto-*'))
+        self.assertEqual(len(apartados), 1)
+        self.assertEqual(apartados[0].read_bytes(), b'\x00' * 501)
+
+    def test_un_json_que_no_es_un_objeto_tambien_se_aparta(self):
+        Path('identidad.json').write_text('[]', encoding='utf-8')
+        with self.assertLogs(level='ERROR'):
+            self.assertEqual(self._agente()._cargar_identidad(), {})
+
+    def test_lee_un_archivo_con_bom(self):
+        Path('identidad.json').write_text('{"token": "t"}', encoding='utf-8-sig')
+        self.assertEqual(self._agente()._cargar_identidad(), {'token': 't'})
+
+    def test_sin_archivo_arranca_vacio(self):
+        self.assertEqual(self._agente()._cargar_identidad(), {})
+
+    def test_guardar_reemplaza_y_no_deja_temporal(self):
+        agente = self._agente()
+        agente.identidad = {'token': 'viejo'}
+        agente._guardar_identidad()
+        agente.identidad = {'token': 'nuevo'}
+        agente._guardar_identidad()
+        self.assertEqual(json.loads(Path('identidad.json').read_text(encoding='utf-8')), {'token': 'nuevo'})
+        self.assertFalse(Path('identidad.json.tmp').exists())
+
+    def test_un_fallo_al_escribir_deja_intacto_el_archivo_anterior(self):
+        """El caso del corte de luz: lo que falla es la escritura, y el archivo bueno
+        tiene que seguir ahí."""
+        agente = self._agente()
+        agente.identidad = {'token': 'bueno'}
+        agente._guardar_identidad()
+        agente.identidad = {'token': object()}  # json.dump revienta a mitad de escribir
+        with self.assertRaises(TypeError):
+            agente._guardar_identidad()
+        self.assertEqual(json.loads(Path('identidad.json').read_text(encoding='utf-8')), {'token': 'bueno'})
+
+
+class ServicioRegistraElFalloDeArranqueTests(SimpleTestCase):
+    """servicio_windows.py importa pywin32, que no existe en CI: se mira la fuente."""
+
+    def test_un_fallo_al_crear_el_agente_va_al_log_y_se_relanza(self):
+        fuente = (Path(__file__).resolve().parents[2] / 'agente-prueba' / 'servicio_windows.py').read_text(
+            encoding='utf-8',
+        )
+        bloque = fuente[fuente.index('self.agente = AgentePrueba(args)'):]
+        bloque = bloque[:bloque.index('threading.Thread')]
+        self.assertIn('except Exception:', bloque)
+        self.assertIn('logging.exception(', bloque)
+        self.assertIn('raise', bloque)
+
+
 class EquivalenciaPredicadosEstacionTests(TestCase):
     """Los predicados de `EstacionQuerySet` y las properties de `Estacion` tienen que
     decir lo MISMO sobre los mismos datos.

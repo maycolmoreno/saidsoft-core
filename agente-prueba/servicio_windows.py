@@ -26,6 +26,7 @@ pywin32 gestiona esos verbos solo al correr este módulo (o el .exe que lo empaq
 como entrypoint — no hace falta un dispatcher a mano.
 """
 import json
+import logging
 import os
 import sys
 import threading
@@ -107,7 +108,16 @@ class ServicioAgenteSaidsoft(win32serviceutil.ServiceFramework):
             return
 
         servicemanager.LogInfoMsg(f'Saidsoft Agente: iniciando para la estación {args.codigo}...')
-        self.agente = AgentePrueba(args)
+        try:
+            self.agente = AgentePrueba(args)
+        except Exception:
+            # Al log ANTES de dejar caer la excepción: sin esto el traceback solo llegaba
+            # al Visor de eventos, y con un Message vacío -- el .exe empaquetado no registra
+            # el archivo de mensajes de pywin32, así que había que leer Properties a mano.
+            # El instalador manda a mirar agente_prueba.log, que quedaba sin una línea.
+            # Se relanza para que el SCM siga viendo el arranque como fallido.
+            logging.exception('Saidsoft Agente: no se pudo crear el agente')
+            raise
         threading.Thread(target=self.agente.correr, daemon=True).start()
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
 

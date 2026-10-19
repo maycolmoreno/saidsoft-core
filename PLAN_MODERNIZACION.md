@@ -7740,3 +7740,43 @@ del usuario. Pruebas: `EstacionesAgenteTandasTests` (panel).
 - **La bandeja de la mesa ordenaba al revés (BD-11).** `order_by('estado')` es alfabético:
   `en_atencion` antes que `escalada`, así que lo ya tomado salía arriba. Ahora un `Case` pone
   primero lo escalado sin tomar (`apps/panel/views/novedades.py`).
+
+## §10-CP — Agente 0.36: un identidad.json corrupto ya no deja la estación muda, y el instalador deja de dar falsos FALLA (18-oct-2026)
+
+Encontrado reinstalando GSD13-ADM y MSI01-E el 18-oct-2026.
+
+**GSD13-ADM: 15 días sin latir.** `C:\ProgramData\Saidsoft\identidad.json` tenía 501 bytes,
+todos en cero. El último latido era del 3-oct 08:33 y el archivo se escribió a las 08:34: un
+corte de luz a mitad de `_guardar_identidad`, que abría el archivo final con `'w'` (lo
+truncaba antes de escribir) y NTFS guardó el tamaño nuevo sin los datos. Desde entonces
+`json.load` reventaba en el constructor del agente, el servicio no arrancaba (`net start` →
+error específico 536870913 = `0x20000001`, la excepción sin atrapar en `SvcDoRun` de pywin32)
+y `agente_prueba.log` no recibía una línea. El traceback solo estaba en el Visor de eventos, con
+`Message` vacío (el .exe no registra el archivo de mensajes de pywin32; se lee en
+`$_.Properties.Value`). Se arregló apartando el archivo: la estación se reenroló con su
+hardware_id y volvió aprobada.
+
+**El arreglo (agente 0.36, `agente-prueba/`).**
+- `_guardar_identidad` escribe atómico: `identidad.json.tmp` + `fsync` + `os.replace`.
+- `_cargar_identidad` aparta un archivo ilegible como `identidad.json.corrupto-<epoch>`, lo deja
+  en el log y arranca sin identidad (se reenrola sola). Lee con `utf-8-sig`.
+- `servicio_windows.py` escribe en `agente_prueba.log` cualquier excepción al crear el agente y
+  la relanza (el SCM la sigue viendo como arranque fallido).
+- Pruebas: `AgenteIdentidadResistenteTests` y `ServicioRegistraElFalloDeArranqueTests`.
+
+**MSI01-E: FALLA con el agente sano.** El instalador miró el servicio una sola vez a los 5 s.
+El paquete traía la 0.34 y la estación ya tenía retenida la 0.35: al conectarse se reemplazó
+sola (`net stop` → copia → `net start`, ~5 s) y la mirada cayó en ese hueco. Ahora el paso 4
+de `apps/catalogo/instalador.py` reintenta hasta 30 s y, en el mismo bucle, lee del log solo las
+líneas nuevas para informar el enrolamiento real (aprobada / ya enrolada / pendiente / sin
+confirmar). Antes decía "PENDIENTE DE APROBACION" siempre, también a estaciones ya aprobadas.
+Pruebas: `InstaladorComprobacionFinalTests`.
+
+**Lo que queda pendiente.**
+- **El paquete del instalador va detrás del agente vigente.** `armar_paquete_agente` empaqueta la
+  última `VersionAgente` cargada, pero hay que correrlo de nuevo después de cada versión: si no,
+  cada instalación deja la estación en la versión vieja y depende del retenido para subir (una
+  estación nueva sin retenido se queda ahí). Reinstalar MSI01-E la bajó de 0.35 a 0.34.
+- **Puede haber más estaciones como GSD13-ADM**: aprobadas, sin latido desde hace días, con el
+  servicio sin poder arrancar. La 0.36 no les llega (no se conectan); hay que entrar por
+  MeshCentral, mirar `Format-Hex` de `identidad.json` y apartarlo a mano.

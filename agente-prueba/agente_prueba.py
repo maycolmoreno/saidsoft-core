@@ -57,7 +57,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.35'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.36'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -311,14 +311,45 @@ class AgentePrueba:
 
     # --- identidad persistida ---
     def _cargar_identidad(self) -> dict:
-        if os.path.exists(ARCHIVO_IDENTIDAD):
-            with open(ARCHIVO_IDENTIDAD, encoding='utf-8') as f:
-                return json.load(f)
-        return {}
+        """Un identidad.json ilegible se aparta y se arranca sin identidad (la estación se
+        vuelve a enrolar con su hardware_id), en vez de dejar que la excepción tumbe el
+        servicio. Antes reventaba en el constructor, antes de escribir una sola línea de
+        log: GSD13-ADM (18-oct-2026) estuvo 15 días sin latir con un identidad.json de 501
+        bytes en cero -- un corte de luz a mitad de _guardar_identidad -- y el único rastro
+        era el error 0x20000001 del SCM.
+
+        utf-8-sig y no utf-8: lee igual con o sin BOM (mismo motivo que config.json en
+        servicio_windows._cargar_config)."""
+        if not os.path.exists(ARCHIVO_IDENTIDAD):
+            return {}
+        try:
+            with open(ARCHIVO_IDENTIDAD, encoding='utf-8-sig') as f:
+                identidad = json.load(f)
+            if not isinstance(identidad, dict):
+                raise ValueError(f'se esperaba un objeto JSON, vino {type(identidad).__name__}')
+            return identidad
+        except (ValueError, UnicodeDecodeError) as exc:
+            # JSONDecodeError es subclase de ValueError. Se renombra en vez de borrar: si
+            # alguna vez hace falta ver qué tenía, sigue ahí.
+            apartado = f'{ARCHIVO_IDENTIDAD}.corrupto-{int(time.time())}'
+            os.replace(ARCHIVO_IDENTIDAD, apartado)
+            logging.error(
+                '%s ilegible (%s): se aparta como %s y la estación se vuelve a enrolar.',
+                ARCHIVO_IDENTIDAD, exc, apartado,
+            )
+            return {}
 
     def _guardar_identidad(self):
-        with open(ARCHIVO_IDENTIDAD, 'w', encoding='utf-8') as f:
+        """Escritura atómica: temporal + fsync + os.replace. Abrir el archivo final con 'w'
+        lo truncaba ANTES de escribir, y un corte de luz en ese momento dejaba un
+        identidad.json vacío o lleno de ceros (NTFS guarda el tamaño nuevo antes que los
+        datos). Con os.replace el archivo es el viejo o el nuevo, nunca uno a medias."""
+        temporal = f'{ARCHIVO_IDENTIDAD}.tmp'
+        with open(temporal, 'w', encoding='utf-8') as f:
             json.dump(self.identidad, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporal, ARCHIVO_IDENTIDAD)
 
     def _token(self) -> str:
         return self.identidad.get('token', '')
