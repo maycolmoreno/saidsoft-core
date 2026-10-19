@@ -7844,6 +7844,23 @@ entre el 1 % y el 5 % del tráfico que describe. Tres farmacias: **ML001, ML004 
   casi en cero en el reporte. Es lo primero a mirar el primer día; no se pudo comprobar sin
   un router real.
 
+**Primer resultado real: ML008 (19-oct-2026, 05:30-06:30).** Funciona de punta a punta: el
+router exporta desde 10.105.128.14 (no su `ip_router` 10.101.22.97), mapeado con
+`NETFLOW_EXPORTADORES`; la bajada llega con la IP interna (cero descartados, la duda del NAT
+quedó resuelta); las cajas salen con su código. 4,54 % de sobrecarga y 3.672 filas/día, pero
+medido de madrugada con 14 MB en la hora: la exportación cuesta ~1,5 kbps casi fijos, así que
+el porcentaje hay que medirlo en horario de atención.
+
+Ese reporte mostró dos errores de clasificación, corregidos el mismo día:
+- **"Local" era cualquier IP privada**, y la WAN entre farmacias y oficinas es toda privada:
+  un Winbox desde una oficina (10.100.100.102 -> router:8291, 12,5 MB) salió como el equipo
+  que más consumía. Ahora local es la LAN de la farmacia: la /24 de `ip_router` y de cada
+  `Estacion.ip_lan` (`contexto_de_farmacias`, `orientar(flujo, redes)`).
+- **Los flujos del propio router contaban como consumo** (Winbox, su DNS y la exportación
+  misma hacia 10.111.6.20:8085). Se apartan en `flujos_del_router` (migración
+  `monitoreo.0047`) cuando cualquiera de sus IP —`ip_router` o las de exportación— está en
+  una punta.
+
 **Criterio para decidir después de una semana:** sobrecarga (%) y filas por día de
 `reporte_netflow`, multiplicados por 700. Si escala, faltan: hypertable con retención,
 latido en `verificar_salud`, una vista en el panel y la configuración de los routers por la

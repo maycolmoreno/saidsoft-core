@@ -27,8 +27,8 @@ from django.utils import timezone
 
 from apps.catalogo.db import cerrar_conexiones_viejas
 from apps.monitoreo.netflow import (
-    PUERTO_COLECTOR, VENTANA_SEGUNDOS, AgregadorNetflow, farmacias_por_ip_exportador, purgar_netflow_antiguo,
-    volcar,
+    PUERTO_COLECTOR, VENTANA_SEGUNDOS, AgregadorNetflow, contexto_de_farmacias, farmacias_por_ip_exportador,
+    purgar_netflow_antiguo, volcar,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,8 @@ class Command(BaseCommand):
         signal.signal(signal.SIGINT, lambda *_: self._detener.set())
 
         extra = _exportadores_extra(os.environ.get('NETFLOW_EXPORTADORES', ''))
-        agregador = AgregadorNetflow(farmacias_por_ip_exportador(extra))
+        mapa = farmacias_por_ip_exportador(extra)
+        agregador = AgregadorNetflow(mapa, contexto_de_farmacias(mapa))
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(('0.0.0.0', options['puerto']))
@@ -90,7 +91,9 @@ class Command(BaseCommand):
                     inicio_ventana = self._volcar(agregador, inicio_ventana)
                     # El mapa se relee en cada ventana: una farmacia a la que se le carga
                     # ip_router empieza a contar sin reiniciar el colector.
+                    # Igual el contexto: una caja nueva con ip_lan suma su red a la LAN.
                     agregador.farmacia_por_ip = farmacias_por_ip_exportador(extra)
+                    agregador.contexto = contexto_de_farmacias(agregador.farmacia_por_ip)
                     proximo_volcado += VENTANA_SEGUNDOS
                 if time.monotonic() >= proxima_purga:
                     cerrar_conexiones_viejas()

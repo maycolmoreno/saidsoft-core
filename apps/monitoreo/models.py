@@ -184,6 +184,9 @@ class VentanaNetflowFarmacia(models.Model):
     datagramas_sin_plantilla = models.PositiveIntegerField(default=0)
     flujos = models.PositiveIntegerField(default=0)
     flujos_descartados = models.PositiveIntegerField(default=0)
+    # Flujos con el propio router en una punta (Winbox, su DNS, la exportación misma):
+    # se apartan del consumo y se cuentan acá para que no desaparezcan sin rastro.
+    flujos_del_router = models.PositiveIntegerField(default=0)
     bytes_medidos = models.BigIntegerField(default=0)
 
     class Meta:

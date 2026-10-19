@@ -46,7 +46,7 @@ class Command(BaseCommand):
         totales = ventanas.aggregate(
             n=Count('pk'), datagramas=Sum('datagramas'), exportacion=Sum('bytes_exportacion'),
             medidos=Sum('bytes_medidos'), flujos=Sum('flujos'), sin_plantilla=Sum('datagramas_sin_plantilla'),
-            descartados=Sum('flujos_descartados'),
+            descartados=Sum('flujos_descartados'), del_router=Sum('flujos_del_router'),
         )
         if not totales['n']:
             self.stdout.write(self.style.WARNING(
@@ -68,7 +68,8 @@ class Command(BaseCommand):
         if totales['medidos']:
             self.stdout.write(f'  sobrecarga:          {100 * totales["exportacion"] / totales["medidos"]:.2f} %')
         self.stdout.write(
-            f'  flujos:              {totales["flujos"]} útiles, {totales["descartados"]} descartados, '
+            f'  flujos:              {totales["flujos"]} útiles, {totales["del_router"]} del propio router '
+            f'(Winbox, DNS, la exportación), {totales["descartados"]} descartados, '
             f'{totales["sin_plantilla"]} datagramas sin plantilla',
         )
         self.stdout.write(f'  filas guardadas:     {filas.count()} ({filas.count() * 24 // max(options["horas"], 1)} por día)')

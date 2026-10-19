@@ -88,15 +88,34 @@ def _es_privada(ip: str) -> bool:
     return ipaddress.ip_address(ip).is_private
 
 
-def orientar(flujo: Flujo) -> tuple[str, str, int, bool] | None:
+def red_lan(ip: str) -> ipaddress.IPv4Network | None:
+    """La /24 de una IP de la LAN de la farmacia. /24 porque es la máscara de las LAN de
+    farmacia que se vieron (ML008: router 10.101.22.97, cajas 10.101.22.99 a .101); si una
+    farmacia tuviera otra, quedaría a medias y se vería en el reporte."""
+    try:
+        return ipaddress.ip_network(f'{ip}/24', strict=False)
+    except ValueError:
+        return None
+
+
+def orientar(flujo: Flujo, redes: tuple = ()) -> tuple[str, str, int, bool] | None:
     """`(ip_local, ip_remota, puerto_remoto, es_subida)`, o None si no hay lado local.
 
-    Local es el lado privado. Cuando los dos son privados (una caja contra el POS central,
-    192.168.111.8, que también es privado) se toma como remoto el que tiene el puerto más
-    bajo: es el que da el servicio. Dos públicos es tránsito que no debería verse desde la
-    LAN de una farmacia, y se descarta.
+    Con `redes` (la LAN de la farmacia), local es el lado que cae adentro. Sin ellas, el
+    lado privado. Esto último no alcanza en esta red: la WAN entre farmacias y oficinas es
+    toda privada, y en el primer día de ML008 (19-oct-2026) un Winbox desde una oficina
+    (10.100.100.102) salió como "el equipo de la farmacia que más consume".
+
+    Cuando los dos lados son locales (o privados, sin redes) se toma como remoto el del
+    puerto más bajo: es el que da el servicio. Ningún lado local es tránsito y se descarta.
     """
-    origen_privado, destino_privado = _es_privada(flujo.origen), _es_privada(flujo.destino)
+    if redes:
+        def es_local(ip):
+            direccion = ipaddress.ip_address(ip)
+            return any(direccion in red for red in redes)
+    else:
+        es_local = _es_privada
+    origen_privado, destino_privado = es_local(flujo.origen), es_local(flujo.destino)
     if origen_privado and destino_privado:
         if flujo.puerto_origen < flujo.puerto_destino:
             return flujo.destino, flujo.origen, flujo.puerto_origen, False
@@ -115,6 +134,7 @@ class _Acumulado:
     datagramas_sin_plantilla: int = 0
     flujos: int = 0
     flujos_descartados: int = 0
+    flujos_del_router: int = 0
     bytes_medidos: int = 0
     # (ip_local, ip_remota, protocolo, puerto_remoto) -> [bytes_subida, bytes_bajada, paquetes]
     pares: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0, 0]))
@@ -124,8 +144,10 @@ class AgregadorNetflow:
     """Acumula en memoria lo que llega entre dos volcados. No toca la base: eso es
     `volcar`, así esta clase se prueba sin Postgres y el colector decide cuándo escribir."""
 
-    def __init__(self, farmacia_por_ip: dict[str, int]):
+    def __init__(self, farmacia_por_ip: dict[str, int], contexto: dict | None = None):
         self.farmacia_por_ip = farmacia_por_ip
+        # farmacia_id -> (redes LAN, IP del router). Ver `contexto_de_farmacias`.
+        self.contexto = contexto or {}
         # Por exportador: ver el docstring del módulo.
         self._plantillas = defaultdict(lambda: {'netflow': {}, 'ipfix': {}})
         self.reiniciar()
@@ -158,9 +180,15 @@ class AgregadorNetflow:
             acumulado.datagramas_sin_plantilla += 1
             return
 
+        redes, ips_router = self.contexto.get(farmacia_id, ((), frozenset()))
         for registro in paquete.flows:
             flujo = normalizar(registro.data, version)
-            orientado = orientar(flujo) if flujo else None
+            if flujo and (flujo.origen in ips_router or flujo.destino in ips_router):
+                # El router en una punta: Winbox, su DNS, su propia exportación hacia el
+                # servidor. No es consumo de ningún equipo de la farmacia.
+                acumulado.flujos_del_router += 1
+                continue
+            orientado = orientar(flujo, redes) if flujo else None
             if orientado is None:
                 acumulado.flujos_descartados += 1
                 continue
@@ -185,6 +213,7 @@ def volcar(agregador: AgregadorNetflow, inicio, fin) -> int:
                 datagramas=acumulado.datagramas, bytes_exportacion=acumulado.bytes_exportacion,
                 datagramas_sin_plantilla=acumulado.datagramas_sin_plantilla,
                 flujos=acumulado.flujos, flujos_descartados=acumulado.flujos_descartados,
+                flujos_del_router=acumulado.flujos_del_router,
                 bytes_medidos=acumulado.bytes_medidos,
             )
             ordenados = sorted(acumulado.pares.items(), key=lambda par: par[1][0] + par[1][1], reverse=True)
@@ -226,6 +255,30 @@ def farmacias_por_ip_exportador(extra: dict[str, str] | None = None) -> dict[str
             else:
                 logger.warning('NETFLOW_EXPORTADORES: no existe la farmacia %s (para %s).', codigo, ip)
     return mapa
+
+
+def contexto_de_farmacias(farmacia_por_ip: dict[str, int]) -> dict:
+    """farmacia_id -> (redes LAN, IP del router) para las farmacias que exportan.
+
+    La LAN sale de la /24 de `ip_router` y de la de cada `Estacion.ip_lan` de la farmacia.
+    Las IP del router son `ip_router` más las direcciones desde las que exporta (que
+    pueden ser otras, ver NETFLOW_EXPORTADORES): por esas sale también su tráfico propio.
+    """
+    from apps.catalogo.models import Estacion, Farmacia
+
+    ids = set(farmacia_por_ip.values())
+    redes = defaultdict(set)
+    routers = defaultdict(set)
+    for pk, ip in Farmacia.objects.filter(pk__in=ids, ip_router__isnull=False).values_list('pk', 'ip_router'):
+        routers[pk].add(str(ip))
+        if (red := red_lan(str(ip))) is not None:
+            redes[pk].add(red)
+    for pk, ip in Estacion.objects.filter(farmacia_id__in=ids, ip_lan__isnull=False).values_list('farmacia_id', 'ip_lan'):
+        if (red := red_lan(str(ip))) is not None:
+            redes[pk].add(red)
+    for ip, pk in farmacia_por_ip.items():
+        routers[pk].add(ip)
+    return {pk: (tuple(redes[pk]), frozenset(routers[pk])) for pk in ids}
 
 
 def purgar_netflow_antiguo(dias: int = DIAS_RETENCION) -> int:

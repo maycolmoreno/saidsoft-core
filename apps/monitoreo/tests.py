@@ -647,7 +647,7 @@ class NetflowPilotoTests(TestCase):
     librería `netflow` de verdad: lo que se prueba es la combinación, no una imitación.
     """
 
-    CAJA = '192.168.10.21'
+    CAJA = '10.0.1.21'  # en la LAN de ML001 (router 10.0.1.1)
     GOOGLE = '142.250.78.14'
 
     def setUp(self):
@@ -657,9 +657,10 @@ class NetflowPilotoTests(TestCase):
         self.ml004 = Farmacia.objects.create(codigo='ML004', grupo=grupo, unidad_negocio=sg, ip_router='10.0.4.1')
 
     def _agregador(self):
-        from apps.monitoreo.netflow import AgregadorNetflow, farmacias_por_ip_exportador
+        from apps.monitoreo.netflow import AgregadorNetflow, contexto_de_farmacias, farmacias_por_ip_exportador
 
-        return AgregadorNetflow(farmacias_por_ip_exportador())
+        mapa = farmacias_por_ip_exportador()
+        return AgregadorNetflow(mapa, contexto_de_farmacias(mapa))
 
     def test_v5_junta_los_dos_sentidos_en_una_fila(self):
         """En la LAN el router ve la subida (caja -> Google) y la bajada (Google -> caja)
@@ -704,6 +705,49 @@ class NetflowPilotoTests(TestCase):
         agregador.procesar('172.16.0.5', _datagrama_v5([(self.CAJA, self.GOOGLE, 6, 50000, 443, 1, 1)]))
         self.assertEqual(agregador.por_farmacia[self.ml004.pk].flujos, 1)
 
+    def test_un_winbox_desde_la_oficina_no_es_consumo_de_la_farmacia(self):
+        """ML008, 19-oct-2026: 10.100.100.102 -> router:8291 salió primero en "equipos que
+        más consumen". La WAN es toda privada: privado no quiere decir de la farmacia."""
+        agregador = self._agregador()
+        agregador.procesar('10.0.1.1', _datagrama_v5([
+            ('10.100.100.102', '10.0.1.1', 6, 51000, 8291, 12_000_000, 9000),
+            ('10.0.1.1', '10.100.100.102', 6, 8291, 51000, 400_000, 900),
+        ]))
+        acumulado = agregador.por_farmacia[self.ml001.pk]
+        self.assertEqual((acumulado.flujos, acumulado.flujos_del_router), (0, 2))
+        self.assertEqual(dict(acumulado.pares), {})
+
+    def test_la_exportacion_hacia_el_servidor_no_cuenta_como_consumo(self):
+        """El router exporta desde su IP de salida, que puede no ser ip_router (ML008:
+        10.105.128.14). Esa IP también es del router."""
+        from apps.monitoreo.netflow import AgregadorNetflow, contexto_de_farmacias, farmacias_por_ip_exportador
+
+        mapa = farmacias_por_ip_exportador({'10.105.128.14': 'ML001'})
+        agregador = AgregadorNetflow(mapa, contexto_de_farmacias(mapa))
+        agregador.procesar('10.105.128.14', _datagrama_v5([
+            ('10.105.128.14', '10.111.6.20', 17, 2055, 8085, 200_000, 200),
+        ]))
+        self.assertEqual(agregador.por_farmacia[self.ml001.pk].flujos_del_router, 1)
+
+    def test_una_caja_contra_el_pos_central_es_la_caja_la_local(self):
+        """El POS central (192.168.111.6:5433) es privado pero está fuera de la LAN."""
+        agregador = self._agregador()
+        agregador.procesar('10.0.1.1', _datagrama_v5([
+            ('192.168.111.6', self.CAJA, 6, 5433, 52000, 30_000, 20),
+        ]))
+        self.assertEqual(
+            dict(agregador.por_farmacia[self.ml001.pk].pares),
+            {(self.CAJA, '192.168.111.6', 6, 5433): [0, 30_000, 20]},
+        )
+
+    def test_la_lan_suma_la_red_de_cada_estacion(self):
+        """Si una caja está en otra /24 que el router, su red también es local."""
+        from apps.monitoreo.netflow import contexto_de_farmacias
+
+        Estacion.objects.create(codigo='ML001-B', farmacia=self.ml001, ip_lan='10.0.2.50')
+        redes, _ = contexto_de_farmacias({'10.0.1.1': self.ml001.pk})[self.ml001.pk]
+        self.assertEqual(sorted(str(r) for r in redes), ['10.0.1.0/24', '10.0.2.0/24'])
+
     def test_entre_dos_privadas_el_remoto_es_el_del_puerto_bajo(self):
         """Caja contra el POS central (192.168.111.8:5433): las dos son privadas, y el
         que da el servicio es el del puerto conocido."""
@@ -720,7 +764,7 @@ class NetflowPilotoTests(TestCase):
         agregador.procesar('10.0.1.1', _datagrama_v5([
             (self.CAJA, '8.8.8.8', 17, 53000, 53, 300, 1),
             (self.CAJA, self.GOOGLE, 6, 50000, 443, 9_000, 9),
-            ('192.168.10.22', self.GOOGLE, 6, 50001, 443, 5_000, 5),
+            ('10.0.1.22', self.GOOGLE, 6, 50001, 443, 5_000, 5),
         ]))
         ahora = timezone.now()
         with patch('apps.monitoreo.netflow.MAX_FILAS_POR_VENTANA', 2):
@@ -731,7 +775,7 @@ class NetflowPilotoTests(TestCase):
         filas = FlujoNetflowAgregado.objects.filter(ventana=ventana)
         self.assertEqual(
             sorted((f.ip_local, f.bytes_subida) for f in filas.exclude(ip_local__isnull=True)),
-            [('192.168.10.21', 9_000), ('192.168.10.22', 5_000)],
+            [('10.0.1.21', 9_000), ('10.0.1.22', 5_000)],
         )
         self.assertEqual(filas.get(ip_local__isnull=True).bytes_subida, 300)
         self.assertEqual(dict(agregador.por_farmacia), {}, 'volcar deja el agregador vacío')
