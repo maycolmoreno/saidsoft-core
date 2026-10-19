@@ -7848,3 +7848,31 @@ entre el 1 % y el 5 % del tráfico que describe. Tres farmacias: **ML001, ML004 
 `reporte_netflow`, multiplicados por 700. Si escala, faltan: hypertable con retención,
 latido en `verificar_salud`, una vista en el panel y la configuración de los routers por la
 API de RouterOS en vez de a mano.
+
+## §10-CR — Catálogo de software: comandos silenciosos deducidos del instalador (19-oct-2026)
+
+**El problema.** Cada versión del catálogo exigía escribir a mano el comando de instalación
+silenciosa y el de desinstalación, y cada tipo de instalador pide otros argumentos: al cargar
+Firefox y LibreOffice hubo que ir a buscarlos. La desinstalación de un MSI necesita además
+su código de producto, que cambia en cada versión.
+
+**El arreglo.** Si quedan vacíos, `VersionAplicacionForm` los completa
+(`apps/software/instaladores.py`):
+- Instalación según el tipo, reconocido por firmas binarias: MSI (cabecera OLE), NSIS
+  (`0xDEADBEEF` + `NullsoftInst`), Inno Setup (`rDlPtS`), WiX Burn (sección `.wixburn`) y el
+  SFX de 7-Zip de Mozilla (Firefox, que acepta `/S`). Lo no reconocido pide el comando:
+  InstallShield queda afuera porque sus argumentos dependen de cada empaquetado.
+- Desinstalación genérica por nombre: busca en Uninstall (64 y 32 bits) y usa `msiexec /x`,
+  `QuietUninstallString` o `UninstallString` + argumentos del tipo. Sin comillas dobles en el
+  script (el agente lo corre por `cmd` dentro de `powershell -Command "..."`) y sin
+  `-EncodedCommand` (firma de EDR). Probado en Windows: Git (Inno) resuelve a su
+  `QuietUninstallString` y Visual C++ (MSI) a `msiexec /x {código}`; un nombre inexistente
+  sale con código 1 y el motivo.
+- La vista dice qué completó y muestra el comando de instalación.
+- Agente 0.36: `msiexec` devuelve 3010/1641 (correcto, falta reiniciar) aunque se le pase
+  `/norestart`, y contaban como error. Ahora son éxito.
+
+**Límites.** La búsqueda por nombre toma la primera entrada que contiene el nombre del
+catálogo: un nombre demasiado genérico podría tomar otra aplicación. Las instalaciones por
+usuario (HKCU) no se ven, pero el agente instala para todo el equipo. Pruebas:
+`ComandosDeducidosDelInstaladorTests` (software).

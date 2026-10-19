@@ -66,6 +66,95 @@ class VersionAplicacionTests(_BaseSoftwareTests):
         self.assertEqual(self.version.sha256, hash_original)
 
 
+class ComandosDeducidosDelInstaladorTests(_BaseSoftwareTests):
+    """Los comandos silenciosos se completan solos si quedan vacíos (19-oct-2026: había que
+    ir a buscarlos para cada aplicación). Ver apps.software.instaladores."""
+
+    MSI = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1' + b'\x00' * 100
+    NSIS = b'MZ' + b'\x00' * 5000 + b'\xef\xbe\xad\xdeNullsoftInst' + b'\x00' * 100
+    INNO = b'MZ' + b'\x00' * 5000 + b'rDlPtS02\x87eVx' + b'\x00' * 100
+    BURN = b'MZ' + b'\x00' * 300 + b'.wixburn' + b'\x00' * 100
+    FIREFOX = b'MZ' + b'\x00' * 9000 + b';!@Install@!UTF-8!\nTitle="Mozilla Firefox"' + b'\x00' * 100
+    DESCONOCIDO = b'MZ' + b'\x00' * 5000
+
+    def test_reconoce_cada_tipo_por_su_firma(self):
+        from apps.software.instaladores import BURN, INNO, MSI, NSIS, detectar_tipo
+
+        casos = {
+            self.MSI: MSI, self.NSIS: NSIS, self.INNO: INNO, self.BURN: BURN, self.FIREFOX: NSIS,
+            self.DESCONOCIDO: None, b'no es un ejecutable': None,
+        }
+        for cabecera, esperado in casos.items():
+            with self.subTest(esperado=esperado, inicio=cabecera[:4]):
+                self.assertEqual(detectar_tipo(cabecera), esperado)
+
+    def _form(self, contenido, nombre_archivo, **datos):
+        from apps.software.forms import VersionAplicacionForm
+
+        return VersionAplicacionForm(
+            {'version': '1.0', **datos},
+            {'instalador': SimpleUploadedFile(nombre_archivo, contenido)},
+            aplicacion=self.aplicacion,
+        )
+
+    def test_vacio_se_completa_segun_el_tipo(self):
+        form = self._form(self.MSI, 'LibreOffice_25.8.msi')
+        self.assertTrue(form.is_valid(), form.errors)
+        version = form.save(commit=False)
+        self.assertEqual(version.comando_instalacion_silenciosa, 'msiexec /i "{archivo}" /qn /norestart ALLUSERS=1')
+        self.assertIn("IndexOf('Google Chrome'", version.comando_desinstalacion)
+        self.assertEqual(len(form.completados), 2)
+
+    def test_lo_escrito_a_mano_se_respeta(self):
+        form = self._form(
+            self.NSIS, 'setup.exe',
+            comando_instalacion_silenciosa='"{archivo}" /S /D=C:\\App', comando_desinstalacion='otra cosa',
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        version = form.save(commit=False)
+        self.assertEqual(version.comando_instalacion_silenciosa, '"{archivo}" /S /D=C:\\App')
+        self.assertEqual(version.comando_desinstalacion, 'otra cosa')
+        self.assertEqual(form.completados, [])
+
+    def test_un_tipo_que_no_se_reconoce_pide_el_comando_en_vez_de_adivinar(self):
+        form = self._form(self.DESCONOCIDO, 'raro.exe')
+        self.assertFalse(form.is_valid())
+        self.assertIn('No se reconoce el tipo de instalador', str(form.errors['comando_instalacion_silenciosa']))
+
+    def test_la_desinstalacion_no_lleva_comillas_dobles_dentro_del_script(self):
+        """El agente la corre por cmd dentro de powershell -Command "...": una comilla doble
+        adentro cortaría el argumento. Un nombre con comillas no puede romperlo."""
+        from apps.software.instaladores import comando_desinstalacion
+
+        comando = comando_desinstalacion('App "rara" de O\'Brien', 'nsis')
+        script = comando.split('-Command "', 1)[1][:-1]
+        self.assertNotIn('"', script)
+        self.assertIn("O''Brien", script)
+        self.assertNotIn('EncodedCommand', comando)
+
+    def test_la_vista_avisa_que_los_completo(self):
+        from django.contrib.auth.models import Permission
+        from django.urls import reverse
+
+        from apps.cuentas.models import PerfilUsuario
+
+        admin = User.objects.create_user(username='carga', password='x')
+        PerfilUsuario.objects.create(usuario=admin, acceso_todas_unidades=True)
+        admin.user_permissions.add(*Permission.objects.filter(codename__in=[
+            'add_versionaplicacion', 'view_aplicacioncatalogo',
+        ]))
+        self.client.force_login(admin)
+        respuesta = self.client.post(
+            reverse('panel:version_crear', args=[self.aplicacion.pk]),
+            {'version': '158.0', 'instalador': SimpleUploadedFile('Firefox Setup 158.0.exe', self.FIREFOX)},
+            follow=True,
+        )
+        self.assertContains(respuesta, 'Comandos completados automáticamente')
+        self.assertEqual(
+            VersionAplicacion.objects.get(version='158.0').comando_instalacion_silenciosa, '"{archivo}" /S',
+        )
+
+
 class PublicarSolicitudFirmaTests(_BaseSoftwareTests):
     """SEC-1 (auditoría 22-ago-2026): mismo hueco que apps.despliegues — el mensaje de
     instalación de software no llevaba ninguna firma HMAC."""

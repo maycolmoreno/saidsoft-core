@@ -113,7 +113,7 @@ def version_crear(request, pk):
     aplicacion = get_object_or_404(AplicacionCatalogo, pk=pk)
     verificar_acceso(request.user, aplicacion.unidad_negocio)
     if request.method == 'POST':
-        form = VersionAplicacionForm(request.POST, request.FILES)
+        form = VersionAplicacionForm(request.POST, request.FILES, aplicacion=aplicacion)
         if form.is_valid():
             version = form.save(commit=False)
             version.aplicacion = aplicacion
@@ -122,9 +122,16 @@ def version_crear(request, pk):
                 usuario=request.user, accion='version_aplicacion.crear', objeto=version, request=request,
             )
             messages.success(request, f'Versión {version.version} agregada.')
+            if form.completados:
+                # Se dice qué se completó solo y con qué: quien carga la versión tiene que
+                # poder ver el comando que va a correr en las farmacias.
+                messages.info(request, (
+                    f'Comandos completados automáticamente: {"; ".join(form.completados)}. '
+                    f'Instalación: {version.comando_instalacion_silenciosa}'
+                ))
             return redirect('panel:aplicacion_detalle', pk=aplicacion.pk)
     else:
-        form = VersionAplicacionForm()
+        form = VersionAplicacionForm(aplicacion=aplicacion)
     return render(request, 'panel/accion_form.html', {
         'form': form, 'titulo': f'Nueva versión de {aplicacion.nombre}',
         'volver_url': reverse('panel:aplicacion_detalle', args=[pk]),

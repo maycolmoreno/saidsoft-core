@@ -52,6 +52,48 @@ class VersionAplicacionForm(forms.ModelForm):
             'comando_desinstalacion': forms.Textarea(attrs={'class': f'{INPUT_CLASS} font-mono', 'rows': 3}),
             'argumentos_adicionales': forms.TextInput(attrs={'class': INPUT_CLASS}),
         }
+        help_texts = {
+            'comando_instalacion_silenciosa': (
+                'Vacío = se completa solo según el instalador (MSI, NSIS, Inno Setup o WiX Burn). '
+                '"{archivo}" se reemplaza por la ruta donde el agente guardó el instalador.'
+            ),
+            'comando_desinstalacion': (
+                'Vacío = se completa solo: busca la aplicación por su nombre en el registro de Windows.'
+            ),
+            'argumentos_adicionales': (
+                'Se agregan al final de los DOS comandos, instalar y desinstalar. Normalmente vacío.'
+            ),
+        }
+
+    def __init__(self, *args, aplicacion=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.aplicacion = aplicacion
+        self.fields['comando_instalacion_silenciosa'].required = False
+        # Qué se completó solo, para que la vista se lo diga a quien cargó la versión.
+        self.completados = []
+
+    def clean(self):
+        from apps.software import instaladores
+
+        datos = super().clean()
+        instalador = datos.get('instalador')
+        tipo = instaladores.detectar_tipo(instaladores.leer_cabecera(instalador)) if instalador else None
+
+        if not datos.get('comando_instalacion_silenciosa'):
+            if tipo is None:
+                self.add_error(
+                    'comando_instalacion_silenciosa',
+                    'No se reconoce el tipo de instalador (se reconocen MSI, NSIS, Inno Setup y WiX '
+                    'Burn). Escribí el comando de instalación silenciosa.',
+                )
+            else:
+                datos['comando_instalacion_silenciosa'] = instaladores.comando_instalacion(tipo)
+                self.completados.append(f'instalación ({instaladores.NOMBRES_TIPO[tipo]})')
+
+        if not datos.get('comando_desinstalacion') and self.aplicacion is not None:
+            datos['comando_desinstalacion'] = instaladores.comando_desinstalacion(self.aplicacion.nombre, tipo)
+            self.completados.append(f'desinstalación (busca "{self.aplicacion.nombre}" en el registro)')
+        return datos
 
 
 class SolicitudInstalacionForm(forms.Form):

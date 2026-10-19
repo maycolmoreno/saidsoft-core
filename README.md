@@ -1034,6 +1034,29 @@ suite que dependiera de una API paga sería lenta, no reproducible y costaría d
 cada corrida.
 
 
+## Catálogo de software: comandos silenciosos automáticos
+
+Al cargar una versión (Aplicaciones → la aplicación → Nueva versión), los comandos de
+instalación y desinstalación **se pueden dejar vacíos**:
+
+- **Instalación:** se deduce del propio instalador por sus firmas binarias
+  (`apps/software/instaladores.py`): MSI → `msiexec /i "{archivo}" /qn /norestart
+  ALLUSERS=1`; NSIS → `/S`; Inno Setup → `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`;
+  WiX Burn → `/quiet /norestart`. El instalador completo de Firefox (un SFX de 7-Zip de
+  Mozilla) se trata como NSIS. Si el tipo no se reconoce (InstallShield, por ejemplo), el
+  formulario pide el comando en vez de adivinar.
+- **Desinstalación:** un PowerShell que busca la aplicación **por su nombre en el
+  catálogo** en la clave Uninstall del registro (64 y 32 bits) y usa `msiexec /x` con el
+  código de producto si es MSI, la `QuietUninstallString` si existe, o la
+  `UninstallString` con los argumentos silenciosos del tipo. Si no la encuentra, termina
+  con error y lo dice. Por eso conviene que el nombre en el catálogo sea parte del que
+  muestra Windows en "Aplicaciones instaladas" (ej. "LibreOffice", "Firefox").
+
+Lo que se escribe a mano se respeta. Al guardar, el panel muestra qué completó y el
+comando de instalación resultante. Desde el agente 0.36, los códigos 3010 y 1641 de
+`msiexec` (instalado, falta reiniciar) cuentan como instalación correcta.
+
+
 ## NetFlow por farmacia (piloto: ML001, ML004, MH001)
 
 El SNMP de los Mikrotik (sección "Red por farmacia") dice **cuánto** pasa por el enlace.

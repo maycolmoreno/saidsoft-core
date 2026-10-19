@@ -2735,7 +2735,12 @@ del "%~f0"
         except subprocess.TimeoutExpired:
             self._reportar_instalacion(solicitud_id, 'error', detalle='Timeout (600s) ejecutando el instalador.')
             return
-        if resultado.returncode == 0:
+        # 3010 y 1641 son éxito con reinicio pendiente (ERROR_SUCCESS_REBOOT_REQUIRED /
+        # _INITIATED): msiexec los devuelve aunque se le pase /norestart. Antes contaban
+        # como error y una instalación correcta salía en rojo en el panel.
+        if resultado.returncode in (0, 3010, 1641):
+            if resultado.returncode:
+                logging.info('Instalación #%s correcta, pide reinicio (código %s).', solicitud_id, resultado.returncode)
             self._reportar_instalacion(solicitud_id, 'instalado', version_instalada=payload.get('version', ''))
         else:
             self._reportar_instalacion(
