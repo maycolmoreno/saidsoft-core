@@ -7792,3 +7792,48 @@ volver a notificar). Es la alerta de reloj "crónica" que ya figuraba en la medi
 `resolver_alertas_de_reglas_que_no_aplican` (`apps/monitoreo/services.py`) las resuelve en un
 UPDATE, y corre al inicio de `escalar_alertas_task` (cada 10 min), así cubre el panel, el admin
 y cualquier `update()` en lote. Pruebas: `ResolverAlertasDeReglasQueNoAplicanTests`.
+
+## §10-CQ — Piloto NetFlow: quién consume el enlace de cada farmacia (18-oct-2026)
+
+**Por qué.** El SNMP a los Mikrotik (`apps.monitoreo.mikrotik`, `MuestraRedFarmacia`) mide
+CUÁNTO pasa por el enlace, pero no quién: el router no reparte tráfico por equipo. NetFlow
+(en RouterOS, *Traffic Flow*, sin licencia aparte) agrega el quién y el hacia dónde.
+
+**Por qué un piloto y no la flota.** Lo que no se sabe es el costo: 700 routers exportando
+hacia un NUC que sale por WiFi pueden saturar el enlace o el disco, y NetFlow suele sumar
+entre el 1 % y el 5 % del tráfico que describe. Tres farmacias: **ML001, ML004 y MH001**.
+
+**Lo que se construyó.**
+- `apps/monitoreo/netflow.py`: decodifica v5/v9/IPFIX con la librería `netflow` (fijada en
+  0.12.2), orienta cada flujo (lado privado = equipo local; entre dos privadas, el remoto es
+  el del puerto bajo, ej. el POS central 192.168.111.8:5433), junta subida y bajada del mismo
+  par en una fila y vuelca cada 5 min el top 50 por farmacia más una fila "resto".
+  Esquiva dos rarezas de la librería: plantillas v9 en un dict por id (los Mikrotik usan todos
+  la 256, así que va uno por router) y `bytes` UTF-8 válidos leídos como hex (se le pasa un
+  `bytearray`).
+- Modelos `VentanaNetflowFarmacia` (contadores, incluido `bytes_exportacion`, lo que costó
+  exportar) y `FlujoNetflowAgregado`; migración `monitoreo.0046`. Tablas comunes, no
+  hypertables; purga a 14 días desde el propio colector.
+- `run_netflow_collector`, servicio `netflow_collector` en `deploy/docker-compose.yml`,
+  UDP **8085** del host -> 2055. La farmacia sale de la IP del router contra
+  `Farmacia.ip_router`, con `NETFLOW_EXPORTADORES` para el que sale con otra dirección; el
+  log lista las IP que exportan sin reconocerse.
+- `reporte_netflow --farmacia X [--horas N]`: el costo primero, después el top de equipos
+  (con el código de estación por `ip_lan`) y de destinos.
+- Pruebas: `NetflowPilotoTests` (monitoreo), con datagramas v5 y v9 armados byte a byte y
+  pasados por la librería real.
+
+**Lo que hay que verificar en el servidor y en los routers.**
+- **Firewall:** 8080-8085 está abierto, pero NetFlow es UDP. Comprobar que la regla cubra UDP.
+- **IP de salida de cada router:** si no coincide con `ip_router`, el log del colector la
+  muestra y se agrega a `NETFLOW_EXPORTADORES`.
+- **La bajada.** Con `interfaces=all`, la bajada entra por la WAN. Si RouterOS la registra
+  con la IP pública del router como destino (antes de deshacer el NAT), el flujo es
+  público-público y se descarta: se vería como `flujos_descartados` alto y `bytes_bajada`
+  casi en cero en el reporte. Es lo primero a mirar el primer día; no se pudo comprobar sin
+  un router real.
+
+**Criterio para decidir después de una semana:** sobrecarga (%) y filas por día de
+`reporte_netflow`, multiplicados por 700. Si escala, faltan: hypertable con retención,
+latido en `verificar_salud`, una vista en el panel y la configuración de los routers por la
+API de RouterOS en vez de a mano.

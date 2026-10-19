@@ -11,6 +11,10 @@ celery>=5.4
 redis>=5.0
 xhtml2pdf>=0.2.16
 pysnmp>=7.1
+# Decodificación NetFlow v5/v9/IPFIX del piloto (apps/monitoreo/netflow.py). Fijada
+# exacta: la librería no publica desde 2022 y el módulo esquiva dos de sus rarezas
+# (plantillas por id y bytes leídos como hex), que podrían cambiar en otra versión.
+netflow==0.12.2
 django-axes>=8.3
 django-otp>=1.5
 qrcode[pil]>=8.0

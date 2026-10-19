@@ -160,6 +160,72 @@ class MuestraRedFarmacia(models.Model):
         return round(100 * total / (contratado * 1000), 1)
 
 
+class VentanaNetflowFarmacia(models.Model):
+    """Lo que exportó por NetFlow el Mikrotik de una farmacia en una ventana de 5 min —
+    ver apps.monitoreo.netflow. PILOTO (18-oct-2026, §10-CQ).
+
+    Los contadores de la ventana existen para contestar la pregunta del piloto, que es el
+    costo: `bytes_exportacion` es lo que la exportación misma le sumó al enlace, y
+    `bytes_medidos` el tráfico que describe. `datagramas_sin_plantilla` mide cuánto se
+    pierde mientras el router no reenvía su plantilla v9.
+
+    Tabla común y no hypertable: con tres farmacias son ~900 ventanas por día. Si el piloto
+    escala, pasarla a hypertable va con el resto de las series (migración 0035).
+    """
+
+    # Sin indice propio: `(farmacia, -inicio)` ya lo cubre (mismo criterio que la migracion 0041).
+    farmacia = models.ForeignKey(
+        Farmacia, on_delete=models.CASCADE, related_name='ventanas_netflow', db_index=False,
+    )
+    inicio = models.DateTimeField()
+    fin = models.DateTimeField()
+    datagramas = models.PositiveIntegerField(default=0)
+    bytes_exportacion = models.BigIntegerField(default=0)
+    datagramas_sin_plantilla = models.PositiveIntegerField(default=0)
+    flujos = models.PositiveIntegerField(default=0)
+    flujos_descartados = models.PositiveIntegerField(default=0)
+    bytes_medidos = models.BigIntegerField(default=0)
+
+    class Meta:
+        db_table = 'ventana_netflow_farmacia'
+        ordering = ['-inicio']
+        indexes = [models.Index(fields=['farmacia', '-inicio'])]
+        verbose_name = 'Ventana NetFlow de farmacia'
+        verbose_name_plural = 'Ventanas NetFlow de farmacia'
+
+    def __str__(self):
+        return f'{self.farmacia.codigo} @ {self.inicio:%Y-%m-%d %H:%M}'
+
+
+class FlujoNetflowAgregado(models.Model):
+    """Un par (equipo local, destino, protocolo, puerto) dentro de una ventana, con los
+    bytes de los dos sentidos sumados en una sola fila.
+
+    Solo se guardan los `MAX_FILAS_POR_VENTANA` pares con más bytes, más UNA fila "resto"
+    con las IP en null que suma lo que quedó afuera: así el total de la ventana sigue
+    cuadrando sin guardar cada flujo.
+    """
+
+    ventana = models.ForeignKey(VentanaNetflowFarmacia, on_delete=models.CASCADE, related_name='flujos_agregados')
+    ip_local = models.GenericIPAddressField(null=True, blank=True)
+    ip_remota = models.GenericIPAddressField(null=True, blank=True)
+    protocolo = models.PositiveSmallIntegerField(null=True, blank=True)
+    puerto_remoto = models.PositiveIntegerField(null=True, blank=True)
+    bytes_subida = models.BigIntegerField(default=0)
+    bytes_bajada = models.BigIntegerField(default=0)
+    paquetes = models.BigIntegerField(default=0)
+
+    class Meta:
+        db_table = 'flujo_netflow_agregado'
+        verbose_name = 'Flujo NetFlow agregado'
+        verbose_name_plural = 'Flujos NetFlow agregados'
+
+    def __str__(self):
+        if self.ip_local is None:
+            return f'resto de la ventana {self.ventana_id}'
+        return f'{self.ip_local} -> {self.ip_remota}:{self.puerto_remoto}'
+
+
 class Metrica(models.TextChoices):
     CPU_CARGA_PCT = 'cpu_carga_pct', 'CPU (%)'
     RAM_USADA_PCT = 'ram_usada_pct', 'RAM (%)'

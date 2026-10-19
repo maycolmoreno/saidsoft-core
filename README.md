@@ -1034,6 +1034,44 @@ suite que dependiera de una API paga sería lenta, no reproducible y costaría d
 cada corrida.
 
 
+## NetFlow por farmacia (piloto: ML001, ML004, MH001)
+
+El SNMP de los Mikrotik (sección "Red por farmacia") dice **cuánto** pasa por el enlace.
+NetFlow dice **quién y hacia dónde**: qué equipo de la farmacia consume y contra qué
+destino y puerto. Es un **piloto** desde el 18-oct-2026: lo que tiene que contestar es el
+costo (cuánto tráfico agrega la exportación al enlace y cuántas filas por día) antes de
+decidir si se extiende a la flota. Ver `PLAN_MODERNIZACION.md` §10-CQ.
+
+**Cómo funciona.** El servicio `netflow_collector` (`run_netflow_collector`) escucha UDP
+en el puerto **8085** del servidor, decodifica NetFlow v5/v9/IPFIX con la librería
+`netflow` y cada 5 minutos guarda por farmacia una `VentanaNetflowFarmacia` (contadores,
+incluido lo que costó la exportación) con el top 50 de pares equipo-destino en
+`FlujoNetflowAgregado`, más una fila "resto". No guarda flujos crudos. La farmacia sale
+de la IP del router que exporta contra `Farmacia.ip_router`; si un router sale con otra
+dirección, se mapea con `NETFLOW_EXPORTADORES="ip=CODIGO,..."` en `deploy/.env`. Se
+purga a los 14 días. Lógica en `apps/monitoreo/netflow.py`.
+
+**Configurar un Mikrotik** (RouterOS v6.4x y v7, por terminal o Winbox):
+
+```
+/ip traffic-flow set enabled=yes interfaces=all active-flow-timeout=1m inactive-flow-timeout=15s
+/ip traffic-flow target add dst-address=10.111.6.20 port=8085 version=9
+```
+
+Para apagarlo: `/ip traffic-flow set enabled=no`.
+
+**Ver lo que juntó:**
+
+```
+docker exec deploy-web-1 python manage.py reporte_netflow --farmacia ML001
+docker exec deploy-web-1 python manage.py reporte_netflow --farmacia MH001 --horas 2 --top 20
+```
+
+Muestra primero el costo (lo enviado por NetFlow, la sobrecarga en % y las filas por día)
+y después los equipos y destinos que más consumen; un equipo con agente aparece con el
+código de su estación (por `Estacion.ip_lan`).
+
+
 ## Estado de enlaces por farmacia (ICMP y SNMP, sin agente)
 
 Todo el resto del monitoreo de este proyecto depende de que la farmacia tenga un **agente

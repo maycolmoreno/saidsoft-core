@@ -598,6 +598,174 @@ class NotificarAlertaWebhookTeamsTests(TestCase):
         self.assertIn('SIN ATENDER', mail.outbox[-1].subject)
 
 
+def _datagrama_v5(flujos):
+    """NetFlow v5 real. `flujos`: [(origen, destino, protocolo, p_origen, p_destino, bytes, paquetes)]."""
+    import ipaddress
+    import struct
+
+    cuerpo = b''.join(
+        struct.pack(
+            '!IIIHHIIIIHHxBBBHHBBxx',
+            int(ipaddress.ip_address(o)), int(ipaddress.ip_address(d)), 0, 0, 0, paq, byt, 0, 0, po, pd, 0, proto,
+            0, 0, 0, 0, 0,
+        )
+        for o, d, proto, po, pd, byt, paq in flujos
+    )
+    return struct.pack('!HHIIIIBBH', 5, len(flujos), 0, 0, 0, 0, 0, 0, 0) + cuerpo
+
+
+# Plantilla 256 de v9 con los siete campos que lee apps.monitoreo.netflow (tipo, largo).
+_CAMPOS_PLANTILLA_V9 = [(8, 4), (12, 4), (4, 1), (7, 2), (11, 2), (1, 4), (2, 4)]
+
+
+def _datagrama_v9(flujos, *, con_plantilla=True):
+    """NetFlow v9 real, con o sin su flowset de plantilla delante de los datos."""
+    import ipaddress
+    import struct
+
+    flowsets = b''
+    if con_plantilla:
+        campos = b''.join(struct.pack('!HH', t, largo) for t, largo in _CAMPOS_PLANTILLA_V9)
+        plantilla = struct.pack('!HH', 256, len(_CAMPOS_PLANTILLA_V9)) + campos
+        flowsets += struct.pack('!HH', 0, 4 + len(plantilla)) + plantilla
+    registros = b''.join(
+        struct.pack(
+            '!IIBHHII', int(ipaddress.ip_address(o)), int(ipaddress.ip_address(d)), proto, po, pd, byt, paq,
+        )
+        for o, d, proto, po, pd, byt, paq in flujos
+    )
+    relleno = (-(4 + len(registros))) % 4
+    flowsets += struct.pack('!HH', 256, 4 + len(registros) + relleno) + registros + b'\x00' * relleno
+    cantidad = len(flujos) + (1 if con_plantilla else 0)
+    return struct.pack('!HHIIII', 9, cantidad, 0, 0, 0, 0) + flowsets
+
+
+class NetflowPilotoTests(TestCase):
+    """Piloto NetFlow (§10-CQ): de datagramas reales de la librería al resumen por farmacia.
+
+    Los datagramas se arman byte a byte con el formato de cada versión y pasan por la
+    librería `netflow` de verdad: lo que se prueba es la combinación, no una imitación.
+    """
+
+    CAJA = '192.168.10.21'
+    GOOGLE = '142.250.78.14'
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.ml001 = Farmacia.objects.create(codigo='ML001', grupo=grupo, unidad_negocio=sg, ip_router='10.0.1.1')
+        self.ml004 = Farmacia.objects.create(codigo='ML004', grupo=grupo, unidad_negocio=sg, ip_router='10.0.4.1')
+
+    def _agregador(self):
+        from apps.monitoreo.netflow import AgregadorNetflow, farmacias_por_ip_exportador
+
+        return AgregadorNetflow(farmacias_por_ip_exportador())
+
+    def test_v5_junta_los_dos_sentidos_en_una_fila(self):
+        """En la LAN el router ve la subida (caja -> Google) y la bajada (Google -> caja)
+        como dos flujos. Para "quién consume" son el mismo par."""
+        agregador = self._agregador()
+        agregador.procesar('10.0.1.1', _datagrama_v5([
+            (self.CAJA, self.GOOGLE, 6, 50000, 443, 1_000, 10),
+            (self.GOOGLE, self.CAJA, 6, 443, 50000, 5_000, 12),
+        ]))
+        acumulado = agregador.por_farmacia[self.ml001.pk]
+        self.assertEqual(dict(acumulado.pares), {(self.CAJA, self.GOOGLE, 6, 443): [1_000, 5_000, 22]})
+        self.assertEqual(acumulado.bytes_medidos, 6_000)
+
+    def test_v9_decodifica_con_la_plantilla_de_su_router(self):
+        agregador = self._agregador()
+        agregador.procesar('10.0.1.1', _datagrama_v9([(self.CAJA, self.GOOGLE, 6, 50000, 443, 700, 3)]))
+        self.assertEqual(agregador.por_farmacia[self.ml001.pk].flujos, 1)
+
+    def test_las_plantillas_no_se_comparten_entre_routers(self):
+        """Todos los Mikrotik usan la plantilla 256. Con un dict compartido, ML004 se
+        decodificaría con la plantilla que mandó ML001; si los campos difieren, con
+        basura. ML004 tiene que esperar la suya."""
+        agregador = self._agregador()
+        agregador.procesar('10.0.1.1', _datagrama_v9([(self.CAJA, self.GOOGLE, 6, 50000, 443, 700, 3)]))
+        agregador.procesar('10.0.4.1', _datagrama_v9(
+            [(self.CAJA, self.GOOGLE, 6, 50000, 443, 700, 3)], con_plantilla=False,
+        ))
+        ml004 = agregador.por_farmacia[self.ml004.pk]
+        self.assertEqual(ml004.flujos, 0)
+        self.assertEqual(ml004.datagramas_sin_plantilla, 1)
+
+    def test_un_router_que_no_se_reconoce_no_suma_a_ninguna_farmacia(self):
+        agregador = self._agregador()
+        agregador.procesar('10.9.9.9', _datagrama_v5([(self.CAJA, self.GOOGLE, 6, 50000, 443, 1, 1)]))
+        self.assertEqual(dict(agregador.por_farmacia), {})
+        self.assertEqual(agregador.exportadores_desconocidos['10.9.9.9'], 1)
+
+    def test_un_router_con_otra_ip_se_mapea_por_codigo(self):
+        from apps.monitoreo.netflow import AgregadorNetflow, farmacias_por_ip_exportador
+
+        agregador = AgregadorNetflow(farmacias_por_ip_exportador({'172.16.0.5': 'ML004'}))
+        agregador.procesar('172.16.0.5', _datagrama_v5([(self.CAJA, self.GOOGLE, 6, 50000, 443, 1, 1)]))
+        self.assertEqual(agregador.por_farmacia[self.ml004.pk].flujos, 1)
+
+    def test_entre_dos_privadas_el_remoto_es_el_del_puerto_bajo(self):
+        """Caja contra el POS central (192.168.111.8:5433): las dos son privadas, y el
+        que da el servicio es el del puerto conocido."""
+        from apps.monitoreo.netflow import Flujo, orientar
+
+        respuesta = Flujo('192.168.111.8', self.CAJA, 6, 5433, 51000, 900, 2)
+        self.assertEqual(orientar(respuesta), (self.CAJA, '192.168.111.8', 5433, False))
+
+    def test_volcar_guarda_el_top_y_una_fila_con_el_resto(self):
+        from apps.monitoreo.models import FlujoNetflowAgregado, VentanaNetflowFarmacia
+        from apps.monitoreo.netflow import volcar
+
+        agregador = self._agregador()
+        agregador.procesar('10.0.1.1', _datagrama_v5([
+            (self.CAJA, '8.8.8.8', 17, 53000, 53, 300, 1),
+            (self.CAJA, self.GOOGLE, 6, 50000, 443, 9_000, 9),
+            ('192.168.10.22', self.GOOGLE, 6, 50001, 443, 5_000, 5),
+        ]))
+        ahora = timezone.now()
+        with patch('apps.monitoreo.netflow.MAX_FILAS_POR_VENTANA', 2):
+            self.assertEqual(volcar(agregador, ahora - timedelta(minutes=5), ahora), 1)
+
+        ventana = VentanaNetflowFarmacia.objects.get()
+        self.assertEqual((ventana.farmacia, ventana.flujos, ventana.bytes_medidos), (self.ml001, 3, 14_300))
+        filas = FlujoNetflowAgregado.objects.filter(ventana=ventana)
+        self.assertEqual(
+            sorted((f.ip_local, f.bytes_subida) for f in filas.exclude(ip_local__isnull=True)),
+            [('192.168.10.21', 9_000), ('192.168.10.22', 5_000)],
+        )
+        self.assertEqual(filas.get(ip_local__isnull=True).bytes_subida, 300)
+        self.assertEqual(dict(agregador.por_farmacia), {}, 'volcar deja el agregador vacío')
+
+    def test_purga_lo_de_mas_de_catorce_dias_con_sus_flujos(self):
+        from apps.monitoreo.models import FlujoNetflowAgregado, VentanaNetflowFarmacia
+        from apps.monitoreo.netflow import purgar_netflow_antiguo
+
+        hace = timezone.now() - timedelta(days=15)
+        vieja = VentanaNetflowFarmacia.objects.create(farmacia=self.ml001, inicio=hace, fin=hace)
+        FlujoNetflowAgregado.objects.create(ventana=vieja, ip_local=self.CAJA)
+        VentanaNetflowFarmacia.objects.create(farmacia=self.ml001, inicio=timezone.now(), fin=timezone.now())
+
+        purgar_netflow_antiguo()
+        self.assertEqual(VentanaNetflowFarmacia.objects.count(), 1)
+        self.assertFalse(FlujoNetflowAgregado.objects.exists())
+
+    def test_el_reporte_muestra_la_sobrecarga_y_al_equipo(self):
+        from apps.monitoreo.netflow import volcar
+
+        Estacion.objects.create(codigo='ML001-A', farmacia=self.ml001, ip_lan=self.CAJA)
+        agregador = self._agregador()
+        agregador.procesar('10.0.1.1', _datagrama_v5([(self.CAJA, self.GOOGLE, 6, 50000, 443, 100_000, 80)]))
+        ahora = timezone.now()
+        volcar(agregador, ahora - timedelta(minutes=5), ahora)
+
+        salida = io.StringIO()
+        call_command('reporte_netflow', '--farmacia', 'ml001', stdout=salida)
+        texto = salida.getvalue()
+        self.assertIn('sobrecarga', texto)
+        self.assertIn('ML001-A', texto)
+        self.assertIn(self.GOOGLE, texto)
+
+
 class ResolverAlertasDeReglasQueNoAplicanTests(TestCase):
     """Una alerta se cierra cuando su regla la vuelve a evaluar, y una regla apagada o
     acotada a otra unidad ya no se evalúa. MSI01-E (18-oct-2026): alerta crítica de reloj
@@ -6338,6 +6506,7 @@ class ComposeServiciosClasificadosTests(ComposeMeshCentralTests):
         'telegram_bot': True,         # /sincronizar dispara un script a una estación
         'meshcentral_worker': False,  # habla con MeshCentral por websocket, no con EMQX
         'celery_beat': False,         # solo agenda: nunca publica
+        'netflow_collector': False,   # recibe UDP de los Mikrotik y escribe en la base
     }
 
     VARIABLES_MQTT = ('MQTT_HOST', 'MQTT_PORT', 'MQTT_USERNAME', 'MQTT_PASSWORD',

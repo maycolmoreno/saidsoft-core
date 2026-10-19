@@ -367,6 +367,33 @@ services:
       meshcentral:
         condition: service_started
 
+  netflow_collector:
+    <<: *app-build
+    restart: unless-stopped
+    # PILOTO NetFlow (18-oct-2026, ML001/ML004/MH001 — ver PLAN_MODERNIZACION.md §10-CQ y
+    # apps.monitoreo.netflow). Recibe Traffic Flow de los Mikrotik y guarda un resumen por
+    # farmacia cada 5 min. Sin routers exportando, se queda escuchando sin hacer nada.
+    command: ["python", "manage.py", "run_netflow_collector"]
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.produccion
+      RUN_MIGRATIONS: "0"
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SECRET_KEY: ${SECRET_KEY}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+      COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
+      BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      # Solo para un router que sale hacia el servidor con una IP distinta de su
+      # Farmacia.ip_router: "ip=CODIGO,ip=CODIGO". El log del colector lista las IP que
+      # exportan sin reconocerse.
+      NETFLOW_EXPORTADORES: ${NETFLOW_EXPORTADORES:-}
+    ports:
+      # 8085: dentro del rango 8080-8085 que ya abre el firewall. Pero es UDP: verificar
+      # que la regla del firewall cubra UDP y no solo TCP antes de culpar al router.
+      - "8085:2055/udp"
+    depends_on:
+      db:
+        condition: service_healthy
+
   telegram_bot:
     <<: *app-build
     restart: unless-stopped

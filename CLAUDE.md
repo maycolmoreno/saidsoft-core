@@ -28,10 +28,11 @@ informe de auditoría de esa fecha para las proyecciones hacia 1.300 farmacias.
   El entrypoint corre las migraciones solo.
   **`build web` NO alcanza** (decía eso acá hasta el 11-sep-2026): los servicios
   comparten el mismo `Dockerfile` vía el ancla `x-app`, pero Compose genera **una
-  imagen por servicio** — hoy **seis**: `deploy-web`, `deploy-worker`,
-  `deploy-celery_beat`, `deploy-celery_worker`, `deploy-meshcentral_worker` y
-  `deploy-telegram_bot` (esta última faltaba en esta lista hasta el 6-oct-2026, y es
-  donde vive el bot de Telegram). Con `build web` solo se
+  imagen por servicio** — hoy **siete**: `deploy-web`, `deploy-worker`,
+  `deploy-celery_beat`, `deploy-celery_worker`, `deploy-meshcentral_worker`,
+  `deploy-telegram_bot` (esta faltaba en esta lista hasta el 6-oct-2026, y es
+  donde vive el bot de Telegram) y `deploy-netflow_collector` (piloto NetFlow,
+  18-oct-2026, §10-CQ). Con `build web` solo se
   recrea `web` y el worker MQTT y Celery se quedan con el código viejo — pasó en el
   despliegue del 11-sep: beat seguía sin la tarea nueva y sin el `ping` del
   Dockerfile. `build` sin argumento las construye todas.
