@@ -148,12 +148,22 @@ def notificar_cambios_enlaces_task():
     # una sola vez por apagón. Va acá y no en el barrido por la misma razón que el resto.
     reanudacion = avisar_reanudacion_monitoreo()
     resumen = notificar_cambios_enlaces()
+    # La saturación va acá por lo mismo que las caídas: mismo canal y misma cadencia. Un
+    # mensaje aparte y no mezclado con las caídas: se atiende distinto (una caída es del
+    # proveedor; una saturación casi siempre es de algo que corre adentro de la farmacia).
+    from .saturacion import evaluar_saturacion_enlaces, notificar_saturacion_enlaces
+
+    evaluar_saturacion_enlaces()
+    saturacion = notificar_saturacion_enlaces()
+    partes = []
     if reanudacion['enviado']:
-        return f'{reanudacion["pendientes"]} farmacia(s) sin volver tras el apagón del monitoreo — avisado.'
-    if not resumen['caidos'] and not resumen['recuperados']:
-        return 'Sin novedades de enlaces.'
-    estado = 'avisado' if resumen['enviado'] else 'SIN avisar (revisar ENLACES_NOTIFICAR_A)'
-    return f'{resumen["caidos"]} caido(s), {resumen["recuperados"]} recuperado(s) — {estado}.'
+        partes.append(f'{reanudacion["pendientes"]} farmacia(s) sin volver tras el apagón del monitoreo — avisado')
+    if resumen['caidos'] or resumen['recuperados']:
+        estado = 'avisado' if resumen['enviado'] else 'SIN avisar (revisar ENLACES_NOTIFICAR_A)'
+        partes.append(f'{resumen["caidos"]} caido(s), {resumen["recuperados"]} recuperado(s) — {estado}')
+    if saturacion['saturados'] or saturacion['normalizados']:
+        partes.append(f'{saturacion["saturados"]} saturado(s), {saturacion["normalizados"]} normalizado(s)')
+    return '. '.join(partes) + '.' if partes else 'Sin novedades de enlaces.'
 
 
 @shared_task(name='apps.monitoreo.tasks.sondear_identidad_equipos_task')

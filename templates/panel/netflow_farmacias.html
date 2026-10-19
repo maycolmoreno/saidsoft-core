@@ -1,0 +1,126 @@
+{% extends "panel/base.html" %}
+{% block title %}NetFlow · SAIDSOFT{% endblock %}
+{% block content %}
+{% comment %}
+Quién consume el enlace de una farmacia (apps.monitoreo.netflow.resumen_netflow, el mismo
+cálculo que `reporte_netflow`). Arriba el consumo, que es lo que se viene a mirar; el costo
+de la exportación va al final porque es la pregunta del piloto, no la de todos los días.
+{% endcomment %}
+{% with campo="w-full rounded-md px-3 py-2 text-sm bg-[var(--bg)] text-[var(--text)]" %}
+
+<div class="flex items-start justify-between gap-4 mb-5 flex-wrap">
+    <div>
+        <h1 class="text-xl font-semibold">NetFlow</h1>
+        <p class="text-sm text-[var(--text-faint)]">Qué equipo consume el enlace de la farmacia y contra qué destino</p>
+    </div>
+    <a href="{% url 'panel:enlaces_farmacias_lista' %}" class="btn secondary text-xs">← Enlaces</a>
+</div>
+
+{% if not farmacias %}
+<div class="card p-6 text-sm text-[var(--text-faint)]">
+    Ninguna farmacia exportó NetFlow en los últimos 14 días. Para encenderlo en un Mikrotik, ver la sección
+    «NetFlow por farmacia» del README.
+</div>
+{% else %}
+
+<form method="get" class="card p-4 mb-4">
+    <div class="grid gap-3" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));">
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="farmacia">Farmacia</label>
+            <select name="farmacia" id="farmacia" class="{{ campo }}" style="border:1px solid var(--border);">
+                {% for f in farmacias %}<option value="{{ f.codigo }}" {% if f == farmacia %}selected{% endif %}>{{ f.codigo }} — {{ f.nombre }}</option>{% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-[var(--text-faint)] mb-1" for="horas">Período</label>
+            <select name="horas" id="horas" class="{{ campo }}" style="border:1px solid var(--border);">
+                {% for h in rangos %}<option value="{{ h }}" {% if h == horas %}selected{% endif %}>{% if h == 168 %}Últimos 7 días{% elif h == 1 %}Última hora{% else %}Últimas {{ h }} horas{% endif %}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="flex items-end">
+            <button type="submit" class="btn primary w-full justify-center">Ver</button>
+        </div>
+    </div>
+</form>
+
+{% if not resumen %}
+<div class="card p-6 text-sm text-[var(--text-faint)] text-center">{{ farmacia.codigo }} no exportó nada en este período.</div>
+{% else %}
+
+<div class="grid gap-4 mb-4" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));">
+    <div class="card" style="overflow-x:auto;">
+        <div class="px-3 pt-3 pb-2 text-xs uppercase tracking-wide text-[var(--text-faint)]">Equipos que más consumen</div>
+        <table class="w-full text-sm">
+            <thead style="background:var(--panel);">
+                <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                    <th class="text-left px-3 py-2">Equipo</th>
+                    <th class="text-right px-3 py-2">↓ Bajada</th><th class="text-right px-3 py-2">↑ Subida</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for e in resumen.equipos %}
+                <tr style="border-top:1px solid var(--border-soft);">
+                    <td class="px-3 py-2"><span class="mono">{{ e.ip_local }}</span>{% if e.estacion %} <span class="pill neutral">{{ e.estacion }}</span>{% endif %}</td>
+                    <td class="px-3 py-2 text-right num">{{ e.bajada|filesizeformat }}</td>
+                    <td class="px-3 py-2 text-right num">{{ e.subida|filesizeformat }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="card" style="overflow-x:auto;">
+        <div class="px-3 pt-3 pb-2 text-xs uppercase tracking-wide text-[var(--text-faint)]">Destinos que más consumen</div>
+        <table class="w-full text-sm">
+            <thead style="background:var(--panel);">
+                <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
+                    <th class="text-left px-3 py-2">Destino</th><th class="text-left px-3 py-2">Puerto</th>
+                    <th class="text-right px-3 py-2">Total</th><th class="text-right px-3 py-2">Equipos</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for d in resumen.destinos %}
+                <tr style="border-top:1px solid var(--border-soft);">
+                    <td class="px-3 py-2 mono">{{ d.ip_remota }}</td>
+                    <td class="px-3 py-2 mono text-[var(--text-faint)]">{{ d.protocolo_nombre }}/{{ d.puerto_remoto }}</td>
+                    <td class="px-3 py-2 text-right num">{{ d.total|filesizeformat }}</td>
+                    <td class="px-3 py-2 text-right num">{{ d.equipos }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% if resumen.resto %}<div class="px-3 py-2 text-xs text-[var(--text-faint)]">Fuera del top de cada ventana de 5 min: {{ resumen.resto|filesizeformat }}</div>{% endif %}
+    </div>
+</div>
+
+{% if saturaciones %}
+<div class="card mb-4" style="overflow-x:auto;">
+    <div class="px-3 pt-3 pb-2 text-xs uppercase tracking-wide text-[var(--text-faint)]">Últimas saturaciones del enlace (≥90% sostenido 15 min)</div>
+    <table class="w-full text-sm">
+        <tbody>
+        {% for s in saturaciones %}
+            <tr style="border-top:1px solid var(--border-soft);">
+                <td class="px-3 py-2 num">{{ s.inicio|date:"d/m/Y H:i" }}</td>
+                <td class="px-3 py-2 num">{% if s.fin %}{{ s.duracion_minutos }} min{% else %}<span style="color:var(--critical);">en curso</span>{% endif %}</td>
+                <td class="px-3 py-2 num">pico {{ s.pico_pct|floatformat:0 }}% de {{ s.contratado_mbps }} Mbps</td>
+                <td class="px-3 py-2 text-xs text-[var(--text-faint)]">{{ s.principal_consumidor }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% with t=resumen.totales %}
+<div class="card p-4 text-xs text-[var(--text-faint)]">
+    <div class="uppercase tracking-wide mb-2">Costo de la exportación (piloto)</div>
+    {{ t.ventanas }} ventana(s) de 5 min · enviado por NetFlow {{ t.exportacion|filesizeformat }} ({{ t.kbps_exportacion }} kbps promedio)
+    para describir {{ t.medidos|filesizeformat }}{% if t.sobrecarga_pct is not None %} · <strong>sobrecarga {{ t.sobrecarga_pct }}%</strong>{% endif %}
+    · {{ t.flujos }} flujos útiles, {{ t.del_router }} del propio router, {{ t.descartados }} descartados
+    · {{ t.filas_por_dia }} filas por día
+</div>
+{% endwith %}
+
+{% endif %}
+{% endif %}
+{% endwith %}
+{% endblock %}

@@ -60,8 +60,10 @@ def clasificar(valor, umbral_warning, umbral_critico):
 # marca. Estaba escrito a mano dentro de `enlace_farmacia_modal.html` (`>= 90` /
 # `>= 70`), al lado de un valor que se coloreaba con los umbrales ABSOLUTOS en kbps de
 # más arriba: dos criterios distintos para el mismo número, en la misma tarjeta.
-BW_CONTRATADO_UMBRAL_WARNING_PCT = 70
-BW_CONTRATADO_UMBRAL_CRITICAL_PCT = 90
+#
+# Viven en apps.monitoreo.umbrales desde el 19-oct-2026: el aviso de saturación de enlace
+# (apps.monitoreo.saturacion) usa los mismos, y el dominio no importa de la presentación.
+from apps.monitoreo.umbrales import BW_CONTRATADO_UMBRAL_CRITICAL_PCT, BW_CONTRATADO_UMBRAL_WARNING_PCT  # noqa: E402
 
 # Solo se leen las reglas "≥": las pantallas de recursos son medidores donde más es
 # peor, y una regla "≤" (no hay ninguna hoy) necesitaría el coloreado invertido. Se

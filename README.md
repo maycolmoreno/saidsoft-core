@@ -1094,6 +1094,24 @@ Muestra primero el costo (lo enviado por NetFlow, la sobrecarga en % y las filas
 y después los equipos y destinos que más consumen; un equipo con agente aparece con el
 código de su estación (por `Estacion.ip_lan`).
 
+**En el panel:** Monitoreo → Enlaces → **NetFlow** (`/monitoreo/netflow/`). Mismo cálculo
+que el comando (`resumen_netflow`), con selector de farmacia y período, las últimas
+saturaciones del enlace y el costo de la exportación al pie.
+
+
+## Aviso de enlace saturado
+
+Cuando el consumo de una farmacia está en **≥90 % de su ancho contratado durante 15
+minutos** (tres muestras SNMP seguidas), llega un aviso por el **mismo canal que las
+caídas** (`ENLACES_NOTIFICAR_A` y `ENLACES_TELEGRAM_CHAT_ID`), y otro cuando baja del
+**70 %**. Son los mismos umbrales con que el panel pinta el enlace de rojo y ámbar
+(`apps/monitoreo/umbrales.py`). Si la farmacia exporta NetFlow, el aviso dice qué equipo
+consumía más y contra qué destino.
+
+Solo se evalúan las farmacias con `ancho_contratado_mbps` cargado: sin el contrato no hay
+contra qué decir "saturado". Se carga en lote con `fijar_ancho_contratado`. Lógica en
+`apps/monitoreo/saturacion.py`; corre dentro de `notificar_cambios_enlaces_task`, cada 5 min.
+
 
 ## Estado de enlaces por farmacia (ICMP y SNMP, sin agente)
 

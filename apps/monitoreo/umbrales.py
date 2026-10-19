@@ -59,3 +59,13 @@ ALERTA_SIN_LATIDO_UMBRAL_MINUTOS = 5
 # horas de gracia: alcanza para que un arranque tardío tras un corte de energía corra su
 # ejecución atrasada sin que el panel grite, y no tanto como para tapar un día perdido.
 RESPALDO_UMBRAL_HORAS = 26
+
+
+# --- Consumo del enlace contra el ancho CONTRATADO ---------------------------------
+#
+# Los mismos para el color del panel (`apps.panel.umbrales`, que los reexporta) y para el
+# aviso de saturación (`apps.monitoreo.saturacion`): si el panel pintara rojo a un número y
+# el aviso saliera a otro, alguien preguntaría con razón cuál de los dos miente. El aviso
+# abre al CRITICAL sostenido y cierra al bajar del WARNING (histéresis).
+BW_CONTRATADO_UMBRAL_WARNING_PCT = 70
+BW_CONTRATADO_UMBRAL_CRITICAL_PCT = 90

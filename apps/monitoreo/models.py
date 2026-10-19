@@ -1011,6 +1011,55 @@ class EventoEnlaceFarmacia(models.Model):
         return int((self.fin - self.inicio).total_seconds() // 60)
 
 
+class EventoSaturacionEnlace(models.Model):
+    """Un período en que el enlace de una farmacia estuvo saturado — ver
+    apps.monitoreo.saturacion (§10-CS).
+
+    Saturado es ≥90 % del ancho contratado en las tres últimas muestras SNMP (15 min), y
+    termina cuando una muestra baja del 70 %: los mismos umbrales con que el panel ya pinta
+    el enlace de rojo y de ámbar (`apps.panel.umbrales`), con histéresis para que un enlace
+    rondando el 90 % no abra y cierre un evento en cada muestra.
+
+    Mismas dos marcas que `EventoEnlaceFarmacia` y por el mismo motivo: el aviso de inicio
+    y el de normalización son dos mensajes distintos, y la normalización solo se avisa si
+    el inicio se avisó.
+    """
+
+    farmacia = models.ForeignKey(Farmacia, on_delete=models.CASCADE, related_name='saturaciones_enlace')
+    inicio = models.DateTimeField(db_index=True)
+    fin = models.DateTimeField(null=True, blank=True)
+    pico_pct = models.FloatField(help_text='El mayor porcentaje del contratado que se vio durante el evento.')
+    contratado_mbps = models.PositiveSmallIntegerField(
+        help_text='Copia del ancho contratado al empezar: el porcentaje se entiende contra éste.',
+    )
+    principal_consumidor = models.CharField(
+        max_length=200, blank=True,
+        help_text='Qué equipo consumía más al avisar, si la farmacia exporta NetFlow.',
+    )
+    notificado_en = models.DateTimeField(null=True, blank=True)
+    normalizacion_notificada_en = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'evento_saturacion_enlace'
+        ordering = ['-inicio']
+        indexes = [
+            models.Index(fields=['farmacia'], condition=models.Q(fin__isnull=True),
+                         name='saturacion_enlace_abierta'),
+        ]
+        verbose_name = 'Saturación de enlace'
+        verbose_name_plural = 'Saturaciones de enlace'
+
+    def __str__(self):
+        estado = 'en curso' if self.fin is None else f'{self.duracion_minutos} min'
+        return f'{self.farmacia.codigo}: saturado {self.inicio:%d/%m %H:%M} ({estado})'
+
+    @property
+    def duracion_minutos(self) -> int | None:
+        if self.fin is None:
+            return None
+        return round((self.fin - self.inicio).total_seconds() / 60)
+
+
 class ReanudacionMonitoreo(models.Model):
     """El monitoreo de enlaces estuvo ciego y volvió: cuándo, y quién respondía antes.
 

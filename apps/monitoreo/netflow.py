@@ -281,6 +281,93 @@ def contexto_de_farmacias(farmacia_por_ip: dict[str, int]) -> dict:
     return {pk: (tuple(redes[pk]), frozenset(routers[pk])) for pk in ids}
 
 
+PROTOCOLOS = {1: 'icmp', 6: 'tcp', 17: 'udp'}
+
+
+def resumen_netflow(farmacia, horas: int = 24, top: int = 10) -> dict | None:
+    """Lo que juntó NetFlow para `farmacia` en las últimas `horas`: costo de la
+    exportación, equipos y destinos que más consumen. None si no hay ventanas.
+
+    Un solo cálculo para la consola (`reporte_netflow`), la pantalla del panel y el aviso
+    de saturación (`principal_consumidor`): si cada uno sumara por su lado, tarde o
+    temprano dirían números distintos para lo mismo.
+    """
+    from django.db.models import Count, F, Sum
+
+    from apps.catalogo.models import Estacion
+    from apps.monitoreo.models import FlujoNetflowAgregado, VentanaNetflowFarmacia
+
+    desde = timezone.now() - timedelta(hours=horas)
+    ventanas = VentanaNetflowFarmacia.objects.filter(farmacia=farmacia, inicio__gte=desde)
+    totales = ventanas.aggregate(
+        ventanas=Count('pk'), datagramas=Sum('datagramas'), exportacion=Sum('bytes_exportacion'),
+        medidos=Sum('bytes_medidos'), flujos=Sum('flujos'), sin_plantilla=Sum('datagramas_sin_plantilla'),
+        descartados=Sum('flujos_descartados'), del_router=Sum('flujos_del_router'),
+    )
+    if not totales['ventanas']:
+        return None
+    totales = {clave: valor or 0 for clave, valor in totales.items()}
+    filas = FlujoNetflowAgregado.objects.filter(ventana__in=ventanas)
+    cantidad_filas = filas.count()
+    totales.update(
+        sobrecarga_pct=round(100 * totales['exportacion'] / totales['medidos'], 2) if totales['medidos'] else None,
+        kbps_exportacion=round(8 * totales['exportacion'] / (horas * 3600) / 1000, 1),
+        filas=cantidad_filas,
+        filas_por_dia=cantidad_filas * 24 // max(horas, 1),
+    )
+
+    estaciones = {
+        str(ip): codigo for ip, codigo in
+        Estacion.objects.filter(farmacia=farmacia, ip_lan__isnull=False).values_list('ip_lan', 'codigo')
+    }
+    consumo = F('bytes_subida') + F('bytes_bajada')
+    equipos = [
+        {**fila, 'estacion': estaciones.get(fila['ip_local'], '')}
+        for fila in filas.exclude(ip_local__isnull=True).values('ip_local')
+        .annotate(subida=Sum('bytes_subida'), bajada=Sum('bytes_bajada'), total=Sum(consumo))
+        .order_by('-total')[:top]
+    ]
+    destinos = [
+        {**fila, 'protocolo_nombre': PROTOCOLOS.get(fila['protocolo'], str(fila['protocolo']))}
+        for fila in filas.exclude(ip_remota__isnull=True).values('ip_remota', 'protocolo', 'puerto_remoto')
+        .annotate(total=Sum(consumo), equipos=Count('ip_local', distinct=True))
+        .order_by('-total')[:top]
+    ]
+    resto = filas.filter(ip_local__isnull=True).aggregate(total=Sum(consumo))['total'] or 0
+    return {'totales': totales, 'equipos': equipos, 'destinos': destinos, 'resto': resto}
+
+
+def principal_consumidor(farmacia, minutos: int = 15) -> str:
+    """"10.101.22.100 (ML008-A), sobre todo contra 142.250.78.14 tcp/443", o '' si la
+    farmacia no exporta NetFlow. Para el aviso de saturación: dice a quién mirar."""
+    from django.db.models import F, Sum
+
+    from apps.catalogo.models import Estacion
+    from apps.monitoreo.models import FlujoNetflowAgregado
+
+    desde = timezone.now() - timedelta(minutes=minutos)
+    filas = FlujoNetflowAgregado.objects.filter(
+        ventana__farmacia=farmacia, ventana__inicio__gte=desde, ip_local__isnull=False,
+    )
+    equipo = (
+        filas.values('ip_local').annotate(total=Sum(F('bytes_subida') + F('bytes_bajada'))).order_by('-total').first()
+    )
+    if equipo is None:
+        return ''
+    destino = (
+        filas.filter(ip_local=equipo['ip_local']).values('ip_remota', 'protocolo', 'puerto_remoto')
+        .annotate(total=Sum(F('bytes_subida') + F('bytes_bajada'))).order_by('-total').first()
+    )
+    codigo = Estacion.objects.filter(farmacia=farmacia, ip_lan=equipo['ip_local']).values_list('codigo', flat=True).first()
+    texto = f"{equipo['ip_local']}" + (f' ({codigo})' if codigo else '')
+    if destino:
+        texto += (
+            f", sobre todo contra {destino['ip_remota']} "
+            f"{PROTOCOLOS.get(destino['protocolo'], destino['protocolo'])}/{destino['puerto_remoto']}"
+        )
+    return texto
+
+
 def purgar_netflow_antiguo(dias: int = DIAS_RETENCION) -> int:
     """Tabla común y chica (no hypertable): un DELETE alcanza. Las filas de flujos se van
     por CASCADE con su ventana."""

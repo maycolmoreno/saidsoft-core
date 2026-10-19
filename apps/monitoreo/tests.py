@@ -810,6 +810,125 @@ class NetflowPilotoTests(TestCase):
         self.assertIn(self.GOOGLE, texto)
 
 
+@override_settings(ENLACES_NOTIFICAR_A=['noc@example.com'], ENLACES_TELEGRAM_CHAT_ID='')
+class SaturacionEnlaceTests(TestCase):
+    """≥90% del contratado en tres muestras seguidas abre y avisa; bajar de 70% cierra y
+    avisa la normalización (§10-CS). Contrato de 10 Mbps: 9.000 kbps es el 90%."""
+
+    def setUp(self):
+        sg = UnidadNegocio.objects.get(codigo='SG')
+        grupo = Grupo.objects.create(codigo='TRX001')
+        self.farmacia = Farmacia.objects.create(
+            codigo='ML008', grupo=grupo, unidad_negocio=sg, ip_router='10.0.1.1', ancho_contratado_mbps=10,
+        )
+
+    def _muestras(self, *kbps, farmacia=None):
+        """Una muestra cada 5 min, la última ahora. `kbps` de la más vieja a la más nueva."""
+        ahora = timezone.now()
+        for i, valor in enumerate(reversed(kbps)):
+            MuestraRedFarmacia.objects.create(
+                farmacia=farmacia or self.farmacia, bytes_recibidos=0, bytes_enviados=0,
+                red_recibido_kbps=valor, red_enviado_kbps=0, timestamp=ahora - timedelta(minutes=5 * i),
+            )
+
+    def _evaluar(self):
+        from apps.monitoreo.saturacion import evaluar_saturacion_enlaces
+
+        return evaluar_saturacion_enlaces()
+
+    def test_tres_muestras_sobre_el_noventa_abren_el_evento(self):
+        from apps.monitoreo.models import EventoSaturacionEnlace
+
+        self._muestras(9_200, 9_500, 9_900)
+        self.assertEqual(self._evaluar()['abiertos'], 1)
+        evento = EventoSaturacionEnlace.objects.get()
+        self.assertEqual((evento.pico_pct, evento.contratado_mbps), (99.0, 10))
+
+    def test_un_pico_aislado_no_alcanza(self):
+        self._muestras(3_000, 3_000, 9_900)
+        self.assertEqual(self._evaluar()['abiertos'], 0)
+
+    def test_sin_ancho_contratado_no_se_evalua(self):
+        """Sin el contrato no hay contra qué decir "saturado"."""
+        self.farmacia.ancho_contratado_mbps = None
+        self.farmacia.save(update_fields=['ancho_contratado_mbps'])
+        self._muestras(50_000, 50_000, 50_000)
+        self.assertEqual(self._evaluar()['abiertos'], 0)
+
+    def test_cierra_recien_al_bajar_del_setenta(self):
+        """Histéresis: un enlace rondando el 90% no abre y cierra en cada muestra."""
+        from apps.monitoreo.models import EventoSaturacionEnlace
+
+        self._muestras(9_500, 9_500, 9_500)
+        self._evaluar()
+        MuestraRedFarmacia.objects.all().delete()
+        self._muestras(8_000)
+        self._evaluar()
+        self.assertIsNone(EventoSaturacionEnlace.objects.get().fin)
+        self._muestras(6_000)
+        self.assertEqual(self._evaluar()['cerrados'], 1)
+        self.assertIsNotNone(EventoSaturacionEnlace.objects.get().fin)
+
+    def test_avisa_una_vez_con_el_principal_consumidor_y_despues_la_normalizacion(self):
+        from apps.monitoreo.models import FlujoNetflowAgregado, VentanaNetflowFarmacia
+        from apps.monitoreo.saturacion import notificar_saturacion_enlaces
+
+        Estacion.objects.create(codigo='ML008-A', farmacia=self.farmacia, ip_lan='10.0.1.100')
+        ventana = VentanaNetflowFarmacia.objects.create(
+            farmacia=self.farmacia, inicio=timezone.now() - timedelta(minutes=5), fin=timezone.now(),
+        )
+        FlujoNetflowAgregado.objects.create(
+            ventana=ventana, ip_local='10.0.1.100', ip_remota='142.250.78.14', protocolo=6, puerto_remoto=443,
+            bytes_bajada=900_000_000,
+        )
+        self._muestras(9_500, 9_500, 9_500)
+        self._evaluar()
+
+        self.assertEqual(notificar_saturacion_enlaces()['saturados'], 1)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].subject, '[Enlaces] 1 saturado(s)')
+        self.assertIn('10.0.1.100 (ML008-A), sobre todo contra 142.250.78.14 tcp/443', mail.outbox[0].body)
+
+        notificar_saturacion_enlaces()
+        self.assertEqual(len(mail.outbox), 1, 'no se repite el aviso')
+
+        self._muestras(2_000)
+        self._evaluar()
+        notificar_saturacion_enlaces()
+        self.assertEqual(mail.outbox[1].subject, '[Enlaces] 1 normalizado(s)')
+
+    def test_no_avisa_la_normalizacion_de_lo_que_nunca_se_aviso(self):
+        from apps.monitoreo.models import EventoSaturacionEnlace
+        from apps.monitoreo.saturacion import notificar_saturacion_enlaces
+
+        EventoSaturacionEnlace.objects.create(
+            farmacia=self.farmacia, inicio=timezone.now(), fin=timezone.now(), pico_pct=95, contratado_mbps=10,
+        )
+        self.assertFalse(notificar_saturacion_enlaces()['enviado'])
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_la_pantalla_de_netflow_muestra_quien_consume(self):
+        from apps.monitoreo.models import FlujoNetflowAgregado, VentanaNetflowFarmacia
+
+        ventana = VentanaNetflowFarmacia.objects.create(
+            farmacia=self.farmacia, inicio=timezone.now() - timedelta(minutes=5), fin=timezone.now(),
+            bytes_medidos=1000, bytes_exportacion=40,
+        )
+        FlujoNetflowAgregado.objects.create(
+            ventana=ventana, ip_local='10.0.1.100', ip_remota='142.250.78.14', protocolo=6, puerto_remoto=443,
+            bytes_bajada=1000,
+        )
+        usuario = User.objects.create_user(username='noc', password='x')
+        PerfilUsuario.objects.create(usuario=usuario, acceso_todas_unidades=True)
+        usuario.user_permissions.add(Permission.objects.get(codename='view_estadoenlacefarmacia'))
+        self.client.force_login(usuario)
+
+        respuesta = self.client.get(reverse('panel:netflow_farmacias'))
+        self.assertContains(respuesta, '10.0.1.100')
+        self.assertContains(respuesta, '142.250.78.14')
+        self.assertRegex(respuesta.content.decode(), r'sobrecarga 4[.,]0%')
+
+
 class ResolverAlertasDeReglasQueNoAplicanTests(TestCase):
     """Una alerta se cierra cuando su regla la vuelve a evaluar, y una regla apagada o
     acotada a otra unidad ya no se evalúa. MSI01-E (18-oct-2026): alerta crítica de reloj

@@ -7893,3 +7893,30 @@ su código de producto, que cambia en cada versión.
 catálogo: un nombre demasiado genérico podría tomar otra aplicación. Las instalaciones por
 usuario (HKCU) no se ven, pero el agente instala para todo el equipo. Pruebas:
 `ComandosDeducidosDelInstaladorTests` (software).
+
+## §10-CS — NetFlow en el panel y aviso de enlace saturado (19-oct-2026)
+
+**Pedido:** ver el informe de NetFlow desde la web y que avise cuando un enlace se satura.
+Decisiones del usuario: pantalla propia, aviso por el mismo canal que las caídas, ≥90 %
+sostenido 15 min.
+
+- **Pantalla** `panel:netflow_farmacias` (Monitoreo → Enlaces → NetFlow,
+  `apps/panel/views/netflow.py`). Lista solo las farmacias que exportaron en la retención.
+  El cálculo pasó a `apps.monitoreo.netflow.resumen_netflow`, que ahora usa también
+  `reporte_netflow`: la consola y la pantalla no pueden dar números distintos.
+- **Saturación** (`apps/monitoreo/saturacion.py`, modelo `EventoSaturacionEnlace`, migración
+  `monitoreo.0048`): abre con las tres últimas muestras SNMP ≥90 % del contratado y cierra al
+  bajar del 70 %. Se mide el total (subida + bajada), igual que la barra del panel. Avisa por
+  correo y Telegram en un mensaje propio —no mezclado con las caídas: una caída es del
+  proveedor, una saturación casi siempre es de algo dentro de la farmacia— con el
+  `principal_consumidor` de NetFlow si la farmacia exporta. Corre en
+  `notificar_cambios_enlaces_task`.
+- Los umbrales 70/90 se mudaron de `apps.panel.umbrales` a `apps.monitoreo.umbrales` (el
+  panel los reexporta): el aviso usa los mismos y el dominio no importa de la presentación.
+- Pruebas: `SaturacionEnlaceTests` (monitoreo).
+
+**Límites.** Solo farmacias con `ancho_contratado_mbps`. Un evento abierto sin muestras
+nuevas (el SNMP dejó de responder) queda abierto hasta la próxima muestra: no se cierra por
+falta de dato. "Equipo saturado" por CPU/RAM/disco ya lo cubren las `ReglaAlerta` de
+estación; lo nuevo es el consumo de red, que solo existe donde hay NetFlow.
+
