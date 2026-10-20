@@ -10,6 +10,8 @@ from apps.whatsapp.views import webhook as whatsapp_webhook
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/auth/token/', obtain_auth_token, name='api-auth-token'),
+    # Integración de solo lectura para otros sistemas (inventario, mantenimiento).
+    path('api/v1/rmm/', include('apps.catalogo.api_urls')),
     path('api/v1/', include('apps.mantenimiento.api_urls')),
     path('api/v1/monitoreo/', include('apps.monitoreo.api_urls')),
     # Lo llama Meta; lo protege la firma del cuerpo (ver apps.whatsapp.views).
