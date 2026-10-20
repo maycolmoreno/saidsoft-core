@@ -9758,8 +9758,12 @@ class TodosLosBuscadoresRespondenTests(TestCase):
             # viaticos la vista `zonas_lista` se publica como `viaticos_zonas_lista`, y
             # asumirlo hacia que esta prueba reventara con NoReverseMatch — un falso
             # negativo que se ve igual que la pantalla rota que busca detectar.
+            # La vista puede ir envuelta por `diferido('<modulo>', views.x)` (módulos fuera
+            # de SaidSoft RMM 1.0, ver apps/panel/modulos.py): se acepta esa forma también,
+            # para que esos buscadores se sigan probando y no desaparezcan en silencio.
             m = re.search(
-                r"path\(\s*'([^']*)'\s*,\s*views\.%s\s*,\s*name='([^']+)'" % re.escape(nombre),
+                r"path\(\s*'([^']*)'\s*,\s*(?:diferido\(\s*'[a-z_]+'\s*,\s*)?views\.%s\s*\)?\s*,\s*name='([^']+)'"
+                % re.escape(nombre),
                 urls,
             )
             # Las rutas con `<pk>` se saltan: necesitan un objeto y no son listados.

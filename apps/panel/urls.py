@@ -4,6 +4,7 @@ from django.urls import path
 from apps.cuentas.forms import LoginConOTPForm
 
 from . import views
+from .modulos import diferido
 
 app_name = 'panel'
 
@@ -67,35 +68,35 @@ urlpatterns = [
     path('estaciones/<int:pk>/meshcentral/grabaciones/', views.estacion_supervision_grabaciones, name='estacion_supervision_grabaciones'),
     path('estaciones/<int:pk>/bitlocker/clave/', views.estacion_bitlocker_ver_clave, name='estacion_bitlocker_ver_clave'),
 
-    path('despliegues/', views.despliegues_lista, name='despliegues_lista'),
-    path('despliegues/nuevo/', views.despliegue_crear, name='despliegue_crear'),
-    path('despliegues/<int:pk>/', views.despliegue_detalle, name='despliegue_detalle'),
-    path('despliegues/<int:pk>/progreso/', views.despliegue_progreso_partial, name='despliegue_progreso_partial'),
-    path('despliegues/<int:pk>/aprobar/', views.despliegue_aprobar, name='despliegue_aprobar'),
-    path('despliegues/<int:pk>/publicar/', views.despliegue_publicar, name='despliegue_publicar'),
-    path('despliegues/<int:pk>/pausar/', views.despliegue_pausar, name='despliegue_pausar'),
-    path('despliegues/<int:pk>/reanudar/', views.despliegue_reanudar, name='despliegue_reanudar'),
-    path('despliegues/<int:pk>/promover/', views.despliegue_promover, name='despliegue_promover'),
+    path('despliegues/', diferido('despliegues', views.despliegues_lista), name='despliegues_lista'),
+    path('despliegues/nuevo/', diferido('despliegues', views.despliegue_crear), name='despliegue_crear'),
+    path('despliegues/<int:pk>/', diferido('despliegues', views.despliegue_detalle), name='despliegue_detalle'),
+    path('despliegues/<int:pk>/progreso/', diferido('despliegues', views.despliegue_progreso_partial), name='despliegue_progreso_partial'),
+    path('despliegues/<int:pk>/aprobar/', diferido('despliegues', views.despliegue_aprobar), name='despliegue_aprobar'),
+    path('despliegues/<int:pk>/publicar/', diferido('despliegues', views.despliegue_publicar), name='despliegue_publicar'),
+    path('despliegues/<int:pk>/pausar/', diferido('despliegues', views.despliegue_pausar), name='despliegue_pausar'),
+    path('despliegues/<int:pk>/reanudar/', diferido('despliegues', views.despliegue_reanudar), name='despliegue_reanudar'),
+    path('despliegues/<int:pk>/promover/', diferido('despliegues', views.despliegue_promover), name='despliegue_promover'),
 
-    path('aperturas/', views.aperturas_lista, name='aperturas_lista'),
-    path('aperturas/nueva/', views.apertura_crear, name='apertura_crear'),
-    path('aperturas/<int:pk>/', views.apertura_detalle, name='apertura_detalle'),
-    path('aperturas/<int:pk>/pasos/', views.apertura_pasos_partial, name='apertura_pasos_partial'),
-    path('aperturas/<int:pk>/aprobar/', views.apertura_aprobar, name='apertura_aprobar'),
-    path('aperturas/<int:pk>/tokens/emitir/', views.apertura_emitir_tokens, name='apertura_emitir_tokens'),
+    path('aperturas/', diferido('aperturas', views.aperturas_lista), name='aperturas_lista'),
+    path('aperturas/nueva/', diferido('aperturas', views.apertura_crear), name='apertura_crear'),
+    path('aperturas/<int:pk>/', diferido('aperturas', views.apertura_detalle), name='apertura_detalle'),
+    path('aperturas/<int:pk>/pasos/', diferido('aperturas', views.apertura_pasos_partial), name='apertura_pasos_partial'),
+    path('aperturas/<int:pk>/aprobar/', diferido('aperturas', views.apertura_aprobar), name='apertura_aprobar'),
+    path('aperturas/<int:pk>/tokens/emitir/', diferido('aperturas', views.apertura_emitir_tokens), name='apertura_emitir_tokens'),
     path(
-        'aperturas/<int:pk>/tokens/<int:token_pk>/revocar/', views.apertura_token_revocar,
+        'aperturas/<int:pk>/tokens/<int:token_pk>/revocar/', diferido('aperturas', views.apertura_token_revocar),
         name='apertura_token_revocar',
     ),
     path(
-        'aperturas/<int:pk>/pasos/<int:paso_pk>/completar/', views.apertura_paso_completar,
+        'aperturas/<int:pk>/pasos/<int:paso_pk>/completar/', diferido('aperturas', views.apertura_paso_completar),
         name='apertura_paso_completar',
     ),
     path(
-        'aperturas/<int:pk>/pasos/<int:paso_pk>/reintentar/', views.apertura_paso_reintentar,
+        'aperturas/<int:pk>/pasos/<int:paso_pk>/reintentar/', diferido('aperturas', views.apertura_paso_reintentar),
         name='apertura_paso_reintentar',
     ),
-    path('aperturas/<int:pk>/cancelar/', views.apertura_cancelar, name='apertura_cancelar'),
+    path('aperturas/<int:pk>/cancelar/', diferido('aperturas', views.apertura_cancelar), name='apertura_cancelar'),
 
     path('auditoria/', views.auditoria_lista, name='auditoria_lista'),
 
@@ -118,9 +119,9 @@ urlpatterns = [
     path('monitoreo/red-farmacias/', views.red_farmacias_lista, name='red_farmacias_lista'),
     path('monitoreo/enlaces/', views.enlaces_farmacias_lista, name='enlaces_farmacias_lista'),
     path('monitoreo/enlaces/historial/', views.enlaces_historial, name='enlaces_historial'),
-    path('monitoreo/netflow/', views.netflow_farmacias, name='netflow_farmacias'),
-    path('mesa/', views.novedades_lista, name='novedades_lista'),
-    path('mesa/<int:pk>/accion/', views.novedad_accion, name='novedad_accion'),
+    path('monitoreo/netflow/', diferido('netflow', views.netflow_farmacias), name='netflow_farmacias'),
+    path('mesa/', diferido('mesa', views.novedades_lista), name='novedades_lista'),
+    path('mesa/<int:pk>/accion/', diferido('mesa', views.novedad_accion), name='novedad_accion'),
     path('monitoreo/enlaces/<int:pk>/', views.enlace_farmacia_modal, name='enlace_farmacia_modal'),
     path(
         'monitoreo/enlaces/<int:pk>/solicitar/', views.enlace_farmacia_solicitar,
@@ -139,7 +140,7 @@ urlpatterns = [
     path('reportes/', views.reportes_index, name='reportes_index'),
     path('reportes/cliente/', views.reporte_cliente_resumen, name='reporte_cliente_resumen'),
     path('reportes/cumplimiento.csv', views.reporte_cumplimiento_csv, name='reporte_cumplimiento_csv'),
-    path('reportes/despliegue/<int:pk>.csv', views.reporte_despliegue_csv, name='reporte_despliegue_csv'),
+    path('reportes/despliegue/<int:pk>.csv', diferido('despliegues', views.reporte_despliegue_csv), name='reporte_despliegue_csv'),
     path('reportes/auditoria.csv', views.reporte_auditoria_csv, name='reporte_auditoria_csv'),
     path('reportes/activos.csv', views.reporte_activos_csv, name='reporte_activos_csv'),
     path('reportes/alertas.csv', views.reporte_alertas_csv, name='reporte_alertas_csv'),
@@ -256,17 +257,17 @@ urlpatterns = [
     path('notificaciones/<int:pk>/marcar-leida/', views.notificacion_marcar_leida, name='notificacion_marcar_leida'),
 
     # Módulo de Scripts (RMM)
-    path('scripts/', views.scripts_lista, name='scripts_lista'),
-    path('scripts/nuevo/', views.script_crear, name='script_crear'),
-    path('scripts/ejecutar-adhoc/', views.script_ejecutar_adhoc, name='script_ejecutar_adhoc'),
-    path('scripts/programados/', views.scripts_programados_lista, name='scripts_programados_lista'),
-    path('scripts/programados/nuevo/', views.script_programado_crear, name='script_programado_crear'),
-    path('scripts/<int:pk>/', views.script_detalle, name='script_detalle'),
-    path('scripts/<int:pk>/ejecutar/', views.script_ejecutar, name='script_ejecutar'),
-    path('ejecuciones/', views.ejecuciones_lista, name='ejecuciones_lista'),
-    path('ejecuciones/<int:pk>/', views.ejecucion_detalle, name='ejecucion_detalle'),
-    path('ejecuciones/<int:pk>/progreso/', views.ejecucion_progreso_partial, name='ejecucion_progreso_partial'),
-    path('ejecuciones/<int:pk>/aprobar/', views.ejecucion_aprobar, name='ejecucion_aprobar'),
+    path('scripts/', diferido('scripts', views.scripts_lista), name='scripts_lista'),
+    path('scripts/nuevo/', diferido('scripts', views.script_crear), name='script_crear'),
+    path('scripts/ejecutar-adhoc/', diferido('scripts', views.script_ejecutar_adhoc), name='script_ejecutar_adhoc'),
+    path('scripts/programados/', diferido('scripts', views.scripts_programados_lista), name='scripts_programados_lista'),
+    path('scripts/programados/nuevo/', diferido('scripts', views.script_programado_crear), name='script_programado_crear'),
+    path('scripts/<int:pk>/', diferido('scripts', views.script_detalle), name='script_detalle'),
+    path('scripts/<int:pk>/ejecutar/', diferido('scripts', views.script_ejecutar), name='script_ejecutar'),
+    path('ejecuciones/', diferido('scripts', views.ejecuciones_lista), name='ejecuciones_lista'),
+    path('ejecuciones/<int:pk>/', diferido('scripts', views.ejecucion_detalle), name='ejecucion_detalle'),
+    path('ejecuciones/<int:pk>/progreso/', diferido('scripts', views.ejecucion_progreso_partial), name='ejecucion_progreso_partial'),
+    path('ejecuciones/<int:pk>/aprobar/', diferido('scripts', views.ejecucion_aprobar), name='ejecucion_aprobar'),
 
     # Catálogo de software
     path('aplicaciones/', views.aplicaciones_lista, name='aplicaciones_lista'),
@@ -290,24 +291,24 @@ urlpatterns = [
     ),
 
     # Módulo de Planificación y Cumplimiento
-    path('cumplimiento/', views.cumplimiento_lista, name='cumplimiento_lista'),
-    path('cumplimiento/nueva/', views.cumplimiento_crear, name='cumplimiento_crear'),
-    path('cumplimiento/<int:pk>/', views.cumplimiento_detalle, name='cumplimiento_detalle'),
+    path('cumplimiento/', diferido('cumplimiento', views.cumplimiento_lista), name='cumplimiento_lista'),
+    path('cumplimiento/nueva/', diferido('cumplimiento', views.cumplimiento_crear), name='cumplimiento_crear'),
+    path('cumplimiento/<int:pk>/', diferido('cumplimiento', views.cumplimiento_detalle), name='cumplimiento_detalle'),
     path(
         'cumplimiento/<int:pk>/resultados/<int:resultado_pk>/completar/',
-        views.cumplimiento_resultado_completar, name='cumplimiento_resultado_completar',
+        diferido('cumplimiento', views.cumplimiento_resultado_completar), name='cumplimiento_resultado_completar',
     ),
 
     # Control de viáticos (política GFI-GTC-PR002)
-    path('viaticos/nuevo/', views.viatico_crear, name='viatico_crear'),
-    path('viaticos/mis-reportes/', views.viaticos_mis_reportes, name='viaticos_mis_reportes'),
-    path('viaticos/farmacias-partial/', views.viaticos_farmacias_partial, name='viaticos_farmacias_partial'),
-    path('viaticos/bandeja/', views.viaticos_bandeja, name='viaticos_bandeja'),
-    path('viaticos/consolidado/', views.viaticos_consolidado, name='viaticos_consolidado'),
-    path('viaticos/consolidado.csv', views.viaticos_consolidado_csv, name='viaticos_consolidado_csv'),
-    path('viaticos/zonas/', views.zonas_lista, name='viaticos_zonas_lista'),
-    path('viaticos/zonas/nueva/', views.zona_crear, name='viaticos_zona_crear'),
-    path('viaticos/<int:pk>/corregir/', views.viatico_editar, name='viatico_editar'),
-    path('viaticos/<int:pk>/', views.viatico_detalle, name='viatico_detalle'),
-    path('viaticos/<int:pk>/<str:accion>/', views.viatico_revisar, name='viatico_revisar'),
+    path('viaticos/nuevo/', diferido('viaticos', views.viatico_crear), name='viatico_crear'),
+    path('viaticos/mis-reportes/', diferido('viaticos', views.viaticos_mis_reportes), name='viaticos_mis_reportes'),
+    path('viaticos/farmacias-partial/', diferido('viaticos', views.viaticos_farmacias_partial), name='viaticos_farmacias_partial'),
+    path('viaticos/bandeja/', diferido('viaticos', views.viaticos_bandeja), name='viaticos_bandeja'),
+    path('viaticos/consolidado/', diferido('viaticos', views.viaticos_consolidado), name='viaticos_consolidado'),
+    path('viaticos/consolidado.csv', diferido('viaticos', views.viaticos_consolidado_csv), name='viaticos_consolidado_csv'),
+    path('viaticos/zonas/', diferido('viaticos', views.zonas_lista), name='viaticos_zonas_lista'),
+    path('viaticos/zonas/nueva/', diferido('viaticos', views.zona_crear), name='viaticos_zona_crear'),
+    path('viaticos/<int:pk>/corregir/', diferido('viaticos', views.viatico_editar), name='viatico_editar'),
+    path('viaticos/<int:pk>/', diferido('viaticos', views.viatico_detalle), name='viatico_detalle'),
+    path('viaticos/<int:pk>/<str:accion>/', diferido('viaticos', views.viatico_revisar), name='viatico_revisar'),
 ]

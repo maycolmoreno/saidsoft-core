@@ -89,6 +89,7 @@ TEMPLATES = [
                 'apps.cuentas.context_processors.unidad_negocio_contexto',
                 'apps.mantenimiento.context_processors.notificaciones_contexto',
                 'apps.panel.context_processors.htmx_contexto',
+                'apps.panel.modulos.modulos_diferidos_contexto',
                 # Estado real de la plataforma en la barra superior. Va acá y no en cada
                 # vista porque la barra se dibuja en TODAS las pantallas del panel: antes
                 # afirmaba "Todos los sistemas operativos" sin comprobar nada. Cuesta una
@@ -677,3 +678,8 @@ LOGGING = {
         },
     },
 }
+
+# Módulos del panel fuera del alcance de SaidSoft RMM 1.0 (ver apps/panel/modulos.py y
+# docs/producto/SAIDSOFT_RMM_1_0_ALCANCE.md). Vacío por defecto: en desarrollo y CI se ven
+# todos, para que sus pruebas sigan ejercitando el código. Producción define la lista.
+PANEL_MODULOS_DIFERIDOS = env.list('PANEL_MODULOS_DIFERIDOS', default=[])

@@ -53,3 +53,11 @@ EMAIL_TIMEOUT = env.int('EMAIL_TIMEOUT', default=10)  # noqa: F405
 # importen, y una máquina de desarrollo caliente no debe cambiar el resultado de pruebas
 # ajenas. Ver apps.monitoreo.temperatura.
 SALUD_LEER_TEMPERATURA = env.bool('SALUD_LEER_TEMPERATURA', default=True)  # noqa: F405
+
+# SaidSoft RMM 1.0: monitoreo de infraestructura y gestión de software. Estos módulos se
+# difieren (sus pantallas devuelven 404 y no aparecen en el menú); su código, sus modelos
+# y sus servicios siguen en su lugar. Ver docs/producto/SAIDSOFT_RMM_1_0_ALCANCE.md.
+PANEL_MODULOS_DIFERIDOS = env.list(  # noqa: F405
+    'PANEL_MODULOS_DIFERIDOS',
+    default=['viaticos', 'aperturas', 'cumplimiento', 'netflow', 'mesa', 'despliegues', 'scripts'],
+)

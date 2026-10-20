@@ -575,7 +575,7 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
             Instala el agente de MeshCentral en el equipo y pega aquí el ID del dispositivo
             (se copia desde la URL de su página en la consola de MeshCentral).
         </p>
-        {% if perms.scripts.add_script and perms.scripts.add_ejecucionscript %}
+        {% if perms.scripts.add_script and perms.scripts.add_ejecucionscript and 'scripts' not in modulos_diferidos %}
         {% if estacion.estado_aprobacion == 'aprobada' and estacion.estado_conexion == 'online' %}
         <a href="{% url 'panel:script_ejecutar_adhoc' %}?estacion={{ estacion.pk }}"
            class="inline-block mb-3 text-xs font-medium underline text-[var(--info)]">
