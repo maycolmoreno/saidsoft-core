@@ -69,3 +69,19 @@ RESPALDO_UMBRAL_HORAS = 26
 # abre al CRITICAL sostenido y cierra al bajar del WARNING (histéresis).
 BW_CONTRATADO_UMBRAL_WARNING_PCT = 70
 BW_CONTRATADO_UMBRAL_CRITICAL_PCT = 90
+
+# --- Temperatura del SERVIDOR que corre SAIDSOFT (no de las estaciones) -------------
+#
+# El 20-oct-2026 se vio el NUC con la CPU a 97 °C y carga 0,6, 43.629 eventos de throttling
+# en tres horas, y ocho reinicios bruscos (sin secuencia de apagado) entre el 30-sep y el
+# 20-oct. Cada corte borra lo que EMQX guarda en RAM. Un problema de refrigeración tiene
+# que verse en el panel ANTES de que tire el equipo.
+#
+# 85 °C es la temperatura a partir de la cual un NUC de esta generación ya no debería
+# estar en reposo; 95 °C es cerca de donde la CPU empieza a frenarse sola. El disco NVMe no
+# usa estos números: usa los umbrales que reporta el propio disco (temp1_max/temp1_crit).
+TEMPERATURA_CPU_AVISO_C = 85
+TEMPERATURA_CPU_CRITICA_C = 95
+# Solo si el disco no informa los suyos.
+TEMPERATURA_DISCO_AVISO_C = 70
+TEMPERATURA_DISCO_CRITICA_C = 75

@@ -47,3 +47,9 @@ EMAIL_USE_TLS = True
 # en Celery (ver apps.monitoreo.tasks.notificar_alerta_task): un worker con
 # --concurrency=2 se queda sin hilos con dos envios colgados.
 EMAIL_TIMEOUT = env.int('EMAIL_TIMEOUT', default=10)  # noqa: F405
+
+# Leer la temperatura del servidor (/sys/class/thermal y /sys/class/hwmon) y mostrarla como
+# componente de salud. Solo en producción: en desarrollo y en CI no hay sensores que
+# importen, y una máquina de desarrollo caliente no debe cambiar el resultado de pruebas
+# ajenas. Ver apps.monitoreo.temperatura.
+SALUD_LEER_TEMPERATURA = env.bool('SALUD_LEER_TEMPERATURA', default=True)  # noqa: F405

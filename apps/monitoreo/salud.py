@@ -45,9 +45,17 @@ de aceptación es que ningún número cambie. Los DOS lados leen los umbrales de
 from datetime import datetime
 from typing import NamedTuple
 
+from django.conf import settings
 from django.utils import timezone
 
-from apps.monitoreo.umbrales import RESPALDO_UMBRAL_HORAS, WORKER_MQTT_UMBRAL_SEGUNDOS
+from apps.monitoreo.umbrales import (
+    RESPALDO_UMBRAL_HORAS,
+    TEMPERATURA_CPU_AVISO_C,
+    TEMPERATURA_CPU_CRITICA_C,
+    TEMPERATURA_DISCO_AVISO_C,
+    TEMPERATURA_DISCO_CRITICA_C,
+    WORKER_MQTT_UMBRAL_SEGUNDOS,
+)
 
 # El nombre con el que cada proceso registra su latido. `NOMBRE_WORKER_MQTT` y
 # `NOMBRE_RESPALDO` se importan de donde se escriben, para que renombrar uno rompa acá y
@@ -258,7 +266,73 @@ def estado_latidos() -> list[ComponenteSalud]:
             instante=respaldo.ultimo_latido,
         ))
 
+    # La temperatura del propio servidor. No es un latido, pero responde la misma pregunta
+    # —¿la plataforma puede seguir funcionando?— y un equipo que se recalienta se apaga
+    # entero. Solo donde está habilitada (producción): ver `SALUD_LEER_TEMPERATURA`.
+    if getattr(settings, 'SALUD_LEER_TEMPERATURA', False):
+        componentes.append(componente_temperatura())
+
     return componentes
+
+
+def componente_temperatura(lecturas=None) -> ComponenteSalud:
+    """El estado térmico del servidor, a partir de `apps.monitoreo.temperatura`.
+
+    Manda la CPU (avisa desde `TEMPERATURA_CPU_AVISO_C`, crítica desde
+    `TEMPERATURA_CPU_CRITICA_C`) y el disco NVMe con SUS umbrales, si los informa. La placa
+    se muestra como dato y no decide: en este equipo sigue de cerca a la CPU y contarla
+    dos veces no agrega información.
+
+    Es una lectura instantánea, no un promedio: un pico corto bajo carga puede pintarla en
+    ámbar un momento. En reposo no debería pasar de 60-70 °C, así que un ámbar o un rojo
+    que se repite es un problema de refrigeración, no ruido.
+    """
+    from apps.monitoreo.temperatura import leer_temperaturas
+
+    if lecturas is None:
+        lecturas = leer_temperaturas()
+    if 'cpu' not in lecturas and 'disco' not in lecturas:
+        return ComponenteSalud(
+            clave='temperatura', etiqueta='Temperatura del servidor', estado='sin_dato',
+            detalle='sin verificar: no hay sensores de temperatura legibles',
+            verificable=False,
+        )
+
+    gravedad = {'ok': 0, 'warning': 1, 'critical': 2}
+    estado = 'ok'
+    partes = []
+
+    def empeorar(nuevo):
+        nonlocal estado
+        if gravedad[nuevo] > gravedad[estado]:
+            estado = nuevo
+
+    cpu = lecturas.get('cpu')
+    if cpu is not None:
+        partes.append('CPU %.0f °C' % cpu)
+        if cpu >= TEMPERATURA_CPU_CRITICA_C:
+            empeorar('critical')
+        elif cpu >= TEMPERATURA_CPU_AVISO_C:
+            empeorar('warning')
+    if lecturas.get('placa') is not None:
+        partes.append('placa %.0f °C' % lecturas['placa'])
+    disco = lecturas.get('disco')
+    if disco is not None:
+        aviso = lecturas.get('disco_max', TEMPERATURA_DISCO_AVISO_C)
+        critica = lecturas.get('disco_crit', TEMPERATURA_DISCO_CRITICA_C)
+        partes.append('disco %.0f °C' % disco)
+        if disco >= critica:
+            empeorar('critical')
+        elif disco >= aviso:
+            empeorar('warning')
+
+    detalle = ' · '.join(partes)
+    if estado != 'ok':
+        detalle += ' (CPU: aviso %d °C, crítico %d °C)' % (TEMPERATURA_CPU_AVISO_C, TEMPERATURA_CPU_CRITICA_C)
+    return ComponenteSalud(
+        clave='temperatura', etiqueta='Temperatura del servidor', estado=estado, detalle=detalle,
+        instante=timezone.now(),
+    )
 
 
 def resumen_salud(componentes: list[ComponenteSalud]) -> dict:

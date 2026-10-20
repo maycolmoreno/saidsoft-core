@@ -448,3 +448,161 @@ class WorkerMeshCentralConexionTests(TestCase):
             detener=detener, on_desconectado=lambda: avisos.append(True),
         )
         self.assertEqual(avisos, [])
+
+
+class TemperaturaDelServidorTests(TestCase):
+    """La temperatura del servidor como componente de salud.
+
+    Motivo: el 20-oct-2026 el NUC estaba con la CPU a 97 °C en reposo y se había reiniciado
+    de golpe ocho veces en tres semanas. Se lee un sysfs FALSO en un directorio temporal:
+    ninguna prueba depende de los sensores de la máquina que la corre.
+    """
+
+    def setUp(self):
+        import tempfile
+
+        self._dir = tempfile.TemporaryDirectory()
+        self.base = self._dir.name
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _escribir(self, ruta, contenido):
+        import os
+
+        completa = os.path.join(self.base, *ruta.split('/'))
+        os.makedirs(os.path.dirname(completa), exist_ok=True)
+        with open(completa, 'w', encoding='ascii') as archivo:
+            archivo.write(f'{contenido}\n')
+
+    def _zona(self, indice, tipo, milicelsius):
+        self._escribir(f'thermal/thermal_zone{indice}/type', tipo)
+        self._escribir(f'thermal/thermal_zone{indice}/temp', milicelsius)
+
+    def _hwmon(self, indice, nombre, **archivos):
+        self._escribir(f'hwmon/hwmon{indice}/name', nombre)
+        for archivo, valor in archivos.items():
+            self._escribir(f'hwmon/hwmon{indice}/{archivo}', valor)
+
+    def _leer(self):
+        from apps.monitoreo.temperatura import leer_temperaturas
+
+        return leer_temperaturas(self.base)
+
+    # --- Lectura ----------------------------------------------------------------------------
+
+    def test_lee_cpu_placa_y_disco_como_en_el_nuc(self):
+        self._zona(0, 'acpitz', 84000)
+        self._zona(1, 'x86_pkg_temp', 97000)
+        self._zona(2, 'iwlwifi_1', 61000)
+        self._hwmon(0, 'nvme', temp1_input=47850, temp1_max=76850, temp1_crit=78850)
+        self.assertEqual(self._leer(), {
+            'placa': 84.0, 'cpu': 97.0, 'disco': 47.85, 'disco_max': 76.85, 'disco_crit': 78.85,
+        })
+
+    def test_sin_zona_del_encapsulado_usa_coretemp(self):
+        self._hwmon(0, 'coretemp', temp1_input=74000)
+        self.assertEqual(self._leer(), {'cpu': 74.0})
+
+    def test_ignora_lecturas_absurdas_e_ilegibles(self):
+        """En el NUC hay zonas que reportan -274 °C."""
+        self._zona(0, 'x86_pkg_temp', -274000)
+        self._zona(1, 'acpitz', 'no-es-un-numero')
+        self._hwmon(0, 'nvme', temp1_input=999000)
+        self.assertEqual(self._leer(), {})
+
+    def test_sin_sysfs_no_lanza(self):
+        from apps.monitoreo.temperatura import leer_temperaturas
+
+        self.assertEqual(leer_temperaturas(self.base + '/no-existe'), {})
+
+    # --- Componente ---------------------------------------------------------------------------
+
+    def _estado(self, **lecturas):
+        from apps.monitoreo.salud import componente_temperatura
+
+        return componente_temperatura(lecturas)
+
+    def test_cpu_normal_es_ok(self):
+        componente = self._estado(cpu=55.0, placa=50.0, disco=40.0)
+        self.assertEqual(componente.estado, 'ok')
+        self.assertIn('CPU 55 °C', componente.detalle)
+
+    def test_cpu_caliente_avisa_y_muy_caliente_es_critica(self):
+        from apps.monitoreo.umbrales import TEMPERATURA_CPU_AVISO_C, TEMPERATURA_CPU_CRITICA_C
+
+        self.assertEqual(self._estado(cpu=TEMPERATURA_CPU_AVISO_C - 1).estado, 'ok')
+        self.assertEqual(self._estado(cpu=TEMPERATURA_CPU_AVISO_C).estado, 'warning')
+        self.assertEqual(self._estado(cpu=TEMPERATURA_CPU_CRITICA_C).estado, 'critical')
+        self.assertEqual(self._estado(cpu=97.0).estado, 'critical', 'el valor medido el 20-oct-2026')
+
+    def test_el_disco_usa_sus_propios_umbrales(self):
+        self.assertEqual(self._estado(disco=74.0, disco_max=76.0, disco_crit=78.0).estado, 'ok')
+        self.assertEqual(self._estado(disco=76.0, disco_max=76.0, disco_crit=78.0).estado, 'warning')
+        self.assertEqual(self._estado(disco=78.0, disco_max=76.0, disco_crit=78.0).estado, 'critical')
+
+    def test_sin_umbrales_del_disco_usa_los_por_defecto(self):
+        from apps.monitoreo.umbrales import TEMPERATURA_DISCO_AVISO_C, TEMPERATURA_DISCO_CRITICA_C
+
+        self.assertEqual(self._estado(disco=TEMPERATURA_DISCO_AVISO_C).estado, 'warning')
+        self.assertEqual(self._estado(disco=TEMPERATURA_DISCO_CRITICA_C).estado, 'critical')
+
+    def test_gana_el_peor_de_cpu_y_disco(self):
+        self.assertEqual(self._estado(cpu=96.0, disco=77.0, disco_max=76.0, disco_crit=78.0).estado, 'critical')
+
+    def test_la_placa_se_muestra_pero_no_decide(self):
+        componente = self._estado(cpu=60.0, placa=110.0)
+        self.assertEqual(componente.estado, 'ok')
+        self.assertIn('placa 110 °C', componente.detalle)
+
+    def test_sin_sensores_es_sin_dato_y_no_verde(self):
+        componente = self._estado()
+        self.assertEqual(componente.estado, 'sin_dato')
+        self.assertFalse(componente.verificable)
+
+    # --- Integración con la salud de la plataforma --------------------------------------------
+
+    def test_solo_aparece_donde_esta_habilitada(self):
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        self._zona(0, 'x86_pkg_temp', 60000)
+        with patch('apps.monitoreo.temperatura.BASE_SYSFS', self.base):
+            with override_settings(SALUD_LEER_TEMPERATURA=False):
+                self.assertNotIn('temperatura', [c.clave for c in estado_latidos()])
+            with override_settings(SALUD_LEER_TEMPERATURA=True):
+                por_clave = {c.clave: c for c in estado_latidos()}
+        self.assertEqual(por_clave['temperatura'].estado, 'ok')
+
+    def test_verificar_salud_falla_con_temperatura_critica_y_pasa_con_normal(self):
+        from io import StringIO
+        from unittest.mock import patch
+
+        from django.core.management import call_command
+        from django.test import override_settings
+
+        with patch('apps.monitoreo.temperatura.BASE_SYSFS', self.base), \
+                override_settings(SALUD_LEER_TEMPERATURA=True):
+            self._zona(0, 'x86_pkg_temp', 97000)
+            with self.assertRaises(SystemExit) as salida:
+                call_command('verificar_salud', '--silencioso', '--solo', 'temperatura', stdout=StringIO())
+            self.assertEqual(salida.exception.code, 1)
+
+            self._zona(0, 'x86_pkg_temp', 60000)
+            call_command('verificar_salud', '--silencioso', '--solo', 'temperatura', stdout=StringIO())
+
+    def test_el_healthcheck_de_un_worker_no_depende_de_la_temperatura(self):
+        """Los contenedores se miden a sí mismos (`--solo`): un servidor caliente no debe
+        marcar enfermo al worker MQTT, porque Docker no arregla eso reiniciándolo."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from django.core.management import call_command
+        from django.test import override_settings
+
+        WorkerHeartbeat.objects.create(nombre='mqtt_worker', ultimo_latido=timezone.now(), conectado=True)
+        self._zona(0, 'x86_pkg_temp', 99000)
+        with patch('apps.monitoreo.temperatura.BASE_SYSFS', self.base), \
+                override_settings(SALUD_LEER_TEMPERATURA=True):
+            call_command('verificar_salud', '--silencioso', '--solo', 'mqtt_worker', stdout=StringIO())
