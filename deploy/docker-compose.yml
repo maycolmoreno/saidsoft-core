@@ -82,6 +82,13 @@ services:
       EMQX_AUTHORIZATION__SOURCES__1__ENABLE: "true"
       # Deniega lo que no tenga una regla explícita en built_in_database.
       EMQX_AUTHORIZATION__NO_MATCH: "deny"
+      # Retenidos en disco (Mnesia, dentro del volumen emqx_data): sobreviven al reinicio
+      # del broker. En RAM, que es el valor por defecto, cada reinicio borraba los
+      # catálogos, el freno de emergencia y las órdenes pendientes (R-6,
+      # docs/auditoria/fase_c1_laboratorio.md §7). La variable manda sobre lo que se
+      # cambie por la API o el dashboard. Al aplicarla por primera vez, pasar ANTES a
+      # disco por la API: si no, la recreación del contenedor borra lo que esté en RAM.
+      EMQX_RETAINER__BACKEND__STORAGE_TYPE: "disc"
       # Listener MQTT sobre TLS (8883) usando los certs montados en ./certs
       EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
       EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/cert.pem

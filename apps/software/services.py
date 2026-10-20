@@ -243,6 +243,33 @@ def paso_valido(paso) -> bool:
     return paso in EventoInstalacion.Paso.values
 
 
+#: Pasos con los que la estación demuestra que ya tiene la orden. Mismo criterio que
+#: `apps.despliegues.services.PASOS_QUE_CONFIRMAN_RECEPCION`: el agente marca la
+#: instalación como procesada al recibirla (`agente_prueba._manejar_software`).
+#: `instalando` está porque una desinstalación no reporta `recibido`.
+PASOS_QUE_CONFIRMAN_RECEPCION = frozenset({
+    EventoInstalacion.Paso.RECIBIDO, EventoInstalacion.Paso.INSTALANDO,
+    EventoInstalacion.Paso.INSTALADO, EventoInstalacion.Paso.ERROR,
+})
+
+
+def retenido_ya_entregado(estacion) -> bool:
+    """True si la estación ya acusó recibo de todas sus instalaciones. Ver
+    `apps.despliegues.services.retenido_ya_entregado`: mismo razonamiento y misma
+    preferencia por dejar el retenido antes que borrar una orden no entregada."""
+    return not ResultadoInstalacion.objects.filter(
+        estacion=estacion, estado=ResultadoInstalacion.Estado.PENDIENTE,
+    ).exists()
+
+
+def retirar_retenido(estacion) -> bool:
+    """Borra la instalación retenida en el tópico de `estacion`. Ver
+    `apps.despliegues.services.retirar_retenido`."""
+    from apps.catalogo.services import _publicar_mqtt
+
+    return _publicar_mqtt(_topico_de(estacion), '', retain=True)
+
+
 def registrar_estado_de_estacion(*, solicitud_id, estacion, paso, datos: dict | None = None):
     """Aplica a `ResultadoInstalacion` el paso que reporto una estacion y deja su evento.
 

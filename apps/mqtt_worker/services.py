@@ -543,7 +543,7 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
         logger.warning('Reporte de despliegue de estación no aprobada: %s', codigo_estacion)
         return
 
-    from apps.despliegues.services import paso_valido, registrar_estado_de_estacion
+    from apps.despliegues.services import PASOS_QUE_CONFIRMAN_RECEPCION, paso_valido, registrar_estado_de_estacion
 
     paso = payload.get('paso')
     if not paso_valido(paso):
@@ -553,6 +553,16 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
     resultado = registrar_estado_de_estacion(
         despliegue_id=payload.get('despliegue_id'), estacion=estacion, paso=paso, datos=payload,
     )
+
+    if resultado is not None and paso in PASOS_QUE_CONFIRMAN_RECEPCION:
+        # La estación ya tiene la orden: el retenido sobra. Se ENCOLA por el mismo motivo
+        # que la limpieza de actualizar_agente (ver manejar_heartbeat): la credencial de
+        # este proceso no puede publicar en el tópico de despliegues.
+        from apps.despliegues.tasks import retirar_retenido_despliegue_task
+        try:
+            retirar_retenido_despliegue_task.delay(estacion.pk)
+        except Exception:
+            logger.exception('No se pudo encolar el retiro del despliegue retenido de %s', estacion.codigo)
 
     # Que un despliegue termine OK tambien significa "esta caja esta viva y corre tal
     # version del POS". Esa conclusion cruza tres dominios —catalogo, facturacion,
@@ -590,16 +600,24 @@ def manejar_estado_instalacion(codigo_estacion: str, payload: dict) -> None:
         logger.warning('Reporte de instalación de estación no aprobada: %s', codigo_estacion)
         return
 
-    from apps.software.services import paso_valido, registrar_estado_de_estacion
+    from apps.software.services import PASOS_QUE_CONFIRMAN_RECEPCION, paso_valido, registrar_estado_de_estacion
 
     paso = payload.get('paso')
     if not paso_valido(paso):
         logger.warning('Paso desconocido "%s" reportado por %s (instalación)', paso, codigo_estacion)
         return
 
-    registrar_estado_de_estacion(
+    resultado = registrar_estado_de_estacion(
         solicitud_id=payload.get('solicitud_id'), estacion=estacion, paso=paso, datos=payload,
     )
+
+    if resultado is not None and paso in PASOS_QUE_CONFIRMAN_RECEPCION:
+        # Mismo motivo que en manejar_estado_despliegue.
+        from apps.software.tasks import retirar_retenido_instalacion_task
+        try:
+            retirar_retenido_instalacion_task.delay(estacion.pk)
+        except Exception:
+            logger.exception('No se pudo encolar el retiro de la instalación retenida de %s', estacion.codigo)
 
 
 def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:

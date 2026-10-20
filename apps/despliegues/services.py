@@ -434,6 +434,48 @@ def paso_valido(paso) -> bool:
     return paso in EventoDespliegue.Paso.values
 
 
+#: Pasos con los que la estación demuestra que ya tiene la orden. Con cualquiera de
+#: ellos el worker encola `retirar_retenido_despliegue_task`. `recibido` alcanza: el
+#: agente marca el despliegue como procesado al recibirlo, antes de aplicarlo
+#: (`agente_prueba._manejar_despliegue`), así que volver a entregárselo no sirve de
+#: nada. Los finales están por si el `recibido` se perdió en el camino.
+PASOS_QUE_CONFIRMAN_RECEPCION = frozenset({
+    EventoDespliegue.Paso.RECIBIDO, EventoDespliegue.Paso.OK,
+    EventoDespliegue.Paso.ERROR, EventoDespliegue.Paso.ROLLBACK,
+})
+
+
+def retenido_ya_entregado(estacion) -> bool:
+    """True si la estación ya acusó recibo de todos sus despliegues.
+
+    El tópico retenido es uno por estación y guarda solo la ÚLTIMA orden publicada, pero
+    el servidor no registra cuál fue. Por eso no basta con que el despliegue que acaba de
+    reportar esté terminado: si después se publicó otro a la misma estación, el retenido
+    es ese otro. Lo que sí se puede afirmar es esto: si ningún resultado de la estación
+    sigue en PENDIENTE o PUBLICADO, todo lo que se le publicó ya lo recibió, sea cual sea
+    el que quedó retenido.
+
+    Es conservador a propósito: un resultado que quedó pendiente para siempre (una
+    publicación que falló, una orden que otra más nueva pisó antes de que la estación se
+    conectara) impide retirar el retenido. Eso deja las cosas como estaban antes de esta
+    limpieza; lo contrario podría borrar una orden que la estación todavía no recibió.
+    """
+    return not ResultadoDespliegue.objects.filter(
+        estacion=estacion,
+        estado__in=[ResultadoDespliegue.Estado.PENDIENTE, ResultadoDespliegue.Estado.PUBLICADO],
+    ).exists()
+
+
+def retirar_retenido(estacion) -> bool:
+    """Borra el despliegue retenido en el tópico de `estacion` (payload vacío con
+    retain=True). Publica con MQTT 5 y lee el PUBACK (`_publicar_mqtt`): un rechazo de
+    EMQX devuelve False en vez de pasar por éxito. Lo llama la tarea, que corre con la
+    credencial del panel; la del worker no puede publicar en este tópico."""
+    from apps.catalogo.services import _publicar_mqtt
+
+    return _publicar_mqtt(_topico_de(estacion), '', retain=True)
+
+
 def registrar_estado_de_estacion(*, despliegue_id, estacion, paso, datos: dict | None = None):
     """Aplica a `ResultadoDespliegue` el paso que reporto una estacion y deja su evento.
 
