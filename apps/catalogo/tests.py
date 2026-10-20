@@ -776,7 +776,7 @@ class ComandoFirmadoTests(TestCase):
         self.otra_estacion = Estacion.objects.create(codigo='ML001-B', farmacia=farmacia)
 
     def _publicar(self, estacion, comando):
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             enviar_comando(estacion, comando)
         return mock_single.call_args.args[1]  # (topico, payload_json, ...)
 
@@ -813,7 +813,7 @@ class ScriptFirmadoTests(TestCase):
         self.estacion = Estacion.objects.create(codigo='ML001-A', farmacia=farmacia)
 
     def test_el_payload_lleva_estacion_timestamp_y_firma_valida(self):
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             enviar_script(
                 self.estacion, ejecucion_id=1, resultado_id=2, tipo_script='powershell',
                 contenido='Write-Host hola', timeout_segundos=60,
@@ -867,7 +867,7 @@ class EnviarActualizacionAgenteTests(TestCase):
         )
 
     def test_el_payload_lleva_estacion_timestamp_y_firma_valida(self):
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             enviar_actualizacion_agente(self.estacion, self.version)
         payload = json.loads(mock_single.call_args.args[1])
         self.assertEqual(payload['comando'], 'actualizar_agente')
@@ -884,7 +884,7 @@ class EnviarActualizacionAgenteTests(TestCase):
         # No usa /comando/ (fire-and-forget a propósito, ver enviar_comando): esto
         # debe quedar retenido en EMQX para que una estación apagada lo reciba apenas
         # se conecte, no solo si ya estaba en línea en el momento del publish.
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             enviar_actualizacion_agente(self.estacion, self.version)
         args, kwargs = mock_single.call_args
         self.assertEqual(args[0], f'/saidsof/agente/{self.estacion.codigo}/actualizar_agente/')
@@ -892,7 +892,7 @@ class EnviarActualizacionAgenteTests(TestCase):
 
     def test_limpiar_actualizacion_pendiente_publica_vacio_y_retenido(self):
         from apps.catalogo.services import limpiar_actualizacion_pendiente
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             limpiar_actualizacion_pendiente(self.estacion)
         args, kwargs = mock_single.call_args
         self.assertEqual(args[0], f'/saidsof/agente/{self.estacion.codigo}/actualizar_agente/')
@@ -932,7 +932,7 @@ class EnviarConsultarRedFarmaciaTests(TestCase):
 
     def test_el_payload_lleva_comunidad_estacion_timestamp_y_firma_valida(self):
         from apps.catalogo.services import enviar_consultar_red_farmacia
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             enviar_consultar_red_farmacia(self.estacion, 'ml001')
         args, kwargs = mock_single.call_args
         # No usa /comando/ como los demás (retain=False ahí no importa), pero SÍ
@@ -985,7 +985,7 @@ class EnviarConfigurarNodoPosTests(TestCase):
 
     def test_el_payload_lleva_los_cuatro_valores_y_firma_valida(self):
         from apps.catalogo.services import enviar_configurar_nodo_pos
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             enviar_configurar_nodo_pos(
                 self.estacion, servidor='192.168.200.9', bdd='trx009', puerto='5555', password='s3cr3t',
             )
@@ -1008,7 +1008,7 @@ class EnviarConfigurarNodoPosTests(TestCase):
         # Reapuntar el POS de una caja apagada, en un momento indeterminado, es
         # justamente lo que no se quiere: se reenvía a mano cuando vuelva.
         from apps.catalogo.services import enviar_configurar_nodo_pos
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             enviar_configurar_nodo_pos(self.estacion, servidor='1.2.3.4', bdd='x', puerto='1', password='p')
         self.assertFalse(mock_single.call_args.kwargs['retain'])
 
@@ -2038,7 +2038,7 @@ class SecretoHmacPorEstacionTests(TestCase):
         )
 
     def _firma_publicada(self, estacion):
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             enviar_comando(estacion, 'reiniciar')
         return json.loads(mock_single.call_args.args[1])
 

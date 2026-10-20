@@ -507,8 +507,16 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
         # a que esta estación se conectara (ver enviar_actualizacion_agente), ya se
         # aplicó: borrarla para que una desconexión/reconexión de red cualquiera (no
         # solo apagar/prender el equipo) no la vuelva a disparar de nuevo.
-        from apps.catalogo.services import limpiar_actualizacion_pendiente
-        limpiar_actualizacion_pendiente(estacion)
+        #
+        # Se ENCOLA y no se publica desde acá: este proceso usa la credencial del worker,
+        # que no puede publicar en ese tópico, y EMQX descartaba el borrado sin avisar
+        # (L-5). La tarea corre en celery_worker con la credencial del panel.
+        from apps.catalogo.tasks import limpiar_actualizacion_pendiente_task
+        try:
+            limpiar_actualizacion_pendiente_task.delay(estacion.pk, estacion.version_agente)
+        except Exception:
+            # Sin broker de Celery el retenido queda, igual que antes; el latido no se pierde.
+            logger.exception('No se pudo encolar la limpieza del retenido de %s', estacion.codigo)
 
     from apps.facturacion.services import registrar_actividad_mensual
     registrar_actividad_mensual(estacion)

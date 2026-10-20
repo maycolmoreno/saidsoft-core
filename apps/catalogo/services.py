@@ -3,9 +3,11 @@ import hashlib
 import hmac
 import json
 import logging
+import threading
 import time
+import uuid
 
-import paho.mqtt.publish as mqtt_publish
+import paho.mqtt.client as mqtt
 from django.conf import settings
 
 from apps.catalogo import crypto
@@ -88,7 +90,62 @@ def secreto_de(estacion) -> str | None:
     return estacion.hmac_secret
 
 
+class PublicacionRechazada(Exception):
+    """EMQX rechazó la conexión o la publicación, o no confirmó a tiempo."""
+
+
+ESPERA_CONFIRMACION_MQTT_SEGUNDOS = 10
+
+
+def _enviar_mqtt_v5(topico, payload_str, *, hostname, port, auth, tls, client_id, retain):
+    """Publica con MQTT 5 y QoS 1 y espera el PUBACK. Lanza `PublicacionRechazada` si EMQX
+    no acepta.
+
+    Reemplaza a `paho.mqtt.publish.single`, que publicaba en MQTT 3.1.1: ahí EMQX descarta
+    un publish no autorizado sin avisar (con QoS 1 el PUBACK llega como éxito), y
+    `_publicar_mqtt` devolvía True igual. En MQTT 5 el PUBACK trae un código de razón y un
+    rechazo de la ACL llega como "Not authorized" (docs/auditoria/fase_c1_laboratorio.md,
+    prueba L-5). "No matching subscribers" NO es un fallo: el mensaje quedó retenido.
+    """
+    cliente = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, protocol=mqtt.MQTTv5)
+    if auth:
+        cliente.username_pw_set(auth['username'], auth.get('password'))
+    if tls is not None:
+        cliente.tls_set(ca_certs=tls.get('ca_certs'))
+    conectado, confirmado = threading.Event(), threading.Event()
+    estado = {}
+
+    def al_conectar(_cliente, _datos, _flags, codigo, _propiedades):
+        if codigo.is_failure:
+            estado['motivo'] = f'conexión rechazada: {codigo}'
+        conectado.set()
+
+    def al_publicar(_cliente, _datos, _mid, codigo, _propiedades):
+        if codigo.is_failure:
+            estado['motivo'] = f'publicación rechazada: {codigo}'
+        confirmado.set()
+
+    cliente.on_connect = al_conectar
+    cliente.on_publish = al_publicar
+    cliente.connect(hostname, port, keepalive=30)
+    cliente.loop_start()
+    try:
+        if not conectado.wait(ESPERA_CONFIRMACION_MQTT_SEGUNDOS):
+            raise PublicacionRechazada('el broker no respondió la conexión a tiempo')
+        if 'motivo' in estado:
+            raise PublicacionRechazada(estado['motivo'])
+        cliente.publish(topico, payload_str, qos=1, retain=retain)
+        if not confirmado.wait(ESPERA_CONFIRMACION_MQTT_SEGUNDOS):
+            raise PublicacionRechazada('el broker no confirmó la publicación a tiempo')
+        if 'motivo' in estado:
+            raise PublicacionRechazada(estado['motivo'])
+    finally:
+        cliente.disconnect()
+        cliente.loop_stop()
+
+
 def _publicar_mqtt(topico: str, payload_str: str, *, retain: bool) -> bool:
+    """True solo si EMQX confirmó la publicación (MQTT 5, QoS 1). Ver `_enviar_mqtt_v5`."""
     mqtt_conf = settings.MQTT_CONFIG
     auth = None
     if mqtt_conf['USERNAME']:
@@ -98,16 +155,22 @@ def _publicar_mqtt(topico: str, payload_str: str, *, retain: bool) -> bool:
         tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
 
     try:
-        mqtt_publish.single(
+        _enviar_mqtt_v5(
             topico, payload_str,
             hostname=mqtt_conf['HOST'],
             port=mqtt_conf['PORT'],
             auth=auth,
             tls=tls,
-            client_id=mqtt_conf['CLIENT_ID_PANEL'],
+            # Sufijo único por publicación: con un client_id fijo, dos procesos que publican
+            # a la vez (web, Celery, el bot) se desconectan entre sí y el PUBACK de uno no
+            # llega nunca. La ACL de EMQX es por usuario, no por client_id.
+            client_id=f"{mqtt_conf['CLIENT_ID_PANEL']}-{uuid.uuid4().hex[:8]}",
             retain=retain,
         )
         return True
+    except PublicacionRechazada as error:
+        logger.error('EMQX no aceptó la publicación en %s: %s', topico, error)
+        return False
     except Exception:
         logger.exception('No se pudo publicar en %s', topico)
         return False

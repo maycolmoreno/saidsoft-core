@@ -3176,7 +3176,7 @@ class SondeoDeActivosPorPingTests(TestCase):
 
         # Sin IP, no sin activo: el modelo prohibe borrar un Activo a proposito.
         Activo.objects.filter(pk=self.impresora.pk).update(ip=None)
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             self.assertEqual(solicitar_sondeo_activos_via_agente(), 0)
         mock_single.assert_not_called()
 
@@ -3190,14 +3190,14 @@ class SondeoDeActivosPorPingTests(TestCase):
                 estado_aprobacion=Estacion.EstadoAprobacion.APROBADA,
                 estado_conexion=Estacion.EstadoConexion.ONLINE,
             )
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             self.assertEqual(solicitar_sondeo_activos_via_agente(), 1)
         self.assertEqual(mock_single.call_count, 1)
 
     def test_el_comando_va_firmado(self):
         from apps.catalogo.services import enviar_consultar_activos_farmacia, firmar_payload
 
-        with patch('apps.catalogo.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_mqtt_v5') as mock_single:
             enviar_consultar_activos_farmacia(self.estacion, '7:10.0.0.9')
         payload = json.loads(mock_single.call_args.args[1])
         self.assertEqual(
