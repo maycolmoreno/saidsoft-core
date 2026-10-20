@@ -314,3 +314,137 @@ class CaidasDeEnlaceDuplicadasTests(TestCase):
         salida = io.StringIO()
         call_command('revisar_caidas_duplicadas', stdout=salida, stderr=salida)
         self.assertIn('Ninguna farmacia', salida.getvalue())
+
+
+class WorkerMeshCentralConexionTests(TestCase):
+    """El worker de MeshCentral informa si está conectado, no solo si está vivo.
+
+    Antes solo escribía `ultimo_latido` y nunca `conectado`, así que el panel lo mostraba
+    siempre en ámbar ("conexión al broker sin verificar") aunque funcionara bien, y lo
+    habría seguido mostrando igual si se cortaba. Además el texto hablaba del "broker",
+    que este worker no usa: habla con el servidor de MeshCentral.
+    """
+
+    def _latido(self, conectado):
+        WorkerHeartbeat.objects.update_or_create(
+            nombre='meshcentral_worker',
+            defaults={'ultimo_latido': timezone.now(), 'conectado': conectado, 'mensajes_procesados': 0},
+        )
+
+    def _componente(self):
+        return {c.clave: c for c in estado_latidos()}['meshcentral_worker']
+
+    # --- Lo que muestra el panel -----------------------------------------------------------
+
+    def test_conectado_es_ok_y_no_inventa_un_conteo_de_mensajes(self):
+        self._latido(True)
+        componente = self._componente()
+        self.assertEqual(componente.estado, 'ok')
+        self.assertIn('conectado a MeshCentral', componente.detalle)
+        self.assertNotIn('mensajes', componente.detalle)
+
+    def test_desconectado_es_critico_y_nombra_a_meshcentral(self):
+        self._latido(False)
+        componente = self._componente()
+        self.assertEqual(componente.estado, 'critical')
+        self.assertIn('NO está conectado a MeshCentral', componente.detalle)
+        self.assertNotIn('broker', componente.detalle)
+
+    def test_sin_dato_sigue_en_advertencia_pero_nombra_a_meshcentral(self):
+        self._latido(None)
+        componente = self._componente()
+        self.assertEqual(componente.estado, 'warning')
+        self.assertIn('conexión a MeshCentral sin verificar', componente.detalle)
+        self.assertNotIn('broker', componente.detalle)
+
+    # --- Lo que escribe el worker ------------------------------------------------------------
+
+    def _comando(self):
+        from io import StringIO
+
+        from apps.monitoreo.management.commands.run_meshcentral_worker import Command
+
+        return Command(stdout=StringIO())
+
+    def _conectado_guardado(self):
+        return WorkerHeartbeat.objects.get(nombre='meshcentral_worker').conectado
+
+    def test_antes_de_conectar_el_latido_dice_desconectado(self):
+        self._comando()._registrar_latido()
+        self.assertIs(self._conectado_guardado(), False)
+
+    def test_al_conectar_y_al_desconectar_el_latido_lo_refleja(self):
+        from unittest.mock import MagicMock
+
+        comando = self._comando()
+        comando._on_conectado(MagicMock())
+        self.assertIs(self._conectado_guardado(), True)
+        comando._registrar_latido()  # el latido periódico conserva el estado
+        self.assertIs(self._conectado_guardado(), True)
+        comando._on_desconectado()
+        self.assertIs(self._conectado_guardado(), False)
+
+    # --- Lo que avisa el adaptador -----------------------------------------------------------
+
+    def _adaptador(self, ws=None, error_al_conectar=None):
+        from unittest.mock import MagicMock
+
+        from django.test import override_settings
+
+        from apps.monitoreo.adapters.meshcentral import AdaptadorMeshCentral
+
+        with override_settings(MESHCENTRAL_API_CONFIG={'WS_URL': 'wss://x', 'USUARIO': 'u', 'PASSWORD': 'p'}):
+            adaptador = AdaptadorMeshCentral()
+        adaptador._autenticar_y_conectar = MagicMock(return_value=ws, side_effect=error_al_conectar)
+        adaptador._solicitar_nodes = MagicMock(return_value=0)
+        return adaptador
+
+    def test_una_conexion_perdida_avisa_la_desconexion_una_vez(self):
+        import threading
+        from unittest.mock import MagicMock
+
+        detener = threading.Event()
+        ws = MagicMock()
+        ws.recv.return_value = ''  # el servidor cerró la conexión
+        avisos = []
+
+        def al_desconectar():
+            avisos.append(True)
+            detener.set()  # cortar el bucle de reconexión de la prueba
+
+        self._adaptador(ws).escuchar_eventos(detener=detener, on_desconectado=al_desconectar)
+        self.assertEqual(avisos, [True])
+
+    def test_apagar_a_pedido_no_es_una_desconexion(self):
+        import threading
+        from unittest.mock import MagicMock
+
+        import websocket
+
+        detener = threading.Event()
+        ws = MagicMock()
+
+        def recv():
+            detener.set()
+            raise websocket.WebSocketTimeoutException('timeout')
+
+        ws.recv.side_effect = recv
+        avisos = []
+        self._adaptador(ws).escuchar_eventos(detener=detener, on_desconectado=lambda: avisos.append(True))
+        self.assertEqual(avisos, [])
+
+    def test_un_intento_de_conexion_fallido_no_avisa_desconexion(self):
+        """No hubo conexión que perder: el latido ya dice `conectado=False`."""
+        import threading
+
+        detener = threading.Event()
+
+        def fallar():
+            detener.set()
+            raise ConnectionRefusedError('sin servidor')
+
+        avisos = []
+        self._adaptador(error_al_conectar=fallar).escuchar_eventos(
+            detener=detener, on_desconectado=lambda: avisos.append(True),
+        )
+        self.assertEqual(avisos, [])

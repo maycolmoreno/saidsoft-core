@@ -202,7 +202,7 @@ class AdaptadorMeshCentral(FuenteMonitoreo):
                 except Exception:
                     pass
 
-    def escuchar_eventos(self, *, detener: threading.Event, on_conectado=None) -> None:
+    def escuchar_eventos(self, *, detener: threading.Event, on_conectado=None, on_desconectado=None) -> None:
         """Bucle de larga duración para run_meshcentral_worker: mantiene la conexión
         abierta y procesa nodeconnect en tiempo real. Reconecta con backoff simple
         (1s, 2s, 4s... hasta 60s) si se cae la conexión de verdad.
@@ -212,12 +212,18 @@ class AdaptadorMeshCentral(FuenteMonitoreo):
         tiempo) NO es una conexión perdida — sin este cuidado, el bucle reconectaba
         (re-auth + resync completo) cada 8-15s indefinidamente, disfrazando el diseño de
         "push, sin polling" en un poll agresivo cada pocos segundos.
+
+        `on_desconectado()` se llama cuando se pierde una conexión que SÍ se había
+        establecido (no en cada intento fallido de conectar, ni al apagar a pedido). Lo
+        usa el worker para que su latido diga si está conectado, no solo si está vivo.
         """
         backoff = 1
         while not detener.is_set():
             ws = None
+            conectado = False
             try:
                 ws = self._autenticar_y_conectar()
+                conectado = True
                 if on_conectado:
                     on_conectado(ws)
                 self._solicitar_nodes(ws)  # resync al (re)conectar
@@ -244,3 +250,8 @@ class AdaptadorMeshCentral(FuenteMonitoreo):
                         ws.close()
                     except Exception:
                         pass
+                if conectado and on_desconectado and not detener.is_set():
+                    try:
+                        on_desconectado()
+                    except Exception:
+                        logger.exception('MeshCentral: falló el aviso de desconexión')

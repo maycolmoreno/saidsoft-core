@@ -129,9 +129,12 @@ def estado_latidos() -> list[ComponenteSalud]:
     latidos = {h.nombre: h for h in WorkerHeartbeat.objects.all()}
     componentes = []
 
-    for clave, etiqueta in (
-        (NOMBRE_WORKER_MQTT, 'Worker MQTT'),
-        (NOMBRE_WORKER_MESHCENTRAL, 'Worker MeshCentral'),
+    # El tercer valor es CON QUÉ habla cada worker: el de MQTT con el broker, el de
+    # MeshCentral con el servidor de MeshCentral. Decir "broker" para los dos confundía
+    # (el de MeshCentral no toca EMQX).
+    for clave, etiqueta, destino in (
+        (NOMBRE_WORKER_MQTT, 'Worker MQTT', 'al broker'),
+        (NOMBRE_WORKER_MESHCENTRAL, 'Worker MeshCentral', 'a MeshCentral'),
     ):
         fila = latidos.get(clave)
         if fila is None:
@@ -160,7 +163,7 @@ def estado_latidos() -> list[ComponenteSalud]:
         if fila.conectado is False:
             componentes.append(ComponenteSalud(
                 clave=clave, etiqueta=etiqueta, estado='critical',
-                detalle='el proceso vive pero NO está conectado al broker',
+                detalle='el proceso vive pero NO está conectado %s' % destino,
                 instante=fila.ultimo_latido,
             ))
             continue
@@ -168,14 +171,17 @@ def estado_latidos() -> list[ComponenteSalud]:
         if fila.conectado is None:
             componentes.append(ComponenteSalud(
                 clave=clave, etiqueta=etiqueta, estado='warning',
-                detalle='%s · conexión al broker sin verificar (¿worker viejo?)' % detalle,
+                detalle='%s · conexión %s sin verificar (¿worker viejo?)' % (detalle, destino),
                 instante=fila.ultimo_latido,
             ))
             continue
+        if clave == NOMBRE_WORKER_MQTT:
+            ok = '%s · conectado · %s mensajes' % (detalle, fila.mensajes_procesados)
+        else:
+            # El worker de MeshCentral no cuenta mensajes: no se inventa un "0 mensajes".
+            ok = '%s · conectado %s' % (detalle, destino)
         componentes.append(ComponenteSalud(
-            clave=clave, etiqueta=etiqueta, estado='ok',
-            detalle='%s · conectado · %s mensajes' % (detalle, fila.mensajes_procesados),
-            instante=fila.ultimo_latido,
+            clave=clave, etiqueta=etiqueta, estado='ok', detalle=ok, instante=fila.ultimo_latido,
         ))
 
     # El BROKER, deducido de la conexión real del worker y no de su API de administración.

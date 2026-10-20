@@ -34,6 +34,10 @@ class Command(BaseCommand):
         super().__init__(*args, **kwargs)
         self._detener = threading.Event()
         self._ws = None
+        # Si la conexión con MeshCentral está abierta AHORA. Viaja en cada latido
+        # (`WorkerHeartbeat.conectado`): sin esto el latido solo probaba que el proceso
+        # vivía, y el panel no podía distinguir un worker sano de uno desconectado.
+        self._conectado = False
 
     def handle(self, *args, **options):
         adaptador = AdaptadorMeshCentral()
@@ -52,18 +56,28 @@ class Command(BaseCommand):
         threading.Thread(target=self._latido_periodico, daemon=True).start()
 
         self.stdout.write(self.style.NOTICE('Conectando a MeshCentral...'))
-        adaptador.escuchar_eventos(detener=self._detener, on_conectado=self._on_conectado)
+        adaptador.escuchar_eventos(
+            detener=self._detener, on_conectado=self._on_conectado, on_desconectado=self._on_desconectado,
+        )
         self.stdout.write(self.style.NOTICE('Worker MeshCentral detenido.'))
 
     def _on_conectado(self, ws):
         self._ws = ws
+        self._conectado = True
         self.stdout.write(self.style.SUCCESS('[MeshCentral] Conectado'))
+        self._registrar_latido()
+
+    def _on_desconectado(self):
+        self._ws = None
+        self._conectado = False
+        self.stdout.write(self.style.WARNING('[MeshCentral] Desconectado, reintentando'))
         self._registrar_latido()
 
     def _registrar_latido(self):
         cerrar_conexiones_viejas()
         WorkerHeartbeat.objects.update_or_create(
-            nombre=NOMBRE_WORKER_MESHCENTRAL, defaults={'ultimo_latido': timezone.now()},
+            nombre=NOMBRE_WORKER_MESHCENTRAL,
+            defaults={'ultimo_latido': timezone.now(), 'conectado': self._conectado},
         )
 
     def _latido_periodico(self):
