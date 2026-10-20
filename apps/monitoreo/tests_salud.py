@@ -103,6 +103,7 @@ class EstadoDeLaPlataformaTests(TestCase):
         self._latido('meshcentral_worker', conectado=True)
         self._latido('celery_beat')
         self._latido('respaldo')
+        self._latido('respaldo_externo')
 
         resumen = resumen_salud(estado_latidos())
         self.assertEqual(resumen['estado'], 'ok')
@@ -144,6 +145,24 @@ class EstadoDeLaPlataformaTests(TestCase):
         self._latido('respaldo', hace_segundos=int((RESPALDO_UMBRAL_HORAS + 5) * 3600))
         self.assertEqual(self._componente('respaldo').estado, 'critical')
 
+    # --- Copia externa del respaldo (OneDrive) ------------------------------------------
+
+    def test_sin_copia_externa_es_advertencia_aunque_el_respaldo_local_este_al_dia(self):
+        """Un respaldo en el mismo disco no sobrevive a perder el disco: eso tiene que
+        verse aunque el respaldo local esté perfecto."""
+        self._latido('respaldo')
+        componente = self._componente('respaldo_externo')
+        self.assertEqual(componente.estado, 'warning')
+        self.assertIn('nunca se copió', componente.detalle)
+
+    def test_una_copia_externa_reciente_esta_bien(self):
+        self._latido('respaldo_externo', hace_segundos=3600)
+        self.assertEqual(self._componente('respaldo_externo').estado, 'ok')
+
+    def test_una_copia_externa_atrasada_es_critica(self):
+        self._latido('respaldo_externo', hace_segundos=int((RESPALDO_UMBRAL_HORAS + 5) * 3600))
+        self.assertEqual(self._componente('respaldo_externo').estado, 'critical')
+
     # --- El agregado ----------------------------------------------------------------------
 
     def test_el_resumen_toma_el_peor_componente(self):
@@ -152,6 +171,7 @@ class EstadoDeLaPlataformaTests(TestCase):
         self._latido('meshcentral_worker', hace_segundos=WORKER_MQTT_UMBRAL_SEGUNDOS + 60)
         self._latido('celery_beat')
         self._latido('respaldo')
+        self._latido('respaldo_externo')
 
         resumen = resumen_salud(estado_latidos())
         self.assertEqual(resumen['estado'], 'critical')
@@ -211,6 +231,31 @@ class VerificarSaludLeeElMismoLugarQueElPanelTests(TestCase):
         WorkerHeartbeat.objects.create(nombre='celery_beat', ultimo_latido=timezone.now())
         _, codigo = self._correr()
         self.assertEqual(codigo, 0)
+
+    def _sistema_sano(self):
+        for nombre in ('mqtt_worker', 'meshcentral_worker'):
+            WorkerHeartbeat.objects.create(nombre=nombre, ultimo_latido=timezone.now(), conectado=True)
+        WorkerHeartbeat.objects.create(nombre='celery_beat', ultimo_latido=timezone.now())
+        WorkerHeartbeat.objects.create(nombre='respaldo', ultimo_latido=timezone.now())
+
+    def test_sin_copia_externa_configurada_la_consola_no_falla(self):
+        """Es una advertencia de la pantalla: el temporizador que manda correo no puede
+        avisar todas las noches por algo que se configura una sola vez."""
+        self._sistema_sano()
+        _, codigo = self._correr()
+        self.assertEqual(codigo, 0)
+
+    def test_una_copia_externa_atrasada_si_falla_en_la_consola(self):
+        """Una vez configurada, que deje de funcionar —credencial de OneDrive vencida, sin
+        internet— es exactamente lo que el temporizador tiene que avisar."""
+        self._sistema_sano()
+        WorkerHeartbeat.objects.create(
+            nombre='respaldo_externo',
+            ultimo_latido=timezone.now() - timedelta(hours=RESPALDO_UMBRAL_HORAS + 5),
+        )
+        texto, codigo = self._correr()
+        self.assertEqual(codigo, 1)
+        self.assertIn('respaldo_externo', texto)
 
     def test_sigue_pudiendo_medir_un_solo_componente(self):
         """Un contenedor tiene que medirse a SÍ MISMO: si el worker MQTT se marcara enfermo

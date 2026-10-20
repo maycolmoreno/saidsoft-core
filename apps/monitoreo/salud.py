@@ -129,7 +129,7 @@ def estado_latidos() -> list[ComponenteSalud]:
     las páginas del panel, y el presupuesto es una. Se traen las tres filas de golpe y se
     comparan en Python — es el mismo patrón que ya usa `verificar_salud._revisar_latidos`.
     """
-    from apps.mqtt_worker.management.commands.registrar_latido import NOMBRE_RESPALDO
+    from apps.mqtt_worker.management.commands.registrar_latido import NOMBRE_RESPALDO, NOMBRE_RESPALDO_EXTERNO
     from apps.mqtt_worker.models import WorkerHeartbeat
     from apps.mqtt_worker.services import NOMBRE_WORKER_MQTT
 
@@ -264,6 +264,25 @@ def estado_latidos() -> list[ComponenteSalud]:
             estado='ok' if horas <= RESPALDO_UMBRAL_HORAS else 'critical',
             detalle='último hace %.0f h (umbral %d h)' % (horas, RESPALDO_UMBRAL_HORAS),
             instante=respaldo.ultimo_latido,
+        ))
+
+    # La copia fuera del servidor. "Nunca se copió" es advertencia y no silencio: mientras
+    # sea así, perder el NUC es perder todo, y eso tiene que verse aunque el respaldo local
+    # esté al día. Una copia atrasada es crítica, con el mismo umbral que el respaldo
+    # local, porque la base se sube todos los días.
+    externo = latidos.get(NOMBRE_RESPALDO_EXTERNO)
+    if externo is None:
+        componentes.append(ComponenteSalud(
+            clave=NOMBRE_RESPALDO_EXTERNO, etiqueta='Copia externa del respaldo', estado='warning',
+            detalle='nunca se copió fuera del servidor: si se pierde el disco se pierde todo',
+        ))
+    else:
+        horas = (ahora - externo.ultimo_latido).total_seconds() / 3600
+        componentes.append(ComponenteSalud(
+            clave=NOMBRE_RESPALDO_EXTERNO, etiqueta='Copia externa del respaldo',
+            estado='ok' if horas <= RESPALDO_UMBRAL_HORAS else 'critical',
+            detalle='última hace %.0f h (umbral %d h)' % (horas, RESPALDO_UMBRAL_HORAS),
+            instante=externo.ultimo_latido,
         ))
 
     # La temperatura del propio servidor. No es un latido, pero responde la misma pregunta

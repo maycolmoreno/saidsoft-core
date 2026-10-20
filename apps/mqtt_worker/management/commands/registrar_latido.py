@@ -19,6 +19,10 @@ from apps.mqtt_worker.models import WorkerHeartbeat
 
 # Nombre de fila del respaldo, compartido con el dashboard (apps.panel.views.dashboard).
 NOMBRE_RESPALDO = 'respaldo'
+# La copia del respaldo fuera del servidor (OneDrive). Se registra aparte porque falla por
+# motivos distintos —credencial de OneDrive vencida, sin internet— y un respaldo local al
+# día no dice nada de si existe una copia que sobreviva a perder el NUC.
+NOMBRE_RESPALDO_EXTERNO = 'respaldo_externo'
 
 
 class Command(BaseCommand):

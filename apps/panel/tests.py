@@ -2649,6 +2649,7 @@ class SaludEnLaBarraSuperiorTests(TestCase):
         self._latido('meshcentral_worker', conectado=True)
         self._latido('celery_beat')
         self._latido('respaldo')
+        self._latido('respaldo_externo')
 
     def test_nunca_afirma_que_todo_esta_operativo(self):
         """La frase vieja no vuelve: afirmaba algo sobre TODO, incluida la flota, que

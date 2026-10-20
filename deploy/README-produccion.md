@@ -500,6 +500,38 @@ ahora sale en el log: `docker logs deploy-web-1 | grep EMQX`.
 Recien con esto en verde tiene sentido rotar `MQTT_PASSWORD_AGENTE` /
 `COMANDO_HMAC_SECRET` o correr `deploy/emqx-narrow-acl-agente.sh`.
 
+## Copia del respaldo a OneDrive (20-oct-2026)
+
+`deploy/backup.sh` sube a OneDrive, con rclone, lo que ya dejó cifrado con GPG: la base y
+EMQX todos los días, media solo si allá no hay una de los últimos 7 días. Conserva
+`BACKUP_ONEDRIVE_RETENCION_DIAS` (30) y, si todo subió, registra el latido
+`respaldo_externo`, que el panel muestra como "Copia externa del respaldo".
+
+**La passphrase de GPG no se sube.** Sin ella las copias de OneDrive no sirven: tiene que
+estar guardada fuera del NUC (gestor de contraseñas), junto con el `.env`.
+
+Configuración, una sola vez:
+
+1. Instalar rclone en el NUC (`sudo apt install rclone`, o el `.deb` de rclone.org si la
+   versión del repositorio es muy vieja) y comprobar `rclone version`.
+2. Crear el remoto **como `glpi`**, que es el usuario del servicio de respaldo:
+   `rclone config` → `n` (nuevo) → nombre `onedrive` → tipo `onedrive` → client_id y
+   client_secret vacíos → región `global` → sin configuración avanzada → a "Use web
+   browser to automatically authenticate?" responder **`n`**: el NUC no tiene navegador.
+3. rclone pide un token y muestra el comando para obtenerlo. En una PC con navegador,
+   con rclone para Windows descomprimido, correr `rclone authorize "onedrive"`, iniciar
+   sesión con la cuenta de Microsoft y pegar en el NUC el token que imprime.
+   Con una cuenta de la empresa, el tenant puede exigir que un administrador apruebe la
+   aplicación rclone la primera vez.
+4. Elegir la unidad (OneDrive de la cuenta) y confirmar. Probar:
+   `rclone mkdir onedrive:SaidSoft/respaldos && rclone lsd onedrive:SaidSoft`.
+5. En `deploy/.env`: `BACKUP_ONEDRIVE_REMOTO=onedrive:SaidSoft/respaldos`.
+6. Correr un respaldo a mano y revisar la salida:
+   `sudo systemctl start saidsoft-respaldo.service && journalctl -u saidsoft-respaldo -n 40 --no-pager`.
+7. **Probar la restauración desde OneDrive**, no desde el disco local: bajar el último
+   `db_*.sql.gz.gpg` con `rclone copy` a una carpeta temporal y pasárselo a
+   `deploy/restaurar-backup.sh` (restaura contra `restore_test`, nunca contra la real).
+
 ## Rotar el certificado TLS (y por qué no es solo redesplegar)
 
 `deploy/certs/cert.pem` **no lo usa una sola cosa**. Antes de tocarlo conviene saber
