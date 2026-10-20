@@ -7664,6 +7664,130 @@ class EventosWindowsCatalogoTests(TestCase):
         self.assertTrue(publicar.call_args.kwargs['retain'])
 
 
+class ProveedorEventoVigiladoValidacionTests(TestCase):
+    """`EventoSistemaVigilado.proveedor` solo admite el alfabeto de los proveedores reales
+    (P0-1, docs/auditoria/verificacion-seguridad-p0.md).
+
+    El proveedor viaja en el catálogo que el agente usa para consultar el visor de
+    Windows. Esta validación es UNA de las defensas, no la única: no reemplaza la
+    verificación del catálogo en el agente ni la separación entre código y datos al
+    consultar el visor. Los valores "de inyección" de abajo solo se validan; nada se
+    ejecuta.
+
+    Ojo: los validadores de campo corren en `full_clean()` y en los formularios (el
+    admin), no en `save()`. Una escritura directa por ORM no pasa por acá.
+    """
+
+    def _evento(self, proveedor):
+        from apps.monitoreo.models import EventoSistemaVigilado
+
+        # Identificador fuera de los sembrados para no chocar con el unique.
+        return EventoSistemaVigilado(log='System', proveedor=proveedor, identificador=60001, nombre='Prueba')
+
+    def _errores_de_proveedor(self, proveedor):
+        from django.core.exceptions import ValidationError
+
+        try:
+            self._evento(proveedor).full_clean()
+        except ValidationError as error:
+            return [e.code for e in error.error_dict.get('proveedor', [])]
+        return []
+
+    def test_acepta_los_formatos_legitimos(self):
+        validos = [
+            'Ntfs',
+            'disk',
+            'Application Error',
+            'Microsoft-Windows-Kernel-Power',
+            'Service Control Manager',
+            'Proveedor_1.0 (x86)/Sub-Componente',
+            'A',
+            'A' + 'b' * 119,  # exactamente 120
+        ]
+        for proveedor in validos:
+            with self.subTest(proveedor=proveedor):
+                self.assertEqual(self._errores_de_proveedor(proveedor), [])
+
+    def test_los_proveedores_sembrados_por_migracion_pasan_la_validacion(self):
+        from apps.monitoreo.models import EventoSistemaVigilado
+
+        sembrados = list(EventoSistemaVigilado.objects.all())
+        self.assertEqual(len(sembrados), 10)
+        for vigilado in sembrados:
+            with self.subTest(proveedor=vigilado.proveedor):
+                vigilado.full_clean()
+
+    def test_rechaza_lo_que_no_es_del_alfabeto_permitido(self):
+        invalidos = {
+            'vacio': '',
+            'empieza con espacio': ' Ntfs',
+            'empieza con guion': '-Ntfs',
+            'empieza con punto': '.Ntfs',
+            'empieza con parentesis': '(Ntfs)',
+            'comilla simple': "Nt'fs",
+            'comilla doble': 'Nt"fs',
+            'punto y coma': 'Ntfs;',
+            'acento grave': 'Nt`fs',
+            'signo pesos': 'Nt$fs',
+            'llaves': 'Ntfs{}',
+            'arroba': 'Ntfs@',
+            'tabulador': 'Nt\tfs',
+            'caracter nulo': 'Nt\x00fs',
+            'caracter de control': 'Nt\x1bfs',
+            'salto de linea final': 'Ntfs\n',
+            'retorno y salto final': 'Ntfs\r\n',
+            'salto de linea en el medio': 'Nt\nfs',
+            'no ASCII': 'Ntfś',
+            'separador de linea unicode': 'Ntfs ',
+            '121 caracteres': 'A' + 'b' * 120,
+        }
+        for caso, proveedor in invalidos.items():
+            with self.subTest(caso=caso):
+                self.assertNotEqual(self._errores_de_proveedor(proveedor), [], f'{caso} debió rechazarse')
+
+    def test_rechaza_valores_con_forma_de_inyeccion_powershell(self):
+        """Solo se comprueba el rechazo de la entrada: no se invoca PowerShell."""
+        intentos = [
+            "x'; Write-Output INYECTADO; '",
+            "x'}; Write-Output INYECTADO; Write-Output @{a='",
+            '$(Get-Date)',
+            'Ntfs`nWrite-Output INYECTADO',
+            'Ntfs | Out-Null',
+            'Ntfs & calc',
+        ]
+        for proveedor in intentos:
+            with self.subTest(proveedor=proveedor):
+                self.assertIn('proveedor_invalido', self._errores_de_proveedor(proveedor))
+
+    def test_el_error_es_el_del_validador_de_formato(self):
+        """El rechazo lo hace el validador nuevo (código propio), no otra regla del campo."""
+        self.assertEqual(self._errores_de_proveedor("Nt'fs"), ['proveedor_invalido'])
+        self.assertIn('proveedor_invalido', self._errores_de_proveedor('A' + 'b' * 120))
+
+    def test_el_formulario_del_admin_aplica_la_validacion(self):
+        """La ruta de alta y edición real: el admin, que valida con el formulario del modelo.
+        Solo se valida el formulario; no se guarda, así que no se publica nada."""
+        from django.contrib.admin.sites import site
+        from django.test import RequestFactory
+
+        from apps.monitoreo.models import EventoSistemaVigilado
+
+        request = RequestFactory().get('/')
+        request.user = User.objects.create_superuser(username='u_proveedor_admin', password='x' * 16)
+        formulario = site._registry[EventoSistemaVigilado].get_form(request)
+        datos = {
+            'nombre': 'Prueba', 'activo': 'on', 'log': 'System', 'identificador': '60002',
+            'severidad': 'warning', 'nota': '',
+        }
+
+        valido = formulario(data={**datos, 'proveedor': 'Microsoft-Windows-Kernel-Power'})
+        self.assertTrue(valido.is_valid(), valido.errors)
+
+        invalido = formulario(data={**datos, 'proveedor': "x'}; Write-Output INYECTADO; Write-Output @{a='"})
+        self.assertFalse(invalido.is_valid())
+        self.assertIn('proveedor', invalido.errors)
+
+
 class EventosWindowsIngestaTests(TestCase):
     """Lo que hace el servidor con lo que reporta el agente."""
 

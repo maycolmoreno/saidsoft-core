@@ -32,6 +32,7 @@ no vuelve a enrolarse en cada arranque si ya tiene un token guardado, igual que 
 documenta que hace el agente real.
 """
 import argparse
+import base64
 import hashlib
 import hmac
 import ipaddress
@@ -181,6 +182,57 @@ def correr_powershell(script: str, timeout: int) -> str:
         timeout=timeout, text=True, encoding='utf-8', errors='replace',
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
     )
+
+
+# --- Consulta del visor de eventos: código CONSTANTE, datos por la entrada estándar ---
+#
+# Hasta 0.36 `_leer_eventos_sistema` armaba el script insertando `log` y `proveedor` del
+# catálogo entre comillas dentro del código, y lo corría con `powershell -Command` como
+# LocalSystem. Un valor con una comilla cerraba el literal y lo que seguía pasaba a ser
+# código (P0-1; docs/auditoria/fase_c1_laboratorio.md, C-5).
+#
+# Ahora el script es siempre el mismo texto y los filtros llegan como JSON por stdin: el
+# script los lee con [Console]::In y los usa como VALORES de un hashtable, nunca como
+# texto de código. Va con -EncodedCommand (UTF-16LE en base64) para que la línea de
+# comandos no dependa de cómo Windows reparte las comillas. El JSON viaja en ASCII puro
+# (`ensure_ascii`), así que la página de códigos de la consola no lo altera.
+#
+# Lo que el script NO hace es confiar en la forma de los datos: castea cada valor al tipo
+# que espera y descarta un log que no sea System/Application. La validación de formato del
+# lado de Python (`_filtros_consulta_eventos`) es otra capa, no la que evita la inyección.
+SCRIPT_CONSULTA_EVENTOS = r'''
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'SilentlyContinue'
+try {
+    $datos = [Console]::In.ReadToEnd() | ConvertFrom-Json -ErrorAction Stop
+    $inicio = [datetime]::ParseExact([string]$datos.inicio, 's', [Globalization.CultureInfo]::InvariantCulture)
+} catch {
+    [Console]::Error.WriteLine('entrada invalida para la consulta de eventos')
+    exit 2
+}
+$r = @()
+foreach ($f in @($datos.fuentes)) {
+    $log = [string]$f.log
+    if (@('System', 'Application') -notcontains $log) { continue }
+    $ids = @(@($f.ids) | ForEach-Object { [int]$_ })
+    if ($ids.Count -eq 0) { continue }
+    $filtro = @{ LogName = $log; Id = $ids; StartTime = $inicio }
+    $proveedor = [string]$f.proveedor
+    if ($proveedor) { $filtro['ProviderName'] = $proveedor }
+    $e = Get-WinEvent -FilterHashtable $filtro -ErrorAction SilentlyContinue
+    $r += $e | Group-Object Id | ForEach-Object {
+        $u = $_.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1
+        [PSCustomObject]@{ log = $log; id = [int]$_.Name; cantidad = $_.Count; origen = $u.ProviderName; mensaje = ($u.Message -replace '\s+', ' ') }
+    }
+}
+ConvertTo-Json -InputObject @($r) -Compress -Depth 3
+'''
+SCRIPT_CONSULTA_EVENTOS_CODIFICADO = base64.b64encode(SCRIPT_CONSULTA_EVENTOS.encode('utf-16-le')).decode('ascii')
+LOGS_EVENTOS_PERMITIDOS = ('System', 'Application')
+# El mismo formato que valida el servidor (`apps.monitoreo.models.PATRON_PROVEEDOR_EVENTO`).
+# Acá es defensa adicional: el agente no confía en que lo que llega pasó por Django.
+PATRON_PROVEEDOR_EVENTO = re.compile(r'\A[A-Za-z0-9][A-Za-z0-9 ._/()-]{0,119}\Z')
+TIMEOUT_CONSULTA_EVENTOS_SEGUNDOS = 60
 
 
 def leer_numero_serie() -> str:
@@ -1260,66 +1312,145 @@ class AgentePrueba:
                 inicio = datetime.now() - timedelta(hours=1)
 
         marca_nueva = datetime.now().isoformat(timespec='seconds')
-        # Se agrupa por (log, PROVEEDOR): el ID solo no identifica un evento.
-        # Comprobado contra un visor real el 20-sep-2026 -- pidiendo solo `System 55`
-        # volvian 260 avisos de energia del procesador, no corrupcion de NTFS.
-        por_fuente = {}
-        for entrada in catalogo:
-            clave = (entrada.get('log') or 'System', entrada.get('proveedor') or '')
-            por_fuente.setdefault(clave, []).append(int(entrada.get('id')))
+        filtros = self._filtros_consulta_eventos(catalogo, inicio)
+        if not filtros['fuentes']:
+            # Habia catalogo pero ninguna entrada valida: no se consulta nada y la marca no
+            # avanza, igual que cuando no se puede leer el visor.
+            return [], None
 
+        # La salida se fuerza a UTF-8 dentro del script. Sin esto PowerShell escribe en la
+        # pagina de codigos del sistema (cp1252 en un Windows en espanol) y `json.loads`
+        # revienta con el primer mensaje acentuado -- que son todos, porque el visor esta
+        # en espanol. Comprobado el 20-sep-2026: "operacion de paginacion" rompia el parseo.
+        #
         # Se agrupa por (log, proveedor, id) EN LA ESTACION: mandar 260 ocurrencias
-        # identicas para que el servidor las cuente seria gastar red y base en algo
-        # que aca sale gratis.
-        # que el servidor las cuente seria gastar red y base en algo que aca sale gratis.
-        # La salida se fuerza a UTF-8. Sin esto PowerShell escribe en la pagina de codigos
-        # del sistema (cp1252 en un Windows en espanol) y `json.loads` revienta con el
-        # primer mensaje acentuado -- que son todos, porque el visor esta en espanol.
-        # Comprobado el 20-sep-2026: "operacion de paginacion" rompia el parseo.
-        script_partes = [
-            '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
-            "$ErrorActionPreference = 'SilentlyContinue'",
-            '$r = @()',
-        ]
-        for (log, proveedor), ids in por_fuente.items():
-            lista = ','.join(str(i) for i in ids)
-            # ProviderName dentro del propio FilterHashtable: filtrar en el visor es
-            # mucho mas barato que traer todo y descartar despues en PowerShell.
-            filtro = f"LogName='{log}'; ID={lista}"
-            if proveedor:
-                filtro += f"; ProviderName='{proveedor}'"
-            script_partes.append(
-                f"$e = Get-WinEvent -FilterHashtable @{{{filtro}; "
-                f"StartTime=[datetime]'{inicio.isoformat(timespec='seconds')}'}} -ErrorAction SilentlyContinue"
-            )
-            script_partes.append(
-                '$r += $e | Group-Object Id | ForEach-Object { '
-                '$u = $_.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1; '
-                '[PSCustomObject]@{ log = ' + f"'{log}'" + '; id = [int]$_.Name; '
-                'cantidad = $_.Count; origen = $u.ProviderName; '
-                'mensaje = ($u.Message -replace "\\s+", " ") } }'
-            )
-        script_partes.append('ConvertTo-Json -InputObject @($r) -Compress -Depth 3')
-
+        # identicas para que el servidor las cuente seria gastar red y base en algo que
+        # aca sale gratis.
         try:
-            salida = subprocess.check_output(
-                ['powershell', '-NoProfile', '-Command', '\n'.join(script_partes)],
-                timeout=60, text=True, encoding='utf-8', errors='replace',
+            resultado = subprocess.run(
+                ['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+                 SCRIPT_CONSULTA_EVENTOS_CODIFICADO],
+                input=json.dumps(filtros, ensure_ascii=True),
+                capture_output=True, timeout=TIMEOUT_CONSULTA_EVENTOS_SEGUNDOS,
+                text=True, encoding='utf-8', errors='replace',
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
+        except subprocess.TimeoutExpired:
+            logging.error(
+                'La consulta al visor de eventos supero %ss y se corto.', TIMEOUT_CONSULTA_EVENTOS_SEGUNDOS,
+            )
+            return [], None
         except Exception:
             logging.exception('No se pudo leer el visor de eventos de Windows')
             return [], None
+        if resultado.returncode != 0:
+            logging.error(
+                'La consulta al visor de eventos termino con codigo %s: %s',
+                resultado.returncode, (resultado.stderr or '').strip()[:300],
+            )
+            return [], None
+        salida = resultado.stdout or ''
+        if not salida.strip():
+            # El script SIEMPRE imprime al menos `[]` (ConvertTo-Json de @($r)). Una salida
+            # vacia con codigo 0 es un fallo, no "sin eventos": no se avanza la marca.
+            logging.error('La consulta al visor de eventos termino sin salida; se reintenta en el proximo barrido.')
+            return [], None
 
         try:
-            eventos = json.loads(salida) if salida.strip() else []
+            eventos = json.loads(salida)
         except json.JSONDecodeError:
             logging.warning('El visor de eventos devolvio algo que no es JSON, se descarta.')
+            return [], None
+
+        motivo = self._motivo_resultado_eventos_invalido(eventos)
+        if motivo:
+            # Toda la lectura se descarta: publicar la parte "buena" y avanzar la marca
+            # perderia para siempre la ventana que no se pudo leer bien.
+            logging.error('El visor de eventos devolvio un resultado fuera de contrato (%s); se descarta.', motivo)
             return [], None
 
         for evento in eventos:
             evento['mensaje'] = (evento.get('mensaje') or '')[:500]
         return eventos, marca_nueva
+
+    # Contrato de salida de SCRIPT_CONSULTA_EVENTOS, y lo que sus consumidores necesitan
+    # (`_reportar_eventos_sistema` y `apps.monitoreo.services.registrar_eventos_sistema`):
+    # una lista de objetos con exactamente estas claves.
+    #   log      str, System o Application (el script no emite otro)
+    #   id       int (no bool), 0..65535
+    #   cantidad int (no bool), >= 1 (Group-Object nunca agrupa cero)
+    #   origen   str o null (el servidor trata null como "sin origen")
+    #   mensaje  str o null (null se normaliza a '' mas abajo, como siempre)
+    CLAVES_RESULTADO_EVENTOS = frozenset({'log', 'id', 'cantidad', 'origen', 'mensaje'})
+
+    @classmethod
+    def _motivo_resultado_eventos_invalido(cls, eventos):
+        """None si `eventos` cumple el contrato; si no, un motivo corto (sin datos del equipo)."""
+        if not isinstance(eventos, list):
+            return f'la raiz es {type(eventos).__name__}, no una lista'
+        for posicion, evento in enumerate(eventos):
+            if not isinstance(evento, dict):
+                return f'el elemento {posicion} no es un objeto'
+            if set(evento) != cls.CLAVES_RESULTADO_EVENTOS:
+                return f'el elemento {posicion} no tiene exactamente las claves esperadas'
+            if evento['log'] not in LOGS_EVENTOS_PERMITIDOS:
+                return f'el elemento {posicion} tiene un log no permitido'
+            if type(evento['id']) is not int or not 0 <= evento['id'] <= 65535:
+                return f'el elemento {posicion} tiene un id invalido'
+            if type(evento['cantidad']) is not int or evento['cantidad'] < 1:
+                return f'el elemento {posicion} tiene una cantidad invalida'
+            if evento['origen'] is not None and not isinstance(evento['origen'], str):
+                return f'el elemento {posicion} tiene un origen invalido'
+            if evento['mensaje'] is not None and not isinstance(evento['mensaje'], str):
+                return f'el elemento {posicion} tiene un mensaje invalido'
+        return None
+
+    @staticmethod
+    def _filtros_consulta_eventos(catalogo, inicio) -> dict:
+        """Los filtros que viajan como DATOS (JSON por stdin) al script constante.
+
+        Se agrupa por (log, PROVEEDOR): el ID solo no identifica un evento. Comprobado
+        contra un visor real el 20-sep-2026 -- pidiendo solo `System 55` volvian 260
+        avisos de energia del procesador, no corrupcion de NTFS. El ProviderName va dentro
+        del propio FilterHashtable: filtrar en el visor es mucho mas barato que traer todo
+        y descartar despues en PowerShell.
+
+        Una entrada con forma invalida se descarta y queda contada en el log; no llega al
+        proceso. Se conservan los valores por defecto de siempre: log `System` si falta y
+        sin filtro de proveedor si viene vacio. El `id` tiene que ser un entero de verdad
+        (no bool, no texto): el servidor siempre lo manda asi.
+        """
+        por_fuente = {}
+        descartadas = 0
+        for entrada in catalogo if isinstance(catalogo, list) else []:
+            if not isinstance(entrada, dict):
+                descartadas += 1
+                continue
+            log = entrada.get('log') or 'System'
+            proveedor = entrada.get('proveedor') or ''
+            identificador = entrada.get('id')
+            valido = (
+                log in LOGS_EVENTOS_PERMITIDOS
+                and isinstance(proveedor, str)
+                and (proveedor == '' or PATRON_PROVEEDOR_EVENTO.match(proveedor) is not None)
+                and type(identificador) is int
+                and 0 <= identificador <= 65535
+            )
+            if not valido:
+                descartadas += 1
+                continue
+            por_fuente.setdefault((log, proveedor), []).append(identificador)
+        if descartadas:
+            logging.warning(
+                'Catalogo de eventos: %d entrada(s) descartada(s) por formato invalido.', descartadas,
+            )
+        return {
+            'inicio': inicio.isoformat(timespec='seconds'),
+            'fuentes': [
+                {'log': log, 'proveedor': proveedor, 'ids': ids}
+                for (log, proveedor), ids in por_fuente.items()
+            ],
+        }
 
     def bucle_reloj(self):
         """Compara el reloj contra el servidor de hora por su cuenta, cada hora.

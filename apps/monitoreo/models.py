@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.conf import settings
-from django.core.validators import MaxValueValidator, MinValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
 from django.utils import timezone
 
@@ -1231,6 +1231,21 @@ def nombres_de_servicios_pos() -> dict:
     return cache['valor']
 
 
+# Formato permitido para `EventoSistemaVigilado.proveedor` (P0-1, docs/auditoria/
+# verificacion-seguridad-p0.md). El proveedor viaja en el catálogo que el agente usa para
+# consultar el visor de Windows, así que solo se admite el alfabeto que tienen los
+# proveedores reales: primer carácter alfanumérico y después letras ASCII, dígitos,
+# espacio, punto, guion bajo, barra, paréntesis y guion, hasta 120 caracteres.
+# `\A`/`\Z` y no `^`/`$`: en Python `$` también acepta un salto de línea final.
+PATRON_PROVEEDOR_EVENTO = r'\A[A-Za-z0-9][A-Za-z0-9 ._/()-]{0,119}\Z'
+validar_proveedor_evento = RegexValidator(
+    regex=PATRON_PROVEEDOR_EVENTO,
+    message='El proveedor solo admite letras, números, espacios y . _ / ( ) -, debe empezar '
+            'con letra o número y tener como máximo 120 caracteres.',
+    code='proveedor_invalido',
+)
+
+
 class EventoSistemaVigilado(models.Model):
     """Catálogo GLOBAL de qué eventos del visor de Windows mira el agente.
 
@@ -1268,6 +1283,7 @@ class EventoSistemaVigilado(models.Model):
     )
     proveedor = models.CharField(
         max_length=120,
+        validators=[validar_proveedor_evento],
         help_text='Quién emite el evento, ej. "disk", "Ntfs", "Microsoft-Windows-Kernel-Power". '
                   'OBLIGATORIO, y no es un detalle: el ID solo NO identifica un evento. '
                   'Medido el 20-sep-2026 contra un visor real, el ID 55 de System devolvió '
