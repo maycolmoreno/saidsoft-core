@@ -130,7 +130,6 @@
     </div>
 
     {# --- Despliegue --- #}
-    {% if 'despliegues' not in modulos_diferidos %}
     <div class="card p-5">
         <h2 class="font-medium mb-1">Resultado de un despliegue</h2>
         <p class="text-sm text-[var(--text-faint)] mb-4">Estado por estación y tiempos de la línea de tiempo.</p>
@@ -142,6 +141,5 @@
             <p class="text-xs text-[var(--text-faint)]">La descarga inicia al elegir un despliegue.</p>
         </div>
     </div>
-    {% endif %}{# fin despliegues diferibles #}
 </div>
 {% endblock %}

@@ -26,8 +26,10 @@ from django.http import Http404
 
 # Los módulos que pueden diferirse. Una clave fuera de esta lista es un error de
 # programación (un typo dejaría la ruta expuesta), por eso `diferido` la valida.
+# `despliegues` (actualización del POS Farmamia/Elipsys) no está: es parte del núcleo, la
+# gestión centralizada de software, y el núcleo no se difiere.
 MODULOS_DIFERIBLES = frozenset({
-    'viaticos', 'aperturas', 'cumplimiento', 'netflow', 'mesa', 'despliegues', 'scripts',
+    'viaticos', 'aperturas', 'cumplimiento', 'netflow', 'mesa', 'scripts',
 })
 
 

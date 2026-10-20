@@ -57,7 +57,8 @@ SALUD_LEER_TEMPERATURA = env.bool('SALUD_LEER_TEMPERATURA', default=True)  # noq
 # SaidSoft RMM 1.0: monitoreo de infraestructura y gestión de software. Estos módulos se
 # difieren (sus pantallas devuelven 404 y no aparecen en el menú); su código, sus modelos
 # y sus servicios siguen en su lugar. Ver docs/producto/SAIDSOFT_RMM_1_0_ALCANCE.md.
+# Despliegues (actualización del POS) es parte del núcleo y no figura.
 PANEL_MODULOS_DIFERIDOS = env.list(  # noqa: F405
     'PANEL_MODULOS_DIFERIDOS',
-    default=['viaticos', 'aperturas', 'cumplimiento', 'netflow', 'mesa', 'despliegues', 'scripts'],
+    default=['viaticos', 'aperturas', 'cumplimiento', 'netflow', 'mesa', 'scripts'],
 )

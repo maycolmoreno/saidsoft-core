@@ -42,7 +42,7 @@
             <span class="lbl">Estaciones</span>
         </a>
         {% endif %}
-        {% if perms.despliegues.view_despliegue and 'despliegues' not in modulos_diferidos %}
+        {% if perms.despliegues.view_despliegue %}
         <a href="{% url 'panel:despliegues_lista' %}" class="nav-item {% if 'despliegue' in request.resolver_match.url_name %}active{% endif %}">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
             <span class="lbl">Despliegues</span>

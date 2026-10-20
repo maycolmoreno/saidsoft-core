@@ -29,6 +29,7 @@ SaidSoft RMM 1.0 hace dos cosas para la red de farmacias:
    - inventario de versiones;
    - instalación y actualización controlada de aplicaciones autorizadas;
    - seguimiento del resultado;
+   - actualización controlada del POS Farmamia/Elipsys (`Zabyca.Pos.Desktop.exe`);
    - actualización controlada del agente SaidSoft.
 
 Todo lo demás se difiere o se retira.
@@ -50,6 +51,7 @@ Todo lo demás se difiere o se retira.
 | SNMP del equipo de borde (ancho de banda, identidad, reinicios) | `monitoreo/mikrotik.py` |
 | Actualizaciones de Windows **pendientes** (solo escaneo) | Agente `escanear_actualizaciones`, ficha de estación |
 | Catálogo de software, versiones, instalaciones e inventario de lo instalado | `software` |
+| Despliegues del POS Farmamia/Elipsys: paquete, aprobación de cuatro ojos, publicación por MQTT, progreso por estación, freno por % de error, pausa, promoción y rollback | `despliegues`, `panel/views/despliegues.py`, agente `_manejar_despliegue`. Riesgos pendientes en la sección 11 |
 | Actualización del agente por tandas con canario; instalador de un solo uso | `panel/views/agente_flota.py`, `instalador.py`, `catalogo.VersionAgente` |
 | Usuarios, roles, MFA, alcance por unidad de negocio | `cuentas`, `activos/management/commands/seed_permisos.py` |
 | Auditoría de acciones | `auditoria` |
@@ -78,8 +80,9 @@ Todo lo demás se difiere o se retira.
 | Campañas de cumplimiento | 4 (`cumplimiento/*`) | Atestación manual sin uso |
 | NetFlow | 1 (`monitoreo/netflow/`) | Piloto; el contenedor `netflow_collector` sigue |
 | Mesa de ayuda por WhatsApp | 2 (`mesa/*`) | Duplica Odoo; el chatbot está apagado (`WHATSAPP_MODO`) |
-| Despliegues del POS | 10 (`despliegues/*`, `reporte_despliegue_csv`) | Fuera de 1.0; nunca se probó con el POS real |
 | Scripts PowerShell/BAT | 11 (`scripts/*`, `ejecuciones/*`) | Ejecución genérica fuera de 1.0 |
+
+Despliegues del POS figuraba en esta lista en la primera versión del corte. Se pasó a `CORE` antes de publicarlo (sección 2): es la actualización del POS Farmamia/Elipsys, el software principal de las farmacias, y su ciclo completo ya llegó a "Confirmado OK" con el POS real en la estación piloto ML016-A.
 
 **Diferidos sin cambios en este corte:**
 
@@ -105,7 +108,6 @@ Todo lo demás se difiere o se retira.
 | App | Qué usa el núcleo | Qué es prescindible |
 |---|---|---|
 | `aperturas` | `consumir_token` / `enrolar_estacion_de_apertura` en `mqtt_worker/services.py` (enrolamiento con token) | Pantallas, plantillas, pasos |
-| `despliegues` | El worker registra `despliegue_estado`; `aperturas` lo orquesta | Pantallas y publicación de despliegues |
 | `scripts` | El bot de Telegram ("sincronizar hora"), `cambiar_nodo_pos`, el worker (`script_estado`), `aperturas` | Pantallas, biblioteca, ad-hoc y programados |
 | `whatsapp` | `monitoreo/telegram_bot.py` (respuestas de la mesa) y `historial_enlaces.py` (causa "luz" fuera del SLA) importan sus modelos | Bandeja `/mesa/`, chatbot, webhook |
 | `activos` | `Farmacia.tecnico_asignado` → `Colaborador`; `Activo.estacion`; FK desde `monitoreo` y `mantenimiento` | Compras, bodegas, movimientos, consumibles (ITAM avanzado) |
@@ -118,9 +120,10 @@ Todo lo demás se difiere o se retira.
 | App | Clasificación | En este corte |
 |---|---|---|
 | `catalogo`, `mqtt_worker`, `cuentas`, `auditoria`, `software`, `panel` | CORE | Sin cambios de comportamiento (el panel gana el mecanismo de módulos diferidos) |
+| `despliegues` | CORE | Sin cambios: no se puede diferir |
 | `monitoreo` | CORE (NetFlow e IA diferidos dentro) | Pantalla NetFlow diferida |
 | `activos`, `mantenimiento` | DEPENDENCIA_COMPARTIDA | Sin cambios (sección 9) |
-| `despliegues`, `scripts`, `aperturas`, `whatsapp` | DEPENDENCIA_COMPARTIDA, UI DIFERIDA | Pantallas diferidas |
+| `scripts`, `aperturas`, `whatsapp` | DEPENDENCIA_COMPARTIDA, UI DIFERIDA | Pantallas diferidas |
 | `viaticos`, `cumplimiento` | DIFERIDO → RETIRADA_CANDIDATA | Pantallas diferidas |
 | `facturacion` | SECUNDARIO | Sin cambios |
 
@@ -129,7 +132,6 @@ Todo lo demás se difiere o se retira.
 | Componente | Riesgo |
 |---|---|
 | `aperturas` (app) | Rompe el enrolamiento con token de apertura (`mqtt_worker`). Separar antes `consumir_token` |
-| `despliegues` (app) | El worker pierde el destino de `despliegue_estado`; un agente que reporte un despliegue viejo generaría mensajes fallidos |
 | `scripts` (app) | Se cae "sincronizar hora" del bot de Telegram y `cambiar_nodo_pos` |
 | `whatsapp` (app) | Rompen imports en `telegram_bot.py` y `historial_enlaces.py`; el SLA de enlaces deja de excluir cortes de luz |
 | `mantenimiento` (app) | Rompe `Alerta.mantenimiento`, la bandeja de notificaciones y **la app móvil de los técnicos** |
@@ -158,7 +160,7 @@ Todo lo demás se difiere o se retira.
 4. **Tanda 5:**
    - `activos` y `mantenimiento`, con la app móvil, pasan a otro proyecto (sección 10);
    - `facturacion`: ¿hay cobro entre unidades? Necesita decisión.
-5. **Tanda 6:** separar de `despliegues`, `scripts` y `aperturas` lo que usa el núcleo (enrolamiento con token, estados en el worker, hora del bot) y después retirar el resto.
+5. **Tanda 6:** separar de `scripts` y `aperturas` lo que usa el núcleo (enrolamiento con token, estados en el worker, hora del bot) y después retirar el resto.
 
 ---
 
@@ -210,6 +212,25 @@ En sentido contrario no hay bloqueo: ni `activos` ni `mantenimiento` necesitan v
 
 ---
 
+## 11. Despliegues del POS: riesgos pendientes antes del despliegue masivo
+
+Despliegues entra al núcleo **sin cambios en el agente ni en MQTT**. Está validado en una sola estación (ML016-A). Antes de publicar una versión a muchas farmacias hay que corregir estos defectos del agente (hallazgo C-13 de `docs/auditoria/gestion-remota-software.md`). Corregirlos implica una versión nueva del agente:
+
+| # | Defecto | Dónde | Consecuencia |
+|---|---|---|---|
+| 1 | El POS se detiene con `taskkill /F` | `agente_prueba.py`, `_detener_pos` | Si hay una venta en curso, se interrumpe sin cierre ordenado |
+| 2 | El rollback copia el respaldo encima de la carpeta y no borra lo que el paquete agregó | `_restaurar_carpeta` (`copytree(..., dirs_exist_ok=True)`) | Después de un rollback pueden quedar archivos de la versión fallida junto a los de la anterior |
+| 3 | La extracción de un `.zip` con carpeta raíz copia cada entrada sin validar que quede dentro de la carpeta del POS | `_extraer_paquete`, rama del prefijo | Una entrada con `..` podría escribir fuera de la carpeta. Lo mitigan la verificación SHA-256 y la firma HMAC del paquete, que solo emite el servidor |
+| 4 | Pausar solo cambia el estado en el servidor | `despliegues/services.py`, `pausar_despliegue` | Las estaciones que ya recibieron el mensaje retenido siguen instalando |
+
+**Mientras tanto:**
+- usar el modo "Aplicar cuando el POS se cierre". Evita el cierre forzado en horario de venta, pero no reemplaza la corrección 1;
+- avanzar por anillos: una estación piloto, unas pocas farmacias, un grupo y por último la cadena, promoviendo solo con el anillo anterior en "Confirmado OK";
+- dejar el freno por porcentaje de error activo;
+- no contar con la pausa para detener estaciones que ya recibieron el paquete.
+
+---
+
 ## Anexo — Mecanismo del primer corte
 
 - `apps/panel/modulos.py`:
@@ -217,14 +238,13 @@ En sentido contrario no hay bloqueo: ni `activos` ni `mantenimiento` necesitan v
   - `diferido(modulo, vista)`, que devuelve 404 si el módulo está diferido;
   - un *context processor* que expone `modulos_diferidos` a las plantillas.
 - `config/settings/base.py`: `PANEL_MODULOS_DIFERIDOS` vacío (desarrollo y CI).
-- `config/settings/produccion.py`: la lista de los 7 módulos, sobrescribible por variable de entorno sin tocar código.
-- `apps/panel/urls.py`: 49 rutas envueltas; los nombres no cambian.
+- `config/settings/produccion.py`: la lista de los 6 módulos, sobrescribible por variable de entorno sin tocar código.
+- `apps/panel/urls.py`: 39 rutas envueltas; los nombres no cambian.
 - Plantillas:
   - **menú** (`base.html`);
   - **botón NetFlow** en Enlaces;
-  - **bloque "Despliegues en curso"** del tablero de versión del POS;
-  - **CSV de despliegues** en Reportes;
   - **"Instalar agente ahora (vía Scripts RMM)"** en la ficha de la estación. El texto que explica cómo instalar MeshCentral a mano sigue visible.
+- Despliegues no es diferible: sus 10 rutas, el bloque "Despliegues en curso" del tablero y el CSV de despliegues en Reportes quedan como estaban antes del corte. Si el `.env` del servidor todavía nombra `despliegues` en `PANEL_MODULOS_DIFERIDOS`, no tiene efecto.
 - Pruebas: `apps/panel/tests_alcance_rmm.py`.
 
 **Por qué no permisos:** el rol Administrador los tiene todos (seguiría viendo los módulos), y quitarlos de los roles es un cambio de datos en producción.

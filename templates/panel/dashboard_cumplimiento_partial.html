@@ -59,7 +59,6 @@ dejaría el contenido cerrado dentro de un bloque ya abierto.
         </tbody>
     </table>
 
-    {% if 'despliegues' not in modulos_diferidos %}
     <h3 class="text-xs font-medium uppercase tracking-wide text-[var(--text-faint)] mt-5 mb-2">
         Despliegues en curso
         <span class="font-normal normal-case tracking-normal">— {{ despliegues_activos|length }}</span>
@@ -98,5 +97,4 @@ dejaría el contenido cerrado dentro de un bloque ya abierto.
     {% empty %}
         {% include "panel/_estado_vacio.html" with titulo="No hay despliegues en curso" ignorar_filtros=1 %}
     {% endfor %}
-    {% endif %}{# fin despliegues diferibles #}
 </div>
