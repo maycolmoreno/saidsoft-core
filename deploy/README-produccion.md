@@ -538,6 +538,39 @@ Al día siguiente, comprobar que una estación nueva o re-enrolada recibe su cre
 
 **Revertir:** volver a poner `"8082:18083"` en el compose y `sh deploy/desplegar.sh`.
 
+## API Keys de EMQX (R-8, 20-oct-2026)
+
+La API REST de EMQX **no pasa por las ACL**: con una API Key se puede publicar en cualquier
+tópico y cambiar usuarios y permisos. Por eso:
+
+- **Una sola clave en uso: `saidsoft-provisioning`**, la del `.env` (`EMQX_API_KEY`). La crea
+  `bootstrap-emqx.sh` si no existe.
+- **Solo la reciben `web` y `worker`**, los únicos que llaman a `apps.mqtt_worker.emqx_admin`:
+  - `worker` aprovisiona la credencial de cada estación al enrolarla;
+  - `web` la revoca al rechazar una estación, muestra las estaciones sin suscripciones en el
+    tablero y corre `revisar_credenciales_mqtt` y `reaplicar_acls_mqtt`.
+
+  `celery_worker`, `celery_beat` y `meshcentral_worker` ya no la reciben.
+- **`saidsof_django_admin`**, la clave que creaba el script hasta el 20-oct, **no se usa**. Se
+  **desactiva** y no se borra: si se borrara, la próxima corrida de un `bootstrap-emqx.sh` viejo
+  crearía otra.
+
+Desactivarla. Es reversible, no reinicia nada y no muestra secretos:
+
+    cd ~/Documentos/Said/saidsoft-core/deploy
+    (
+      . ./.env
+      API=http://127.0.0.1:8082/api/v5
+      TOKEN=$(curl -s -X POST "$API/login" -H 'Content-Type: application/json' \
+        -d "{\"username\":\"admin\",\"password\":\"${EMQX_DASHBOARD_PASSWORD}\"}" \
+        | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+      curl -s -o /dev/null -w 'PUT %{http_code}\n' -X PUT "$API/api_key/saidsof_django_admin" \
+        -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+        -d '{"enable": false, "desc": "Sin uso: desactivada el 20-oct-2026 (R-8)"}'
+    )
+
+Esperado: `PUT 200`. Para revertir, lo mismo con `"enable": true`.
+
 ## Copia del respaldo a OneDrive (20-oct-2026)
 
 `deploy/backup.sh` sube a OneDrive, con rclone, lo que ya dejó cifrado con GPG: la base y

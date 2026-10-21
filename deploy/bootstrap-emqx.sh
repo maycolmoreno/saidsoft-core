@@ -168,7 +168,11 @@ definir_acl "$MQTT_USERNAME_PANEL" '[
 echo
 echo "Verificando API Key administrativa para apps.mqtt_worker.emqx_admin..."
 
-API_KEY_NAME="saidsof_django_admin"
+# El nombre es el de la clave que usa producción. Hasta el 20-oct-2026 este script creaba
+# "saidsof_django_admin", pero el .env de producción usa "saidsoft-provisioning", creada
+# a mano: un servidor reconstruido con este script habría tenido una clave distinta de la
+# documentada. "saidsof_django_admin" quedó DESACTIVADA en producción, no borrada.
+API_KEY_NAME="saidsoft-provisioning"
 
 ya_existe=$(curl -s -X GET "$EMQX_API/api_key" -H "Authorization: Bearer $TOKEN" \
     | grep -c "\"name\":\"$API_KEY_NAME\"" || true)

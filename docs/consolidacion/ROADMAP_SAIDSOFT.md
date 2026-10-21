@@ -54,7 +54,7 @@ consolidan antes de agregar.
 
 | # | Trabajo | Tipo | Depende de |
 |---|---|---|---|
-| 1.1 | Dashboard de EMQX solo en `127.0.0.1:8082` o detrás del firewall (R-1) | Configuración | 0.4 |
+| 1.1 | ✅ **Hecho el 20-oct** (`f670fb4`). Dashboard de EMQX solo en `127.0.0.1:8082`; verificado en el NUC y desde otra red. Acceso por túnel SSH | Configuración | 0.4 |
 | 1.2 | Respaldos fuera del NUC, **prueba de restauración**, MeshCentral y certificados en el respaldo, RPO y RTO definidos | Operación + script existente | 0.1, 0.2; autorización de Microsoft 365 o el destino que se elija |
 | 1.3 | Rotar la contraseña del dashboard y las API Keys, con vencimiento (R-8). **Desactivar** `saidsof_django_admin` (no borrarla) y alinear `bootstrap-emqx.sh` con la clave que usa producción (`saidsoft-provisioning`) | Operación + script | 1.1 |
 | 1.4 | MFA obligatorio para los roles Administrador y Operador RMM; token de la API con vencimiento o atado al MFA | Código chico | — |

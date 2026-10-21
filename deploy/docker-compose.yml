@@ -360,15 +360,8 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS}
       COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
       BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
-      # Aprovisionamiento de credenciales MQTT por estación (apps.mqtt_worker.emqx_admin):
-      # con esto cada estación recibe, al enrolarse, su propia credencial con ACL acotada
-      # a sus propios tópicos, en vez de compartir MQTT_PASSWORD_AGENTE con toda la flota.
-      # Vacías = comportamiento anterior (credencial compartida); `_config()` trata la
-      # cadena vacía igual que la ausencia, así que el `:-` de acá es seguro pese a que
-      # django-environ no aplique default a una var presente pero vacía.
-      EMQX_API_URL: ${EMQX_API_URL:-}
-      EMQX_API_KEY: ${EMQX_API_KEY:-}
-      EMQX_API_SECRET: ${EMQX_API_SECRET:-}
+      # Sin EMQX_API_*: este servicio no llama a apps.mqtt_worker.emqx_admin. La API Key
+      # salta las ACL de EMQX, así que solo la reciben web y worker (R-8, 20-oct-2026).
       MESHCENTRAL_API_WS_URL: ${MESHCENTRAL_API_WS_URL}
       MESHCENTRAL_API_USUARIO: ${MESHCENTRAL_API_USUARIO}
       MESHCENTRAL_API_PASSWORD: ${MESHCENTRAL_API_PASSWORD}
@@ -492,15 +485,8 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS}
       COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
       BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
-      # Aprovisionamiento de credenciales MQTT por estación (apps.mqtt_worker.emqx_admin):
-      # con esto cada estación recibe, al enrolarse, su propia credencial con ACL acotada
-      # a sus propios tópicos, en vez de compartir MQTT_PASSWORD_AGENTE con toda la flota.
-      # Vacías = comportamiento anterior (credencial compartida); `_config()` trata la
-      # cadena vacía igual que la ausencia, así que el `:-` de acá es seguro pese a que
-      # django-environ no aplique default a una var presente pero vacía.
-      EMQX_API_URL: ${EMQX_API_URL:-}
-      EMQX_API_KEY: ${EMQX_API_KEY:-}
-      EMQX_API_SECRET: ${EMQX_API_SECRET:-}
+      # Sin EMQX_API_*: este servicio no llama a apps.mqtt_worker.emqx_admin. La API Key
+      # salta las ACL de EMQX, así que solo la reciben web y worker (R-8, 20-oct-2026).
       # sincronizar_meshcentral_task corre ACÁ, no en meshcentral_worker: sin estas
       # variables `AdaptadorMeshCentral.configurado()` da False y la tarea devuelve
       # "0 nodo(s) sincronizado(s)" cada 15 min — un éxito aparente que en el log de
@@ -604,15 +590,8 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS}
       COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
       BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
-      # Aprovisionamiento de credenciales MQTT por estación (apps.mqtt_worker.emqx_admin):
-      # con esto cada estación recibe, al enrolarse, su propia credencial con ACL acotada
-      # a sus propios tópicos, en vez de compartir MQTT_PASSWORD_AGENTE con toda la flota.
-      # Vacías = comportamiento anterior (credencial compartida); `_config()` trata la
-      # cadena vacía igual que la ausencia, así que el `:-` de acá es seguro pese a que
-      # django-environ no aplique default a una var presente pero vacía.
-      EMQX_API_URL: ${EMQX_API_URL:-}
-      EMQX_API_KEY: ${EMQX_API_KEY:-}
-      EMQX_API_SECRET: ${EMQX_API_SECRET:-}
+      # Sin EMQX_API_*: este servicio no llama a apps.mqtt_worker.emqx_admin. La API Key
+      # salta las ACL de EMQX, así que solo la reciben web y worker (R-8, 20-oct-2026).
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     depends_on:
