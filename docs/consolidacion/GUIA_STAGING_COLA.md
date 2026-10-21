@@ -187,28 +187,33 @@ Para observar, en todos los pasos:
    colgadas. Las `publicando` se recuperan, y el cerrojo de la pasada se libera solo al morir
    la conexión.
 
-## 9. Reversión (si staging falla)
+## 9. Reversión
 
 Ensayada en la base de pruebas con `ENSAYO_REVERSION=1 python manage.py test
-apps.catalogo.tests_reversion_0039`. En staging:
+apps.catalogo.tests_reversion_0039`. El procedimiento paso a paso, con los comandos del
+servidor, está en `CHECKLIST_PILOTO_COLA.md` §8. Lo que importa entender:
 
-1. Respaldo previo:
-   ```sh
-   pg_dump -t orden_agente
-   python manage.py dumpdata catalogo.OrdenAgente > orden_agente.json
-   ```
-2. Volver el código a la rama anterior **antes** o junto con la migración. El código viejo no
-   usa la tabla; el código nuevo sin la tabla falla.
-3. `python manage.py migrate catalogo 0038_estacion_mac_lan`. Borra solo `orden_agente`, con
-   sus índices y restricciones. No toca resultados, estaciones ni eventos.
-4. Verificar:
-   - siguen iguales los conteos y estados de `ResultadoInstalacion`, `ResultadoDespliegue`,
-     `ResultadoEjecucionScript` y `Estacion`;
-   - en `showmigrations catalogo`, `0039` aparece sin aplicar.
-5. Quedan, inofensivos: el permiso `resolver_ordenagente` y el content type de `ordenagente`
-   (Django no los borra) y los eventos de auditoría `orden_agente.*` (texto, sin FK).
-6. Los retenidos que la cola publicó siguen en EMQX. El código anterior los maneja como
-   siempre (`retirar_retenido_*` al recibir el reporte).
+- **El orden importa.** Django deshace una migración leyendo su archivo. El código anterior
+  no tiene `0039_orden_agente.py`, así que una vez desplegado ya no puede quitarla. El
+  entrypoint de los contenedores solo aplica migraciones hacia adelante: tampoco la deshace.
+- **Vuelta atrás rápida (solo el código), sin pérdida de datos.** Se revierte el commit y se
+  despliega. La tabla `orden_agente` queda en la base sin uso. Limitación: sus claves
+  foráneas impiden borrar una estación o un usuario que tengan órdenes, hasta que se limpie.
+  Es la opción para una emergencia.
+- **Vuelta atrás completa (quita la tabla).** Con el código NUEVO todavía desplegado:
+  1. detener `celery_beat`, `celery_worker` y `worker`;
+  2. respaldar `orden_agente`;
+  3. `migrate catalogo 0038_estacion_mac_lan`;
+  4. recién después, revertir el código y desplegar.
+
+  Borra solo `orden_agente`, con sus índices y restricciones. No toca resultados,
+  estaciones ni eventos.
+- **Antes de cualquiera de las dos**, mirar las órdenes `pendiente`: el código anterior no
+  las despacha, así que esas estaciones no recibirían su orden. Anotarlas para republicar.
+- **Quedan, inofensivos:**
+  - el permiso `resolver_ordenagente` y el content type `ordenagente` (Django no los borra);
+  - los eventos de auditoría `orden_agente.*` (texto, sin FK);
+  - los retenidos que la cola publicó en EMQX, que el código anterior maneja como siempre.
 
 ## 10. Criterios para autorizar el despliegue
 
