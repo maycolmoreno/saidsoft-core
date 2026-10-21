@@ -36,6 +36,18 @@ def _registrar(paso, evento, detalle=''):
     return EventoApertura.objects.create(paso=paso, evento=evento, detalle=detalle)
 
 
+def _registrar_publicacion(paso, publicacion, descripcion):
+    """`ENVIADO` ("Trabajo enviado a la estación") solo si el broker aceptó la orden. Si
+    quedó sin confirmar o en espera, no se afirma el envío: el paso sigue en curso con el
+    motivo en su detalle, y `sincronizar_apertura` lo cierra por el resultado de dominio,
+    como siempre."""
+    if publicacion.confirmada and publicacion.aceptadas:
+        _registrar(paso, EventoApertura.Paso.ENVIADO, f'{descripcion}: {publicacion.resumen()}')
+        return
+    paso.detalle = f'{descripcion}: todavía sin confirmación de envío: {publicacion.resumen()}'
+    paso.save(update_fields=['detalle'])
+
+
 # --------------------------------------------------------------------------------------
 # Ciclo de vida de la apertura (lo dispara una persona desde el panel)
 # --------------------------------------------------------------------------------------
@@ -414,9 +426,9 @@ def _ejecutar_paso_software(paso, plantilla):
     paso.solicitud_instalacion = solicitud
     paso.save(update_fields=['solicitud_instalacion'])
     if not resultado.exitoso:
-        marcar_paso(paso, PasoApertura.Estado.ERROR, 'No se pudo publicar la instalación (¿broker caído?)')
+        marcar_paso(paso, PasoApertura.Estado.ERROR, 'No se pudo publicar la instalación (¿broker caído o ACL?)')
         return
-    _registrar(paso, EventoApertura.Paso.ENVIADO, f'Solicitud de instalación #{solicitud.pk}')
+    _registrar_publicacion(paso, resultado, f'Solicitud de instalación #{solicitud.pk}')
 
 
 def _ejecutar_paso_despliegue(paso, plantilla):
@@ -429,11 +441,11 @@ def _ejecutar_paso_despliegue(paso, plantilla):
             f'El despliegue {despliegue.version} sigue en borrador: aprobalo antes de usarlo en una apertura.',
         )
         return
-    enviado = publicar_despliegue_a_estacion(despliegue, paso.estacion)
-    if not enviado:
-        marcar_paso(paso, PasoApertura.Estado.ERROR, 'No se pudo publicar el despliegue (¿broker caído?)')
+    publicacion = publicar_despliegue_a_estacion(despliegue, paso.estacion, detallado=True)
+    if not publicacion.exitoso:
+        marcar_paso(paso, PasoApertura.Estado.ERROR, 'No se pudo publicar el despliegue (¿broker caído o ACL?)')
         return
-    _registrar(paso, EventoApertura.Paso.ENVIADO, f'Despliegue {despliegue.version} enviado')
+    _registrar_publicacion(paso, publicacion, f'Despliegue {despliegue.version}')
 
 
 def _ejecutar_paso_activo(paso):

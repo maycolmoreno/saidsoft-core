@@ -8,23 +8,16 @@ disparada por un humano.
 import json
 import logging
 import time
-from dataclasses import dataclass
 
-import paho.mqtt.publish as mqtt_publish
 from django.conf import settings
 from django.utils import timezone
 
+from apps.catalogo.ordenes import ResultadoPublicacion
 from apps.catalogo.services import firmar_payload, secreto_de
 
 from .models import Despliegue, EventoDespliegue, ResultadoDespliegue
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ResultadoPublicacion:
-    total_estaciones: int
-    exitoso: bool
 
 
 def _topico_de(estacion) -> str:
@@ -181,6 +174,21 @@ def marcar_reanudado(*, despliegue: Despliegue) -> Despliegue:
     return despliegue
 
 
+def _publicar_mensajes(mensajes):
+    """Transporte de las órdenes de despliegue. Una sola conexión para todos los tópicos del
+    destino (antes: connect+disconnect por tópico vía publish.single() en loop — con un
+    destino de muchas estaciones puntuales, eso bloqueaba la request HTTP con decenas de
+    handshakes secuenciales).
+
+    MQTT 5 con un resultado por mensaje (`aceptado`/`rechazado`/`incierto`, según el
+    PUBACK): con `paho.mqtt.publish.multiple` (MQTT 3.1.1) un rechazo de la ACL de EMQX
+    pasaba como éxito. Respeta MQTT_USE_TLS igual que antes (en producción EMQX solo expone
+    el listener TLS). Ver `apps.catalogo.services._enviar_lote_v5`."""
+    from apps.catalogo.services import publicar_lote
+
+    return publicar_lote(mensajes)
+
+
 def publicar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     """Resuelve el destino, crea ResultadoDespliegue por estación y publica por MQTT.
 
@@ -189,6 +197,9 @@ def publicar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     Antes esto se registraba igual aunque la publicación hubiera fallado por completo,
     dejando al operador viendo "publicado con éxito" sin que ninguna estación recibiera
     nada. El caller decide qué mostrar/reintentar según `ResultadoPublicacion.exitoso`.
+
+    El evento "publicado" se registra SOLO para las estaciones cuya orden EMQX aceptó (ver
+    `orden_aceptada_por_el_broker`); lo sin confirmar va en `sin_confirmar`.
     """
     estaciones = list(despliegue.resolver_estaciones_destino())
 
@@ -198,34 +209,15 @@ def publicar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     ]
     ResultadoDespliegue.objects.bulk_create(resultados, ignore_conflicts=True)
 
+    # Un payload por estación: cada uno firmado con el secreto de su destinataria, y cada
+    # envío registrado como `OrdenAgente` (ver apps.software.services.publicar_solicitud).
+    from apps.catalogo import ordenes
 
-    mqtt_conf = settings.MQTT_CONFIG
-    auth = None
-    if mqtt_conf['USERNAME']:
-        auth = {'username': mqtt_conf['USERNAME'], 'password': mqtt_conf['PASSWORD']}
-    tls = None
-    if mqtt_conf['USE_TLS']:
-        # EMQX en producción solo expone el listener TLS (8883); sin esto, publish.multiple
-        # se conecta en plano y el broker cierra la conexión.
-        tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
-
-    # Un payload por estación: cada uno firmado con el secreto de su destinataria.
-    mensajes = [
-        {'topic': _topico_de(e), 'payload': json.dumps(_payload(despliegue, e)), 'retain': True}
-        for e in estaciones
-    ]
-
+    envios = [(e, _topico_de(e), json.dumps(_payload(despliegue, e))) for e in estaciones]
     try:
-        # Una sola conexión para todos los tópicos del destino (antes: connect+disconnect
-        # por tópico vía publish.single() en loop — con un destino de muchas estaciones
-        # puntuales, eso bloqueaba la request HTTP con decenas de handshakes secuenciales).
-        mqtt_publish.multiple(
-            mensajes,
-            hostname=mqtt_conf['HOST'],
-            port=mqtt_conf['PORT'],
-            auth=auth,
-            tls=tls,
-            client_id=mqtt_conf['CLIENT_ID_PANEL'],
+        cola = ordenes.encolar_y_publicar(
+            tipo=ordenes.Tipo.DESPLIEGUE, origen_id=despliegue.id, envios=envios,
+            publicar=_publicar_mensajes, creada_por=despliegue.creado_por,
         )
     except Exception:
         logger.exception(
@@ -233,16 +225,16 @@ def publicar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
         )
         return ResultadoPublicacion(total_estaciones=len(estaciones), exitoso=False)
 
-    EventoDespliegue.objects.bulk_create([
-        EventoDespliegue(resultado=r, paso=EventoDespliegue.Paso.PUBLICADO, detalle=f'Tópico: {_topico_de(r.estacion)}')
-        for r in ResultadoDespliegue.objects.filter(despliegue=despliegue).select_related('estacion')
-    ])
-
     despliegue.estado = Despliegue.Estado.PUBLICANDO
     despliegue.fecha_publicacion = timezone.now()
     despliegue.save(update_fields=['estado', 'fecha_publicacion'])
+    # Si alguna estación quedó en error por un rechazo del broker, recién ahora (con el
+    # despliegue publicando) cuentan el freno y el completado.
+    if cola['rechazadas']:
+        evaluar_freno_automatico(despliegue)
+        verificar_completado(despliegue)
 
-    return ResultadoPublicacion(total_estaciones=len(estaciones), exitoso=True)
+    return ResultadoPublicacion.de_la_cola(len(estaciones), cola)
 
 
 def reintentar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
@@ -265,27 +257,18 @@ def reintentar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
     if not pendientes:
         return ResultadoPublicacion(total_estaciones=0, exitoso=True)
 
-    mensajes = [
-        {'topic': _topico_de(r.estacion), 'payload': json.dumps(_payload(despliegue, r.estacion)), 'retain': True}
-        for r in pendientes
-    ]
+    # Con la cola de órdenes, una estación cuya orden de este despliegue está en curso
+    # (entregada, recibida o en ejecución) se OMITE: un payload con timestamp nuevo el agente
+    # lo toma como orden nueva, y le volvería a cerrar el POS y aplicar el paquete encima de
+    # uno que todavía está aplicando. Se reintenta a las que terminaron mal o nunca la
+    # recibieron, y a las publicadas antes de la cola (sin orden registrada), como siempre.
+    from apps.catalogo import ordenes
 
-    mqtt_conf = settings.MQTT_CONFIG
-    auth = None
-    if mqtt_conf['USERNAME']:
-        auth = {'username': mqtt_conf['USERNAME'], 'password': mqtt_conf['PASSWORD']}
-    tls = None
-    if mqtt_conf['USE_TLS']:
-        tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
-
+    envios = [(r.estacion, _topico_de(r.estacion), json.dumps(_payload(despliegue, r.estacion))) for r in pendientes]
     try:
-        mqtt_publish.multiple(
-            mensajes,
-            hostname=mqtt_conf['HOST'],
-            port=mqtt_conf['PORT'],
-            auth=auth,
-            tls=tls,
-            client_id=mqtt_conf['CLIENT_ID_PANEL'],
+        cola = ordenes.encolar_y_publicar(
+            tipo=ordenes.Tipo.DESPLIEGUE, origen_id=despliegue.id, envios=envios, publicar=_publicar_mensajes,
+            detalle_publicado='Republicado (reintento manual)',
         )
     except Exception:
         logger.exception(
@@ -294,19 +277,29 @@ def reintentar_despliegue(despliegue: Despliegue) -> ResultadoPublicacion:
         )
         return ResultadoPublicacion(total_estaciones=len(pendientes), exitoso=False)
 
+    omitidas = {e.pk for e in cola['omitidas']} | {e.pk for e in cola['inciertas']}
+    if omitidas:
+        logger.info(
+            'Reintento del despliegue %s: %d estación(es) omitidas: %d con la orden en curso y %d '
+            'con la orden incierta (se resuelve a mano antes de reintentar).',
+            despliegue.id, len(omitidas), len(cola['omitidas']), len(cola['inciertas']),
+        )
+    # Las rechazadas por el broker ya quedaron en error con el motivo
+    # (`orden_rechazada_por_el_broker`): no se reintentaron y no vuelven a pendiente.
+    rechazadas = {o.estacion_id for o in cola['rechazadas']}
+    republicados = [r for r in pendientes if r.estacion_id not in omitidas and r.estacion_id not in rechazadas]
+
     # Vuelven a PENDIENTE para que el próximo freno automático (evaluar_freno_automatico)
-    # no las cuente contra el reintento con el % de error de la ronda anterior.
-    ResultadoDespliegue.objects.filter(pk__in=[r.pk for r in pendientes]).update(
+    # no las cuente contra el reintento con el % de error de la ronda anterior. El evento
+    # "publicado" lo registra la cola solo para las que el broker aceptó.
+    ResultadoDespliegue.objects.filter(pk__in=[r.pk for r in republicados]).update(
         estado=ResultadoDespliegue.Estado.PENDIENTE,
     )
-    EventoDespliegue.objects.bulk_create([
-        EventoDespliegue(resultado=r, paso=EventoDespliegue.Paso.PUBLICADO, detalle='Republicado (reintento manual)')
-        for r in pendientes
-    ])
-    return ResultadoPublicacion(total_estaciones=len(pendientes), exitoso=True)
+    resultado = ResultadoPublicacion.de_la_cola(len(republicados), cola)
+    return resultado
 
 
-def publicar_despliegue_a_estacion(despliegue: Despliegue, estacion) -> bool:
+def publicar_despliegue_a_estacion(despliegue: Despliegue, estacion, *, detallado: bool = False):
     """Envía un despliegue ya existente a UNA estación, por su tópico individual.
 
     Lo usa `apps.aperturas`: una estación que se enrola en una farmacia que está abriendo
@@ -318,42 +311,99 @@ def publicar_despliegue_a_estacion(despliegue: Despliegue, estacion) -> bool:
 
     No aprueba nada ni cambia el estado del despliegue: solo suma un destinatario a uno
     que ya pasó por su propio control de cuatro ojos.
+
+    Devuelve True si la orden quedó en curso (False si no se pudo conectar o EMQX la
+    rechazó). Con `detallado=True` devuelve el `ResultadoPublicacion`, para distinguir una
+    publicación confirmada de una sin confirmar o en espera. El evento "publicado" lo
+    registra la cola solo cuando el broker la acepta.
     """
     resultado, _ = ResultadoDespliegue.objects.get_or_create(
         despliegue=despliegue, estacion=estacion,
         defaults={'estado': ResultadoDespliegue.Estado.PENDIENTE},
     )
 
-    mqtt_conf = settings.MQTT_CONFIG
-    auth = None
-    if mqtt_conf['USERNAME']:
-        auth = {'username': mqtt_conf['USERNAME'], 'password': mqtt_conf['PASSWORD']}
-    tls = None
-    if mqtt_conf['USE_TLS']:
-        tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
+    # Como orden de la cola: si la estación ya tiene otro despliegue entregado sin acuse,
+    # este espera su turno (y lo despacha `procesar_ordenes_task`) en vez de pisarlo.
+    from apps.catalogo import ordenes
 
     try:
-        mqtt_publish.single(
-            f'/saidsof/agente/{estacion.codigo}/despliegue/',
-            payload=json.dumps(_payload(despliegue, estacion)),
-            retain=True,
-            hostname=mqtt_conf['HOST'],
-            port=mqtt_conf['PORT'],
-            auth=auth,
-            tls=tls,
-            client_id=mqtt_conf['CLIENT_ID_PANEL'],
+        cola = ordenes.encolar_y_publicar(
+            tipo=ordenes.Tipo.DESPLIEGUE, origen_id=despliegue.id,
+            envios=[(estacion, _topico_de(estacion), json.dumps(_payload(despliegue, estacion)))],
+            publicar=_publicar_mensajes, detalle_publicado='Publicado por una apertura (estación recién enrolada)',
         )
     except Exception:
         logger.exception(
             'No se pudo publicar el despliegue %s a la estación %s', despliegue.id, estacion.codigo,
         )
-        return False
+        return ResultadoPublicacion(total_estaciones=1, exitoso=False) if detallado else False
 
-    EventoDespliegue.objects.create(
-        resultado=resultado, paso=EventoDespliegue.Paso.PUBLICADO,
-        detalle='Publicado por una apertura (estación recién enrolada)',
+    publicacion = ResultadoPublicacion.de_la_cola(1, cola)
+    return publicacion if detallado else True
+
+
+# --- Avisos de la cola de órdenes (apps.catalogo.ordenes) ---
+
+def orden_aceptada_por_el_broker(ordenes_aceptadas, *, detalle=None):
+    """EMQX aceptó estas órdenes: recién ahora el despliegue está "publicado" para esas
+    estaciones. Corre en la misma transacción que la orden pasa a `entregada`."""
+    resultados = {
+        (r.despliegue_id, r.estacion_id): r
+        for r in ResultadoDespliegue.objects.filter(
+            despliegue_id__in={o.origen_id for o in ordenes_aceptadas},
+            estacion_id__in={o.estacion_id for o in ordenes_aceptadas},
+        )
+    }
+    eventos = []
+    for orden in ordenes_aceptadas:
+        resultado = resultados.get((orden.origen_id, orden.estacion_id))
+        if resultado is None:
+            # Sin resultado de dominio (la despliegue se borró): no se inventa uno. La orden
+            # sigue su curso; el aviso no puede tumbar el lote de las demás.
+            logger.warning('Orden %s aceptada sin resultado de dominio (%s %s): no se registra el evento.',
+                           orden.uid, 'despliegue', orden.origen_id)
+            continue
+        eventos.append(EventoDespliegue(
+            resultado=resultado, paso=EventoDespliegue.Paso.PUBLICADO, detalle=detalle or f'Tópico: {orden.topico}',
+        ))
+    EventoDespliegue.objects.bulk_create(eventos)
+
+
+def _con_resultado(orden) -> bool:
+    """Los avisos de la cola solo actualizan un resultado de dominio que existe: nunca lo
+    crean (si la despliegue se borró, crearlo fallaría por la clave foránea y tumbaría la
+    transacción de la cola)."""
+    if ResultadoDespliegue.objects.filter(despliegue_id=orden.origen_id, estacion_id=orden.estacion_id).exists():
+        return True
+    logger.warning('Orden %s sin resultado de dominio (%s %s): el aviso se ignora.', orden.uid, 'despliegue',
+                   orden.origen_id)
+    return False
+
+
+def orden_rechazada_por_el_broker(ordenes_rechazadas, *, detalle):
+    """EMQX rechazó estas órdenes y es seguro que no salieron: el paquete no se envió. Queda
+    en error con el motivo, y cuenta para el freno automático: un despliegue que el broker
+    rechaza en masa (ACL o credencial) tiene que frenarse igual que uno que falla."""
+    for orden in ordenes_rechazadas:
+        if not _con_resultado(orden):
+            continue
+        registrar_estado_de_estacion(
+            despliegue_id=orden.origen_id, estacion=orden.estacion, paso=EventoDespliegue.Paso.ERROR,
+            datos={'detalle': detalle},
+        )
+
+
+def orden_resuelta_a_mano(orden, *, decision, detalle):
+    """Una persona verificó en la caja el resultado de una orden incierta. Se registra como
+    el paso final (`ok` o `error`) con el detalle de la resolución manual. NO toca la
+    versión del POS de la estación: eso lo afirma el agente al reportar `ok` con
+    `version_nueva`, no una persona."""
+    paso = EventoDespliegue.Paso.OK if decision == 'completada' else EventoDespliegue.Paso.ERROR
+    if not _con_resultado(orden):
+        return
+    registrar_estado_de_estacion(
+        despliegue_id=orden.origen_id, estacion=orden.estacion, paso=paso, datos={'detalle': detalle},
     )
-    return True
 
 
 def evaluar_freno_automatico(despliegue: Despliegue) -> bool:

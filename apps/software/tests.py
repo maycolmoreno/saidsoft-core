@@ -22,6 +22,12 @@ from .services import (
 )
 
 
+def broker_acepta(mensajes, **_):
+    """Reemplazo de `apps.catalogo.services._enviar_lote_v5`: EMQX acepta todo (PUBACK de
+    éxito por mensaje)."""
+    return ['aceptado'] * len(mensajes)
+
+
 class _BaseSoftwareTests(TestCase):
     def setUp(self):
         self.sg = UnidadNegocio.objects.get(codigo='SG')
@@ -163,7 +169,7 @@ class PublicarSolicitudFirmaTests(_BaseSoftwareTests):
         solicitud = self._crear_solicitud()
         solicitud.estaciones.set([self._crear_estacion('ML001-A')])
 
-        with patch('apps.software.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             publicar_solicitud(solicitud)
 
         payload = json.loads(mock_multiple.call_args.args[0][0]['payload'])
@@ -183,7 +189,7 @@ class PublicarSolicitudFirmaTests(_BaseSoftwareTests):
         solicitud = self._crear_solicitud()
         solicitud.estaciones.set([self._crear_estacion('ML001-A')])
 
-        with patch('apps.software.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             publicar_solicitud(solicitud)
 
         payload = json.loads(mock_multiple.call_args.args[0][0]['payload'])
@@ -204,7 +210,7 @@ class PublicarSolicitudTests(_BaseSoftwareTests):
         solicitud = self._crear_solicitud()
         solicitud.estaciones.set([self._crear_estacion(f'ML001-{i}') for i in range(3)])
 
-        with patch('apps.software.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             resultado = publicar_solicitud(solicitud)
 
         mock_multiple.assert_called_once()
@@ -223,7 +229,7 @@ class PublicarSolicitudTests(_BaseSoftwareTests):
         solicitud = self._crear_solicitud()
         solicitud.estaciones.set([self._crear_estacion('ML001-A')])
 
-        with patch('apps.software.services.mqtt_publish.multiple', side_effect=ConnectionRefusedError('sin broker')):
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=ConnectionRefusedError('sin broker')):
             resultado = publicar_solicitud(solicitud)
 
         self.assertFalse(resultado.exitoso)
@@ -241,7 +247,7 @@ class PublicarSolicitudTests(_BaseSoftwareTests):
         solicitud = self._crear_solicitud(destino_tipo=DestinoTipo.GRUPOS)
         solicitud.grupos.set([self.grupo])
 
-        with patch('apps.software.services.mqtt_publish.multiple'):
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta):
             resultado = publicar_solicitud(solicitud)
 
         self.assertEqual(resultado.total_estaciones, 1)  # solo ML001-A, nunca MAM01-A
@@ -386,7 +392,7 @@ class FanOutSoftwarePorEstacionTests(_BaseSoftwareTests):
 
     def _publicar_a_la_cadena(self):
         solicitud = self._crear_solicitud(destino_tipo=DestinoTipo.CADENA)
-        with patch('apps.software.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             publicar_solicitud(solicitud)
         return {m['topic']: json.loads(m['payload']) for m in mock_multiple.call_args.args[0]}
 

@@ -21,6 +21,12 @@ from .services import (
 )
 
 
+def broker_acepta(mensajes, **_):
+    """Reemplazo de `apps.catalogo.services._enviar_lote_v5`: EMQX acepta todo (PUBACK de
+    éxito por mensaje)."""
+    return ['aceptado'] * len(mensajes)
+
+
 class _BaseDespliegueTests(TestCase):
     def setUp(self):
         self.sg = UnidadNegocio.objects.get(codigo='SG')
@@ -64,7 +70,7 @@ class PublicarDespliegueFirmaTests(_BaseDespliegueTests):
         despliegue = self._crear_despliegue()
         despliegue.estaciones.set([self._crear_estacion('ML001-A')])
 
-        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             publicar_despliegue(despliegue)
 
         payload = json.loads(mock_multiple.call_args.args[0][0]['payload'])
@@ -81,7 +87,7 @@ class PublicarDespliegueFirmaTests(_BaseDespliegueTests):
         despliegue = self._crear_despliegue()
         despliegue.estaciones.set([self._crear_estacion('ML001-A')])
 
-        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             publicar_despliegue(despliegue)
 
         payload = json.loads(mock_multiple.call_args.args[0][0]['payload'])
@@ -99,7 +105,7 @@ class PublicarDespliegueTests(_BaseDespliegueTests):
         despliegue = self._crear_despliegue()
         despliegue.estaciones.set([self._crear_estacion(f'ML001-{i}') for i in range(3)])
 
-        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             resultado = publicar_despliegue(despliegue)
 
         mock_multiple.assert_called_once()
@@ -119,7 +125,7 @@ class PublicarDespliegueTests(_BaseDespliegueTests):
         despliegue.estaciones.set([self._crear_estacion('ML001-A')])
 
         with patch(
-            'apps.despliegues.services.mqtt_publish.multiple', side_effect=ConnectionRefusedError('sin broker'),
+            'apps.catalogo.services._enviar_lote_v5', side_effect=ConnectionRefusedError('sin broker'),
         ):
             resultado = publicar_despliegue(despliegue)
 
@@ -135,7 +141,7 @@ class PublicarDespliegueTests(_BaseDespliegueTests):
         despliegue = self._crear_despliegue()
         despliegue.estaciones.set([self._crear_estacion('ML001-A')])
 
-        with patch('apps.despliegues.services.mqtt_publish.multiple', side_effect=OSError):
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=OSError):
             publicar_despliegue(despliegue)
 
         # Los ResultadoDespliegue se crean antes de intentar publicar: si el broker vuelve
@@ -229,7 +235,7 @@ class UrlDescargaAgenteTests(_BaseDespliegueTests):
 
     def _url_publicada(self, despliegue):
         despliegue.estaciones.set([self._crear_estacion('ML001-A')])
-        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             publicar_despliegue(despliegue)
         return json.loads(mock_multiple.call_args.args[0][0]['payload'])['url']
 
@@ -301,7 +307,7 @@ class ReintentarDespliegueTests(_BaseDespliegueTests):
         self._resultado(despliegue, error, ResultadoDespliegue.Estado.ERROR)
         self._resultado(despliegue, pendiente, ResultadoDespliegue.Estado.PENDIENTE)
 
-        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             resultado = reintentar_despliegue(despliegue)
 
         self.assertTrue(resultado.exitoso)
@@ -328,7 +334,7 @@ class ReintentarDespliegueTests(_BaseDespliegueTests):
         despliegue.estaciones.set([ok])
         self._resultado(despliegue, ok, ResultadoDespliegue.Estado.APLICADO)
 
-        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             resultado = reintentar_despliegue(despliegue)
 
         mock_multiple.assert_not_called()
@@ -341,7 +347,7 @@ class ReintentarDespliegueTests(_BaseDespliegueTests):
         despliegue.estaciones.set([error])
         self._resultado(despliegue, error, ResultadoDespliegue.Estado.ERROR)
 
-        with patch('apps.despliegues.services.mqtt_publish.multiple', side_effect=OSError):
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=OSError):
             resultado = reintentar_despliegue(despliegue)
 
         self.assertFalse(resultado.exitoso)
@@ -560,7 +566,7 @@ class MarcarReanudadoServicioTests(_BaseDespliegueTests):
         self._resultado(despliegue, estacion, ResultadoDespliegue.Estado.ERROR)
 
         self.client.force_login(aprobador)
-        with patch('apps.despliegues.services.mqtt_publish.multiple', side_effect=OSError('broker caído')):
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=OSError('broker caído')):
             self.client.post(f'/despliegues/{despliegue.pk}/reanudar/')
 
         despliegue.refresh_from_db()
@@ -584,7 +590,7 @@ class DespliegueReanudarVistaTests(_BaseDespliegueTests):
         self._resultado(despliegue, estacion, ResultadoDespliegue.Estado.ERROR)
 
         self.client.force_login(self.aprobador)
-        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             response = self.client.post(f'/despliegues/{despliegue.pk}/reanudar/')
 
         self.assertEqual(response.status_code, 302)
@@ -600,7 +606,7 @@ class DespliegueReanudarVistaTests(_BaseDespliegueTests):
         self._resultado(despliegue, estacion, ResultadoDespliegue.Estado.ERROR)
 
         self.client.force_login(self.aprobador)
-        with patch('apps.despliegues.services.mqtt_publish.multiple', side_effect=OSError):
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=OSError):
             self.client.post(f'/despliegues/{despliegue.pk}/reanudar/')
 
         despliegue.refresh_from_db()
@@ -624,7 +630,7 @@ class FanOutPorEstacionTests(_BaseDespliegueTests):
 
     def _publicar_a_la_cadena(self, estaciones):
         despliegue = self._crear_despliegue(destino_tipo=Despliegue.DestinoTipo.CADENA)
-        with patch('apps.despliegues.services.mqtt_publish.multiple') as mock_multiple:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_multiple:
             publicar_despliegue(despliegue)
         return {m['topic']: json.loads(m['payload']) for m in mock_multiple.call_args.args[0]}
 
@@ -696,7 +702,7 @@ class FanOutPorEstacionTests(_BaseDespliegueTests):
         self._crear_estacion('ML001-A')
         self._crear_estacion('ML001-B')
         despliegue = self._crear_despliegue(destino_tipo=Despliegue.DestinoTipo.CADENA)
-        with patch('apps.despliegues.services.mqtt_publish.multiple'):
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta):
             resultado = publicar_despliegue(despliegue)
         self.assertEqual(resultado.total_estaciones, 2)
         self.assertEqual(despliegue.resultados.count(), 2)
@@ -897,9 +903,10 @@ class BorrarEstacionNoSeLlevaElHistorialTests(TestCase):
 
 
 class PublicarDespliegueAUnaEstacionTests(_BaseDespliegueTests):
-    """El camino de UNA estación (`apps.aperturas`), que publica con `single`.
+    """El camino de UNA estación (`apps.aperturas`), que antes publicaba con `single` y
+    ahora usa el mismo transporte MQTT 5 que el fan-out (`_enviar_lote_v5`).
 
-    Toda la batería de despliegues parchea `mqtt_publish.multiple` —el fan-out—, así que
+    Toda la batería de despliegues parcheaba `mqtt_publish.multiple` —el fan-out—, así que
     este camino no tenía ninguna prueba. El 16-sep-2026 (`8d3ca12`) `_payload` ganó el
     parámetro `estacion` para firmar con el secreto propio de cada una: se actualizaron
     las dos llamadas del fan-out y esta quedó con un solo argumento. El `except Exception`
@@ -911,13 +918,15 @@ class PublicarDespliegueAUnaEstacionTests(_BaseDespliegueTests):
         despliegue = self._crear_despliegue()
         estacion = self._crear_estacion('ML001-A')
 
-        with patch('apps.despliegues.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_single:
             enviado = publicar_despliegue_a_estacion(despliegue, estacion)
 
         self.assertTrue(enviado)
         mock_single.assert_called_once()
-        self.assertEqual(mock_single.call_args.args[0], '/saidsof/agente/ML001-A/despliegue/')
-        payload = json.loads(mock_single.call_args.kwargs['payload'])
+        (mensaje,) = mock_single.call_args.args[0]
+        self.assertEqual(mensaje['topic'], '/saidsof/agente/ML001-A/despliegue/')
+        self.assertTrue(mensaje['retain'])
+        payload = json.loads(mensaje['payload'])
         self.assertEqual(payload['firma'], firmar_payload(
             comando='desplegar', despliegue_id=payload['despliegue_id'], version=payload['version'],
             url=payload['url'], sha256=payload['sha256'], modo_aplicacion=payload['modo_aplicacion'],
@@ -929,10 +938,11 @@ class PublicarDespliegueAUnaEstacionTests(_BaseDespliegueTests):
         despliegue = self._crear_despliegue()
         estacion = self._crear_estacion('ML001-B', version='agente-prueba-0.21', hmac_propio=True)
 
-        with patch('apps.despliegues.services.mqtt_publish.single') as mock_single:
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=broker_acepta) as mock_single:
             publicar_despliegue_a_estacion(despliegue, estacion)
 
-        payload = json.loads(mock_single.call_args.kwargs['payload'])
+        (mensaje,) = mock_single.call_args.args[0]
+        payload = json.loads(mensaje['payload'])
         campos = dict(
             comando='desplegar', despliegue_id=payload['despliegue_id'], version=payload['version'],
             url=payload['url'], sha256=payload['sha256'], modo_aplicacion=payload['modo_aplicacion'],
@@ -945,7 +955,7 @@ class PublicarDespliegueAUnaEstacionTests(_BaseDespliegueTests):
         despliegue = self._crear_despliegue()
         estacion = self._crear_estacion('ML001-C')
 
-        with patch('apps.despliegues.services.mqtt_publish.single', side_effect=OSError):
+        with patch('apps.catalogo.services._enviar_lote_v5', side_effect=OSError):
             enviado = publicar_despliegue_a_estacion(despliegue, estacion)
 
         self.assertFalse(enviado)

@@ -223,7 +223,7 @@ class EnrolamientoCeroTouchTests(_BaseAperturaTests):
             payload['token_apertura'] = token_plano
         return payload
 
-    @patch('apps.scripts.services.enviar_script', return_value=True)
+    @patch('apps.scripts.services.enviar_script', return_value='aceptado')
     @patch('apps.mqtt_worker.services.aprovisionar_credencial_estacion', return_value=None)
     def test_enrola_aprobada_con_la_configuracion_del_perfil(self, _cred, _enviar):
         apertura, plano = self._token_para(self.perfil_adm)
@@ -246,7 +246,7 @@ class EnrolamientoCeroTouchTests(_BaseAperturaTests):
         self.assertEqual(token.estacion, estacion)
         self.assertEqual(token.hardware_id, 'hw-ML099-ADM')
 
-    @patch('apps.scripts.services.enviar_script', return_value=True)
+    @patch('apps.scripts.services.enviar_script', return_value='aceptado')
     @patch('apps.mqtt_worker.services.aprovisionar_credencial_estacion', return_value=None)
     def test_el_token_no_se_puede_reusar(self, _cred, _enviar):
         _, plano = self._token_para(self.perfil_caja)
@@ -260,7 +260,7 @@ class EnrolamientoCeroTouchTests(_BaseAperturaTests):
         })
         self.assertFalse(respuesta['aceptado'])
 
-    @patch('apps.scripts.services.enviar_script', return_value=True)
+    @patch('apps.scripts.services.enviar_script', return_value='aceptado')
     @patch('apps.mqtt_worker.services.aprovisionar_credencial_estacion', return_value=None)
     def test_lanza_los_pasos_de_la_plantilla(self, _cred, mock_enviar):
         apertura, plano = self._token_para(self.perfil_caja)
@@ -297,7 +297,7 @@ class EnrolamientoCeroTouchTests(_BaseAperturaTests):
             Estacion.EstadoAprobacion.PENDIENTE,
         )
 
-    @patch('apps.scripts.services.enviar_script', return_value=True)
+    @patch('apps.scripts.services.enviar_script', return_value='aceptado')
     @patch('apps.mqtt_worker.services.aprovisionar_credencial_estacion', return_value=None)
     def test_queda_rastro_auditable_de_la_aprobacion_automatica(self, _cred, _enviar):
         """Entrar sin el clic de un humano no puede significar entrar sin que nadie se
@@ -515,7 +515,7 @@ class CancelarAperturaTests(_BaseAperturaTests):
 
 
 class CierreDeAperturaTests(_BaseAperturaTests):
-    @patch('apps.scripts.services.enviar_script', return_value=True)
+    @patch('apps.scripts.services.enviar_script', return_value='aceptado')
     @patch('apps.mqtt_worker.services.aprovisionar_credencial_estacion', return_value=None)
     def test_no_completa_si_falta_una_estacion_obligatoria(self, _cred, _enviar):
         """Una farmacia cuyo servidor nunca apareció no está abierta, por más que la caja
@@ -532,7 +532,7 @@ class CierreDeAperturaTests(_BaseAperturaTests):
         apertura.refresh_from_db()
         self.assertEqual(apertura.estado, Apertura.Estado.EN_CURSO)
 
-    @patch('apps.scripts.services.enviar_script', return_value=True)
+    @patch('apps.scripts.services.enviar_script', return_value='aceptado')
     @patch('apps.mqtt_worker.services.aprovisionar_credencial_estacion', return_value=None)
     def test_completa_y_fecha_la_apertura_de_la_farmacia(self, _cred, _enviar):
         apertura = self._apertura_aprobada()

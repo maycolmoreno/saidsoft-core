@@ -1,0 +1,53 @@
+{% extends "admin/base_site.html" %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">Inicio</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; <a href="{% url 'admin:catalogo_ordenagente_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+&rsaquo; <a href="{% url 'admin:catalogo_ordenagente_change' orden.pk %}">{{ orden.uid }}</a>
+&rsaquo; Resolver
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="module" style="margin-bottom: 20px;">
+    <h2>Orden</h2>
+    <div class="form-row">
+        <p><strong>{{ orden.get_tipo_display }}</strong> #{{ orden.origen_id }} &rarr; {{ orden.estacion.codigo }}</p>
+        <p><strong>Estado:</strong> {{ orden.get_estado_display }}{% if orden.requiere_revision %} — marcada para revisión{% endif %}</p>
+        {% if orden.motivo_revision %}<p><strong>Motivo:</strong> {{ orden.motivo_revision }}</p>{% endif %}
+        <p><strong>Último reporte del agente:</strong> {{ orden.ultimo_paso|default:"ninguno" }}{% if orden.ultimo_reporte_en %} ({{ orden.ultimo_reporte_en }}){% endif %}</p>
+        <p><strong>Publicaciones:</strong> {{ orden.entregas }}{% if orden.ultima_entrega_en %}, la última {{ orden.ultima_entrega_en }}{% endif %}</p>
+    </div>
+    <table>
+        <thead><tr><th>Estado</th><th>Cuándo</th><th>Detalle</th></tr></thead>
+        <tbody>
+        {% for entrada in orden.historial %}
+            <tr><td>{{ entrada.estado }}</td><td>{{ entrada.en }}</td><td>{{ entrada.detalle }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<ul class="messagelist">
+    <li class="warning">
+        No se sabe si el agente ejecutó esta orden. Antes de resolverla, verificá en la estación
+        (versión del POS, software instalado, salida del script). "Completada" o "fallida" cierran la
+        orden, actualizan el resultado de la operación y habilitan reintentar el origen: si el agente
+        todavía estuviera trabajando en ella, un reporte suyo podría caer en la orden nueva. Si no se
+        puede determinar, elegí "No se pudo determinar": queda registrada la revisión y nada más
+        cambia. Si la orden todavía puede estar en el broker, se retira antes de cerrarla.
+    </li>
+</ul>
+
+<form method="post">{% csrf_token %}
+    <fieldset class="module aligned">
+        {{ form.as_p }}
+    </fieldset>
+    <div class="submit-row">
+        <input type="submit" class="default" value="Resolver">
+        <a href="{% url 'admin:catalogo_ordenagente_change' orden.pk %}" class="closelink">Volver</a>
+    </div>
+</form>
+{% endblock %}

@@ -4,6 +4,7 @@ Sigue el mismo patrón que apps/despliegues/services.py: la lógica de negocio
 vive aquí, separada de las vistas, y reusa apps.catalogo.services para la
 resolución de destino y el envío por MQTT.
 """
+import logging
 from datetime import timedelta
 
 from django.db.models import DateTimeField, ExpressionWrapper, F
@@ -12,6 +13,8 @@ from django.utils import timezone
 from apps.catalogo.services import enviar_script, resolver_estaciones
 
 from .models import EjecucionScript, ResultadoEjecucionScript, Script
+
+logger = logging.getLogger(__name__)
 
 # Correr código arbitrario contra toda la cadena/grupos/farmacias es la misma superficie
 # de riesgo que un Despliegue a esos destinos: requiere aprobación de un segundo usuario
@@ -76,19 +79,66 @@ def _publicar_ejecucion(ejecucion):
         for estacion in estaciones_destino
     ])
 
+    from apps.catalogo import ordenes
+
     for resultado in resultados:
-        enviado = enviar_script(
+        # La orden se registra y se reserva (`publicando`) ANTES de enviar, y como no
+        # repetible: el agente no deduplica scripts por id (solo una ventana de 120 s), así
+        # que la cola NUNCA lo reenvía. Sirve para el seguimiento: recibido, en ejecución,
+        # resultado, o "sin evidencia" si el agente nunca reporta (ver
+        # apps.catalogo.ordenes.revisar_entregadas y revisar_publicando).
+        orden = ordenes.crear_orden(
+            estacion=resultado.estacion, tipo=ordenes.Tipo.SCRIPT, origen_id=resultado.pk,
+            topico=f'/saidsof/agente/{resultado.estacion.codigo}/comando/', repetible=False, ronda=1,
+            creada_por=ejecucion.creado_por, timeout_segundos=ejecucion.timeout_segundos,
+        )
+        ordenes.reservar_ranura(orden)
+        # `aceptado`, `rechazado` (seguro que no salió) o `incierto` (salió sin PUBACK: puede
+        # ejecutarse). Solo `aceptado` cuenta como enviado.
+        publicacion = enviar_script(
             resultado.estacion, ejecucion_id=ejecucion.pk, resultado_id=resultado.pk,
             tipo_script=ejecucion.script.tipo, contenido=ejecucion.contenido_snapshot,
-            timeout_segundos=ejecucion.timeout_segundos,
+            timeout_segundos=ejecucion.timeout_segundos, detallado=True,
         )
-        resultado.estado = (
-            ResultadoEjecucionScript.Estado.ENVIADO if enviado else ResultadoEjecucionScript.Estado.ERROR
-        )
+        ordenes.aplicar_resultados([orden], [publicacion])
+        resultado.estado = {
+            ordenes.ACEPTADO: ResultadoEjecucionScript.Estado.ENVIADO,
+            # No salió (rechazo o sin conexión): ERROR, el contrato de siempre para "no se
+            # envió", con el motivo para no confundirlo con un script que corrió y falló.
+            ordenes.RECHAZADO: ResultadoEjecucionScript.Estado.ERROR,
+            # Sin confirmar: no se afirma que salió ni que falló. Si el agente reporta, avanza;
+            # si no, `caducar_resultados_vencidos` lo cierra como TIMEOUT ("nunca supimos
+            # nada") y la orden queda incierta para revisión. Nunca se reenvía.
+        }.get(publicacion, ResultadoEjecucionScript.Estado.PENDIENTE)
+        if publicacion == ordenes.RECHAZADO:
+            resultado.motivo_sin_respuesta = 'No se envió: el broker no aceptó la publicación (rechazo o sin conexión).'
+        elif publicacion != ordenes.ACEPTADO:
+            resultado.motivo_sin_respuesta = ('Salió sin confirmación del broker: puede haberse ejecutado o no. '
+                                              'No se reenvía.')
         resultado.fecha_envio = timezone.now()
-        resultado.save(update_fields=['estado', 'fecha_envio'])
+        resultado.save(update_fields=['estado', 'fecha_envio', 'motivo_sin_respuesta'])
 
     recalcular_estado_ejecucion(ejecucion)
+
+
+def orden_resuelta_a_mano(orden, *, decision, detalle):
+    """Aviso de la cola (apps.catalogo.ordenes.resolver_orden): una persona verificó en la
+    estación qué pasó con un script cuyo resultado era incierto. 'completada' → COMPLETADO;
+    'fallida' → ERROR (se verificó que no corrió o salió mal). 'desconocido' no llega acá:
+    ese caso lo sigue cerrando `caducar_resultados_vencidos` como TIMEOUT, que es "nunca
+    supimos nada", distinto de ERROR."""
+    resultado = ResultadoEjecucionScript.objects.select_for_update().filter(pk=orden.origen_id).first()
+    if resultado is None:
+        # La ejecución se borró: no hay resultado que actualizar (y no se inventa uno).
+        logger.warning('Orden %s resuelta sin resultado de script %s: se ignora.', orden.uid, orden.origen_id)
+        return
+    resultado.estado = (
+        ResultadoEjecucionScript.Estado.COMPLETADO if decision == 'completada' else ResultadoEjecucionScript.Estado.ERROR
+    )
+    resultado.fecha_fin = timezone.now()
+    resultado.motivo_sin_respuesta = detalle[:400]
+    resultado.save(update_fields=['estado', 'fecha_fin', 'motivo_sin_respuesta'])
+    recalcular_estado_ejecucion(resultado.ejecucion)
 
 
 def aprobar_ejecucion_script(*, ejecucion, usuario):

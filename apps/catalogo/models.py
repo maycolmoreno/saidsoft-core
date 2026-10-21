@@ -1,4 +1,5 @@
 import hashlib
+import uuid
 
 from django.conf import settings
 from django.core.validators import RegexValidator
@@ -828,3 +829,120 @@ class PerifericoDetectado(models.Model):
 
     def __str__(self):
         return f'{self.nombre} ({self.estacion.codigo})'
+
+
+class OrdenAgente(models.Model):
+    """Una orden para una estación, con la base como fuente de verdad (fase 1,
+    docs/consolidacion/PROPUESTA_AGENTE_HTTPS.md §5).
+
+    MQTT sigue siendo el transporte, pero deja de ser la única copia de lo pendiente: antes
+    una instalación o un despliegue vivían solo en el mensaje retenido del broker, y una
+    segunda orden al mismo tópico pisaba a la primera si la estación estaba apagada.
+
+    Cubre las órdenes con efecto real y seguimiento: instalar o desinstalar software,
+    desplegar el POS y ejecutar un script. Las consultas (`consultar_info`, …), `reiniciar`,
+    la actualización del agente, la pausa y los catálogos siguen con su mecanismo propio:
+    las consultas y el reinicio no tienen acuse en el protocolo del agente, y la pausa y los
+    catálogos son estado declarativo, no órdenes. La lógica vive en `apps.catalogo.ordenes`.
+
+    Los modelos de resultado de cada dominio (`ResultadoInstalacion`, `ResultadoDespliegue`,
+    `ResultadoEjecucionScript`) se conservan y se siguen actualizando igual: esta tabla es la
+    capa de entrega, no los reemplaza.
+    """
+
+    class Tipo(models.TextChoices):
+        SOFTWARE = 'software', 'Instalación o desinstalación de software'
+        DESPLIEGUE = 'despliegue', 'Despliegue del POS'
+        SCRIPT = 'script', 'Ejecución de script'
+
+    class Estado(models.TextChoices):
+        PENDIENTE = 'pendiente', 'Pendiente'
+        PUBLICANDO = 'publicando', 'Publicando (sin confirmación del broker)'
+        ENTREGADA = 'entregada', 'Aceptada por el broker, sin acuse'
+        RECIBIDA = 'recibida', 'Recibida por el agente'
+        EN_EJECUCION = 'en_ejecucion', 'En ejecución'
+        COMPLETADA = 'completada', 'Completada'
+        FALLIDA = 'fallida', 'Fallida'
+        INTERRUMPIDA = 'interrumpida', 'Interrumpida'
+        CADUCADA = 'caducada', 'Caducada'
+        CANCELADA = 'cancelada', 'Cancelada'
+        NO_ENTREGABLE = 'no_entregable', 'No entregable'
+
+    uid = models.UUIDField(unique=True, default=uuid.uuid4, editable=False)
+    estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='ordenes')
+    tipo = models.CharField(max_length=20, choices=Tipo.choices)
+    # Identificador del objeto de dominio que el agente reporta: solicitud_id, despliegue_id
+    # o resultado_id del script. El agente no conoce el `uid`: los reportes se asocian por
+    # (estación, tipo, origen_id).
+    origen_id = models.PositiveIntegerField()
+    clave_idempotencia = models.CharField(max_length=120)
+    repetible = models.BooleanField(
+        help_text='Si el mismo payload firmado se puede volver a publicar sin riesgo de que el '
+                  'agente lo ejecute dos veces (lo deduplica por id y timestamp).',
+    )
+    topico = models.CharField(max_length=200)
+    # El JSON exacto que se publicó, firmado. Volver a publicar ESTE texto (mismo timestamp)
+    # es lo que hace segura la reentrega: el agente lo reconoce como ya procesado. Vacío en
+    # los scripts, que nunca se reenvían.
+    payload = models.TextField(blank=True)
+    estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.PENDIENTE)
+    creada_en = models.DateTimeField(auto_now_add=True)
+    expira_en = models.DateTimeField(null=True, blank=True)
+    entregas = models.PositiveSmallIntegerField(default=0)
+    ultima_entrega_en = models.DateTimeField(null=True, blank=True)
+    recibida_en = models.DateTimeField(null=True, blank=True)
+    iniciada_en = models.DateTimeField(null=True, blank=True)
+    finalizada_en = models.DateTimeField(null=True, blank=True)
+    ultimo_reporte_en = models.DateTimeField(null=True, blank=True)
+    ultimo_paso = models.CharField(max_length=30, blank=True)
+    # Sin avance durante este plazo, con la estación viva, la orden se da por interrumpida.
+    plazo_sin_avance_s = models.PositiveIntegerField()
+    # Antes de esta fecha no se evalúa la interrupción: un despliegue en modo "ventana"
+    # recibido hoy puede estar esperando legítimamente hasta mañana.
+    no_interrumpir_antes_de = models.DateTimeField(null=True, blank=True)
+    detalle = models.TextField(blank=True)
+    historial = models.JSONField(default=list, blank=True)
+    # Casos inciertos que una persona tiene que mirar: una orden interrumpida o no
+    # entregable (no se sabe si se ejecutó), o un reporte que no se pudo atribuir con
+    # certeza porque el agente no informa a qué orden corresponde.
+    requiere_revision = models.BooleanField(default=False)
+    motivo_revision = models.CharField(max_length=300, blank=True)
+    # Si en algún momento pudo haber quedado en el broker o en manos del agente: EMQX la
+    # aceptó, una publicación quedó sin confirmar, el proceso murió después de reservarla, o
+    # el agente reportó algo. False solo si es SEGURO que nunca salió (rechazo confirmado o
+    # sin conexión en todos los intentos). Decide si un rechazo la cancela o la deja
+    # incierta, y si una orden cerrada vuelve ambiguos los reportes de la siguiente.
+    pudo_llegar = models.BooleanField(default=False)
+    creada_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+
+    class Meta:
+        db_table = 'orden_agente'
+        ordering = ['-creada_en']
+        verbose_name = 'Orden al agente'
+        verbose_name_plural = 'Órdenes al agente'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['estacion', 'clave_idempotencia'], name='orden_agente_idempotente',
+            ),
+            # La ranura del tópico retenido: como máximo UNA orden publicándose o entregada
+            # sin acuse por estación y canal. Publicar otra la pisaría en el broker y, si la
+            # estación está apagada, la primera se perdería. Lo garantiza la base, no solo el
+            # código.
+            models.UniqueConstraint(
+                fields=['estacion', 'tipo'],
+                condition=models.Q(estado__in=['publicando', 'entregada'], tipo__in=['software', 'despliegue']),
+                name='orden_agente_una_entregada_por_ranura',
+            ),
+        ]
+        permissions = [
+            ('resolver_ordenagente', 'Puede resolver a mano órdenes inciertas al agente'),
+        ]
+        indexes = [
+            models.Index(fields=['estado', 'tipo'], name='orden_agente_estado_tipo'),
+            models.Index(fields=['estacion', 'tipo', 'origen_id'], name='orden_agente_origen'),
+        ]
+
+    def __str__(self):
+        return f'{self.get_tipo_display()} #{self.origen_id} → {self.estacion.codigo} ({self.estado})'

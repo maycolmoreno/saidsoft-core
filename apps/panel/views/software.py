@@ -228,15 +228,23 @@ def solicitud_instalacion_publicar(request, pk):
         resultado = publicar_solicitud(solicitud)
         registrar_evento(
             usuario=request.user, accion='solicitud_instalacion.publicar', objeto=solicitud,
-            detalle={'estaciones_destino': resultado.total_estaciones, 'exitoso': resultado.exitoso},
+            detalle={'estaciones_destino': resultado.total_estaciones, 'exitoso': resultado.exitoso,
+                     **resultado.conteos()},
             request=request,
         )
-        if resultado.exitoso:
-            messages.success(request, f'Solicitud publicada a {resultado.total_estaciones} estación(es).')
+        if resultado.confirmada:
+            messages.success(
+                request, f'Solicitud en curso ({resultado.total_estaciones} estación(es) destino): '
+                         f'{resultado.resumen()}',
+            )
+        elif resultado.exitoso:
+            # En curso, pero no todo confirmado: no se presenta como publicada.
+            messages.warning(request, f'Solicitud en curso, con publicaciones sin confirmar: {resultado.resumen()}')
         else:
             messages.error(
                 request,
-                'No se pudo publicar: falló la conexión con el broker MQTT. La solicitud sigue '
+                'No se pudo publicar: el broker MQTT no estaba disponible o rechazó la '
+                'publicación (revisar la conexión, la credencial o la ACL del panel). La solicitud sigue '
                 'en borrador — puede reintentar cuando el broker esté disponible.',
             )
     return redirect('panel:solicitud_instalacion_detalle', pk=pk)

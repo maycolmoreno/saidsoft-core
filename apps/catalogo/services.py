@@ -94,6 +94,20 @@ class PublicacionRechazada(Exception):
     """EMQX rechazó la conexión o la publicación, o no confirmó a tiempo."""
 
 
+class SinConexion(PublicacionRechazada):
+    """No se llegó a publicar: el broker no respondió la conexión o la rechazó. Es seguro
+    afirmar que el mensaje NO llegó al broker."""
+
+
+class PublicacionIncierta(PublicacionRechazada):
+    """El mensaje salió pero el broker no confirmó (sin PUBACK a tiempo, o se cortó la
+    conexión en el medio). NO se sabe si EMQX lo aceptó: no se puede tratar como rechazo ni
+    como aceptación."""
+
+
+ACEPTADO, RECHAZADO, INCIERTO = 'aceptado', 'rechazado', 'incierto'
+
+
 ESPERA_CONFIRMACION_MQTT_SEGUNDOS = 10
 
 
@@ -123,29 +137,50 @@ def _enviar_mqtt_v5(topico, payload_str, *, hostname, port, auth, tls, client_id
     def al_publicar(_cliente, _datos, _mid, codigo, _propiedades):
         if codigo.is_failure:
             estado['motivo'] = f'publicación rechazada: {codigo}'
+        estado['puback'] = True
+        confirmado.set()
+
+    def al_desconectar(*_args):
+        estado['cortado'] = True
         confirmado.set()
 
     cliente.on_connect = al_conectar
     cliente.on_publish = al_publicar
-    cliente.connect(hostname, port, keepalive=30)
+    cliente.on_disconnect = al_desconectar
+    try:
+        cliente.connect(hostname, port, keepalive=30)
+    except OSError as exc:
+        raise SinConexion(f'no se pudo conectar al broker: {exc}') from exc
     cliente.loop_start()
     try:
         if not conectado.wait(ESPERA_CONFIRMACION_MQTT_SEGUNDOS):
-            raise PublicacionRechazada('el broker no respondió la conexión a tiempo')
+            raise SinConexion('el broker no respondió la conexión a tiempo')
         if 'motivo' in estado:
-            raise PublicacionRechazada(estado['motivo'])
-        cliente.publish(topico, payload_str, qos=1, retain=retain)
+            raise SinConexion(estado['motivo'])
+        info = cliente.publish(topico, payload_str, qos=1, retain=retain)
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            raise SinConexion(f'paho no pudo enviar el mensaje (rc={info.rc})')
         if not confirmado.wait(ESPERA_CONFIRMACION_MQTT_SEGUNDOS):
-            raise PublicacionRechazada('el broker no confirmó la publicación a tiempo')
+            raise PublicacionIncierta('el broker no confirmó la publicación a tiempo')
         if 'motivo' in estado:
             raise PublicacionRechazada(estado['motivo'])
+        if not estado.get('puback'):
+            raise PublicacionIncierta('se cortó la conexión antes del PUBACK')
     finally:
         cliente.disconnect()
         cliente.loop_stop()
 
 
 def _publicar_mqtt(topico: str, payload_str: str, *, retain: bool) -> bool:
-    """True solo si EMQX confirmó la publicación (MQTT 5, QoS 1). Ver `_enviar_mqtt_v5`."""
+    """True solo si EMQX confirmó la publicación (MQTT 5, QoS 1). Ver `_enviar_mqtt_v5`.
+    Un resultado incierto devuelve False, igual que un rechazo: para quien necesita
+    distinguirlos está `resultado_publicacion`."""
+    return resultado_publicacion(topico, payload_str, retain=retain) == ACEPTADO
+
+
+def resultado_publicacion(topico: str, payload_str: str, *, retain: bool) -> str:
+    """`aceptado`, `rechazado` (seguro que NO quedó en el broker) o `incierto` (salió, pero
+    sin confirmación: puede haber quedado)."""
     mqtt_conf = settings.MQTT_CONFIG
     auth = None
     if mqtt_conf['USERNAME']:
@@ -167,13 +202,113 @@ def _publicar_mqtt(topico: str, payload_str: str, *, retain: bool) -> bool:
             client_id=f"{mqtt_conf['CLIENT_ID_PANEL']}-{uuid.uuid4().hex[:8]}",
             retain=retain,
         )
-        return True
+        return ACEPTADO
+    except PublicacionIncierta as error:
+        logger.error('Publicación en %s SIN CONFIRMAR (puede haber quedado en el broker): %s', topico, error)
+        return INCIERTO
     except PublicacionRechazada as error:
         logger.error('EMQX no aceptó la publicación en %s: %s', topico, error)
-        return False
+        return RECHAZADO
     except Exception:
         logger.exception('No se pudo publicar en %s', topico)
-        return False
+        return RECHAZADO
+
+
+def _enviar_lote_v5(mensajes, *, hostname, port, auth, tls, client_id):
+    """Publica varios mensajes en UNA conexión MQTT 5 con QoS 1 y devuelve, por mensaje y en
+    el mismo orden, `aceptado`, `rechazado` o `incierto` según el PUBACK de cada uno.
+
+    Reemplaza a `paho.mqtt.publish.multiple` (MQTT 3.1.1), con el que un rechazo de la ACL
+    pasaba como éxito: EMQX lo descarta y el PUBACK de 3.1.1 no trae código de razón
+    (verificado contra EMQX 5.8.3 en apps/catalogo/tests_integracion_emqx.py). Lanza
+    `SinConexion` si no se pudo conectar: ningún mensaje salió.
+
+    - `aceptado`: PUBACK con código de éxito ("No matching subscribers" también lo es: el
+      mensaje quedó retenido).
+    - `rechazado`: PUBACK con código de error, o paho no llegó a enviarlo.
+    - `incierto`: salió y no hubo PUBACK a tiempo, o se cortó la conexión en el medio.
+    """
+    cliente = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, protocol=mqtt.MQTTv5)
+    if auth:
+        cliente.username_pw_set(auth['username'], auth.get('password'))
+    if tls is not None:
+        cliente.tls_set(ca_certs=tls.get('ca_certs'))
+    resultados = [INCIERTO] * len(mensajes)
+    por_mid, cerrojo = {}, threading.Lock()
+    conectado, terminado = threading.Event(), threading.Event()
+    estado = {'pendientes': 0}
+
+    def al_conectar(_cliente, _datos, _flags, codigo, _propiedades):
+        if codigo.is_failure:
+            estado['motivo'] = f'conexión rechazada: {codigo}'
+        conectado.set()
+
+    def al_publicar(_cliente, _datos, mid, codigo, _propiedades):
+        with cerrojo:
+            indice = por_mid.pop(mid, None)
+            if indice is None:
+                return
+            resultados[indice] = RECHAZADO if codigo.is_failure else ACEPTADO
+            estado['pendientes'] -= 1
+            if estado['pendientes'] == 0 and estado.get('todo_enviado'):
+                terminado.set()
+
+    def al_desconectar(*_args):
+        terminado.set()  # lo que no tuvo PUBACK queda incierto
+
+    cliente.on_connect = al_conectar
+    cliente.on_publish = al_publicar
+    cliente.on_disconnect = al_desconectar
+    try:
+        cliente.connect(hostname, port, keepalive=30)
+    except OSError as exc:
+        raise SinConexion(f'no se pudo conectar al broker: {exc}') from exc
+    cliente.loop_start()
+    try:
+        if not conectado.wait(ESPERA_CONFIRMACION_MQTT_SEGUNDOS):
+            raise SinConexion('el broker no respondió la conexión a tiempo')
+        if 'motivo' in estado:
+            raise SinConexion(estado['motivo'])
+        for indice, mensaje in enumerate(mensajes):
+            # El cerrojo cubre publicar Y anotar el mid: el PUBACK puede llegar por el hilo
+            # de red antes de que `publish` devuelva.
+            with cerrojo:
+                info = cliente.publish(mensaje['topic'], mensaje['payload'], qos=1, retain=mensaje.get('retain', False))
+                if info.rc != mqtt.MQTT_ERR_SUCCESS:
+                    resultados[indice] = RECHAZADO  # paho no lo envió (sin conexión, cola llena)
+                    continue
+                por_mid[info.mid] = indice
+                estado['pendientes'] += 1
+        with cerrojo:
+            estado['todo_enviado'] = True
+            if estado['pendientes'] == 0:
+                terminado.set()
+        terminado.wait(ESPERA_CONFIRMACION_MQTT_SEGUNDOS + 0.01 * len(mensajes))
+    finally:
+        cliente.disconnect()
+        cliente.loop_stop()
+    with cerrojo:
+        return list(resultados)
+
+
+def publicar_lote(mensajes):
+    """`_enviar_lote_v5` con la configuración del panel. Lanza `SinConexion` si no se pudo
+    conectar (ningún mensaje salió); si no, devuelve un resultado por mensaje."""
+    if not mensajes:
+        return []
+    conf = settings.MQTT_CONFIG
+    auth = {'username': conf['USERNAME'], 'password': conf['PASSWORD']} if conf['USERNAME'] else None
+    tls = {'ca_certs': conf['CA_CERT'] or None} if conf['USE_TLS'] else None
+    resultados = _enviar_lote_v5(
+        mensajes, hostname=conf['HOST'], port=conf['PORT'], auth=auth, tls=tls,
+        client_id=f"{conf['CLIENT_ID_PANEL']}-{uuid.uuid4().hex[:8]}",
+    )
+    rechazados = resultados.count(RECHAZADO)
+    inciertos = resultados.count(INCIERTO)
+    if rechazados or inciertos:
+        logger.error('Lote de %d mensaje(s): %d rechazado(s) por EMQX y %d sin confirmar.',
+                     len(mensajes), rechazados, inciertos)
+    return resultados
 
 
 def _publicar_comando(estacion, payload: dict) -> bool:
@@ -204,7 +339,7 @@ def enviar_comando(estacion, comando: str) -> bool:
 
 
 def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script: str,
-                   contenido: str, timeout_segundos: int) -> bool:
+                   contenido: str, timeout_segundos: int, detallado: bool = False):
     """Publica una orden de "ejecutar_script" al agente de la estación.
 
     El agente responde el progreso (recibido/ejecutando/completado/error/timeout)
@@ -221,11 +356,16 @@ def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script
         tipo_script=tipo_script, timeout_segundos=timeout_segundos, contenido=contenido,
         estacion=estacion.codigo, timestamp=timestamp,
     )
-    return _publicar_comando(estacion, {
+    payload = {
         'comando': 'ejecutar_script', 'ejecucion_id': ejecucion_id, 'resultado_id': resultado_id,
         'tipo_script': tipo_script, 'contenido': contenido, 'timeout_segundos': timeout_segundos,
         'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
-    })
+    }
+    if detallado:
+        # `aceptado` / `rechazado` / `incierto`: la cola de órdenes necesita distinguir un
+        # rechazo (no se ejecutará) de una publicación sin confirmar (puede ejecutarse).
+        return resultado_publicacion(_topico_comando(estacion), json.dumps(payload), retain=False)
+    return _publicar_comando(estacion, payload)
 
 
 def asignar_password_nodo(grupo, password_plano: str) -> None:

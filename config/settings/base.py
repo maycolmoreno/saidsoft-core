@@ -418,6 +418,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.catalogo.tasks.marcar_estaciones_offline_task',
         'schedule': 60.0,  # cada minuto — mismo umbral que el comando manual (5 min sin heartbeat)
     },
+    # Cola de órdenes a los agentes (apps.catalogo.ordenes): caducidad, reentrega del mismo
+    # payload a estaciones vivas que no acusaron, órdenes interrumpidas y despacho de las que
+    # esperan su ranura. Cada minuto: los plazos son de minutos u horas.
+    'procesar-ordenes-agente': {
+        'task': 'apps.catalogo.tasks.procesar_ordenes_task',
+        'schedule': 60.0,
+    },
     # Latido propio de Beat. Hasta el 10-oct-2026 su salud se INFERIA de que
     # MuestraRedFarmacia siguiera creciendo, y esa tabla la escriben dos rutas distintas:
     # podia crecer con Beat a medias, y quedarse quieta con Beat perfecto si no habia

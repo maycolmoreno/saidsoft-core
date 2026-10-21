@@ -8,24 +8,17 @@ la publicación falla por completo (antes eso generaba auditoría falsa en despl
 import json
 import logging
 import time
-from dataclasses import dataclass
 from datetime import timedelta
 
-import paho.mqtt.publish as mqtt_publish
 from django.conf import settings
 from django.utils import timezone
 
+from apps.catalogo.ordenes import ResultadoPublicacion
 from apps.catalogo.services import firmar_payload, secreto_de
 
 from .models import EstadoSolicitud, EventoInstalacion, ResultadoInstalacion, SolicitudInstalacion
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ResultadoPublicacion:
-    total_estaciones: int
-    exitoso: bool
 
 
 def _topico_de(estacion) -> str:
@@ -70,11 +63,27 @@ def _payload(solicitud: SolicitudInstalacion, estacion) -> dict:
     }
 
 
+def _publicar_mensajes(mensajes):
+    """Transporte de las órdenes de software: una sola conexión MQTT 5 para todos los
+    mensajes y un resultado por mensaje (`aceptado`/`rechazado`/`incierto`, según el PUBACK).
+    Antes era `paho.mqtt.publish.multiple` (MQTT 3.1.1), con el que un rechazo de la ACL de
+    EMQX pasaba como éxito. Ver `apps.catalogo.services._enviar_lote_v5`."""
+    from apps.catalogo.services import publicar_lote
+
+    return publicar_lote(mensajes)
+
+
 def publicar_solicitud(solicitud: SolicitudInstalacion) -> ResultadoPublicacion:
     """Resuelve el destino, crea ResultadoInstalacion por estación y publica por MQTT.
 
-    Si la publicación falla (ej. broker caído), la solicitud se queda en su estado
-    actual — no avanza a PUBLICANDO ni se registra ningún EventoInstalacion "publicado".
+    Si la publicación falla entera (broker caído, o EMQX rechazó todo), la solicitud se
+    queda en su estado actual — no avanza a PUBLICANDO ni se registra ningún
+    EventoInstalacion "publicado".
+
+    Si sale, el evento "publicado" se registra SOLO para las estaciones cuya orden EMQX
+    aceptó (`orden_aceptada_por_el_broker`, que también lo registra después para las que
+    estaban en espera o sin confirmar). Una rechazada queda en error con el motivo. Lo que
+    no se confirmó se informa en `ResultadoPublicacion.sin_confirmar`.
     """
     estaciones = list(solicitud.resolver_estaciones_destino())
 
@@ -85,28 +94,17 @@ def publicar_solicitud(solicitud: SolicitudInstalacion) -> ResultadoPublicacion:
     ResultadoInstalacion.objects.bulk_create(resultados, ignore_conflicts=True)
 
 
-    mqtt_conf = settings.MQTT_CONFIG
-    auth = None
-    if mqtt_conf['USERNAME']:
-        auth = {'username': mqtt_conf['USERNAME'], 'password': mqtt_conf['PASSWORD']}
-    tls = None
-    if mqtt_conf['USE_TLS']:
-        tls = {'ca_certs': mqtt_conf['CA_CERT'] or None}
+    # Un payload por estación, firmado con el secreto de cada una. Cada envío queda como
+    # `OrdenAgente` (apps.catalogo.ordenes): la base es la fuente de verdad y el retenido,
+    # solo el transporte. Si la estación ya tiene otra instalación entregada sin acuse, esta
+    # espera en `pendiente` en vez de pisarla en el broker.
+    from apps.catalogo import ordenes
 
-    # Un payload por estación, firmado con el secreto de cada una.
-    mensajes = [
-        {'topic': _topico_de(e), 'payload': json.dumps(_payload(solicitud, e)), 'retain': True}
-        for e in estaciones
-    ]
-
+    envios = [(e, _topico_de(e), json.dumps(_payload(solicitud, e))) for e in estaciones]
     try:
-        mqtt_publish.multiple(
-            mensajes,
-            hostname=mqtt_conf['HOST'],
-            port=mqtt_conf['PORT'],
-            auth=auth,
-            tls=tls,
-            client_id=mqtt_conf['CLIENT_ID_PANEL'],
+        cola = ordenes.encolar_y_publicar(
+            tipo=ordenes.Tipo.SOFTWARE, origen_id=solicitud.id, envios=envios,
+            publicar=_publicar_mensajes, creada_por=solicitud.creado_por,
         )
     except Exception:
         logger.exception(
@@ -115,18 +113,77 @@ def publicar_solicitud(solicitud: SolicitudInstalacion) -> ResultadoPublicacion:
         )
         return ResultadoPublicacion(total_estaciones=len(estaciones), exitoso=False)
 
-    EventoInstalacion.objects.bulk_create([
-        EventoInstalacion(
-            resultado=r, paso=EventoInstalacion.Paso.PUBLICADO, detalle=f'Tópico: {_topico_de(r.estacion)}',
-        )
-        for r in ResultadoInstalacion.objects.filter(solicitud=solicitud).select_related('estacion')
-    ])
-
     solicitud.estado = EstadoSolicitud.PUBLICANDO
     solicitud.fecha_publicacion = timezone.now()
     solicitud.save(update_fields=['estado', 'fecha_publicacion'])
+    # Si alguna estación quedó en error por un rechazo del broker y no queda nada en curso,
+    # la solicitud ya está terminada.
+    verificar_completado(solicitud)
 
-    return ResultadoPublicacion(total_estaciones=len(estaciones), exitoso=True)
+    return ResultadoPublicacion.de_la_cola(len(estaciones), cola)
+
+
+# --- Avisos de la cola de órdenes (apps.catalogo.ordenes) ---
+
+def orden_aceptada_por_el_broker(ordenes_aceptadas, *, detalle=None):
+    """EMQX aceptó estas órdenes: recién ahora la instalación está "publicada". Corre en
+    la misma transacción que la orden pasa a `entregada`."""
+    resultados = {
+        (r.solicitud_id, r.estacion_id): r
+        for r in ResultadoInstalacion.objects.filter(
+            solicitud_id__in={o.origen_id for o in ordenes_aceptadas},
+            estacion_id__in={o.estacion_id for o in ordenes_aceptadas},
+        )
+    }
+    eventos = []
+    for orden in ordenes_aceptadas:
+        resultado = resultados.get((orden.origen_id, orden.estacion_id))
+        if resultado is None:
+            # Sin resultado de dominio (la solicitud se borró): no se inventa uno. La orden
+            # sigue su curso; el aviso no puede tumbar el lote de las demás.
+            logger.warning('Orden %s aceptada sin resultado de dominio (%s %s): no se registra el evento.',
+                           orden.uid, 'solicitud', orden.origen_id)
+            continue
+        eventos.append(EventoInstalacion(
+            resultado=resultado, paso=EventoInstalacion.Paso.PUBLICADO, detalle=detalle or f'Tópico: {orden.topico}',
+        ))
+    EventoInstalacion.objects.bulk_create(eventos)
+
+
+def _con_resultado(orden) -> bool:
+    """Los avisos de la cola solo actualizan un resultado de dominio que existe: nunca lo
+    crean (si la solicitud se borró, crearlo fallaría por la clave foránea y tumbaría la
+    transacción de la cola)."""
+    if ResultadoInstalacion.objects.filter(solicitud_id=orden.origen_id, estacion_id=orden.estacion_id).exists():
+        return True
+    logger.warning('Orden %s sin resultado de dominio (%s %s): el aviso se ignora.', orden.uid, 'solicitud',
+                   orden.origen_id)
+    return False
+
+
+def orden_rechazada_por_el_broker(ordenes_rechazadas, *, detalle):
+    """EMQX rechazó estas órdenes y es seguro que no salieron: la instalación no se envió.
+    Queda en error con el motivo (no es un fallo del instalador: el detalle lo dice)."""
+    for orden in ordenes_rechazadas:
+        if not _con_resultado(orden):
+            continue
+        registrar_estado_de_estacion(
+            solicitud_id=orden.origen_id, estacion=orden.estacion, paso=EventoInstalacion.Paso.ERROR,
+            datos={'detalle': detalle},
+        )
+
+
+def orden_resuelta_a_mano(orden, *, decision, detalle):
+    """Una persona verificó en la estación el resultado de una orden incierta. Se registra
+    como el paso final que corresponde, con el detalle que dice que fue una resolución
+    manual y no un reporte del agente. 'desconocido' no llega acá: no se inventa un
+    resultado."""
+    paso = EventoInstalacion.Paso.INSTALADO if decision == 'completada' else EventoInstalacion.Paso.ERROR
+    if not _con_resultado(orden):
+        return
+    registrar_estado_de_estacion(
+        solicitud_id=orden.origen_id, estacion=orden.estacion, paso=paso, datos={'detalle': detalle},
+    )
 
 
 def verificar_completado(solicitud: SolicitudInstalacion) -> bool:

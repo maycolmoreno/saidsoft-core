@@ -74,23 +74,29 @@ class DespliegueAdmin(admin.ModelAdmin):
 
     @admin.action(description='Publicar despliegues aprobados')
     def publicar_despliegues(self, request, queryset):
-        publicados = 0
         fallidos = 0
         for despliegue in queryset.filter(estado=Despliegue.Estado.APROBADO):
             resultado = publicar_despliegue(despliegue)
             registrar_evento(
                 usuario=request.user, accion='despliegue.publicar', objeto=despliegue,
-                detalle={'estaciones_destino': resultado.total_estaciones, 'exitoso': resultado.exitoso},
+                detalle={'estaciones_destino': resultado.total_estaciones, 'exitoso': resultado.exitoso,
+                         **resultado.conteos()},
             )
-            if resultado.exitoso:
-                publicados += 1
-            else:
+            # Cada una con su resumen: una publicación sin confirmar o rechazada no se cuenta
+            # como publicada.
+            if not resultado.exitoso:
                 fallidos += 1
-        if publicados:
-            self.message_user(request, f'{publicados} despliegue(s) publicado(s) por MQTT.')
+            elif resultado.confirmada:
+                self.message_user(request, f'{despliegue}: {resultado.resumen()}')
+            else:
+                self.message_user(
+                    request, f'{despliegue}: en curso, con publicaciones sin confirmar: {resultado.resumen()}',
+                    level='warning',
+                )
         if fallidos:
             self.message_user(
-                request, f'{fallidos} despliegue(s) NO se pudieron publicar (falló el broker MQTT).',
+                request, f'{fallidos} despliegue(s) NO se pudieron publicar (broker MQTT no disponible o '
+                         'rechazó la publicación).',
                 level='error',
             )
 

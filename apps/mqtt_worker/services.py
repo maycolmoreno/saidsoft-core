@@ -553,6 +553,8 @@ def manejar_estado_despliegue(codigo_estacion: str, payload: dict) -> None:
     resultado = registrar_estado_de_estacion(
         despliegue_id=payload.get('despliegue_id'), estacion=estacion, paso=paso, datos=payload,
     )
+    if resultado is not None:
+        _registrar_en_cola(estacion, 'despliegue', payload.get('despliegue_id'), paso, payload.get('detalle', ''))
 
     if resultado is not None and paso in PASOS_QUE_CONFIRMAN_RECEPCION:
         # La estación ya tiene la orden: el retenido sobra. Se ENCOLA por el mismo motivo
@@ -610,6 +612,8 @@ def manejar_estado_instalacion(codigo_estacion: str, payload: dict) -> None:
     resultado = registrar_estado_de_estacion(
         solicitud_id=payload.get('solicitud_id'), estacion=estacion, paso=paso, datos=payload,
     )
+    if resultado is not None:
+        _registrar_en_cola(estacion, 'software', payload.get('solicitud_id'), paso, payload.get('detalle', ''))
 
     if resultado is not None and paso in PASOS_QUE_CONFIRMAN_RECEPCION:
         # Mismo motivo que en manejar_estado_despliegue.
@@ -945,6 +949,31 @@ def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:
     resultado.save()
 
     recalcular_estado_ejecucion(resultado.ejecucion)
+    _registrar_en_cola(estacion, 'script', resultado.pk, estado, '')
+
+
+def _registrar_en_cola(estacion, tipo, origen_id, paso, detalle):
+    """Lleva el reporte a la `OrdenAgente` correspondiente (apps.catalogo.ordenes). Va
+    DESPUÉS del modelo de resultado del dominio, que se sigue actualizando igual, y nunca
+    rompe el procesamiento del reporte. Si la orden dejó libre la ranura retenida de la
+    estación, se encola el despacho de la siguiente: corre en celery_worker, porque la
+    credencial de este proceso no puede publicar en esos tópicos."""
+    if origen_id is None:
+        return
+    try:
+        from apps.catalogo import ordenes
+        _, ranura_liberada = ordenes.registrar_reporte(
+            estacion=estacion, tipo=tipo, origen_id=origen_id, paso=paso, detalle=detalle,
+        )
+    except Exception:
+        logger.exception('No se pudo registrar el reporte "%s" en la cola de órdenes de %s', paso, estacion.codigo)
+        return
+    if ranura_liberada:
+        from apps.catalogo.tasks import despachar_ordenes_task
+        try:
+            despachar_ordenes_task.delay(estacion.pk)
+        except Exception:
+            logger.exception('No se pudo encolar el despacho de órdenes de %s', estacion.codigo)
 
 
 def manejar_metricas(codigo_estacion: str, payload: dict) -> None:

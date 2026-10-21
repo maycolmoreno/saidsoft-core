@@ -98,23 +98,29 @@ class SolicitudInstalacionAdmin(admin.ModelAdmin):
 
     @admin.action(description='Publicar solicitudes (borrador)')
     def publicar_solicitudes(self, request, queryset):
-        publicadas = 0
         fallidas = 0
         for solicitud in queryset.filter(estado=EstadoSolicitud.BORRADOR):
             resultado = publicar_solicitud(solicitud)
             registrar_evento(
                 usuario=request.user, accion='solicitud_instalacion.publicar', objeto=solicitud,
-                detalle={'estaciones_destino': resultado.total_estaciones, 'exitoso': resultado.exitoso},
+                detalle={'estaciones_destino': resultado.total_estaciones, 'exitoso': resultado.exitoso,
+                         **resultado.conteos()},
             )
-            if resultado.exitoso:
-                publicadas += 1
-            else:
+            # Cada una con su resumen: una publicación sin confirmar o rechazada no se cuenta
+            # como publicada.
+            if not resultado.exitoso:
                 fallidas += 1
-        if publicadas:
-            self.message_user(request, f'{publicadas} solicitud(es) publicada(s) por MQTT.')
+            elif resultado.confirmada:
+                self.message_user(request, f'{solicitud}: {resultado.resumen()}')
+            else:
+                self.message_user(
+                    request, f'{solicitud}: en curso, con publicaciones sin confirmar: {resultado.resumen()}',
+                    level='warning',
+                )
         if fallidas:
             self.message_user(
-                request, f'{fallidas} solicitud(es) NO se pudieron publicar (falló el broker MQTT).',
+                request, f'{fallidas} solicitud(es) NO se pudieron publicar (broker MQTT no disponible o '
+                         'rechazó la publicación).',
                 level='error',
             )
 

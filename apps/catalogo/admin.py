@@ -10,7 +10,7 @@ from django.urls import path, reverse
 from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_por_unidad_negocio
 
-from .models import Estacion, Farmacia, Grupo, UnidadNegocio, VersionAgente
+from .models import Estacion, Farmacia, Grupo, OrdenAgente, UnidadNegocio, VersionAgente
 from .services import asignar_password_nodo, establecer_password_nodo, importar_farmacias_desde_csv
 
 
@@ -277,3 +277,146 @@ class VersionAgenteAdmin(admin.ModelAdmin):
             usuario=request.user, accion='version_agente.crear' if not change else 'version_agente.editar',
             objeto=obj,
         )
+
+
+class ResolverOrdenForm(forms.Form):
+    resultado = forms.ChoiceField(
+        label='Qué se verificó en la estación',
+        choices=[('completada', 'Se aplicó / se ejecutó: completada'),
+                 ('fallida', 'No se aplicó / no terminó bien: fallida'),
+                 ('desconocido', 'No se pudo determinar: queda incierta (no cambia el resultado, sigue '
+                                 'bloqueando reintentos)')],
+        widget=forms.RadioSelect,
+    )
+    nota = forms.CharField(
+        label='Nota (obligatoria)', min_length=10, max_length=1000,
+        widget=forms.Textarea(attrs={'rows': 4, 'cols': 80}),
+        help_text='Qué se miró y dónde: por ejemplo, "POS en 4.3.0 según el acceso remoto a la caja".',
+    )
+
+
+@admin.register(OrdenAgente)
+class OrdenAgenteAdmin(admin.ModelAdmin):
+    """Cola de órdenes a los agentes (fase 1): de solo lectura. Las órdenes las crean los
+    servicios de software, despliegues y scripts; acá solo se miran, se cancelan las que el
+    agente todavía no recibió y se resuelven a mano los casos inciertos."""
+
+    list_display = (
+        'creada_en', 'estacion', 'tipo', 'origen_id', 'estado', 'requiere_revision', 'entregas', 'ultimo_paso',
+        'expira_en', 'resolver',
+    )
+    list_filter = ('estado', 'tipo', 'requiere_revision')
+    search_fields = ('estacion__codigo', 'uid')
+    readonly_fields = [f.name for f in OrdenAgente._meta.fields]
+    actions = ['cancelar_ordenes']
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_queryset(self, request):
+        return scope_por_unidad_negocio(
+            super().get_queryset(request).select_related('estacion'), request.user, 'estacion__farmacia__unidad_negocio',
+        )
+
+    def get_urls(self):
+        return [
+            path('<int:object_id>/resolver/', self.admin_site.admin_view(self.resolver_view),
+                 name='catalogo_ordenagente_resolver'),
+        ] + super().get_urls()
+
+    @admin.display(description='Resolver')
+    def resolver(self, obj):
+        from django.utils.html import format_html
+
+        from . import ordenes
+
+        if not ordenes.puede_resolverse(obj):
+            return '—'
+        return format_html('<a href="{}">Resolver…</a>', reverse('admin:catalogo_ordenagente_resolver', args=[obj.pk]))
+
+    def resolver_view(self, request, object_id):
+        """Cierre humano de UNA orden incierta (interrumpida, no entregable o marcada para
+        revisión), después de verificar en la estación. Una a la vez y con nota: no hay
+        resolución en lote, porque cada caso exige mirar la estación."""
+        from django.db import transaction
+        from django.http import Http404
+
+        from . import ordenes
+
+        if not request.user.has_perm('catalogo.resolver_ordenagente'):
+            raise PermissionDenied
+        # Por el queryset con alcance: una orden de otra unidad de negocio no existe acá.
+        orden = self.get_queryset(request).filter(pk=object_id).first()
+        if orden is None:
+            raise Http404
+        volver = reverse('admin:catalogo_ordenagente_change', args=[orden.pk])
+        if not ordenes.puede_resolverse(orden):
+            self.message_user(
+                request, 'Esta orden no está incierta ni marcada para revisión: no se resuelve a mano.', messages.WARNING,
+            )
+            return redirect(volver)
+
+        form = ResolverOrdenForm(request.POST or None)
+        if request.method == 'POST' and form.is_valid():
+            estado_anterior, motivo = orden.estado, orden.motivo_revision
+            try:
+                with transaction.atomic():
+                    orden = ordenes.resolver_orden(
+                        orden, resultado=form.cleaned_data['resultado'], usuario=request.user,
+                        nota=form.cleaned_data['nota'],
+                    )
+                    registrar_evento(
+                        usuario=request.user, accion='orden_agente.resolver', objeto=orden, request=request,
+                        detalle={
+                            'uid': str(orden.uid), 'decision': form.cleaned_data['resultado'],
+                            'nota': form.cleaned_data['nota'].strip(), 'estado_anterior': estado_anterior,
+                            'motivo_revision': motivo,
+                        },
+                    )
+            except ordenes.TransicionInvalida as exc:
+                # Otra persona la resolvió, o llegó un reporte del agente, mientras tanto.
+                self.message_user(request, str(exc), messages.ERROR)
+                return redirect(volver)
+            if form.cleaned_data['resultado'] == 'desconocido':
+                self.message_user(
+                    request, 'Revisión registrada. La orden sigue incierta: su resultado no cambió y un reintento '
+                             'sigue bloqueado hasta que se pueda determinar.', messages.WARNING,
+                )
+            else:
+                self.message_user(
+                    request, f'Orden resuelta como {orden.get_estado_display().lower()}, y el resultado de la '
+                             f'operación actualizado. Ya se puede reintentar el origen.', messages.SUCCESS,
+                )
+            return redirect(volver)
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Resolver orden incierta',
+            'opts': self.model._meta,
+            'orden': orden,
+            'form': form,
+        }
+        return TemplateResponse(request, 'admin/catalogo/ordenagente_resolver.html', context)
+
+    @admin.action(description='Cancelar (solo las que el agente todavía no recibió)')
+    def cancelar_ordenes(self, request, queryset):
+        if not request.user.has_perm('catalogo.change_ordenagente'):
+            raise PermissionDenied
+        from . import ordenes
+
+        canceladas, rechazos = 0, []
+        for orden in queryset:
+            try:
+                ordenes.cancelar_orden(orden, usuario=request.user, motivo='desde el admin')
+            except ordenes.TransicionInvalida as exc:
+                rechazos.append(f'{orden.estacion.codigo} #{orden.origen_id}: {exc}')
+                continue
+            canceladas += 1
+            registrar_evento(usuario=request.user, accion='orden_agente.cancelar', objeto=orden, request=request)
+        if canceladas:
+            self.message_user(request, f'{canceladas} orden(es) cancelada(s).', messages.SUCCESS)
+        for rechazo in rechazos:
+            self.message_user(request, rechazo, messages.WARNING)

@@ -6428,7 +6428,7 @@ class SincronizarHoraPorTelegramTests(TestCase):
     def test_quien_tiene_todo_si_dispara_y_queda_A_SU_NOMBRE(self):
         from apps.scripts.models import EjecucionScript
 
-        with patch('apps.scripts.services.enviar_script', return_value=True):
+        with patch('apps.scripts.services.enviar_script', return_value='aceptado'):
             respuesta = self._sincronizar('ML901-A', '111')
 
         ejecucion = EjecucionScript.objects.get()

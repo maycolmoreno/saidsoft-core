@@ -169,15 +169,23 @@ def despliegue_publicar(request, pk):
         resultado = publicar_despliegue(despliegue)
         registrar_evento(
             usuario=request.user, accion='despliegue.publicar', objeto=despliegue,
-            detalle={'estaciones_destino': resultado.total_estaciones, 'exitoso': resultado.exitoso},
+            detalle={'estaciones_destino': resultado.total_estaciones, 'exitoso': resultado.exitoso,
+                     **resultado.conteos()},
             request=request,
         )
-        if resultado.exitoso:
-            messages.success(request, f'Despliegue publicado a {resultado.total_estaciones} estación(es).')
+        if resultado.confirmada:
+            messages.success(
+                request, f'Despliegue en curso ({resultado.total_estaciones} estación(es) destino): '
+                         f'{resultado.resumen()}',
+            )
+        elif resultado.exitoso:
+            # En curso, pero no todo confirmado: no se presenta como publicado.
+            messages.warning(request, f'Despliegue en curso, con publicaciones sin confirmar: {resultado.resumen()}')
         else:
             messages.error(
                 request,
-                'No se pudo publicar: falló la conexión con el broker MQTT. El despliegue '
+                'No se pudo publicar: el broker MQTT no estaba disponible o rechazó la '
+                'publicación (revisar la conexión, la credencial o la ACL del panel). El despliegue '
                 'sigue en estado "Aprobado" — puede reintentar publicar cuando el broker esté disponible.',
             )
     return redirect('panel:despliegue_detalle', pk=pk)
@@ -218,7 +226,8 @@ def despliegue_reanudar(request, pk):
     if not resultado.exitoso:
         messages.error(
             request,
-            'No se pudo reenviar el paquete: falló la conexión con el broker MQTT. '
+            'No se pudo reenviar el paquete: el broker MQTT no estaba disponible o rechazó la '
+            'publicación (revisar la conexión, la credencial o la ACL del panel). '
             'El despliegue sigue pausado — reintentá "Reanudar" cuando el broker esté disponible.',
         )
         return redirect('panel:despliegue_detalle', pk=pk)
@@ -229,11 +238,14 @@ def despliegue_reanudar(request, pk):
     marcar_reanudado(despliegue=despliegue)
     registrar_evento(
         usuario=request.user, accion='despliegue.reanudar', objeto=despliegue,
-        detalle={'estaciones_reintentadas': resultado.total_estaciones}, request=request,
+        detalle={'estaciones_reintentadas': resultado.total_estaciones, **resultado.conteos()}, request=request,
     )
-    if resultado.total_estaciones:
+    if resultado.total_estaciones and not resultado.confirmada:
+        messages.warning(request, f'Despliegue reanudado, con publicaciones sin confirmar: {resultado.resumen()}')
+    elif resultado.total_estaciones:
         messages.success(
-            request, f'Despliegue reanudado y reenviado a {resultado.total_estaciones} estación(es) pendiente(s).',
+            request, f'Despliegue reanudado ({resultado.total_estaciones} estación(es) pendiente(s)): '
+                     f'{resultado.resumen()}',
         )
     else:
         messages.success(request, 'Despliegue reanudado. No quedaban estaciones pendientes de reintentar.')
