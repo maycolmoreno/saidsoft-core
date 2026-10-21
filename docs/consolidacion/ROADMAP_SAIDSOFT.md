@@ -62,7 +62,8 @@ consolidan antes de agregar.
 | 1.6 | Completar `deploy/.env.prod.example` con las 22 variables que faltan | Documentación | — |
 
 **Riesgos:** 1.1 y 1.3 podrían cortar el aprovisionamiento de credenciales si `EMQX_API_URL` no
-fuera interno. **Verificado el 20-oct: es `http://emqx:18083`**, así que 1.1 no lo afecta. Los
+fuera interno. **Verificado el 20-oct: el servidor y el puerto son `http://emqx:18083`** (la ruta,
+`/api/v5`, no se mostró), así que 1.1 no lo afecta. Los
 scripts del host usan `localhost:8082`: al aplicar 1.1, cambiarlos a `127.0.0.1` o publicar también
 `[::1]` (laboratorio C1, F-F/F-G).
 
