@@ -22,7 +22,7 @@ set -e
 
 . "$(dirname "$0")/.env"
 
-EMQX_API_LOCAL="${EMQX_API_LOCAL:-http://localhost:8082/api/v5}"
+EMQX_API_LOCAL="${EMQX_API_LOCAL:-http://127.0.0.1:8082/api/v5}"
 
 if [ -z "$EMQX_API_KEY" ] || [ -z "$EMQX_API_SECRET" ]; then
     echo "Faltan EMQX_API_KEY/EMQX_API_SECRET en deploy/.env." >&2

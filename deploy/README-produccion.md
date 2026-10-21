@@ -500,6 +500,44 @@ ahora sale en el log: `docker logs deploy-web-1 | grep EMQX`.
 Recien con esto en verde tiene sentido rotar `MQTT_PASSWORD_AGENTE` /
 `COMANDO_HMAC_SECRET` o correr `deploy/emqx-narrow-acl-agente.sh`.
 
+## Dashboard de EMQX solo desde el NUC (R-1, 20-oct-2026)
+
+El dashboard y la API REST de EMQX (8082) estaban publicados en todas las interfaces, y el NUC
+no filtra nada (`DOCKER-USER` vacía, `ufw` inactivo). Quien llegara al puerto podía publicar en
+cualquier tópico y cambiar las ACL. Ahora `docker-compose.yml` lo publica como
+`127.0.0.1:8082:18083`.
+
+**Qué no cambia:**
+- Los contenedores llegan a EMQX por la red interna (`EMQX_API_URL=http://emqx:18083/api/v5`), así
+  que el alta de estaciones sigue funcionando.
+- Los agentes usan 8081, que no se toca.
+- Los scripts del host (`bootstrap-emqx.sh`, `emqx-*.sh`) usan `127.0.0.1:8082`. No `localhost`:
+  puede resolver primero a `::1`, que este mapeo no publica (laboratorio C1, F-F/F-G).
+
+**Abrir el dashboard desde otra PC:** con un túnel SSH. El navegador habla con `localhost:8082` de
+la PC y el túnel lo lleva al `127.0.0.1:8082` del NUC:
+
+    ssh -L 8082:127.0.0.1:8082 glpi@10.111.6.20
+    # y en el navegador de la PC: http://localhost:8082
+
+**Aplicar.** Recrea EMQX: las estaciones se desconectan unos segundos y se reconectan solas. Los
+retenidos están en disco, así que no se pierden.
+
+    cd ~/Documentos/Said/saidsoft-core && sh deploy/desplegar.sh
+
+**Verificar:**
+
+    ss -tlnp | grep ':8082'                                   # solo 127.0.0.1:8082
+    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082/   # 200 desde el NUC
+    docker compose -f deploy/docker-compose.yml exec -T emqx emqx ctl retainer info   # mismos retenidos
+    # Desde OTRA PC de la red, debe fallar:
+    #   Test-NetConnection 10.111.6.20 -Port 8082   (PowerShell)  -> TcpTestSucceeded : False
+
+Al día siguiente, comprobar que una estación nueva o re-enrolada recibe su credencial propia:
+`manage.py revisar_credenciales_mqtt`.
+
+**Revertir:** volver a poner `"8082:18083"` en el compose y `sh deploy/desplegar.sh`.
+
 ## Copia del respaldo a OneDrive (20-oct-2026)
 
 `deploy/backup.sh` sube a OneDrive, con rclone, lo que ya dejó cifrado con GPG: la base y

@@ -25,10 +25,11 @@ set -e
 
 . "$(dirname "$0")/.env"
 
-# El dashboard de EMQX corre en el puerto 18083 DENTRO del contenedor, pero
-# docker-compose.yml lo publica remapeado a 8082 en el host (rango 8080-8085
-# abierto en firewall, ver el comentario junto a "dashboard" en ese archivo).
-EMQX_API="${EMQX_API:-http://localhost:8082/api/v5}"
+# El dashboard de EMQX corre en el puerto 18083 DENTRO del contenedor, y
+# docker-compose.yml lo publica en el host como 127.0.0.1:8082: solo se alcanza desde
+# el propio NUC (R-1, 20-oct-2026). 127.0.0.1 y no `localhost`, que puede resolver
+# primero a ::1, y ese mapeo no publica IPv6.
+EMQX_API="${EMQX_API:-http://127.0.0.1:8082/api/v5}"
 
 # La API de EMQX 5.x no acepta Basic Auth con el usuario del dashboard en estos
 # endpoints; hay que loguearse primero y usar el token Bearer.
@@ -185,7 +186,9 @@ else
             api_key=$(sed -n 's/.*"api_key":"\([^"]*\)".*/\1/p' "$resp_body")
             api_secret=$(sed -n 's/.*"api_secret":"\([^"]*\)".*/\1/p' "$resp_body")
             echo "  API Key creada. EMQX NO vuelve a mostrar el secret — pégalos AHORA en deploy/.env:"
-            echo "    EMQX_API_URL=$EMQX_API"
+            # La dirección para los CONTENEDORES, no la de este script: dentro de Docker,
+            # 127.0.0.1 es el propio contenedor y no llega a EMQX.
+            echo "    EMQX_API_URL=http://emqx:18083/api/v5"
             echo "    EMQX_API_KEY=$api_key"
             echo "    EMQX_API_SECRET=$api_secret"
             echo "  Mientras deploy/.env no tenga estas 3 variables, el aprovisionamiento por"

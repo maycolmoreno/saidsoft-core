@@ -106,7 +106,15 @@ services:
       - ./certs:/opt/emqx/etc/certs:ro          # cert.pem / key.pem para el listener TLS
     ports:
       - "8081:8883"    # MQTT sobre TLS (agentes) — remapeado a 8081 (rango 8080-8085 abierto en firewall)
-      - "8082:18083"   # dashboard (restringir por firewall/VPN)
+      # Dashboard y API REST de EMQX: SOLO desde el propio NUC (R-1, 20-oct-2026). Publicado en
+      # todas las interfaces, quien llegaba al puerto podía publicar en cualquier tópico y
+      # cambiar las ACL, y el host no filtra nada (DOCKER-USER vacía, ufw inactivo). Los
+      # contenedores no usan este puerto: llegan por la red interna (EMQX_API_URL=
+      # http://emqx:18083/api/v5). Los scripts del host usan 127.0.0.1 y no `localhost`, porque
+      # `localhost` puede resolver primero a ::1, que este mapeo no publica (laboratorio
+      # C1, F-F/F-G). Para abrir el dashboard desde otra PC: túnel SSH, ver
+      # deploy/README-produccion.md.
+      - "127.0.0.1:8082:18083"
 
   web:
     <<: *app-build

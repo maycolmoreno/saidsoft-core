@@ -31,7 +31,7 @@ set -e
 
 . "$(dirname "$0")/.env"
 
-EMQX_API="${EMQX_API:-http://localhost:8082/api/v5}"
+EMQX_API="${EMQX_API:-http://127.0.0.1:8082/api/v5}"
 
 TOKEN=$(curl -s -X POST "$EMQX_API/login" -H "Content-Type: application/json" \
     -d "{\"username\":\"admin\",\"password\":\"${EMQX_DASHBOARD_PASSWORD}\"}" \
