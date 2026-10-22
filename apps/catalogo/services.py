@@ -339,7 +339,7 @@ def enviar_comando(estacion, comando: str) -> bool:
 
 
 def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script: str,
-                   contenido: str, timeout_segundos: int, detallado: bool = False):
+                   contenido: str, timeout_segundos: int, detallado: bool = False, orden_uid=None):
     """Publica una orden de "ejecutar_script" al agente de la estación.
 
     El agente responde el progreso (recibido/ejecutando/completado/error/timeout)
@@ -361,6 +361,9 @@ def enviar_script(estacion, *, ejecucion_id: int, resultado_id: int, tipo_script
         'tipo_script': tipo_script, 'contenido': contenido, 'timeout_segundos': timeout_segundos,
         'estacion': estacion.codigo, 'timestamp': timestamp, 'firma': firma,
     }
+    if orden_uid:
+        # Fuera de la firma, como en `ordenes.con_uid`: el agente 0.38 lo devuelve en sus reportes.
+        payload['orden_uid'] = str(orden_uid)
     if detallado:
         # `aceptado` / `rechazado` / `incierto`: la cola de órdenes necesita distinguir un
         # rechazo (no se ejecutará) de una publicación sin confirmar (puede ejecutarse).

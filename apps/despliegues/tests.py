@@ -665,7 +665,7 @@ class FanOutPorEstacionTests(_BaseDespliegueTests):
             firmar_payload(
                 a.hmac_secret, comando='desplegar',
                 **{k: v for k, v in publicado['/saidsof/agente/ML001-A/despliegue/'].items()
-                   if k not in ('timestamp', 'firma', 'usar_cache')},
+                   if k not in ('timestamp', 'firma', 'usar_cache', 'orden_uid')},
                 timestamp=publicado['/saidsof/agente/ML001-A/despliegue/']['timestamp'],
             ),
         )
@@ -680,7 +680,7 @@ class FanOutPorEstacionTests(_BaseDespliegueTests):
         publicado = self._publicar_a_la_cadena(None)
 
         vieja = publicado['/saidsof/agente/ML001-VIEJA/despliegue/']
-        campos = {k: v for k, v in vieja.items() if k not in ('timestamp', 'firma', 'usar_cache')}
+        campos = {k: v for k, v in vieja.items() if k not in ('timestamp', 'firma', 'usar_cache', 'orden_uid')}
         self.assertEqual(
             vieja['firma'],
             firmar_payload(comando='desplegar', **campos, timestamp=vieja['timestamp']),
@@ -692,10 +692,12 @@ class FanOutPorEstacionTests(_BaseDespliegueTests):
         self._crear_estacion('ML001-A')
         publicado = self._publicar_a_la_cadena(None)
         payload = publicado['/saidsof/agente/ML001-A/despliegue/']
+        # `orden_uid` (0.38) va FUERA de la firma: el agente 0.20 reconstruye la lista exacta
+        # de campos firmados y lo ignora. Ver apps.catalogo.ordenes.con_uid.
         self.assertEqual(
             set(payload),
             {'despliegue_id', 'version', 'url', 'sha256', 'modo_aplicacion',
-             'ventana_fecha_hora', 'timestamp', 'usar_cache', 'firma'},
+             'ventana_fecha_hora', 'timestamp', 'usar_cache', 'firma', 'orden_uid'},
         )
 
     def test_se_crea_un_resultado_por_estacion_igual_que_antes(self):

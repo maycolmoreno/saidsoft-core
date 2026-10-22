@@ -98,7 +98,7 @@ def _publicar_ejecucion(ejecucion):
         publicacion = enviar_script(
             resultado.estacion, ejecucion_id=ejecucion.pk, resultado_id=resultado.pk,
             tipo_script=ejecucion.script.tipo, contenido=ejecucion.contenido_snapshot,
-            timeout_segundos=ejecucion.timeout_segundos, detallado=True,
+            timeout_segundos=ejecucion.timeout_segundos, detallado=True, orden_uid=orden.uid,
         )
         ordenes.aplicar_resultados([orden], [publicacion])
         resultado.estado = {

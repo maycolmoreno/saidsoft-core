@@ -223,6 +223,7 @@ class EjecutarCapturandoTests(_AgenteReal):
     def test_el_script_reporta_completado_error_y_timeout(self):
         agente = self.ag.AgentePrueba.__new__(self.ag.AgentePrueba)
         agente._firma_valida = lambda *a, **k: True
+        agente._orden_de = {}
         reportes = []
         agente._reportar_script = lambda rid, estado, **kw: reportes.append((estado, kw))
         payload = {'ejecucion_id': 1, 'resultado_id': 7, 'tipo_script': 'powershell', 'timeout_segundos': 60,
@@ -243,6 +244,7 @@ class ReportesQoS1Tests(_AgenteReal):
         agente = self.ag.AgentePrueba.__new__(self.ag.AgentePrueba)
         agente.args = SimpleNamespace(codigo='LAB-QOS')
         agente._token = lambda: 'tok'
+        agente._orden_de = {}
         publicados = []
 
         def publicar(topico, cuerpo, qos=0):
@@ -268,6 +270,70 @@ class ReportesQoS1Tests(_AgenteReal):
         self.assertEqual([qos for _, qos in publicados], [1, 1, 1])
         self.assertEqual([t.rsplit('/', 2)[-2] for t, _ in publicados],
                          ['software_estado', 'despliegue_estado', 'script_estado'])
+
+
+class OrdenUidAgenteTests(_AgenteReal):
+    """0.38: el agente devuelve en cada reporte el `orden_uid` de la orden que lo originó."""
+
+    def setUp(self):
+        super().setUp()
+        agente = self.ag.AgentePrueba.__new__(self.ag.AgentePrueba)
+        agente.args = SimpleNamespace(codigo='LAB-UID')
+        agente._token = lambda: 'tok'
+        agente._orden_de = {}
+        self.cuerpos = []
+        agente._publicar = lambda topico, cuerpo, qos=0: self.cuerpos.append(cuerpo) or True
+        self.agente = agente
+
+    def test_los_reportes_llevan_el_uid_recordado_de_su_origen(self):
+        self.agente._recordar_orden('instalacion', 14, {'orden_uid': 'u-inst'})
+        self.agente._recordar_orden('despliegue', 9, {'orden_uid': 'u-desp'})
+        self.agente._recordar_orden('script', 7, {'orden_uid': 'u-scr'})
+        self.agente._reportar_instalacion(14, 'recibido')
+        self.agente._reportar_despliegue(9, 'ok')
+        self.agente._reportar_script(7, 'completado', exit_code=0)
+        self.assertEqual([c.get('orden_uid') for c in self.cuerpos], ['u-inst', 'u-desp', 'u-scr'])
+
+    def test_sin_uid_del_servidor_el_reporte_sale_como_antes(self):
+        self.agente._reportar_instalacion(14, 'recibido')
+        self.agente._recordar_orden('despliegue', 9, {'orden_uid': 'viejo'})
+        self.agente._recordar_orden('despliegue', 9, {})  # servidor anterior: se olvida
+        self.agente._reportar_despliegue(9, 'ok')
+        self.assertNotIn('orden_uid', self.cuerpos[0])
+        self.assertNotIn('orden_uid', self.cuerpos[1])
+
+    def test_no_se_mezclan_origenes_ni_tipos(self):
+        self.agente._recordar_orden('instalacion', 14, {'orden_uid': 'u-14'})
+        self.agente._reportar_instalacion(15, 'recibido')
+        self.agente._reportar_despliegue(14, 'ok')
+        self.assertEqual([c.get('orden_uid') for c in self.cuerpos], [None, None])
+
+    def test_un_mensaje_con_firma_invalida_no_se_asocia_a_ninguna_orden(self):
+        self.agente._recordar_orden('instalacion', 14, {'orden_uid': 'u-14'})
+        self.agente._reportar_instalacion(14, 'error', detalle='Firma HMAC inválida', orden_uid='')
+        self.assertNotIn('orden_uid', self.cuerpos[0])
+
+    def test_un_uid_que_no_es_texto_corto_se_descarta(self):
+        for valor in (123, 'x' * 65, ''):
+            self.agente._recordar_orden('instalacion', 14, {'orden_uid': valor})
+            self.assertNotIn(('instalacion', 14), self.agente._orden_de)
+
+    def test_el_manejador_de_software_lo_recuerda_solo_con_la_firma_valida(self):
+        self.agente._ya_procesado = lambda *a: False
+        self.agente._procesado_antes_de_actualizar = lambda *a: False
+        self.agente._marcar_procesado = lambda *a: None
+        self.agente._reportar_instalacion = lambda *a, **k: None
+        self.agente._descargar = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('corta acá'))
+        payload = {'solicitud_id': 14, 'orden_uid': 'u-14', 'url': 'http://x', 'accion': 'instalar'}
+        self.agente._firma_valida = lambda *a, **k: False
+        self.agente._manejar_software(payload)
+        self.assertNotIn(('instalacion', 14), self.agente._orden_de)
+        self.agente._firma_valida = lambda *a, **k: True
+        try:
+            self.agente._manejar_software(payload)
+        except RuntimeError:
+            pass
+        self.assertEqual(self.agente._orden_de[('instalacion', 14)], 'u-14')
 
 
 class VersionTests(_AgenteReal):

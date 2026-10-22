@@ -64,6 +64,7 @@ tope de filas por fase para que una pasada no se extienda indefinidamente.
 """
 import json
 import logging
+import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import timedelta
@@ -343,6 +344,21 @@ def _mover(pks, *, desde, hacia, detalle, ahora, **campos) -> int:
     return OrdenAgente.objects.filter(pk__in=list(pks), estado__in=list(desde)).update(**cambios)
 
 
+def con_uid(payload_str: str, uid) -> str:
+    """El payload con `orden_uid` agregado (o reemplazado, si ya traía el de otra orden).
+
+    Va FUERA de la firma: los agentes reconstruyen la lista exacta de campos firmados, así
+    que uno anterior a 0.38 lo ignora y sigue validando. El 0.38 lo devuelve en cada reporte
+    y `registrar_reporte` asocia el reporte a ESA orden, sin adivinar por el origen. Que no
+    esté firmado no abre nada nuevo: los reportes del agente tampoco lo están, y quien
+    pudiera cambiarlo en el broker ya podría mandar reportes falsos."""
+    if not payload_str:
+        return payload_str
+    payload = json.loads(payload_str)
+    payload['orden_uid'] = str(uid)
+    return json.dumps(payload)
+
+
 def crear_orden(*, estacion, tipo, origen_id, topico, payload_str='', repetible, ronda,
                 creada_por=None, timeout_segundos=None, ahora=None) -> OrdenAgente:
     """Crea la orden en `pendiente`. `ronda` distingue publicaciones sucesivas del mismo
@@ -350,10 +366,12 @@ def crear_orden(*, estacion, tipo, origen_id, topico, payload_str='', repetible,
     así que llamar dos veces con la misma ronda devuelve la orden existente."""
     payload = json.loads(payload_str) if payload_str else {}
     plazo, no_antes, expira = plazos_de(tipo, payload, timeout_segundos=timeout_segundos, ahora=ahora)
+    uid = uuid.uuid4()
     orden, _ = OrdenAgente.objects.get_or_create(
         estacion=estacion, clave_idempotencia=f'{tipo}:{origen_id}:{ronda}',
         defaults={
-            'tipo': tipo, 'origen_id': origen_id, 'topico': topico, 'payload': payload_str,
+            'uid': uid, 'tipo': tipo, 'origen_id': origen_id, 'topico': topico,
+            'payload': con_uid(payload_str, uid),
             'repetible': repetible, 'plazo_sin_avance_s': plazo, 'no_interrumpir_antes_de': no_antes,
             'expira_en': expira, 'creada_por': creada_por,
             'historial': [_entrada(Estado.PENDIENTE, '', ahora or timezone.now())],
@@ -530,9 +548,11 @@ def encolar_y_publicar(*, tipo, origen_id, envios, publicar, repetible=True, cre
         historial = [_entrada(Estado.PENDIENTE, '', ahora)]
         if libre:
             historial.append(_entrada(Estado.PUBLICANDO, 'intento 1', ahora))
+        uid = uuid.uuid4()
         filas.append(OrdenAgente(
-            estacion=estacion, tipo=tipo, origen_id=origen_id, clave_idempotencia=f'{tipo}:{origen_id}:{ronda}',
-            topico=topico, payload=payload_str, repetible=repetible, plazo_sin_avance_s=plazo,
+            uid=uid, estacion=estacion, tipo=tipo, origen_id=origen_id,
+            clave_idempotencia=f'{tipo}:{origen_id}:{ronda}',
+            topico=topico, payload=con_uid(payload_str, uid), repetible=repetible, plazo_sin_avance_s=plazo,
             no_interrumpir_antes_de=no_antes, expira_en=expira, creada_por=creada_por,
             estado=Estado.PUBLICANDO if libre else Estado.PENDIENTE, entregas=1 if libre else 0,
             ultima_entrega_en=ahora if libre else None, historial=historial,
@@ -591,11 +611,33 @@ def _publicar_reservadas(creadas, publicar, *, ahora, omitidas, inciertas, detal
 
 # --- Reportes del agente -------------------------------------------------------------
 
-def registrar_reporte(*, estacion, tipo, origen_id, paso, detalle='', ahora=None):
+def _por_uid(candidatas, orden_uid):
+    """La candidata cuyo `uid` es `orden_uid`, o None (sin uid, mal formado o de otra
+    estación/origen: en ese caso se sigue correlacionando como antes, por el origen)."""
+    if not orden_uid:
+        return None
+    try:
+        buscado = uuid.UUID(str(orden_uid))
+    except ValueError:
+        logger.warning('Reporte con orden_uid mal formado: %r — se correlaciona por el origen.', orden_uid)
+        return None
+    orden = next((o for o in candidatas if o.uid == buscado), None)
+    if orden is None:
+        logger.warning('Reporte con orden_uid %s que no es de esta estación y origen — se correlaciona '
+                       'por el origen.', buscado)
+    return orden
+
+
+def registrar_reporte(*, estacion, tipo, origen_id, paso, detalle='', ahora=None, orden_uid=None):
     """Asocia un reporte del agente a su orden y aplica la transición. Devuelve
     (orden, ranura_liberada) — `ranura_liberada` si la orden dejó la ranura retenida y hay
     que despachar la siguiente de esa estación. (None, False) si no hay orden: publicaciones
-    anteriores a esta fase, que siguen funcionando sin cola."""
+    anteriores a esta fase, que siguen funcionando sin cola.
+
+    `orden_uid` (agente 0.38 en adelante): la orden exacta a la que pertenece el reporte. Con
+    él no hay ambigüedad posible: si es de una orden anterior que el servidor ya había
+    cerrado, va a ESA como evidencia tardía y la orden nueva no se toca. Sin él (agentes
+    viejos) se correlaciona por (estación, tipo, origen), como siempre."""
     nuevo = PASOS.get(tipo, {}).get(paso)
     if nuevo is None:
         return None, False
@@ -606,17 +648,20 @@ def registrar_reporte(*, estacion, tipo, origen_id, paso, detalle='', ahora=None
             .filter(estacion=estacion, tipo=tipo, origen_id=origen_id)
             .order_by('-creada_en', '-pk')
         )
-        orden = next((o for o in candidatas if o.estado in VIVOS), None) or (candidatas[0] if candidatas else None)
+        exacta = _por_uid(candidatas, orden_uid)
+        orden = exacta or next((o for o in candidatas if o.estado in VIVOS), None) or (
+            candidatas[0] if candidatas else None)
         if orden is None:
             return None, False
         estaba = orden.estado
-        # Correlación sin identificador de orden: el reporte trae solo el origen. Si hay una
+        # Correlación sin identificador de orden (agentes anteriores a 0.38, o un uid que no
+        # corresponde): el reporte trae solo el origen. Si hay una
         # orden ANTERIOR del mismo origen que el servidor cerró sin evidencia del agente
         # (interrumpida, no entregable, caducada o cancelada) y que PUDO llegar, el agente
         # pudo haberla tenido y este reporte puede ser de ella. No se aplica: la orden viva
         # queda para revisión. Una cerrada que es seguro que nunca salió (rechazo
         # confirmado, sin conexión, cancelada antes de publicarse) no genera ambigüedad.
-        anteriores_sin_evidencia = [
+        anteriores_sin_evidencia = [] if exacta is not None else [
             o for o in candidatas
             if o.pk != orden.pk and o.creada_en <= orden.creada_en and o.estado in CERRADAS_POR_EL_SERVIDOR
             and o.pudo_llegar

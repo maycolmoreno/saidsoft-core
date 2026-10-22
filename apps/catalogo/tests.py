@@ -2282,7 +2282,8 @@ class AgenteDeduplicaDespliegueTests(CargaAgenteRealMixin, TestCase):
         )
         agente.reportes = []
         agente._guardar_identidad = lambda: None
-        agente._reportar_despliegue = lambda despliegue_id, paso, detalle='': agente.reportes.append(
+        agente._orden_de = {}  # lo arma __init__ (0.38), que aquí no corre
+        agente._reportar_despliegue = lambda despliegue_id, paso, detalle='', **_: agente.reportes.append(
             (despliegue_id, paso, detalle),
         )
         return agente

@@ -872,8 +872,9 @@ class OrdenAgente(models.Model):
     estacion = models.ForeignKey(Estacion, on_delete=models.CASCADE, related_name='ordenes')
     tipo = models.CharField(max_length=20, choices=Tipo.choices)
     # Identificador del objeto de dominio que el agente reporta: solicitud_id, despliegue_id
-    # o resultado_id del script. El agente no conoce el `uid`: los reportes se asocian por
-    # (estación, tipo, origen_id).
+    # o resultado_id del script. Los agentes anteriores a 0.38 no conocen el `uid`: sus
+    # reportes se asocian por (estación, tipo, origen_id). Desde 0.38 el payload lleva
+    # `orden_uid` y el agente lo devuelve (ver `ordenes.con_uid` y `registrar_reporte`).
     origen_id = models.PositiveIntegerField()
     clave_idempotencia = models.CharField(max_length=120)
     repetible = models.BooleanField(

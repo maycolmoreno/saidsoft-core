@@ -551,6 +551,10 @@ def _version_mayor_o_igual(version_actual: str, version_candidata: str) -> bool:
 class AgentePrueba:
     def __init__(self, args):
         self.args = args
+        # (tipo, origen_id) -> orden_uid de la última orden VÁLIDA recibida de ese origen
+        # (0.38). Se devuelve en cada reporte para que el servidor sepa a qué orden
+        # pertenece, sin adivinar por el origen. Ver _recordar_orden.
+        self._orden_de = {}
         self.identidad = self._cargar_identidad()
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f'agente-prueba-{args.codigo}')
         # Si esta estación ya tiene una credencial MQTT propia guardada de un
@@ -2287,6 +2291,7 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
             return
 
         resultado_id = payload['resultado_id']
+        self._recordar_orden('script', resultado_id, payload)
         self._reportar_script(resultado_id, 'ejecutando')
         ruta_script = None
         try:
@@ -2348,12 +2353,33 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
                 except OSError:
                     pass
 
-    def _reportar_script(self, resultado_id, estado, exit_code=None, stdout='', stderr=''):
+    def _recordar_orden(self, tipo, origen_id, payload):
+        """Guarda el `orden_uid` del mensaje (0.38) para devolverlo en los reportes de ese
+        origen. Solo se llama con la firma ya validada. Un servidor anterior no lo manda:
+        entonces se olvida el que hubiera, y los reportes salen sin él, como antes.
+
+        El uid no va firmado (los agentes viejos reconstruyen la lista exacta de campos
+        firmados). Solo sirve para que el servidor asocie el reporte a la orden correcta."""
+        uid = payload.get('orden_uid')
+        if isinstance(uid, str) and 0 < len(uid) <= 64:
+            self._orden_de[(tipo, origen_id)] = uid
+        else:
+            self._orden_de.pop((tipo, origen_id), None)
+
+    def _con_orden(self, cuerpo, tipo, origen_id, orden_uid):
+        """`orden_uid=None`: el recordado para ese origen; '' : ninguno (un mensaje que no
+        validó la firma no se asocia a ninguna orden)."""
+        uid = self._orden_de.get((tipo, origen_id)) if orden_uid is None else orden_uid
+        if uid:
+            cuerpo['orden_uid'] = uid
+        return cuerpo
+
+    def _reportar_script(self, resultado_id, estado, exit_code=None, stdout='', stderr='', orden_uid=None):
         # QoS 1 (0.38, E-01): un corte de red no pierde el paso; el servidor tolera duplicados.
-        self._publicar(f'/saidsof/agente/{self.args.codigo}/script_estado/', {
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/script_estado/', self._con_orden({
             'token': self._token(), 'resultado_id': resultado_id, 'estado': estado,
             'exit_code': exit_code, 'stdout': stdout, 'stderr': stderr,
-        }, qos=1)
+        }, 'script', resultado_id, orden_uid), qos=1)
         logging.info('Script #%s -> %s', resultado_id, estado)
 
     # --- consultar_info (hardware/BitLocker bajo demanda) ---
@@ -2978,13 +3004,16 @@ del "%~f0"
             comando_deteccion=payload.get('comando_deteccion'), timestamp=payload.get('timestamp'),
         ):
             if solicitud_id is not None:
-                self._reportar_instalacion(solicitud_id, 'error', detalle='Firma HMAC inválida o mensaje expirado.')
+                self._reportar_instalacion(
+                    solicitud_id, 'error', detalle='Firma HMAC inválida o mensaje expirado.', orden_uid='',
+                )
             return
         if self._procesado_antes_de_actualizar('instalacion', solicitud_id):
             self._marcar_procesado('instalacion', solicitud_id, payload.get('timestamp'))
             logging.info('Instalación #%s ya procesada por una versión anterior del agente — se ignora.', solicitud_id)
             return
         self._marcar_procesado('instalacion', solicitud_id, payload.get('timestamp'))
+        self._recordar_orden('instalacion', solicitud_id, payload)
 
         accion = payload.get('accion', 'instalar')
 
@@ -3075,12 +3104,12 @@ del "%~f0"
                 hasher.update(bloque)
         return hasher.hexdigest()
 
-    def _reportar_instalacion(self, solicitud_id, paso, detalle='', version_instalada=''):
+    def _reportar_instalacion(self, solicitud_id, paso, detalle='', version_instalada='', orden_uid=None):
         # QoS 1 (0.38, E-01): un corte de red no pierde el paso; el servidor tolera duplicados.
-        self._publicar(f'/saidsof/agente/{self.args.codigo}/software_estado/', {
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/software_estado/', self._con_orden({
             'token': self._token(), 'solicitud_id': solicitud_id, 'paso': paso,
             'detalle': detalle, 'version_instalada': version_instalada,
-        }, qos=1)
+        }, 'instalacion', solicitud_id, orden_uid), qos=1)
         logging.info('Instalación #%s -> %s%s', solicitud_id, paso, f' ({detalle})' if detalle else '')
 
     # --- despliegues de POS ---
@@ -3098,13 +3127,16 @@ del "%~f0"
             ventana_fecha_hora=payload.get('ventana_fecha_hora'), timestamp=payload.get('timestamp'),
         ):
             if despliegue_id is not None:
-                self._reportar_despliegue(despliegue_id, 'error', detalle='Firma HMAC inválida o mensaje expirado.')
+                self._reportar_despliegue(
+                    despliegue_id, 'error', detalle='Firma HMAC inválida o mensaje expirado.', orden_uid='',
+                )
             return
         if self._procesado_antes_de_actualizar('despliegue', despliegue_id):
             self._marcar_procesado('despliegue', despliegue_id, payload.get('timestamp'))
             logging.info('Despliegue #%s ya procesado por una versión anterior del agente — se ignora.', despliegue_id)
             return
         self._marcar_procesado('despliegue', despliegue_id, payload.get('timestamp'))
+        self._recordar_orden('despliegue', despliegue_id, payload)
 
         if not (self.args.pos_carpeta_instalacion and self.args.pos_nombre_proceso
                 and self.args.pos_comando_iniciar):
@@ -3316,8 +3348,12 @@ del "%~f0"
             shutil.rmtree(backup_dir, ignore_errors=True)
         self._reportar_despliegue(despliegue_id, 'rollback', detalle=motivo)
 
-    def _reportar_despliegue(self, despliegue_id, paso, detalle='', version_previa=None, version_nueva=None):
-        cuerpo = {'token': self._token(), 'despliegue_id': despliegue_id, 'paso': paso, 'detalle': detalle}
+    def _reportar_despliegue(self, despliegue_id, paso, detalle='', version_previa=None, version_nueva=None,
+                             orden_uid=None):
+        cuerpo = self._con_orden(
+            {'token': self._token(), 'despliegue_id': despliegue_id, 'paso': paso, 'detalle': detalle},
+            'despliegue', despliegue_id, orden_uid,
+        )
         if version_previa is not None:
             cuerpo['version_previa'] = version_previa
         if version_nueva is not None:

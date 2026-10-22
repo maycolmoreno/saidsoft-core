@@ -424,7 +424,7 @@ class FanOutSoftwarePorEstacionTests(_BaseSoftwareTests):
     def test_una_estacion_con_agente_viejo_recibe_la_firma_compartida(self):
         self._crear_estacion('ML001-VIEJA', version='agente-prueba-0.20')
         payload = self._publicar_a_la_cadena()['/saidsof/agente/ML001-VIEJA/software/']
-        campos = {k: v for k, v in payload.items() if k not in ('timestamp', 'firma', 'usar_cache')}
+        campos = {k: v for k, v in payload.items() if k not in ('timestamp', 'firma', 'usar_cache', 'orden_uid')}
         self.assertEqual(
             payload['firma'],
             firmar_payload(comando='instalar_software', **campos, timestamp=payload['timestamp']),
