@@ -107,7 +107,7 @@ class ComandosDeducidosDelInstaladorTests(_BaseSoftwareTests):
         form = self._form(self.MSI, 'LibreOffice_25.8.msi')
         self.assertTrue(form.is_valid(), form.errors)
         version = form.save(commit=False)
-        self.assertEqual(version.comando_instalacion_silenciosa, 'msiexec /i "{archivo}" /qn /norestart ALLUSERS=1')
+        self.assertEqual(version.comando_instalacion_silenciosa, 'msiexec /i "{archivo}" /qn /norestart ALLUSERS=1 >NUL 2>&1')
         self.assertIn("IndexOf('Google Chrome'", version.comando_desinstalacion)
         self.assertEqual(len(form.completados), 2)
 
@@ -157,7 +157,7 @@ class ComandosDeducidosDelInstaladorTests(_BaseSoftwareTests):
         )
         self.assertContains(respuesta, 'Comandos completados automáticamente')
         self.assertEqual(
-            VersionAplicacion.objects.get(version='158.0').comando_instalacion_silenciosa, '"{archivo}" /S',
+            VersionAplicacion.objects.get(version='158.0').comando_instalacion_silenciosa, '"{archivo}" /S >NUL 2>&1',
         )
 
 

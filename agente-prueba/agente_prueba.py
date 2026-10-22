@@ -58,7 +58,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.36'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.37'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -182,6 +182,120 @@ def correr_powershell(script: str, timeout: int) -> str:
         timeout=timeout, text=True, encoding='utf-8', errors='replace',
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
     )
+
+
+# --- Instaladores: sin tuberías y con el árbol de procesos acotado (0.37) ---
+#
+# Hasta 0.36 el instalador corría con `subprocess.run(shell=True, capture_output=True,
+# timeout=600)`. `capture_output` crea una tubería, y `run` espera a que se CIERRE, no a
+# que termine el instalador: si el instalador deja vivo un proceso hijo que heredó la
+# tubería, el agente espera para siempre. Y el `timeout` no lo salva: al vencer mata solo
+# el `cmd.exe` y vuelve a esperar la tubería, esta vez sin límite.
+#
+# Pasó con LibreOffice en ML008-A y ML008-B (19-oct-2026): el programa quedó instalado,
+# el agente nunca reportó "instalado" y las dos cajas quedaron mudas dos días. Medido en
+# Windows con un instalador que termina en <1 s y deja un hijo vivo 12 s: `run` devolvía
+# a los 12,3 s, y con timeout=3 levantaba TimeoutExpired también a los 12,3 s. Con la
+# salida a un archivo y `Popen.wait`, 0,2 s.
+#
+# Ahora la salida va a un archivo temporal (un hijo que lo herede no bloquea a nadie), se
+# espera al proceso y no a la tubería, y al vencer el tiempo se mata el ÁRBOL completo.
+TIMEOUT_INSTALADOR_SEGUNDOS = 600
+
+
+def matar_arbol(proceso) -> None:
+    """Termina `proceso` y todos sus descendientes. En Windows `taskkill /T`; matar solo
+    el `cmd.exe` deja vivos al instalador y a sus hijos."""
+    try:
+        if os.name == 'nt':
+            subprocess.run(
+                ['taskkill', '/F', '/T', '/PID', str(proceso.pid)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+            )
+        else:
+            proceso.kill()
+        proceso.wait(timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        logging.exception('No se pudo terminar el proceso %s y sus hijos', proceso.pid)
+
+
+def ejecutar_sin_tuberias(comando: str, timeout: int) -> tuple:
+    """Corre `comando` (con `cmd`, como siempre) y devuelve (código de salida, últimas
+    líneas de su salida). El código es None si se venció `timeout`: en ese caso el árbol
+    de procesos ya fue terminado."""
+    descriptor, ruta = tempfile.mkstemp(prefix='saidsoft_comando_', suffix='.log')
+    try:
+        with os.fdopen(descriptor, 'wb') as salida:
+            proceso = subprocess.Popen(
+                comando, shell=True, stdin=subprocess.DEVNULL, stdout=salida, stderr=subprocess.STDOUT,
+            )
+            try:
+                codigo = proceso.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                matar_arbol(proceso)
+                codigo = None
+        with open(ruta, 'rb') as leido:
+            leido.seek(0, os.SEEK_END)
+            leido.seek(max(0, leido.tell() - 4000))
+            texto = leido.read().decode('oem' if os.name == 'nt' else 'utf-8', errors='replace')
+        return codigo, texto[-2000:]
+    finally:
+        try:
+            os.unlink(ruta)
+        except OSError:
+            # Un hijo del instalador que siga vivo puede tener el archivo abierto: queda en
+            # TEMP (unos KB) y Windows lo limpia después.
+            pass
+
+
+# --- Vigilancia del servicio (0.37) ---
+#
+# `servicio_windows.py` corre el agente en un hilo y hasta 0.36 solo esperaba la orden de
+# detenerse: si el agente se colgaba, el servicio seguía informando RUNNING y Windows
+# nunca lo reiniciaba (ML008-B, 19 al 21-oct-2026: proceso vivo, cero actividad). Ahora
+# el servicio mira cada minuto esta función, y si devuelve un motivo termina el proceso
+# con error, para que la recuperación del servicio (`configurar_recuperacion_servicio`)
+# lo vuelva a levantar.
+#
+# La señal de vida es el CICLO del hilo de latidos, no el envío: el ciclo avanza aunque no
+# haya conexión al broker o la estación no esté enrolada, así que un broker caído no
+# provoca reinicios. Solo se dispara si el hilo queda trabado dentro de una vuelta.
+TOLERANCIA_LATIDO_MINIMA_SEGUNDOS = 600
+NOMBRE_SERVICIO = 'SaidsoftAgente'
+
+
+def motivo_para_reiniciar(agente, hilo_agente, ahora=None) -> str:
+    """'' si el agente está sano; si no, por qué hay que reiniciar el servicio."""
+    if not hilo_agente.is_alive():
+        return 'el hilo principal del agente terminó'
+    ultimo = getattr(agente, 'ultimo_ciclo_latido', None)
+    if ultimo is None:
+        return ''
+    tolerancia = max(TOLERANCIA_LATIDO_MINIMA_SEGUNDOS, 5 * int(agente.args.intervalo_heartbeat))
+    atraso = (time.monotonic() if ahora is None else ahora) - ultimo
+    if atraso > tolerancia:
+        return f'el ciclo de latidos no avanza hace {int(atraso)} s (tolerancia {tolerancia} s)'
+    return ''
+
+
+def configurar_recuperacion_servicio(nombre: str = NOMBRE_SERVICIO) -> bool:
+    """Que Windows reinicie el servicio si el proceso termina con error. Mismos tiempos
+    que `instalar-servicio.ps1` (30 s, 60 s, 120 s; el contador se reinicia al día). Se
+    vuelve a aplicar en cada arranque para las estaciones instaladas por otro camino (el
+    paquete de apertura, versiones viejas del instalador): sin esto, el vigilante termina
+    el proceso y nadie lo vuelve a levantar."""
+    try:
+        resultado = subprocess.run(
+            ['sc.exe', 'failure', nombre, 'reset=', '86400', 'actions=', 'restart/30000/restart/60000/restart/120000'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logging.exception('No se pudo configurar la recuperación del servicio %s', nombre)
+        return False
+    if resultado.returncode != 0:
+        logging.warning('sc.exe failure devolvió %s: el servicio no se reiniciará solo si falla', resultado.returncode)
+        return False
+    return True
 
 
 # --- Consulta del visor de eventos: código CONSTANTE, datos por la entrada estándar ---
@@ -1787,9 +1901,14 @@ class AgentePrueba:
         (`_leer_config_pos`, `_version_pos_reportable` y `leer_zona_horaria` nunca
         lanzan), asi que esto es una red de seguridad, no un parche a un bug conocido —
         y es justo lo que hay que tener antes de un despliegue masivo.
+
+        `ultimo_ciclo_latido` es la senal de vida que mira el servicio (0.37, ver
+        `motivo_para_reiniciar`): se marca al empezar cada vuelta, haya o no conexion.
+        Si una vuelta se queda trabada, deja de avanzar y el servicio se reinicia.
         """
         while True:
             time.sleep(self.args.intervalo_heartbeat)
+            self.ultimo_ciclo_latido = time.monotonic()
             if not self._token():
                 continue
             try:
@@ -2858,25 +2977,25 @@ del "%~f0"
     def _correr_comando_software(self, solicitud_id, comando, payload):
         if payload.get('argumentos_adicionales'):
             comando = f"{comando} {payload['argumentos_adicionales']}"
-        try:
-            resultado = subprocess.run(
-                comando, shell=True, capture_output=True, text=True, timeout=600,
-                encoding='oem', errors='replace',
+        # Sin tuberías y con el árbol acotado: ver `ejecutar_sin_tuberias`.
+        codigo, salida = ejecutar_sin_tuberias(comando, TIMEOUT_INSTALADOR_SEGUNDOS)
+        if codigo is None:
+            self._reportar_instalacion(
+                solicitud_id, 'error',
+                detalle=f'Timeout ({TIMEOUT_INSTALADOR_SEGUNDOS}s) ejecutando el instalador: se terminó junto con '
+                        f'sus procesos hijos. Salida: {salida}',
             )
-        except subprocess.TimeoutExpired:
-            self._reportar_instalacion(solicitud_id, 'error', detalle='Timeout (600s) ejecutando el instalador.')
             return
         # 3010 y 1641 son éxito con reinicio pendiente (ERROR_SUCCESS_REBOOT_REQUIRED /
         # _INITIATED): msiexec los devuelve aunque se le pase /norestart. Antes contaban
         # como error y una instalación correcta salía en rojo en el panel.
-        if resultado.returncode in (0, 3010, 1641):
-            if resultado.returncode:
-                logging.info('Instalación #%s correcta, pide reinicio (código %s).', solicitud_id, resultado.returncode)
+        if codigo in (0, 3010, 1641):
+            if codigo:
+                logging.info('Instalación #%s correcta, pide reinicio (código %s).', solicitud_id, codigo)
             self._reportar_instalacion(solicitud_id, 'instalado', version_instalada=payload.get('version', ''))
         else:
             self._reportar_instalacion(
-                solicitud_id, 'error',
-                detalle=f'El comando devolvió código {resultado.returncode}: {resultado.stderr[-2000:]}',
+                solicitud_id, 'error', detalle=f'El comando devolvió código {codigo}: {salida}',
             )
 
     def _descargar(self, url: str, usar_cache: bool = False) -> str:
@@ -3167,6 +3286,7 @@ del "%~f0"
         # en modo debug sin broker disponible. Así, loop_forever reintenta solo desde el
         # primer intento, igual que hace con reconexiones posteriores.
         self.client.connect_async(self.args.host, self.args.puerto, keepalive=60)
+        self.ultimo_ciclo_latido = time.monotonic()
         threading.Thread(target=self.bucle_heartbeat, daemon=True).start()
         threading.Thread(target=self.bucle_metricas, daemon=True).start()
         threading.Thread(target=self.bucle_log_pos, daemon=True).start()

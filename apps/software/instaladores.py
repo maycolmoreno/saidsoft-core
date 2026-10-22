@@ -44,11 +44,19 @@ NOMBRES_TIPO = {
     MSI: 'MSI', NSIS: 'NSIS', INNO: 'Inno Setup', BURN: 'WiX Burn',
 }
 
+# Toda instalación termina con la salida a NUL. Los agentes hasta 0.36 leen la salida del
+# instalador por una tubería y esperan a que se cierre: si el instalador deja vivo un
+# proceso hijo que la heredó, el agente queda colgado para siempre (LibreOffice en ML008-A
+# y ML008-B, 19-oct-2026). Con la salida a NUL ningún hijo la hereda. El agente 0.37 ya no
+# usa tuberías; esto protege a la flota que todavía no se actualizó. Se pierde el texto de
+# error del instalador en el panel, no el código de salida, que es lo que decide.
+SIN_SALIDA = ' >NUL 2>&1'
+
 _INSTALAR = {
-    MSI: 'msiexec /i "{archivo}" /qn /norestart ALLUSERS=1',
-    NSIS: '"{archivo}" /S',
-    INNO: '"{archivo}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-',
-    BURN: '"{archivo}" /quiet /norestart',
+    MSI: 'msiexec /i "{archivo}" /qn /norestart ALLUSERS=1' + SIN_SALIDA,
+    NSIS: '"{archivo}" /S' + SIN_SALIDA,
+    INNO: '"{archivo}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' + SIN_SALIDA,
+    BURN: '"{archivo}" /quiet /norestart' + SIN_SALIDA,
 }
 
 # Lo que se agrega a la UninstallString cuando el fabricante no dejó una silenciosa.

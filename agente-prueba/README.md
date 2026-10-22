@@ -173,6 +173,8 @@ el panel deja de servir para saber qué hay instalado.
 | 0.18 | Reporta reloj (`reloj_epoch`), offset UTC y zona horaria en cada latido |
 | 0.19 | Lee la zona horaria del registro en cada latido en vez de cachearla al arrancar |
 | 0.20 | Reporta la versión real del POS, leída del ejecutable |
+| 0.21 a 0.36 | Ver `git log -- agente-prueba/agente_prueba.py` (cada commit dice qué versión trae) |
+| 0.37 | Un instalador que deja procesos vivos ya no traba al agente: se ejecuta sin tuberías y, si vence el tiempo, se termina el árbol completo (LibreOffice en ML008, 19-oct-2026). El servicio vigila el ciclo de latidos y, si se traba, termina con error para que Windows lo reinicie; la recuperación del servicio se vuelve a configurar en cada arranque. Incluye la consulta de eventos sin interpolación (P0-1 parcial) |
 
 El 14-sep-2026 las ocho estaciones del piloto se actualizaron a 0.20 desde el panel, sin
 tocar ninguna: la orden va por un tópico MQTT **retenido**, así que la recibe también una

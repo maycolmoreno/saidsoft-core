@@ -36,7 +36,13 @@ import win32event
 import win32service
 import win32serviceutil
 
-from agente_prueba import ARCHIVO_LOG, AgentePrueba, args_desde_config, _configurar_logging_archivo
+from agente_prueba import (
+    ARCHIVO_LOG, AgentePrueba, _configurar_logging_archivo, args_desde_config, configurar_recuperacion_servicio,
+    motivo_para_reiniciar,
+)
+
+# Cada cuánto el servicio mira si el agente sigue vivo (ver `motivo_para_reiniciar`).
+INTERVALO_VIGILANCIA_MS = 60_000
 
 # Datos que cambian en cada arranque (identidad.json, el log) van en ProgramData, NUNCA
 # en la carpeta de instalación (Program Files): escribir ahí en tiempo de ejecución da
@@ -73,8 +79,12 @@ class ServicioAgenteSaidsoft(win32serviceutil.ServiceFramework):
         win32serviceutil.ServiceFramework.__init__(self, args)
         self.evento_parada = win32event.CreateEvent(None, 0, 0, None)
         self.agente = None
+        self.deteniendo = False
 
     def SvcStop(self):
+        # Antes de `detener()`: al cortar el bucle MQTT el hilo del agente termina, y el
+        # vigilante no tiene que tomarlo por una falla.
+        self.deteniendo = True
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
         if self.agente is not None:
             self.agente.detener()
@@ -118,10 +128,27 @@ class ServicioAgenteSaidsoft(win32serviceutil.ServiceFramework):
             # Se relanza para que el SCM siga viendo el arranque como fallido.
             logging.exception('Saidsoft Agente: no se pudo crear el agente')
             raise
-        threading.Thread(target=self.agente.correr, daemon=True).start()
+        # Que Windows lo vuelva a levantar si el vigilante de abajo termina el proceso.
+        configurar_recuperacion_servicio()
+        hilo = threading.Thread(target=self.agente.correr, daemon=True)
+        hilo.start()
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
 
-        win32event.WaitForSingleObject(self.evento_parada, win32event.INFINITE)
+        # Hasta 0.36 esto era WaitForSingleObject(INFINITE): si el agente se colgaba, el
+        # servicio seguía en RUNNING para siempre y la recuperación de Windows nunca se
+        # disparaba (ML008-B, 19 al 21-oct-2026). Ahora se despierta cada minuto a mirar.
+        while win32event.WaitForSingleObject(self.evento_parada, INTERVALO_VIGILANCIA_MS) == win32event.WAIT_TIMEOUT:
+            if self.deteniendo:
+                continue
+            motivo = motivo_para_reiniciar(self.agente, hilo)
+            if motivo:
+                logging.critical('Saidsoft Agente: %s. Se termina el proceso para que Windows lo reinicie.', motivo)
+                servicemanager.LogErrorMsg(f'Saidsoft Agente: {motivo}; se reinicia el servicio.')
+                logging.shutdown()
+                # os._exit y no sys.exit: los hilos colgados no dejan terminar al
+                # intérprete de forma ordenada. Para el SCM es una caída con error, que
+                # es justo lo que dispara `sc.exe failure ... restart`.
+                os._exit(1)
         servicemanager.LogInfoMsg('Saidsoft Agente: detenido.')
 
 
