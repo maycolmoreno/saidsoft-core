@@ -43,12 +43,5 @@ y no mudarse de sección porque se apretó "Buscar".
 Es la única forma de completar dos zonas distintas del formulario con una sola respuesta
 sin duplicar el render en JavaScript, que es lo que esta vista evita a propósito.
 {% endcomment %}
-{% with field=form.farmacia %}
-<div class="form-field" id="campo-farmacia" hx-swap-oob="true">
-    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
-    {{ field }}
-    {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
-    {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-</div>
-{% endwith %}
+{% include "panel/_campo_farmacia_activo.html" with oob=True %}
 {% endif %}

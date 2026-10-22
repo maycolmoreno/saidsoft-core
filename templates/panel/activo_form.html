@@ -42,6 +42,21 @@
             <p class="help">
                 Si el equipo ya tiene el agente instalado, trae procesador, RAM y almacenamiento.
             </p>
+            {% if form.duplicados or form.duplicados_ocultos %}
+            <div class="mt-2 text-xs px-3 py-2 rounded-md alert sev-warning">
+                Esta serie ya está registrada:
+                {% for activo in form.duplicados %}
+                <a href="{% url 'panel:activo_detalle' activo.pk %}" target="_blank" rel="noopener" class="underline mono">{{ activo.codigo }}</a>
+                ({{ activo.get_tipo_display }}, {{ activo.get_estado_display|lower }}){% if not forloop.last %}, {% endif %}
+                {% endfor %}
+                {% if form.duplicados_ocultos %}
+                {% if form.duplicados %}y {% endif %}{{ form.duplicados_ocultos }} en otra unidad de negocio
+                {% endif %}.
+                <label class="flex items-center gap-2 mt-2">
+                    {{ form.confirmar_serie_duplicada }} {{ form.confirmar_serie_duplicada.label }}
+                </label>
+            </div>
+            {% endif %}
             {% endif %}
             {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
             {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
@@ -50,7 +65,7 @@
         {% endfor %}
     </div>
 
-    <div class="section-divider" data-tipo-computo hidden>
+    <div class="section-divider" data-tipo-computo="{{ form.TIPOS_COMPUTO|join:',' }}" hidden>
         <div class="section-head"><div class="label"><h3>Especificaciones de cómputo</h3></div></div>
         <div id="especificaciones-computo">
             {% include "panel/_especificaciones_computo.html" %}
@@ -74,25 +89,23 @@
 
     <div class="section-divider">
         <div class="section-head"><div class="label"><h3>Ubicación</h3></div></div>
+        <p class="help mb-3">
+            ¿Dónde está el equipo? Completá <strong>una</strong> de las tres: la bodega donde
+            ingresa, la farmacia donde ya está instalado o la ubicación de matriz u oficina.
+            Bodega y farmacia juntas solo si se recibió en bodega y ya se despachó a la farmacia.
+        </p>
         <div class="form-grid">
             {% with field=form.bodega %}
             <div class="form-field">
-                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
-                {{ field }}
-                {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-            </div>
-            {% endwith %}
-            {% with field=form.farmacia %}
-            {% comment %} El `id` es el destino del intercambio fuera de banda que manda
-               _especificaciones_computo.html cuando la serie encuentra una estación: así
-               el campo se completa sin salir de esta sección. {% endcomment %}
-            <div class="form-field" id="campo-farmacia">
                 <label for="{{ field.id_for_label }}">{{ field.label }}</label>
                 {{ field }}
                 {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
                 {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
             </div>
             {% endwith %}
+            {% comment %} El `id` del campo es el destino del intercambio fuera de banda que manda
+               _especificaciones_computo.html cuando la serie encuentra una estación. {% endcomment %}
+            {% include "panel/_campo_farmacia_activo.html" %}
             {% with field=form.ubicacion %}
             <div class="form-field">
                 <label for="{{ field.id_for_label }}">{{ field.label }}</label>
@@ -125,9 +138,9 @@
 (function () {
     // Procesador/RAM/Almacenamiento solo aplican a equipos de cómputo — antes se
     // mostraban siempre, aunque el tipo fuera Impresora, UPS, Cámara, etc.
-    var TIPOS_COMPUTO = ['LAP', 'DSK', 'SRV', 'TAB'];
-    var select = document.getElementById('id_tipo');
     var bloque = document.querySelector('[data-tipo-computo]');
+    var TIPOS_COMPUTO = bloque.dataset.tipoComputo.split(',');
+    var select = document.getElementById('id_tipo');
 
     function actualizar() {
         bloque.hidden = TIPOS_COMPUTO.indexOf(select.value) === -1;
@@ -135,6 +148,18 @@
 
     select.addEventListener('change', actualizar);
     actualizar();
+
+    // Buscador de farmacias: oculta las opciones que no coinciden. Delegado en el documento
+    // porque "Buscar equipo por serie" puede reemplazar el campo entero.
+    document.addEventListener('input', function (evento) {
+        var id = evento.target.dataset && evento.target.dataset.filtrarSelect;
+        if (!id) { return; }
+        var lista = document.getElementById(id);
+        var texto = evento.target.value.trim().toLowerCase();
+        Array.prototype.forEach.call(lista.options, function (opcion) {
+            opcion.hidden = Boolean(opcion.value) && texto !== '' && opcion.text.toLowerCase().indexOf(texto) === -1;
+        });
+    });
 })();
 </script>
 {% endblock %}

@@ -114,19 +114,35 @@ class RecepcionLoteForm(forms.Form):
 
 
 class ActivoIngresoForm(forms.Form):
-    tipo = forms.ChoiceField(choices=Activo.Tipo.choices, widget=forms.Select(attrs={'class': INPUT_CLASS}))
+    # Tipos con procesador/RAM/almacenamiento. La plantilla muestra esa sección solo para
+    # estos, y `clean` descarta esos datos si el tipo es otro.
+    TIPOS_COMPUTO = (Activo.Tipo.LAPTOP, Activo.Tipo.DESKTOP, Activo.Tipo.SERVIDOR, Activo.Tipo.TABLET)
+
+    # Sin valor por defecto: antes arrancaba en "Laptop", y una impresora a la que nadie
+    # le cambiaba el tipo se guardaba como laptop sin ningún aviso.
+    tipo = forms.ChoiceField(
+        choices=[('', 'Elegí el tipo de equipo…')] + list(Activo.Tipo.choices),
+        widget=forms.Select(attrs={'class': INPUT_CLASS}),
+    )
     marca = forms.ModelChoiceField(
         queryset=Marca.objects.all(), required=False, widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
     categoria = forms.ModelChoiceField(
-        queryset=CategoriaEquipo.objects.all(), required=False,
+        queryset=CategoriaEquipo.objects.all(), required=False, label='Categoría',
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
     modelo = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
     # La búsqueda contra el RMM se dispara desde el botón "Buscar" que arma la
     # plantilla (activo_form.html), no desde este campo: al ser explícita, el usuario
     # sabe cuándo se completaron los datos solos y cuándo no hubo resultados.
-    numero_serie = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
+    numero_serie = forms.CharField(
+        required=False, label='Número de serie', widget=forms.TextInput(attrs={'class': INPUT_CLASS}),
+    )
+    # Aparece solo cuando la serie ya existe (ver `clean`): no se bloquea, porque hay
+    # equipos con series de relleno del BIOS repetidas, pero se registra a conciencia.
+    confirmar_serie_duplicada = forms.BooleanField(
+        required=False, label='Es otro equipo: registrarlo igual con esta serie',
+    )
     procesador = forms.CharField(required=False, widget=forms.TextInput(attrs={'class': INPUT_CLASS}))
     ram_gb = forms.IntegerField(
         required=False, min_value=1, label='RAM (GB)', widget=forms.NumberInput(attrs={'class': INPUT_CLASS}),
@@ -139,17 +155,19 @@ class ActivoIngresoForm(forms.Form):
         required=False, label='Código Activo', widget=forms.TextInput(attrs={'class': INPUT_CLASS}),
     )
     condicion_al_recibir = forms.ChoiceField(
-        choices=[('', '—')] + list(CondicionAlRecibir.choices), required=False,
+        choices=[('', '—')] + list(CondicionAlRecibir.choices), required=False, label='Condición al recibir',
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
     fecha_compra = forms.DateField(
-        required=False, widget=forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
+        required=False, label='Fecha de compra',
+        widget=forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
     )
     vencimiento_garantia = forms.DateField(
-        required=False, widget=forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
+        required=False, label='Vencimiento de la garantía',
+        widget=forms.DateInput(attrs={'class': INPUT_CLASS, 'type': 'date'}),
     )
     orden_compra = forms.ModelChoiceField(
-        queryset=OrdenCompra.objects.all(), required=False,
+        queryset=OrdenCompra.objects.all(), required=False, label='Orden de compra',
         widget=forms.Select(attrs={'class': INPUT_CLASS}),
     )
     # Ninguno es obligatorio por separado, pero hace falta uno: un activo tiene que
@@ -184,6 +202,11 @@ class ActivoIngresoForm(forms.Form):
         from apps.cuentas.services import scope_opcional_por_unidad_negocio
 
         from .models import Bodega
+        self.user = user
+        # Activos con la misma serie: los que el usuario puede ver (con enlace) y cuántos
+        # más hay en unidades de negocio que no ve. Los llena `clean`.
+        self.duplicados = []
+        self.duplicados_ocultos = 0
         self.fields['bodega'].queryset = scope_opcional_por_unidad_negocio(
             Bodega.objects.filter(activa=True), user, 'unidad_negocio',
         )
@@ -200,6 +223,15 @@ class ActivoIngresoForm(forms.Form):
 
     def clean(self):
         datos = super().clean()
+        # Procesador/RAM/almacenamiento solo para equipos de cómputo. La sección se oculta
+        # al cambiar el tipo, pero lo ya cargado (a mano o por "Buscar equipo por serie")
+        # se enviaba igual y quedaba guardado en una impresora.
+        if datos.get('tipo') and datos['tipo'] not in self.TIPOS_COMPUTO:
+            datos['procesador'], datos['ram_gb'], datos['almacenamiento_gb'] = '', None, None
+        if (datos.get('fecha_compra') and datos.get('vencimiento_garantia')
+                and datos['vencimiento_garantia'] < datos['fecha_compra']):
+            self.add_error('vencimiento_garantia', 'La garantía no puede vencer antes de la fecha de compra.')
+        self._revisar_serie_duplicada(datos)
         if not datos.get('bodega') and not datos.get('farmacia') and not datos.get('ubicacion'):
             raise forms.ValidationError(
                 'Indicá dónde está el equipo: la bodega donde ingresa, la farmacia donde '
@@ -213,6 +245,29 @@ class ActivoIngresoForm(forms.Form):
                 'La ubicación es para lo que NO está en un local.',
             )
         return datos
+
+    def _revisar_serie_duplicada(self, datos):
+        serie = (datos.get('numero_serie') or '').strip()
+        if not serie:
+            return
+        from apps.cuentas.services import scope_opcional_por_unidad_negocio
+
+        iguales = Activo.objects.filter(numero_serie__iexact=serie).exclude(estado=Activo.Estado.DADO_DE_BAJA)
+        total = iguales.count()
+        if not total:
+            return
+        self.duplicados = list(
+            scope_opcional_por_unidad_negocio(iguales, self.user, 'unidad_negocio').order_by('codigo')[:5],
+        ) if self.user is not None else []
+        visibles = scope_opcional_por_unidad_negocio(iguales, self.user, 'unidad_negocio').count() \
+            if self.user is not None else 0
+        self.duplicados_ocultos = total - visibles
+        if not datos.get('confirmar_serie_duplicada'):
+            self.add_error(
+                'numero_serie',
+                f'Ya hay {total} activo(s) con esta serie. Revisá que no sea el mismo equipo; si es '
+                'otro, marcá "registrarlo igual".',
+            )
 
 
 class AsignacionForm(forms.Form):

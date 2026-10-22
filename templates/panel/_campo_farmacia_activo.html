@@ -1,0 +1,20 @@
+{% comment %}
+Campo "Farmacia" del alta de activo. Lo usan activo_form.html y el intercambio fuera de
+banda de _especificaciones_computo.html (que lo reemplaza por `id` cuando la serie
+encuentra una estación), así que los dos muestran exactamente lo mismo.
+
+El buscador filtra las opciones de la lista: con cientos de farmacias, bajar por toda la
+lista era la forma de encontrar una. El comportamiento está en activo_form.html, delegado
+en el documento para que siga funcionando después del reemplazo.
+{% endcomment %}
+{% with field=form.farmacia %}
+<div class="form-field" id="campo-farmacia"{% if oob %} hx-swap-oob="true"{% endif %}>
+    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+    <input type="search" placeholder="Buscar farmacia por código…" autocomplete="off"
+           class="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] mb-2"
+           data-filtrar-select="{{ field.id_for_label }}" aria-label="Buscar farmacia">
+    {{ field }}
+    {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
+    {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+</div>
+{% endwith %}
