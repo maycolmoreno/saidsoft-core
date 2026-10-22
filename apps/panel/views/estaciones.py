@@ -15,6 +15,7 @@ from apps.catalogo.services import (
 )
 from apps.cuentas.services import scope_por_unidad_negocio, scope_por_unidad_negocio_activa, verificar_acceso
 from apps.monitoreo.services import eventos_sistema_recientes, ventana_mantenimiento_activa
+from apps.monitoreo.servicios_pos import estado_catalogo
 
 from ..paginacion import paginar
 
@@ -36,6 +37,9 @@ def _render_info_modal(request, estacion, **extra):
         # puntual, y hasta el 23-sep-2026 el dato existía y no se podía ver mas que desde
         # el admin de Django.
         'eventos_windows': eventos_sistema_recientes(estacion=estacion, limite=10),
+        # Si tiene aplicado el último catálogo (agente 0.38). Antes de esto no había forma
+        # de saberlo: H-03 dejó 20 estaciones con el catálogo viejo sin ninguna señal.
+        'estado_catalogos': estado_catalogo(estacion),
         **extra,
     }
     return render(request, 'panel/estacion_info_modal.html', contexto)

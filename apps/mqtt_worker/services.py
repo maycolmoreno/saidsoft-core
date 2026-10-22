@@ -5,6 +5,7 @@ desde management/commands/run_mqtt_worker.py, que es quien mantiene la
 conexión MQTT viva.
 """
 import logging
+import re
 from datetime import timedelta
 
 from django.utils import timezone
@@ -498,6 +499,7 @@ def manejar_heartbeat(codigo_estacion: str, payload: dict) -> None:
         estacion.pausado = pausado_reportado
         estacion.pausa_confirmada_en = timezone.now()
 
+    _versiones_de_catalogo(estacion, payload.get('catalogos'))
     estacion.estado_conexion = Estacion.EstadoConexion.ONLINE
     estacion.ultimo_heartbeat = timezone.now()
     estacion.save()
@@ -952,6 +954,22 @@ def manejar_estado_script(codigo_estacion: str, payload: dict) -> None:
 
     recalcular_estado_ejecucion(resultado.ejecucion)
     _registrar_en_cola(estacion, 'script', resultado.pk, estado, '', orden_uid=payload.get('orden_uid'))
+
+
+_VERSION_CATALOGO = re.compile(r'[0-9a-f]{12}')
+
+
+def _versiones_de_catalogo(estacion, catalogos) -> None:
+    """Versión de cada catálogo que la estación tiene aplicado (agente 0.38). Un agente
+    anterior no manda `catalogos` y los campos quedan como estaban. Un valor que no es
+    una versión válida se ignora: el campo se muestra en el panel."""
+    if not isinstance(catalogos, dict):
+        return
+    for clave, campo in (('servicios_pos', 'catalogo_servicios_version'),
+                         ('eventos_sistema', 'catalogo_eventos_version')):
+        version = catalogos.get(clave)
+        if isinstance(version, str) and _VERSION_CATALOGO.fullmatch(version):
+            setattr(estacion, campo, version)
 
 
 def _registrar_en_cola(estacion, tipo, origen_id, paso, detalle, orden_uid=None):

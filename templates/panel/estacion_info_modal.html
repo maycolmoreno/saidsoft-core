@@ -297,6 +297,17 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
         </p>
         {% endif %}
 
+        <p class="text-xs text-[var(--text-faint)] mb-2">
+            Catálogos:
+            {% for nombre, version, al_dia in estado_catalogos %}
+            {{ nombre }}
+            {% if al_dia is None %}<span class="text-[var(--text-dim)]" title="El agente no informa la versión (anterior a 0.38).">sin dato</span>
+            {% elif al_dia %}<span class="pill good">al día</span>
+            {% else %}<span class="pill warning" title="Tiene aplicada la versión {{ version }}">desactualizado</span>
+            {% endif %}{% if not forloop.last %} · {% endif %}
+            {% endfor %}
+        </p>
+
         {% if not ultima_version_agente %}
         <p class="text-xs text-[var(--text-dim)] mb-2">No hay ninguna versión de agente cargada todavía.</p>
         {% elif not agente_desactualizado %}

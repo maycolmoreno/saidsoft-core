@@ -428,6 +428,16 @@ def firmar(secreto: str, **campos) -> str:
     return hmac.new(secreto.encode(), mensaje.encode(), hashlib.sha256).hexdigest()
 
 
+def version_catalogo(payload: dict) -> str:
+    """Version de un catalogo recibido: los primeros 12 del SHA-256 del texto firmado
+    `catalogo`, igual que `version_de` en apps/monitoreo/servicios_pos.py. Vacia si el
+    mensaje no lo trae (servidor anterior al catalogo firmado)."""
+    cuerpo = payload.get('catalogo')
+    if not isinstance(cuerpo, str):
+        return ''
+    return hashlib.sha256(cuerpo.encode('utf-8')).hexdigest()[:12]
+
+
 def firma_ed25519_valida(claves, mensaje: bytes, firma_b64) -> bool:
     """True si `firma_b64` es una firma Ed25519 de `mensaje` hecha con la privada de
     alguna de `claves` (públicas en base64). Cualquier dato mal formado es False.
@@ -1507,6 +1517,7 @@ class AgentePrueba:
             return
         eventos = contenido.get('eventos') or []
         self.identidad['catalogo_eventos_sistema'] = eventos
+        self.identidad['catalogo_eventos_sistema_version'] = version_catalogo(payload)
         self._guardar_identidad()
         logging.info('Catalogo de eventos de Windows recibido: %d vigilado(s).', len(eventos))
 
@@ -1825,6 +1836,7 @@ class AgentePrueba:
             'desactivados': contenido.get('desactivados') or [],
         }
         self.identidad['catalogo_servicios_pos'] = catalogo
+        self.identidad['catalogo_servicios_pos_version'] = version_catalogo(payload)
         self._guardar_identidad()
         logging.info(
             'Catalogo de servicios recibido: %d con destino fijo, %d desactivado(s).',
@@ -2033,6 +2045,12 @@ class AgentePrueba:
         self._publicar(f'/saidsof/agente/{self.args.codigo}/heartbeat/', {
             'token': self._token(),
             'version_agente': VERSION_AGENTE_PRUEBA,
+            # Que catalogo tiene aplicado (0.38): el servidor lo compara con el vigente y
+            # el panel muestra si esta desactualizado. Vacio = todavia no recibio ninguno.
+            'catalogos': {
+                'servicios_pos': self.identidad.get('catalogo_servicios_pos_version', ''),
+                'eventos_sistema': self.identidad.get('catalogo_eventos_sistema_version', ''),
+            },
             # Se declara, no se deduce de la version: la version dice que este agente
             # ENTIENDE el secreto propio, esto dice que lo TIENE. Son cosas distintas
             # y confundirlas dejo mudas a dos estaciones (ver el bloque de

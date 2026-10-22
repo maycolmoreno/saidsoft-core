@@ -62,11 +62,23 @@ es la actualización del agente, y el freno inmediato es
 `deploy/emqx-narrow-acl-agente.sh` —con la ACL angosta ninguna estación puede publicar en
 estos dos tópicos—.
 """
+import hashlib
 import json
 import logging
 import time
 
 logger = logging.getLogger(__name__)
+
+
+def serializar(contenido: dict) -> str:
+    """El texto exacto que viaja en `catalogo` y que se firma."""
+    return json.dumps(contenido, separators=(',', ':'), sort_keys=True)
+
+
+def version_de(cuerpo: str) -> str:
+    """Versión de un catálogo: los primeros 12 del SHA-256 de su texto firmado. El agente
+    0.38 calcula lo mismo sobre el `catalogo` que aplicó y lo manda en el latido."""
+    return hashlib.sha256(cuerpo.encode('utf-8')).hexdigest()[:12]
 
 
 def envolver_firmado(comando: str, contenido: dict) -> dict:
@@ -87,7 +99,7 @@ def envolver_firmado(comando: str, contenido: dict) -> dict:
 
     from . import firma_catalogo
 
-    cuerpo = json.dumps(contenido, separators=(',', ':'), sort_keys=True)
+    cuerpo = serializar(contenido)
     timestamp = int(time.time())
     sobre = {
         # Duplicado a propósito, para los agentes anteriores a 0.22 — ver el docstring
@@ -246,3 +258,26 @@ def publicar_catalogo_eventos_sistema() -> tuple:
     else:
         logger.warning('El catalogo de eventos no se pudo publicar (broker sin responder).')
     return len(eventos), bool(enviado)
+
+
+def versiones_vigentes() -> dict:
+    """La versión que deberían tener aplicada las estaciones de cada catálogo: la de lo
+    que se publicaría HOY. Si alguien cambió el catálogo y la publicación falló, todas
+    figuran desactualizadas, y es correcto: les falta lo último."""
+    return {
+        'servicios': version_de(serializar(payload_catalogo())),
+        'eventos': version_de(serializar({'eventos': catalogo_eventos_para_agentes()})),
+    }
+
+
+def estado_catalogo(estacion, vigentes=None) -> list:
+    """Por catálogo: `(nombre, version_de_la_estacion, al_dia)`; `al_dia` es None si la
+    estación no informa versión (agente anterior a 0.38)."""
+    vigentes = vigentes or versiones_vigentes()
+    filas = []
+    for nombre, clave, version in (
+        ('Servicios del POS', 'servicios', estacion.catalogo_servicios_version),
+        ('Eventos de Windows', 'eventos', estacion.catalogo_eventos_version),
+    ):
+        filas.append((nombre, version, (version == vigentes[clave]) if version else None))
+    return filas

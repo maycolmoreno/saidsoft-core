@@ -321,6 +321,12 @@ class Estacion(models.Model):
     so_build = models.CharField(max_length=30, blank=True, help_text='Ej. 19045 (22H2)')
     version_agente = models.CharField(max_length=30, blank=True)
     version_pos = models.CharField(max_length=30, blank=True)
+    # Versión de cada catálogo que la estación tiene APLICADO (agente 0.38, en el latido):
+    # los primeros 12 del SHA-256 del catálogo firmado. Se compara con
+    # `apps.monitoreo.servicios_pos.versiones_vigentes()`. Vacía = agente anterior a 0.38
+    # o todavía sin catálogo: no se sabe.
+    catalogo_servicios_version = models.CharField(max_length=12, blank=True, default='')
+    catalogo_eventos_version = models.CharField(max_length=12, blank=True, default='')
 
     # A qué nodo apunta REALMENTE el POS de esta estación, leído por el agente del
     # Zabyca.Pos.Desktop.exe.Config del propio equipo y reportado en cada heartbeat
