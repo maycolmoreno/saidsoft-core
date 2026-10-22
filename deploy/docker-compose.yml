@@ -93,6 +93,11 @@ services:
       EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
       EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /opt/emqx/etc/certs/cert.pem
       EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /opt/emqx/etc/certs/key.pem
+      # Tope de conexiones del listener de los agentes. Medido el 22-oct-2026 en el NUC:
+      # `max_conns: 1024`, que es el límite de archivos abiertos del proceso (ver `ulimits`
+      # abajo), no un número elegido. Con ~700 farmacias y varias cajas cada una, 1024 no
+      # alcanza. 6000 deja margen; subirlo sin subir `nofile` no tiene efecto.
+      EMQX_LISTENERS__SSL__DEFAULT__MAX_CONNECTIONS: "6000"
       # Desactiva el listener TCP sin cifrar: los agentes deben hablar solo por TLS.
       EMQX_LISTENERS__TCP__DEFAULT__ENABLE: "false"
       # wss:default (websocket-TLS, 8084) viene habilitado por defecto en la imagen y no
@@ -101,6 +106,13 @@ services:
       # el nodo EMQX, no solo ese listener (visto en producción: crash loop completo por
       # "no_cert" en wss mientras ssl:8883/ws:8083 sí arrancaban). Desactivarlo explícito.
       EMQX_LISTENERS__WSS__DEFAULT__ENABLE: "false"
+    # Cada conexión MQTT usa un descriptor de archivo. El contenedor heredaba un límite
+    # blando de 1024 (`/proc/<beam.smp>/limits`: 1024 / 524288), y EMQX ajusta el tope de
+    # conexiones a ese número. 65536 cubre las 6000 conexiones del listener con holgura.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - emqx_data:/opt/emqx/data
       - ./certs:/opt/emqx/etc/certs:ro          # cert.pem / key.pem para el listener TLS
@@ -365,7 +377,7 @@ services:
       MESHCENTRAL_API_WS_URL: ${MESHCENTRAL_API_WS_URL}
       MESHCENTRAL_API_USUARIO: ${MESHCENTRAL_API_USUARIO}
       MESHCENTRAL_API_PASSWORD: ${MESHCENTRAL_API_PASSWORD}
-      MESHCENTRAL_API_CA_CERT: ${MESHCENTRAL_API_CA_CERT}
+      MESHCENTRAL_API_CA_CERT: ${MESHCENTRAL_API_CA_CERT:-}
       MESHCENTRAL_API_VERIFICAR_TLS: ${MESHCENTRAL_API_VERIFICAR_TLS:-True}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
@@ -502,7 +514,7 @@ services:
       MESHCENTRAL_API_WS_URL: ${MESHCENTRAL_API_WS_URL}
       MESHCENTRAL_API_USUARIO: ${MESHCENTRAL_API_USUARIO}
       MESHCENTRAL_API_PASSWORD: ${MESHCENTRAL_API_PASSWORD}
-      MESHCENTRAL_API_CA_CERT: ${MESHCENTRAL_API_CA_CERT}
+      MESHCENTRAL_API_CA_CERT: ${MESHCENTRAL_API_CA_CERT:-}
       MESHCENTRAL_API_VERIFICAR_TLS: ${MESHCENTRAL_API_VERIFICAR_TLS:-True}
       # MQTT con la credencial del PANEL: acá corren dos tareas periódicas que le PIDEN
       # algo a un agente — `solicitar_sondeo_activos_task` (cada 15 min) y
