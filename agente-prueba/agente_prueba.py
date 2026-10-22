@@ -65,7 +65,9 @@ VERSION_AGENTE_PRUEBA = 'agente-prueba-0.38'
 # primero se distribuye un agente con la vieja y la nueva, y recién después el servidor
 # cambia de clave. Vacía = este agente valida los catálogos solo con HMAC, como 0.37.
 # La pública sale de `python manage.py clave_firma_catalogos` en el servidor.
-CLAVES_PUBLICAS_CATALOGO = ()
+CLAVES_PUBLICAS_CATALOGO = (
+    'XBmIbE/Szj8w35Q7HHQIRAxLzlz6oVX8pXQbV9//MTw=',  # en uso en el NUC desde el 22-oct-2026
+)
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
