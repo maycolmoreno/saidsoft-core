@@ -5,21 +5,62 @@ cuando se aprieta "Buscar" junto al número de serie
 (ver panel.views.activos.especificaciones_por_serie_partial).
 {% endcomment %}
 {% if estacion %}
-<div class="mb-3 text-xs px-3 py-2 rounded-md alert sev-info">
-    Datos tomados de la estación <span class="mono">{{ estacion.codigo }}</span>, que
-    reporta este mismo número de serie. Podés corregirlos antes de guardar.
-    {% if farmacia_sugerida %}
-    También se completó la farmacia (<span class="mono">{{ farmacia_sugerida.codigo }}</span>),
-    donde esa estación está instalada.
-    {% endif %}
+{% comment %} Un solo <div> adentro: `.alert` reparte sus hijos directos en columnas, y con el
+   texto suelto cada <span> quedaba en una columna propia. {% endcomment %}
+<div class="mb-3 text-xs px-3 py-2 rounded-md alert {% if pedido_hardware and pedido_hardware != 'esperando' %}sev-warning{% else %}sev-info{% endif %}">
+    <div>
+        {% if pedido_hardware == 'esperando' %}
+        La estación <span class="mono">{{ estacion.codigo }}</span> reporta esta serie pero todavía no
+        había mandado su hardware. Se lo pedimos: los datos aparecen acá solos en unos segundos.
+        {% elif pedido_hardware == 'sin_respuesta' %}
+        La estación <span class="mono">{{ estacion.codigo }}</span> no respondió con su hardware. Volvé a
+        apretar "Buscar equipo por serie" en un rato, o cargá los datos a mano.
+        {% elif pedido_hardware == 'apagada' %}
+        La estación <span class="mono">{{ estacion.codigo }}</span> reporta esta serie, pero nunca mandó su
+        hardware y ahora está apagada. Buscá de nuevo cuando esté encendida, o cargá los datos a mano.
+        {% elif pedido_hardware == 'sin_permiso' %}
+        La estación <span class="mono">{{ estacion.codigo }}</span> reporta esta serie, pero nunca mandó su
+        hardware y tu usuario no tiene permiso para pedírselo (consultar info de estación). Pedíselo a
+        quien lo tenga, o cargá los datos a mano.
+        {% elif pedido_hardware == 'no_enviado' %}
+        La estación <span class="mono">{{ estacion.codigo }}</span> reporta esta serie, pero no se le pudo
+        pedir el hardware (broker sin responder). Probá de nuevo en un rato.
+        {% else %}
+        Datos tomados de la estación <span class="mono">{{ estacion.codigo }}</span>, que reporta este
+        mismo número de serie. Podés corregirlos antes de guardar.
+        {% endif %}
+        {% if farmacia_sugerida %}
+        También se completó la farmacia (<span class="mono">{{ farmacia_sugerida.codigo }}</span>), donde
+        esa estación está instalada.
+        {% endif %}
+        {% if campos_identificacion %}
+        Arriba se completó: {{ campos_identificacion|join:", " }}.
+        {% endif %}
+        {% if fabricante_sin_marca %}
+        El equipo dice ser de <strong>{{ fabricante_sin_marca }}</strong>, que no está en la lista de
+        marcas: elegila a mano.
+        {% endif %}
+    </div>
 </div>
+{% if pedido_hardware == 'esperando' %}
+{% comment %} Vuelve a buscar sola cada 3 s con los valores actuales del formulario, hasta que
+   llega el hardware o se agotan los intentos (panel.views.activos._pedir_hardware). {% endcomment %}
+<div hidden
+     hx-get="{% url 'panel:especificaciones_por_serie_partial' %}?intento={{ siguiente_intento }}"
+     hx-trigger="load delay:3s"
+     hx-target="#especificaciones-computo"
+     hx-swap="innerHTML"
+     hx-include="[name='numero_serie'],[name='procesador'],[name='ram_gb'],[name='almacenamiento_gb'],[name='farmacia'],[name='bodega'],[name='tipo'],[name='marca'],[name='modelo']"></div>
+{% endif %}
 {% elif serie_buscada %}
 {% comment %} Se buscó y no hubo resultado. Es distinto de la carga inicial: sin este aviso el
    botón parecería no hacer nada. {% endcomment %}
 <div class="mb-3 text-xs px-3 py-2 rounded-md alert sev-warning">
-    No se encontró ninguna estación con la serie <span class="mono">{{ serie_buscada }}</span>.
-    Puede que el equipo todavía no tenga el agente instalado, o que la serie no coincida
-    exactamente. Cargá las especificaciones a mano.
+    <div>
+        No se encontró ninguna estación con la serie <span class="mono">{{ serie_buscada }}</span>.
+        Puede que el equipo todavía no tenga el agente instalado, o que la serie no coincida
+        exactamente. Cargá las especificaciones a mano.
+    </div>
 </div>
 {% endif %}
 <div class="form-grid">
@@ -33,6 +74,9 @@ cuando se aprieta "Buscar" junto al número de serie
     {% endwith %}
     {% endfor %}
 </div>
+{% for nombre in campos_identificacion %}
+{% include "panel/_campo_identificacion_activo.html" with field=form|get_field:nombre oob=True %}
+{% endfor %}
 {% if farmacia_sugerida %}
 {% comment %}
 Intercambio FUERA DE BANDA del campo de farmacia. HTMX reemplaza este bloque por `id`

@@ -1,0 +1,12 @@
+{% load form_extras %}
+{% comment %}
+Un campo de la sección "Identificación" del alta de activo (tipo, marca, modelo,
+categoría). Lo usan activo_form.html y la búsqueda por serie, que lo reemplaza fuera de
+banda por `id` cuando la estación informa ese dato (_especificaciones_computo.html).
+{% endcomment %}
+<div class="form-field {% if field|widget_ancho_completo %}span-2{% endif %}" id="campo-{{ field.name }}"{% if oob %} hx-swap-oob="true"{% endif %}>
+    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+    {{ field }}
+    {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
+    {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+</div>

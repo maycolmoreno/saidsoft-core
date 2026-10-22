@@ -2487,7 +2487,8 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
         logging.info('Info del equipo reportada.')
 
     def _consultar_info_equipo(self) -> dict:
-        """Procesador/RAM/almacenamiento vía CIM, BitLocker del volumen C: y plan de
+        """Procesador/RAM/almacenamiento vía CIM, fabricante/modelo/formato del equipo
+        (0.38, para el alta del activo), BitLocker del volumen C: y plan de
         energía activo — un solo script de PowerShell que arma todo en JSON, en vez de
         varias llamadas sueltas parseando texto (más frágil). BitLocker puede no estar
         disponible (Windows Home, o el cmdlet ausente) — con -ErrorAction Stop +
@@ -2497,7 +2498,17 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
         script = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $proc = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
-$ramBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+$cs = Get-CimInstance Win32_ComputerSystem
+$ramBytes = $cs.TotalPhysicalMemory
+# Fabricante y modelo (0.38): para dar de alta el activo sin tipearlos. Lenovo pone en
+# `Model` el tipo de maquina (10M7S0XX00); el nombre comercial esta en
+# Win32_ComputerSystemProduct.Version.
+$modelo = $cs.Model
+if ($cs.Manufacturer -like 'LENOVO*') {
+    $version = (Get-CimInstance Win32_ComputerSystemProduct).Version
+    if ($version) { $modelo = $version }
+}
+$chasis = @((Get-CimInstance Win32_SystemEnclosure | Select-Object -First 1).ChassisTypes) -join ','
 $disco = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
 $discoGB = if ($disco) { [math]::Round($disco.Size / 1GB) } else { $null }
 $planEnergia = (Get-CimInstance -Namespace root\cimv2\power -ClassName Win32_PowerPlan | Where-Object IsActive).ElementName
@@ -2528,6 +2539,10 @@ try {
     bitlocker_clave_recuperacion = $claveRecuperacion
     bitlocker_id_protector = $idProtector
     power_plan = $planEnergia
+    fabricante = $cs.Manufacturer
+    modelo = $modelo
+    tipo_sistema = $cs.PCSystemType
+    chasis = $chasis
 } | ConvertTo-Json -Compress
 """
         try:

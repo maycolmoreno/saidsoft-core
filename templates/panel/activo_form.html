@@ -20,10 +20,10 @@
     <div class="form-grid">
         {% for name in "tipo,marca,categoria,modelo,numero_serie"|split_names %}
         {% with field=form|get_field:name %}
-        <div class="form-field {% if field|widget_ancho_completo %}span-2{% endif %}">
+        {% if name == "numero_serie" %}
+        <div class="form-field {% if field|widget_ancho_completo %}span-2{% endif %}" id="campo-{{ name }}">
             <label for="{{ field.id_for_label }}">{{ field.label }}</label>
             {{ field }}
-            {% if name == "numero_serie" %}
             {% comment %} Busqueda EXPLICITA contra el RMM: si una estacion reporta esta misma
                serie, se completan las especificaciones de computo con lo que el
                agente ya sabe. hx-include manda los valores actuales para que el
@@ -32,7 +32,7 @@
                     hx-get="{% url 'panel:especificaciones_por_serie_partial' %}"
                     hx-target="#especificaciones-computo"
                     hx-swap="innerHTML"
-                    hx-include="[name='numero_serie'],[name='procesador'],[name='ram_gb'],[name='almacenamiento_gb'],[name='farmacia'],[name='bodega']"
+                    hx-include="[name='numero_serie'],[name='procesador'],[name='ram_gb'],[name='almacenamiento_gb'],[name='farmacia'],[name='bodega'],[name='tipo'],[name='marca'],[name='modelo']"
                     hx-indicator="#buscando-serie">
                 Buscar equipo por serie
             </button>
@@ -57,10 +57,14 @@
                 </label>
             </div>
             {% endif %}
-            {% endif %}
             {% if field.help_text %}<p class="help">{{ field.help_text }}</p>{% endif %}
             {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
         </div>
+        {% else %}
+        {% comment %} Tipo, marca, modelo y categoría: el mismo bloque que reemplaza la búsqueda
+           por serie cuando la estación los informa (_campo_identificacion_activo.html). {% endcomment %}
+        {% include "panel/_campo_identificacion_activo.html" %}
+        {% endif %}
         {% endwith %}
         {% endfor %}
     </div>
@@ -138,15 +142,21 @@
 (function () {
     // Procesador/RAM/Almacenamiento solo aplican a equipos de cómputo — antes se
     // mostraban siempre, aunque el tipo fuera Impresora, UPS, Cámara, etc.
+    // Se oculta solo cuando se eligió un tipo que NO es de cómputo: con el tipo todavía
+    // vacío se ve, porque "Buscar equipo por serie" escribe ahí lo que encuentra.
     var bloque = document.querySelector('[data-tipo-computo]');
     var TIPOS_COMPUTO = bloque.dataset.tipoComputo.split(',');
-    var select = document.getElementById('id_tipo');
 
     function actualizar() {
-        bloque.hidden = TIPOS_COMPUTO.indexOf(select.value) === -1;
+        // Se busca cada vez: la búsqueda por serie puede reemplazar el campo de tipo.
+        var tipo = document.getElementById('id_tipo').value;
+        bloque.hidden = tipo !== '' && TIPOS_COMPUTO.indexOf(tipo) === -1;
     }
 
-    select.addEventListener('change', actualizar);
+    document.addEventListener('change', function (evento) {
+        if (evento.target.id === 'id_tipo') { actualizar(); }
+    });
+    document.body.addEventListener('htmx:afterSettle', actualizar);
     actualizar();
 
     // Buscador de farmacias: oculta las opciones que no coinciden. Delegado en el documento

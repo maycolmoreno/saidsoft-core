@@ -118,16 +118,71 @@ def especificaciones_por_serie_partial(request):
         if farmacia_sugerida is not None:
             inicial['farmacia'] = farmacia_sugerida.pk
 
+    # Tipo, marca y modelo (agente 0.38): con el mismo criterio, solo si están vacíos. Viven
+    # en la sección "Identificación", así que van fuera de banda (ver la plantilla).
+    identificacion = []
+    for campo in ('tipo', 'marca', 'modelo'):
+        sugerido = (datos or {}).get(campo)
+        if sugerido and not request.GET.get(campo):
+            inicial[campo] = getattr(sugerido, 'pk', sugerido)
+            identificacion.append(campo)
+    fabricante_sin_marca = (datos or {}).get('fabricante') if datos and 'marca' not in datos else ''
+
+    estacion = (datos or {}).get('estacion')
+    pedido, intento = None, 0
+    if estacion is not None and not any(c in datos for c in ('procesador', 'ram_gb', 'almacenamiento_gb')):
+        pedido, intento = _pedir_hardware(request, estacion)
+
     form = ActivoIngresoForm(user=request.user, initial=inicial)
     return render(request, 'panel/_especificaciones_computo.html', {
         'form': form,
-        'estacion': (datos or {}).get('estacion'),
+        'estacion': estacion,
         'farmacia_sugerida': farmacia_sugerida,
         # Distingue "todavía no busqué" de "busqué y no hay": sin esto, no encontrar
         # nada se ve igual que la carga inicial y el usuario no sabe si el botón hizo
         # algo.
         'serie_buscada': serie,
+        'pedido_hardware': pedido,
+        'siguiente_intento': intento + 1,
+        'campos_identificacion': identificacion,
+        'fabricante_sin_marca': fabricante_sin_marca,
     })
+
+
+# Cuántas veces vuelve a mirar la pantalla si ya llegó el hardware pedido, cada 3 s.
+ESPERA_HARDWARE_INTENTOS = 10
+
+
+def _pedir_hardware(request, estacion):
+    """La estación existe pero nunca reportó su hardware: el agente lo manda solo cuando
+    se le pide (`consultar_info`), y hasta el 22-oct-2026 eso había que hacerlo desde la
+    ficha de la estación antes de dar de alta el activo. Acá se pide en el momento y la
+    pantalla vuelve a buscar sola hasta que llega.
+
+    Devuelve `(pedido, intento)`. `pedido` dice qué mostrar: 'esperando', 'apagada',
+    'sin_permiso', 'no_enviado' o 'sin_respuesta'. El pedido sale una sola vez (intento
+    0); los intentos siguientes solo vuelven a mirar.
+
+    Exige `consultar_info_estacion`, el mismo permiso que el botón de la ficha: esa
+    consulta también trae la clave de recuperación de BitLocker.
+    """
+    from apps.catalogo.models import Estacion
+    from apps.catalogo.services import enviar_comando
+
+    try:
+        intento = max(0, int(request.GET.get('intento') or 0))
+    except ValueError:
+        intento = 0
+    if intento > 0:
+        return ('esperando' if intento < ESPERA_HARDWARE_INTENTOS else 'sin_respuesta'), intento
+    if not request.user.has_perm('catalogo.consultar_info_estacion'):
+        return 'sin_permiso', intento
+    if estacion.estado_conexion != Estacion.EstadoConexion.ONLINE:
+        return 'apagada', intento
+    if not enviar_comando(estacion, 'consultar_info'):
+        return 'no_enviado', intento
+    registrar_evento(usuario=request.user, accion='estacion.consultar_info', objeto=estacion, request=request)
+    return 'esperando', intento
 
 
 @login_required

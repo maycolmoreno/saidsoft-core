@@ -342,6 +342,16 @@ class Estacion(models.Model):
     procesador = models.CharField(max_length=150, blank=True)
     ram_total_mb = models.PositiveIntegerField(null=True, blank=True)
     almacenamiento_total_gb = models.PositiveIntegerField(null=True, blank=True)
+    # Fabricante, modelo y formato del equipo (agente 0.38, misma consulta). Sirven para
+    # dar de alta el activo sin tipearlos: ver apps.activos.services.datos_hardware_desde_estacion.
+    fabricante_equipo = models.CharField(max_length=100, blank=True, help_text='Win32_ComputerSystem.Manufacturer.')
+    modelo_equipo = models.CharField(max_length=100, blank=True)
+    tipo_sistema = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text='Win32_ComputerSystem.PCSystemType: 1 escritorio, 2 portátil, 4/5/7 servidor.',
+    )
+    chasis = models.CharField(
+        max_length=50, blank=True, help_text='Win32_SystemEnclosure.ChassisTypes, separados por coma.',
+    )
     info_equipo_fecha = models.DateTimeField(
         null=True, blank=True, help_text='Cuándo se actualizó por última vez la info de hardware.',
     )

@@ -650,6 +650,13 @@ def manejar_info_equipo(codigo_estacion: str, payload: dict) -> None:
     estacion.procesador = payload.get('procesador', estacion.procesador)
     estacion.ram_total_mb = _entero('ram_total_mb') or estacion.ram_total_mb
     estacion.almacenamiento_total_gb = _entero('almacenamiento_total_gb') or estacion.almacenamiento_total_gb
+    # Agente 0.38. Uno anterior no los manda y quedan como estaban.
+    for clave, campo, largo in (('fabricante', 'fabricante_equipo', 100), ('modelo', 'modelo_equipo', 100),
+                                ('chasis', 'chasis', 50)):
+        valor = payload.get(clave)
+        if isinstance(valor, str) and valor.strip():
+            setattr(estacion, campo, valor.strip()[:largo])
+    estacion.tipo_sistema = _entero('tipo_sistema') or estacion.tipo_sistema
     if 'bitlocker_habilitado' in payload:
         estacion.bitlocker_habilitado = bool(payload['bitlocker_habilitado'])
     estacion.bitlocker_metodo_proteccion = payload.get(

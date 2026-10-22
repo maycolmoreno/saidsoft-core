@@ -1019,7 +1019,73 @@ def datos_hardware_desde_estacion(numero_serie: str, *, usuario) -> dict | None:
         datos['ram_gb'] = round(estacion.ram_total_mb / 1024)
     if estacion.almacenamiento_total_gb:
         datos['almacenamiento_gb'] = estacion.almacenamiento_total_gb
+    # Agente 0.38: fabricante, modelo y formato. Se ofrecen igual que el resto.
+    if estacion.fabricante_equipo:
+        datos['fabricante'] = estacion.fabricante_equipo
+        marca = marca_de_fabricante(estacion.fabricante_equipo)
+        if marca is not None:
+            datos['marca'] = marca
+    if estacion.modelo_equipo:
+        datos['modelo'] = estacion.modelo_equipo
+    tipo = tipo_de_equipo(estacion.tipo_sistema, estacion.chasis)
+    if tipo:
+        datos['tipo'] = tipo
     return datos
+
+
+# Cómo se llaman los fabricantes en el BIOS y cómo en la lista de marcas.
+_ALIAS_FABRICANTE = {'hewlett-packard': 'hp', 'hpe': 'hp', 'dell inc': 'dell'}
+_SUFIJOS_FABRICANTE = (
+    ' computer inc.', ' computer inc', ' inc.', ' inc', ' corporation', ' corp.', ' corp', ' co., ltd.',
+    ' co.,ltd.', ' ltd.', ' ltd',
+)
+
+
+def marca_de_fabricante(fabricante: str):
+    """La `Marca` de la lista que corresponde a lo que reporta el BIOS, o None.
+
+    "Dell Inc." → DELL, "HP"/"Hewlett-Packard" → HP, "ASUSTeK COMPUTER INC." → ASUS si
+    existe una marca que empiece así. No crea marcas: si no hay una que coincida, el
+    usuario la elige a mano y la pantalla le muestra el fabricante reportado."""
+    texto = (fabricante or '').strip().lower()
+    if not texto or texto in ('to be filled by o.e.m.', 'system manufacturer', 'default string'):
+        return None
+    for sufijo in _SUFIJOS_FABRICANTE:
+        if texto.endswith(sufijo):
+            texto = texto[: -len(sufijo)].strip()
+            break
+    texto = _ALIAS_FABRICANTE.get(texto, texto)
+    exacta = Marca.objects.filter(nombre__iexact=texto).first()
+    if exacta is not None:
+        return exacta
+    # "asustek" → ASUS: la marca de la lista es un prefijo de lo que dice el BIOS. Solo si
+    # hay UNA que coincida, para no elegir al azar.
+    candidatas = [m for m in Marca.objects.all() if len(m.nombre) >= 2 and texto.startswith(m.nombre.lower())]
+    return candidatas[0] if len(candidatas) == 1 else None
+
+
+# Win32_SystemEnclosure.ChassisTypes que no dejan duda.
+_CHASIS_PORTATIL = {8, 9, 10, 14, 31, 32}
+_CHASIS_ESCRITORIO = {3, 4, 5, 6, 7, 13, 15, 16, 24, 35, 36}
+_CHASIS_SERVIDOR = {17, 23, 28}
+_CHASIS_TABLET = {30}
+
+
+def tipo_de_equipo(tipo_sistema, chasis: str):
+    """El `Activo.Tipo` que sugiere el formato que reporta Windows, o None si no es claro.
+
+    Primero el chasis (es lo físico); si no dice nada, `PCSystemType`. Un valor que no
+    está en ninguna de las listas no se adivina: el usuario elige."""
+    tipos = set()
+    for parte in (chasis or '').split(','):
+        if parte.strip().isdigit():
+            tipos.add(int(parte))
+    for conjunto, tipo in ((_CHASIS_PORTATIL, Activo.Tipo.LAPTOP), (_CHASIS_TABLET, Activo.Tipo.TABLET),
+                           (_CHASIS_SERVIDOR, Activo.Tipo.SERVIDOR), (_CHASIS_ESCRITORIO, Activo.Tipo.DESKTOP)):
+        if tipos & conjunto:
+            return tipo
+    return {1: Activo.Tipo.DESKTOP, 2: Activo.Tipo.LAPTOP, 3: Activo.Tipo.DESKTOP,
+            4: Activo.Tipo.SERVIDOR, 5: Activo.Tipo.SERVIDOR, 7: Activo.Tipo.SERVIDOR}.get(tipo_sistema)
 
 
 # --- Topología de infraestructura de una farmacia ---
