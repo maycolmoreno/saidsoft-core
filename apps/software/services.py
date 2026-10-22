@@ -8,6 +8,7 @@ la publicación falla por completo (antes eso generaba auditoría falsa en despl
 import json
 import logging
 import time
+from collections import Counter
 from datetime import timedelta
 
 from django.conf import settings
@@ -411,3 +412,87 @@ def registrar_software_instalado(*, estacion, programas: list) -> int:
     SoftwareInstaladoDetectado.objects.filter(estacion=estacion).delete()
     SoftwareInstaladoDetectado.objects.bulk_create(detectados)
     return len(detectados)
+
+
+# --- Cierre sin terminar y reintento (T-4) ---
+
+def cerrar_solicitud(solicitud: SolicitudInstalacion, *, usuario, motivo='') -> dict:
+    """Da por terminada una solicitud que sigue esperando estaciones, sin borrar nada.
+
+    Retira de la cola (y del broker) lo que todavía no le llegó a ninguna estación, deja el
+    resultado de cada estación como está y guarda el resumen. Lo que una estación ya está
+    instalando sigue, y su reporte se registra igual. Si alguna orden no se pudo retirar
+    del broker, NO se cierra: quedaría una instalación que puede ejecutarse después de
+    "cerrada". Lanza `ValueError` con el motivo.
+    """
+    from apps.catalogo import ordenes
+
+    if solicitud.estado != EstadoSolicitud.PUBLICANDO:
+        raise ValueError(
+            f'Solo se puede cerrar una solicitud en curso, y esta está {solicitud.get_estado_display().lower()}.',
+        )
+    retiro = ordenes.retirar_del_origen(
+        tipo=ordenes.Tipo.SOFTWARE, origen_id=solicitud.id, usuario=usuario, motivo=motivo,
+    )
+    if retiro['no_retiradas']:
+        raise ValueError(
+            f'{retiro["no_retiradas"]} estación(es) tienen la instalación en el broker y no se pudo retirar '
+            '(o se está publicando en este momento). No se cerró: reintentá en un minuto.',
+        )
+    resumen = {
+        'resultados': dict(Counter(solicitud.resultados.values_list('estado', flat=True))),
+        'ordenes_canceladas': retiro['canceladas'],
+        'en_ejecucion_al_cerrar': retiro['en_ejecucion'],
+        'motivo': motivo,
+    }
+    cerrada = SolicitudInstalacion.objects.filter(pk=solicitud.pk, estado=EstadoSolicitud.PUBLICANDO).update(
+        estado=EstadoSolicitud.CERRADO, cerrado_en=timezone.now(), cerrado_por=usuario, resumen_cierre=resumen,
+    )
+    solicitud.refresh_from_db()
+    if not cerrada:
+        raise ValueError(f'La solicitud cambió de estado mientras se cerraba: {solicitud.get_estado_display()}.')
+    return resumen
+
+
+def reintentar_pendientes(solicitud: SolicitudInstalacion) -> ResultadoPublicacion:
+    """Reabre una solicitud cerrada para las estaciones que no terminaron bien (todas menos
+    las INSTALADO). Mismo criterio que `apps.despliegues.services.reintentar_despliegue`:
+    la cola omite las que tienen la orden en curso o incierta.
+
+    Si sale, la solicitud vuelve a `publicando`; si el broker no estaba, sigue cerrada.
+    """
+    if solicitud.estado != EstadoSolicitud.CERRADO:
+        raise ValueError('Solo se reintenta una solicitud cerrada.')
+    pendientes = list(
+        solicitud.resultados.exclude(estado=ResultadoInstalacion.Estado.INSTALADO).select_related('estacion'),
+    )
+    if not pendientes:
+        # Terminaron todas después del cierre: no hay nada que reintentar.
+        solicitud.estado = EstadoSolicitud.COMPLETADO
+        solicitud.save(update_fields=['estado'])
+        return ResultadoPublicacion(total_estaciones=0, exitoso=True)
+
+    from apps.catalogo import ordenes
+
+    envios = [(r.estacion, _topico_de(r.estacion), json.dumps(_payload(solicitud, r.estacion))) for r in pendientes]
+    try:
+        cola = ordenes.encolar_y_publicar(
+            tipo=ordenes.Tipo.SOFTWARE, origen_id=solicitud.id, envios=envios, publicar=_publicar_mensajes,
+            detalle_publicado='Republicado (reintento de pendientes)',
+        )
+    except Exception:
+        logger.exception('No se pudo reintentar la solicitud %s (%d pendientes)', solicitud.id, len(pendientes))
+        return ResultadoPublicacion(total_estaciones=len(pendientes), exitoso=False)
+
+    omitidas = {e.pk for e in cola['omitidas']} | {e.pk for e in cola['inciertas']}
+    rechazadas = {o.estacion_id for o in cola['rechazadas']}
+    republicadas = [r for r in pendientes if r.estacion_id not in omitidas and r.estacion_id not in rechazadas]
+    # Vuelven a PENDIENTE: con el ERROR de la ronda anterior, `verificar_completado` daría
+    # la solicitud por terminada antes de que respondan.
+    ResultadoInstalacion.objects.filter(pk__in=[r.pk for r in republicadas]).update(
+        estado=ResultadoInstalacion.Estado.PENDIENTE,
+    )
+    solicitud.estado = EstadoSolicitud.PUBLICANDO
+    solicitud.save(update_fields=['estado'])
+    verificar_completado(solicitud)
+    return ResultadoPublicacion.de_la_cola(len(republicadas), cola)

@@ -8,6 +8,7 @@ disparada por un humano.
 import json
 import logging
 import time
+from collections import Counter
 
 from django.conf import settings
 from django.utils import timezone
@@ -564,4 +565,65 @@ def registrar_estado_de_estacion(*, despliegue_id, estacion, paso, datos: dict |
 
     evaluar_freno_automatico(resultado.despliegue)
     verificar_completado(resultado.despliegue)
+    return resultado
+
+
+# --- Cierre sin terminar y reintento (T-4) ---
+
+CERRABLES = (Despliegue.Estado.PUBLICANDO, Despliegue.Estado.PAUSADO)
+
+
+def cerrar_despliegue(despliegue: Despliegue, *, usuario, motivo='') -> dict:
+    """Da por terminado un despliegue que sigue esperando estaciones, sin borrar nada.
+
+    Mismo criterio que `apps.software.services.cerrar_solicitud`: retira lo que todavía no
+    le llegó a ninguna estación, deja cada resultado como está y guarda el resumen. Si
+    alguna orden no se pudo retirar del broker, no se cierra (`ValueError`): un paquete
+    del POS que se aplica después de "cerrado" es justo lo que esto evita.
+    """
+    from apps.catalogo import ordenes
+
+    if despliegue.estado not in CERRABLES:
+        raise ValueError(
+            f'Solo se puede cerrar un despliegue publicando o pausado, y este está '
+            f'{despliegue.get_estado_display().lower()}.',
+        )
+    retiro = ordenes.retirar_del_origen(
+        tipo=ordenes.Tipo.DESPLIEGUE, origen_id=despliegue.id, usuario=usuario, motivo=motivo,
+    )
+    if retiro['no_retiradas']:
+        raise ValueError(
+            f'{retiro["no_retiradas"]} estación(es) tienen el paquete en el broker y no se pudo retirar '
+            '(o se está publicando en este momento). No se cerró: reintentá en un minuto.',
+        )
+    resumen = {
+        'resultados': dict(Counter(despliegue.resultados.values_list('estado', flat=True))),
+        'ordenes_canceladas': retiro['canceladas'],
+        'en_ejecucion_al_cerrar': retiro['en_ejecucion'],
+        'motivo': motivo,
+    }
+    cerrado = Despliegue.objects.filter(pk=despliegue.pk, estado__in=CERRABLES).update(
+        estado=Despliegue.Estado.CERRADO, cerrado_en=timezone.now(), cerrado_por=usuario, resumen_cierre=resumen,
+    )
+    despliegue.refresh_from_db()
+    if not cerrado:
+        raise ValueError(f'El despliegue cambió de estado mientras se cerraba: {despliegue.get_estado_display()}.')
+    return resumen
+
+
+def reintentar_pendientes(despliegue: Despliegue) -> ResultadoPublicacion:
+    """Reabre un despliegue cerrado para las estaciones que no lo aplicaron, con
+    `reintentar_despliegue`. Si sale, vuelve a `publicando`; si el broker no estaba,
+    sigue cerrado."""
+    if despliegue.estado != Despliegue.Estado.CERRADO:
+        raise ValueError('Solo se reintenta un despliegue cerrado.')
+    if not despliegue.resultados.exclude(estado=ResultadoDespliegue.Estado.APLICADO).exists():
+        despliegue.estado = Despliegue.Estado.COMPLETADO
+        despliegue.save(update_fields=['estado'])
+        return ResultadoPublicacion(total_estaciones=0, exitoso=True)
+    resultado = reintentar_despliegue(despliegue)
+    if resultado.exitoso:
+        despliegue.estado = Despliegue.Estado.PUBLICANDO
+        despliegue.save(update_fields=['estado'])
+        verificar_completado(despliegue)
     return resultado

@@ -9,9 +9,10 @@ from apps.auditoria.models import registrar_evento
 from apps.cuentas.services import scope_por_unidad_negocio_activa, verificar_acceso
 from apps.despliegues.models import Despliegue, ResultadoDespliegue
 from apps.despliegues.services import (
-    aprobar_despliegue, marcar_reanudado, pausar_despliegue, publicar_despliegue,
+    aprobar_despliegue, cerrar_despliegue, marcar_reanudado, pausar_despliegue, publicar_despliegue,
     reintentar_despliegue,
 )
+from apps.despliegues.services import reintentar_pendientes as reintentar_pendientes_despliegue
 
 from ..forms import DespliegueForm, PromoverDespliegueForm
 from ..progreso import resumen_de_progreso
@@ -249,4 +250,53 @@ def despliegue_reanudar(request, pk):
         )
     else:
         messages.success(request, 'Despliegue reanudado. No quedaban estaciones pendientes de reintentar.')
+    return redirect('panel:despliegue_detalle', pk=pk)
+
+
+def _mensaje_reintento(resultado, que):
+    if not resultado.exitoso:
+        return messages.ERROR, (f'No se pudo reintentar: el broker MQTT no estaba disponible o rechazó la '
+                                f'publicación. {que} sigue cerrado.')
+    if resultado.total_estaciones == 0:
+        return messages.SUCCESS, 'No quedaba nada pendiente: todas terminaron después del cierre.'
+    nivel = messages.SUCCESS if resultado.confirmada else messages.WARNING
+    return nivel, f'Reintento en curso: {resultado.resumen()}'
+
+
+@login_required
+@permission_required('despliegues.change_despliegue', raise_exception=True)
+@require_POST
+def despliegue_cerrar(request, pk):
+    """T-4: da por terminado un despliegue con estaciones sin respuesta, sin borrar nada."""
+    despliegue = get_object_or_404(Despliegue, pk=pk)
+    verificar_acceso(request.user, despliegue.unidad_negocio)
+    motivo = (request.POST.get('motivo') or '').strip()[:300]
+    try:
+        resumen = cerrar_despliegue(despliegue, usuario=request.user, motivo=motivo)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
+        registrar_evento(usuario=request.user, accion='despliegue.cerrar', objeto=despliegue,
+                         detalle=resumen, request=request)
+        messages.success(request, 'Despliegue cerrado. Las estaciones que no terminaron se pueden reintentar.')
+    return redirect('panel:despliegue_detalle', pk=pk)
+
+
+@login_required
+@permission_required('despliegues.change_despliegue', raise_exception=True)
+@require_POST
+def despliegue_reintentar_pendientes(request, pk):
+    despliegue = get_object_or_404(Despliegue, pk=pk)
+    verificar_acceso(request.user, despliegue.unidad_negocio)
+    try:
+        resultado = reintentar_pendientes_despliegue(despliegue)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect('panel:despliegue_detalle', pk=pk)
+    registrar_evento(
+        usuario=request.user, accion='despliegue.reintentar_pendientes', objeto=despliegue,
+        detalle={'estaciones': resultado.total_estaciones, 'exitoso': resultado.exitoso, **resultado.conteos()},
+        request=request,
+    )
+    messages.add_message(request, *_mensaje_reintento(resultado, 'El despliegue'))
     return redirect('panel:despliegue_detalle', pk=pk)

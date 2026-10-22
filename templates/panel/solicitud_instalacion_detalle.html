@@ -3,7 +3,7 @@
 {% block content %}
 <div class="flex items-center justify-between mb-2">
     <h1 class="text-xl font-semibold">{{ solicitud.get_accion_display }}: {{ solicitud.version_aplicacion }}</h1>
-    <span class="pill {% if solicitud.estado == 'completado' %}good{% elif solicitud.estado == 'cancelado' %}critical{% elif solicitud.estado == 'publicando' %}info{% else %}neutral{% endif %}">
+    <span class="pill {% if solicitud.estado == 'completado' %}good{% elif solicitud.estado == 'cerrado' %}warning{% elif solicitud.estado == 'cancelado' %}critical{% elif solicitud.estado == 'publicando' %}info{% else %}neutral{% endif %}">
         {{ solicitud.get_estado_display }}
     </span>
 </div>
@@ -34,8 +34,41 @@
     </form>
     <span class="text-sm text-[var(--text-faint)] italic">No se envía nada a ninguna estación hasta que publiques.</span>
     {% endif %}
+
+    {% if solicitud.estado == 'publicando' %}
+    {% comment %}T-4: cerrar sin borrar. Retira lo que no salió; lo que ya corre en una estación sigue.{% endcomment %}
+    <form method="post" action="{% url 'panel:solicitud_instalacion_cerrar' solicitud.pk %}" class="flex items-center gap-2"
+          onsubmit="return confirm('Se da por terminada la solicitud aunque haya estaciones sin respuesta. Lo que todavía no les llegó se retira; lo que ya están ejecutando sigue. Después podés reintentar las pendientes. ¿Confirmás?');">
+        {% csrf_token %}
+        <input type="text" name="motivo" maxlength="300" placeholder="Motivo (opcional)" class="rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">
+        <button type="submit" class="btn secondary">Cerrar sin terminar</button>
+    </form>
+    {% endif %}
+    {% if solicitud.estado == 'cerrado' %}
+    <form method="post" action="{% url 'panel:solicitud_instalacion_reintentar_pendientes' solicitud.pk %}"
+          onsubmit="return confirm('Se vuelve a enviar a las estaciones que no terminaron bien. Las que ya terminaron no se tocan. ¿Confirmás?');">
+        {% csrf_token %}
+        <button type="submit" class="btn primary">Reintentar pendientes</button>
+    </form>
+    {% endif %}
 </div>
 
+
+{% if solicitud.cerrado_en %}
+<div class="card p-4 mb-6 text-sm" style="border-left:3px solid var(--warning);">
+    <div class="font-medium mb-1">{% if solicitud.estado == 'cerrado' %}Cerrada sin terminar{% else %}Último cierre{% endif %}</div>
+    <div class="text-[var(--text-faint)]">
+        Por {{ solicitud.cerrado_por.username|default:"—" }} el {{ solicitud.cerrado_en|date:"d/m/Y H:i" }}.
+        {% if solicitud.resumen_cierre.motivo %}Motivo: {{ solicitud.resumen_cierre.motivo }}.{% endif %}
+    </div>
+    <div class="text-[var(--text-faint)] mt-1">
+        Al cerrar:
+        {% for estado, cuantas in solicitud.resumen_cierre.resultados.items %}{{ estado }} {{ cuantas }}{% if not forloop.last %} · {% endif %}{% endfor %}.
+        Retiradas sin llegar: {{ solicitud.resumen_cierre.ordenes_canceladas|default:0 }};
+        todavía ejecutándose: {{ solicitud.resumen_cierre.en_ejecucion_al_cerrar|default:0 }}.
+    </div>
+</div>
+{% endif %}
 {% if solicitud.estado != 'borrador' %}
 <div id="progreso-wrap"
      hx-get="{% url 'panel:solicitud_instalacion_progreso_partial' solicitud.pk %}"

@@ -11,7 +11,8 @@ from apps.cuentas.services import (
 )
 from apps.software.forms import AplicacionCatalogoForm, SolicitudInstalacionForm, VersionAplicacionForm
 from apps.software.models import AplicacionCatalogo, EstadoSolicitud, ResultadoInstalacion, SolicitudInstalacion
-from apps.software.services import estaciones_desactualizadas, publicar_solicitud
+from apps.software.services import cerrar_solicitud, estaciones_desactualizadas, publicar_solicitud
+from apps.software.services import reintentar_pendientes as reintentar_pendientes_solicitud
 from ..progreso import resumen_de_progreso
 
 
@@ -247,4 +248,45 @@ def solicitud_instalacion_publicar(request, pk):
                 'publicación (revisar la conexión, la credencial o la ACL del panel). La solicitud sigue '
                 'en borrador — puede reintentar cuando el broker esté disponible.',
             )
+    return redirect('panel:solicitud_instalacion_detalle', pk=pk)
+
+
+@login_required
+@permission_required('software.change_solicitudinstalacion', raise_exception=True)
+@require_POST
+def solicitud_instalacion_cerrar(request, pk):
+    """T-4: da por terminada una solicitud con estaciones sin respuesta, sin borrar nada."""
+    solicitud = get_object_or_404(SolicitudInstalacion, pk=pk)
+    verificar_acceso(request.user, solicitud.unidad_negocio)
+    motivo = (request.POST.get('motivo') or '').strip()[:300]
+    try:
+        resumen = cerrar_solicitud(solicitud, usuario=request.user, motivo=motivo)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
+        registrar_evento(usuario=request.user, accion='solicitud_instalacion.cerrar', objeto=solicitud,
+                         detalle=resumen, request=request)
+        messages.success(request, 'Solicitud cerrada. Las estaciones que no terminaron se pueden reintentar.')
+    return redirect('panel:solicitud_instalacion_detalle', pk=pk)
+
+
+@login_required
+@permission_required('software.change_solicitudinstalacion', raise_exception=True)
+@require_POST
+def solicitud_instalacion_reintentar_pendientes(request, pk):
+    from .despliegues import _mensaje_reintento
+
+    solicitud = get_object_or_404(SolicitudInstalacion, pk=pk)
+    verificar_acceso(request.user, solicitud.unidad_negocio)
+    try:
+        resultado = reintentar_pendientes_solicitud(solicitud)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect('panel:solicitud_instalacion_detalle', pk=pk)
+    registrar_evento(
+        usuario=request.user, accion='solicitud_instalacion.reintentar_pendientes', objeto=solicitud,
+        detalle={'estaciones': resultado.total_estaciones, 'exitoso': resultado.exitoso, **resultado.conteos()},
+        request=request,
+    )
+    messages.add_message(request, *_mensaje_reintento(resultado, 'La solicitud'))
     return redirect('panel:solicitud_instalacion_detalle', pk=pk)

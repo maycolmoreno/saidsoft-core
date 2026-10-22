@@ -34,7 +34,7 @@
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ d.get_destino_tipo_display }}</td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ d.get_modo_aplicacion_display }}</td>
                 <td class="px-4 py-3">
-                    <span class="pill {% if d.estado == 'completado' %}good{% elif d.estado == 'pausado' %}critical{% elif d.estado == 'publicando' %}info{% else %}neutral{% endif %}">
+                    <span class="pill {% if d.estado == 'completado' %}good{% elif d.estado == 'cerrado' %}warning{% elif d.estado == 'pausado' %}critical{% elif d.estado == 'publicando' %}info{% else %}neutral{% endif %}">
                         {{ d.get_estado_display }}
                     </span>
                 </td>

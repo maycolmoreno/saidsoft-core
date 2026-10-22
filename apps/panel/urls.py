@@ -76,6 +76,11 @@ urlpatterns = [
     path('despliegues/<int:pk>/publicar/', views.despliegue_publicar, name='despliegue_publicar'),
     path('despliegues/<int:pk>/pausar/', views.despliegue_pausar, name='despliegue_pausar'),
     path('despliegues/<int:pk>/reanudar/', views.despliegue_reanudar, name='despliegue_reanudar'),
+    path('despliegues/<int:pk>/cerrar/', views.despliegue_cerrar, name='despliegue_cerrar'),
+    path(
+        'despliegues/<int:pk>/reintentar-pendientes/', views.despliegue_reintentar_pendientes,
+        name='despliegue_reintentar_pendientes',
+    ),
     path('despliegues/<int:pk>/promover/', views.despliegue_promover, name='despliegue_promover'),
 
     path('aperturas/', diferido('aperturas', views.aperturas_lista), name='aperturas_lista'),
@@ -288,6 +293,15 @@ urlpatterns = [
     path(
         'solicitudes-instalacion/<int:pk>/publicar/', views.solicitud_instalacion_publicar,
         name='solicitud_instalacion_publicar',
+    ),
+    path(
+        'solicitudes-instalacion/<int:pk>/cerrar/', views.solicitud_instalacion_cerrar,
+        name='solicitud_instalacion_cerrar',
+    ),
+    path(
+        'solicitudes-instalacion/<int:pk>/reintentar-pendientes/',
+        views.solicitud_instalacion_reintentar_pendientes,
+        name='solicitud_instalacion_reintentar_pendientes',
     ),
 
     # Módulo de Planificación y Cumplimiento

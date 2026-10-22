@@ -133,6 +133,9 @@ class EstadoSolicitud(models.TextChoices):
     PUBLICANDO = 'publicando', 'Publicando'
     COMPLETADO = 'completado', 'Completado'
     CANCELADO = 'cancelado', 'Cancelado'
+    # Terminada a mano con estaciones sin respuesta (T-4). Distinto de COMPLETADO: ahí
+    # respondieron todas.
+    CERRADO = 'cerrado', 'Cerrado sin terminar'
 
 
 class SolicitudInstalacion(models.Model):
@@ -166,6 +169,15 @@ class SolicitudInstalacion(models.Model):
     )
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_publicacion = models.DateTimeField(null=True, blank=True)
+    # Cierre sin terminar (T-4): la operación se da por terminada aunque haya estaciones
+    # sin respuesta, sin borrar nada. Ver `cerrar_*` en services. Si se reintenta después,
+    # vuelve a "publicando" y estos campos quedan como registro del último cierre.
+    cerrado_en = models.DateTimeField(null=True, blank=True)
+    cerrado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='solicitudes_instalacion_cerradas',
+    )
+    resumen_cierre = models.JSONField(default=dict, blank=True)
 
     class Meta:
         db_table = 'solicitud_instalacion'

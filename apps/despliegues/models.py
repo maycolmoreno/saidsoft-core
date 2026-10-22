@@ -32,6 +32,9 @@ class Despliegue(models.Model):
         PAUSADO = 'pausado', 'Pausado'
         COMPLETADO = 'completado', 'Completado'
         CANCELADO = 'cancelado', 'Cancelado'
+        # Terminado a mano con estaciones sin respuesta (T-4). Distinto de COMPLETADO:
+        # ahí respondieron todas.
+        CERRADO = 'cerrado', 'Cerrado sin terminar'
 
     version = models.CharField(max_length=30, help_text='Versión del POS que contiene este paquete, ej. 4.2.1')
     archivo = models.FileField(upload_to=ruta_archivo_despliegue)
@@ -75,6 +78,15 @@ class Despliegue(models.Model):
 
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_publicacion = models.DateTimeField(null=True, blank=True)
+    # Cierre sin terminar (T-4): la operación se da por terminada aunque haya estaciones
+    # sin respuesta, sin borrar nada. Ver `cerrar_*` en services. Si se reintenta después,
+    # vuelve a "publicando" y estos campos quedan como registro del último cierre.
+    cerrado_en = models.DateTimeField(null=True, blank=True)
+    cerrado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='despliegues_cerrados',
+    )
+    resumen_cierre = models.JSONField(default=dict, blank=True)
 
     despliegue_origen = models.ForeignKey(
         'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='promovidos',

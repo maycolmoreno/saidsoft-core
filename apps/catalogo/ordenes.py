@@ -743,6 +743,42 @@ def cancelar_orden(orden, *, usuario=None, motivo='') -> OrdenAgente:
     return orden
 
 
+def retirar_del_origen(*, tipo, origen_id, usuario=None, motivo='', ahora=None) -> dict:
+    """Cierre de una operación (T-4): cancela todas las órdenes de este origen que el agente
+    todavía no recibió, en lote.
+
+    - `pendiente`: se cancela (no salió).
+    - `entregada`: se retira el retenido del broker (una conexión para todas) y se cancela
+      solo si EMQX aceptó el retiro.
+    - `publicando`: hay una publicación en vuelo en otro proceso; retirarla ahora no sirve
+      (la publicación puede llegar después del retiro). Cuenta como no retirada.
+    - `recibida` / `en_ejecucion`: el agente ya la tiene y no se puede detener. Sigue su
+      curso y su reporte se registra igual.
+
+    Devuelve los conteos: `canceladas`, `no_retiradas` (no se pudo garantizar que no se
+    ejecute) y `en_ejecucion`."""
+    ahora = ahora or timezone.now()
+    detalle = f'operación cerrada por {getattr(usuario, "username", "el sistema")}' + (
+        f': {motivo}' if motivo else '')
+    vivas = list(OrdenAgente.objects.filter(tipo=tipo, origen_id=origen_id, estado__in=list(VIVOS)))
+    por_estado = Counter(o.estado for o in vivas)
+    canceladas = _mover([o.pk for o in vivas if o.estado == Estado.PENDIENTE], desde=[Estado.PENDIENTE],
+                        hacia=Estado.CANCELADA, detalle=detalle, ahora=ahora)
+    entregadas = [o for o in vivas if o.estado == Estado.ENTREGADA]
+    retiradas = _retirar_lote(entregadas) if tipo in RANURA_RETENIDA else []
+    canceladas += _mover([o.pk for o in retiradas], desde=[Estado.ENTREGADA], hacia=Estado.CANCELADA,
+                         detalle=detalle + ' (retirada del broker)', ahora=ahora)
+    if retiradas:
+        # La ranura quedó libre: si hay órdenes de OTRAS operaciones esperando en esas
+        # estaciones, que salgan.
+        despachar(estacion_ids=list({o.estacion_id for o in retiradas}), ahora=ahora)
+    return {
+        'canceladas': canceladas,
+        'no_retiradas': (len(entregadas) - len(retiradas)) + por_estado[Estado.PUBLICANDO],
+        'en_ejecucion': por_estado[Estado.RECIBIDA] + por_estado[Estado.EN_EJECUCION],
+    }
+
+
 def puede_resolverse(orden) -> bool:
     """Una orden se resuelve a mano si quedó incierta o marcada para revisión, y si desde
     su estado actual se puede llegar a un final. Una pendiente o recién publicada (sin
