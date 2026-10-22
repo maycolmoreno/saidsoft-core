@@ -9,6 +9,7 @@ from django_otp import user_has_device
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from apps.auditoria.models import registrar_evento
+from apps.cuentas.mfa import mfa_obligatorio
 
 
 def _qr_data_uri(config_url: str) -> str:
@@ -25,8 +26,8 @@ def mfa_estado(request):
 
 @login_required
 def mfa_configurar(request):
-    """Enrolamiento de TOTP (SEC-4). Opcional, por usuario — no se fuerza a ningún rol
-    todavía (ver apps.cuentas.forms.LoginConOTPForm). El dispositivo se crea sin
+    """Enrolamiento de TOTP (SEC-4). Opcional, salvo con `MFA_OBLIGATORIO`, que manda
+    acá a toda cuenta sin dispositivo (ver apps.cuentas.mfa). El dispositivo se crea sin
     confirmar y no cuenta para el login (`user_has_device` filtra `confirmed=True` por
     default) hasta que el usuario prueba un código real leído de su app autenticadora."""
     if user_has_device(request.user):
@@ -57,6 +58,13 @@ def mfa_configurar(request):
 
 @login_required
 def mfa_desactivar(request):
+    if mfa_obligatorio():
+        # Desactivarlo y volver a configurarlo solo con la sesión dejaría cambiar el
+        # teléfono a quien tenga la sesión abierta. Con el MFA obligatorio lo hace un
+        # administrador (borra el dispositivo y abre una ventana individual).
+        messages.error(request, 'La verificación en dos pasos es obligatoria: para cambiar de teléfono, '
+                                'pedíselo a un administrador.')
+        return redirect('panel:mfa_estado')
     if request.method == 'POST':
         password = request.POST.get('password', '')
         if request.user.check_password(password):

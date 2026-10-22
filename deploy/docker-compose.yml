@@ -166,6 +166,10 @@ services:
       ARCHIVOS_BASE_URL: ${ARCHIVOS_BASE_URL}
       SECURE_SSL_REDIRECT: ${SECURE_SSL_REDIRECT:-True}
       COOKIES_SOLO_HTTPS: ${COOKIES_SOLO_HTTPS:-True}
+      # MFA obligatorio (S-07): apagado salvo que el .env lo encienda. Solo `web`, que es
+      # el único que atiende el login. Ver apps/cuentas/mfa.py.
+      MFA_OBLIGATORIO: ${MFA_OBLIGATORIO:-False}
+      MFA_PLAZO_ENROLAMIENTO: ${MFA_PLAZO_ENROLAMIENTO:-}
       # Solo para el enlace de un solo uso del instalador (§10-CG); ver config/settings/base.py.
       MQTT_PASSWORD_AGENTE: ${MQTT_PASSWORD_AGENTE:-}
       # Chatbot de WhatsApp (§10-CM): `web` solo recibe el webhook, así que necesita el

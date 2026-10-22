@@ -5,7 +5,13 @@ from django.urls import include, path, re_path
 from django.views.static import serve
 from rest_framework.authtoken.views import obtain_auth_token
 
+from apps.cuentas.views import login_admin_por_panel
 from apps.whatsapp.views import webhook as whatsapp_webhook
+
+# `/admin/login/` pasa por el login del panel, que es el que pide el código de MFA. Con el
+# login estándar de Django, entrar por acá saltaba el MFA (ver apps.cuentas.views). Va
+# antes de `admin.site.urls`, que arma sus rutas con `admin.site.login`.
+admin.site.login = login_admin_por_panel
 
 urlpatterns = [
     path('admin/', admin.site.urls),

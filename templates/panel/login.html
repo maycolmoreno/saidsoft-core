@@ -8,6 +8,10 @@
         {% if form.errors %}
             <div class="mb-4 alert sev-critical text-sm px-4 py-2.5">
                 Usuario, contraseña o código de verificación incorrectos.
+                {% if form.mfa_obligatorio %}
+                <p class="mt-2">Si tu cuenta todavía no tiene configurada la verificación en dos pasos y
+                venció el plazo para hacerlo, pedile a un administrador que te habilite el enrolamiento.</p>
+                {% endif %}
             </div>
         {% endif %}
         <form method="post">

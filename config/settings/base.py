@@ -62,6 +62,9 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # S-07: con MFA_OBLIGATORIO, una sesión sin dispositivo TOTP solo puede configurarlo
+    # (apps.cuentas.mfa). Después de Authentication (necesita request.user).
+    'apps.cuentas.middleware.MFAObligatorioMiddleware',
     # Traduce el redirect de un alta guardada dentro de una ventana emergente
     # a 204 + evento htmx (ver apps/panel/middleware.py). Sin esto, htmx sigue
     # el redirect y anida la lista entera dentro del modal.
@@ -174,6 +177,15 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 # Nombre que muestra la app autenticadora (Google Authenticator, Authy, etc.) junto al
 # usuario al escanear el QR de activación de MFA (SEC-4).
 OTP_TOTP_ISSUER = 'SAIDSOFT'
+
+# MFA obligatorio (S-07; ver apps.cuentas.mfa). Apagado por defecto para desplegar sin
+# cortar a nadie y encenderlo con fecha. MFA_PLAZO_ENROLAMIENTO = 'AAAA-MM-DD': hasta el
+# fin de ese día, una cuenta sin MFA entra y queda obligada a configurarlo; después no
+# entra salvo con una ventana individual (PerfilUsuario.mfa_enrolar_hasta). Vacío = el
+# enrolamiento al entrar queda abierto sin fin (solo para arrancar: mientras esté
+# abierto, una contraseña robada alcanza para enrolar otro teléfono).
+MFA_OBLIGATORIO = env.bool('MFA_OBLIGATORIO', default=False)
+MFA_PLAZO_ENROLAMIENTO = env('MFA_PLAZO_ENROLAMIENTO', default='')
 
 # Internacionalización
 LANGUAGE_CODE = 'es-EC'

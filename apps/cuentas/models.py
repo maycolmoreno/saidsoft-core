@@ -48,6 +48,17 @@ class PerfilUsuario(models.Model):
                   'consultar: desde el 7-oct-2026 no hace falta tocar el .env.',
     )
 
+    # Ventana individual para configurar el MFA cuando el plazo general ya venció
+    # (MFA_PLAZO_ENROLAMIENTO): alguien que cambió de teléfono, o que entró después. La
+    # abre un administrador por un tiempo corto; mientras está abierta, la cuenta entra
+    # solo con contraseña y queda obligada a configurar el MFA (apps.cuentas.mfa).
+    mfa_enrolar_hasta = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Con el MFA obligatorio y el plazo vencido: hasta cuándo esta cuenta puede entrar sin '
+                  'código para configurarlo. Darle pocas horas. Para un teléfono nuevo, borrar antes su '
+                  'dispositivo TOTP en Admin → OTP_TOTP → TOTP devices.',
+    )
+
     class Meta:
         db_table = 'perfil_usuario'
         constraints = [

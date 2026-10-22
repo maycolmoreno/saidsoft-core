@@ -5,7 +5,7 @@ from .models import PerfilUsuario
 
 @admin.register(PerfilUsuario)
 class PerfilUsuarioAdmin(admin.ModelAdmin):
-    list_display = ('usuario', 'colaborador', 'acceso_todas_unidades', 'telegram_chat_id')
+    list_display = ('usuario', 'colaborador', 'acceso_todas_unidades', 'telegram_chat_id', 'mfa_enrolar_hasta')
     search_fields = ('usuario__username', 'usuario__email', 'telegram_chat_id')
     autocomplete_fields = ('usuario', 'colaborador')
     # `telegram_chat_id` en la lista y no solo en el detalle: es el campo que decide
