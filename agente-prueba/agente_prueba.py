@@ -58,7 +58,7 @@ import paho.mqtt.client as mqtt
 
 ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
-VERSION_AGENTE_PRUEBA = 'agente-prueba-0.37'
+VERSION_AGENTE_PRUEBA = 'agente-prueba-0.38'
 
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
@@ -246,6 +246,43 @@ def ejecutar_sin_tuberias(comando: str, timeout: int) -> tuple:
             # Un hijo del instalador que siga vivo puede tener el archivo abierto: queda en
             # TEMP (unos KB) y Windows lo limpia después.
             pass
+
+
+def _leer_final(ruta: str, encoding: str, caracteres: int) -> str:
+    with open(ruta, 'rb') as leido:
+        leido.seek(0, os.SEEK_END)
+        leido.seek(max(0, leido.tell() - caracteres * 4))
+        return leido.read().decode(encoding, errors='replace')[-caracteres:]
+
+
+def ejecutar_capturando(comando: list, timeout: int, *, encoding: str | None = None,
+                        caracteres: int = 4000) -> tuple:
+    """Como `ejecutar_sin_tuberias`, pero con la salida estándar y la de error por
+    separado, que es lo que necesita el reporte de un script (0.38). Devuelve (código,
+    stdout, stderr), con el código en None si se venció `timeout` y el árbol de procesos ya
+    terminado. `encoding` None = la página de códigos del sistema, como `text=True` sin
+    `encoding=`, que es lo que usaba antes para los .bat."""
+    import locale
+
+    codificacion = encoding or locale.getpreferredencoding(False)
+    descriptor_out, ruta_out = tempfile.mkstemp(prefix='saidsoft_stdout_', suffix='.log')
+    descriptor_err, ruta_err = tempfile.mkstemp(prefix='saidsoft_stderr_', suffix='.log')
+    try:
+        with os.fdopen(descriptor_out, 'wb') as salida, os.fdopen(descriptor_err, 'wb') as errores:
+            proceso = subprocess.Popen(comando, stdin=subprocess.DEVNULL, stdout=salida, stderr=errores)
+            try:
+                codigo = proceso.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                matar_arbol(proceso)
+                codigo = None
+        return (codigo, _leer_final(ruta_out, codificacion, caracteres),
+                _leer_final(ruta_err, codificacion, caracteres))
+    finally:
+        for ruta in (ruta_out, ruta_err):
+            try:
+                os.unlink(ruta)
+            except OSError:
+                pass
 
 
 # --- Vigilancia del servicio (0.37) ---
@@ -1053,14 +1090,24 @@ class AgentePrueba:
 
         threading.Thread(target=_correr, daemon=True).start()
 
-    def _publicar(self, topico, payload):
+    def _publicar(self, topico, payload, qos=0):
         """Publica y AVISA si el broker no lo recibió. paho no lanza cuando está
         desconectado: publish() devuelve rc=MQTT_ERR_NO_CONN y descarta el mensaje
         (QoS 0), así que sin este chequeo el agente seguía logueando "Heartbeat
         enviado"/"Instalación #N -> descargado" mientras en realidad no llegaba nada
         -- el log mentía y el panel se quedaba en "pendiente" sin ninguna pista.
-        Encontrado en MAM06-A (26-ago-2026) instalando LibreOffice."""
-        info = self.client.publish(topico, json.dumps(payload))
+        Encontrado en MAM06-A (26-ago-2026) instalando LibreOffice.
+
+        Con `qos=1` (0.38, los reportes de instalaciones, despliegues y scripts) paho NO
+        lo descarta: lo guarda y lo envía al reconectar, aunque devuelve el mismo
+        MQTT_ERR_NO_CONN. Comprobado contra EMQX 5.8.3 el 22-oct-2026 (publicado antes de
+        conectar y durante un corte forzado por el broker: los dos llegaron; un QoS 0 en el
+        mismo corte, no). La cola vive en memoria: un reinicio del agente antes de
+        reconectar la pierde."""
+        info = self.client.publish(topico, json.dumps(payload), qos=qos)
+        if qos > 0 and info.rc == mqtt.MQTT_ERR_NO_CONN:
+            logging.warning('Sin conexión al broker: el mensaje para %s queda en cola y sale al reconectar.', topico)
+            return True
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             logging.error(
                 'No se pudo publicar en %s (rc=%s, ¿sin conexión al broker?) — el mensaje se perdió.',
@@ -2280,17 +2327,18 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
                 ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ruta_script]
                 if es_powershell else [ruta_script]
             )
-            resultado = subprocess.run(
-                comando_exec, capture_output=True, text=True, timeout=payload['timeout_segundos'],
-                **({'encoding': 'utf-8', 'errors': 'replace'} if es_powershell else {}),
+            # Sin tuberías (0.38): un script que deja un proceso vivo heredando la salida
+            # —un `Start-Process`, un servicio que arranca— dejaba al agente esperando para
+            # siempre, igual que el instalador de LibreOffice en ML008 (ver
+            # `ejecutar_sin_tuberias`). Al vencer el tiempo se termina el árbol completo.
+            codigo, stdout, stderr = ejecutar_capturando(
+                comando_exec, payload['timeout_segundos'], encoding='utf-8' if es_powershell else None,
             )
-            estado = 'completado' if resultado.returncode == 0 else 'error'
-            self._reportar_script(
-                resultado_id, estado, exit_code=resultado.returncode,
-                stdout=resultado.stdout[-4000:], stderr=resultado.stderr[-4000:],
-            )
-        except subprocess.TimeoutExpired:
-            self._reportar_script(resultado_id, 'timeout')
+            if codigo is None:
+                self._reportar_script(resultado_id, 'timeout', stdout=stdout, stderr=stderr)
+                return
+            estado = 'completado' if codigo == 0 else 'error'
+            self._reportar_script(resultado_id, estado, exit_code=codigo, stdout=stdout, stderr=stderr)
         except Exception as exc:
             self._reportar_script(resultado_id, 'error', stderr=str(exc))
         finally:
@@ -2301,10 +2349,11 @@ $redEnviadoBytes = if ($redStats) { $redStats.SentBytes } else { $null }
                     pass
 
     def _reportar_script(self, resultado_id, estado, exit_code=None, stdout='', stderr=''):
+        # QoS 1 (0.38, E-01): un corte de red no pierde el paso; el servidor tolera duplicados.
         self._publicar(f'/saidsof/agente/{self.args.codigo}/script_estado/', {
             'token': self._token(), 'resultado_id': resultado_id, 'estado': estado,
             'exit_code': exit_code, 'stdout': stdout, 'stderr': stderr,
-        })
+        }, qos=1)
         logging.info('Script #%s -> %s', resultado_id, estado)
 
     # --- consultar_info (hardware/BitLocker bajo demanda) ---
@@ -3027,10 +3076,11 @@ del "%~f0"
         return hasher.hexdigest()
 
     def _reportar_instalacion(self, solicitud_id, paso, detalle='', version_instalada=''):
+        # QoS 1 (0.38, E-01): un corte de red no pierde el paso; el servidor tolera duplicados.
         self._publicar(f'/saidsof/agente/{self.args.codigo}/software_estado/', {
             'token': self._token(), 'solicitud_id': solicitud_id, 'paso': paso,
             'detalle': detalle, 'version_instalada': version_instalada,
-        })
+        }, qos=1)
         logging.info('Instalación #%s -> %s%s', solicitud_id, paso, f' ({detalle})' if detalle else '')
 
     # --- despliegues de POS ---
@@ -3272,7 +3322,8 @@ del "%~f0"
             cuerpo['version_previa'] = version_previa
         if version_nueva is not None:
             cuerpo['version_nueva'] = version_nueva
-        self._publicar(f'/saidsof/agente/{self.args.codigo}/despliegue_estado/', cuerpo)
+        # QoS 1 (0.38, E-01): un corte de red no pierde el paso; el servidor tolera duplicados.
+        self._publicar(f'/saidsof/agente/{self.args.codigo}/despliegue_estado/', cuerpo, qos=1)
         logging.info('Despliegue #%s -> %s%s', despliegue_id, paso, f' ({detalle})' if detalle else '')
 
     # --- arranque ---

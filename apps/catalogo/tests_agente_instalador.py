@@ -185,6 +185,91 @@ class ServicioWindowsTests(SimpleTestCase):
         self.assertLess(self.fuente.index('self.deteniendo = True'), self.fuente.index('self.agente.detener()'))
 
 
+class EjecutarCapturandoTests(_AgenteReal):
+    """Scripts sin tuberías (0.38, H-14): el mismo bloqueo de ML008, en la ejecución de
+    scripts, que además necesita stdout y stderr por separado."""
+
+    def _comando(self, codigo):
+        return [sys.executable, '-c', codigo]
+
+    def test_un_hijo_vivo_del_script_no_traba_al_agente(self):
+        inicio = time.monotonic()
+        codigo, stdout, _ = self.ag.ejecutar_capturando(self._comando(
+            "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(15)']); "
+            "print('script termino')"), timeout=60)
+        self.assertLess(time.monotonic() - inicio, 8)
+        self.assertEqual(codigo, 0)
+        self.assertIn('script termino', stdout)
+
+    def test_separa_salida_y_errores_y_devuelve_el_codigo(self):
+        codigo, stdout, stderr = self.ag.ejecutar_capturando(self._comando(
+            "import sys; print('a la salida'); print('al error', file=sys.stderr); sys.exit(3)"), timeout=60)
+        self.assertEqual(codigo, 3)
+        self.assertIn('a la salida', stdout)
+        self.assertNotIn('al error', stdout)
+        self.assertIn('al error', stderr)
+
+    def test_respeta_el_tope_de_caracteres(self):
+        _, stdout, _ = self.ag.ejecutar_capturando(self._comando("print('x' * 10000 + 'FIN')"), timeout=60)
+        self.assertLessEqual(len(stdout), 4000)
+        self.assertIn('FIN', stdout)
+
+    def test_al_vencer_el_tiempo_devuelve_none(self):
+        inicio = time.monotonic()
+        codigo, _, _ = self.ag.ejecutar_capturando(self._comando('import time; time.sleep(30)'), timeout=2)
+        self.assertIsNone(codigo)
+        self.assertLess(time.monotonic() - inicio, 20)
+
+    def test_el_script_reporta_completado_error_y_timeout(self):
+        agente = self.ag.AgentePrueba.__new__(self.ag.AgentePrueba)
+        agente._firma_valida = lambda *a, **k: True
+        reportes = []
+        agente._reportar_script = lambda rid, estado, **kw: reportes.append((estado, kw))
+        payload = {'ejecucion_id': 1, 'resultado_id': 7, 'tipo_script': 'powershell', 'timeout_segundos': 60,
+                   'contenido': 'Get-Date', 'estacion': 'X', 'timestamp': 0}
+        for resultado, esperado in (((0, 'ok', ''), 'completado'), ((1, '', 'fallo'), 'error'),
+                                    ((None, 'parcial', ''), 'timeout')):
+            with self.subTest(esperado=esperado), patch.object(self.ag, 'ejecutar_capturando', return_value=resultado):
+                reportes.clear()
+                agente._verificar_y_ejecutar_script(payload)
+                self.assertEqual([r[0] for r in reportes], ['ejecutando', esperado])
+
+
+class ReportesQoS1Tests(_AgenteReal):
+    """0.38, E-01: los reportes de operaciones van con QoS 1 y, sin conexión, quedan en la
+    cola de paho en vez de perderse (comprobado contra EMQX 5.8.3 el 22-oct-2026)."""
+
+    def _agente(self, rc):
+        agente = self.ag.AgentePrueba.__new__(self.ag.AgentePrueba)
+        agente.args = SimpleNamespace(codigo='LAB-QOS')
+        agente._token = lambda: 'tok'
+        publicados = []
+
+        def publicar(topico, cuerpo, qos=0):
+            publicados.append((topico, qos))
+            return SimpleNamespace(rc=rc)
+
+        agente.client = SimpleNamespace(publish=publicar)
+        return agente, publicados
+
+    def test_qos1_sin_conexion_queda_en_cola(self):
+        agente, _ = self._agente(self.ag.mqtt.MQTT_ERR_NO_CONN)
+        self.assertTrue(agente._publicar('t', {}, qos=1))
+
+    def test_qos0_sin_conexion_sigue_contando_como_perdido(self):
+        agente, _ = self._agente(self.ag.mqtt.MQTT_ERR_NO_CONN)
+        self.assertFalse(agente._publicar('t', {}))
+
+    def test_los_tres_reportes_de_operaciones_van_con_qos1(self):
+        agente, publicados = self._agente(self.ag.mqtt.MQTT_ERR_SUCCESS)
+        agente._reportar_instalacion(14, 'recibido')
+        agente._reportar_despliegue(9, 'ok')
+        agente._reportar_script(7, 'completado', exit_code=0)
+        self.assertEqual([qos for _, qos in publicados], [1, 1, 1])
+        self.assertEqual([t.rsplit('/', 2)[-2] for t, _ in publicados],
+                         ['software_estado', 'despliegue_estado', 'script_estado'])
+
+
 class VersionTests(_AgenteReal):
     def test_version(self):
-        self.assertEqual(self.ag.VERSION_AGENTE_PRUEBA, 'agente-prueba-0.37')
+        self.assertEqual(self.ag.VERSION_AGENTE_PRUEBA, 'agente-prueba-0.38')
