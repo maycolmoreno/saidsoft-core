@@ -5900,10 +5900,15 @@ class TendenciaFlotaConsultasTests(TestCase):
         for semana in range(semanas_atras):
             momento = ahora - timedelta(weeks=semana, days=1)
             for i in range(cuantas + semana):
-                alerta = Alerta.objects.create(
-                    regla=self.regla_warning if i % 2 else self.regla_critical,
-                    estacion=self.estacion, valor_disparador=95,
+                # Una regla por alerta (misma métrica y severidad que las dos de setUp): la
+                # base ya no admite dos alertas activas de la misma regla en la misma
+                # estación (CR-2), y lo que se mide acá es la severidad, no la regla.
+                base = self.regla_warning if i % 2 else self.regla_critical
+                regla = ReglaAlerta.objects.create(
+                    nombre=f'{base.nombre} {semana}-{i}', metrica=base.metrica, umbral=base.umbral,
+                    severidad=base.severidad, creado_por=self.usuario,
                 )
+                alerta = Alerta.objects.create(regla=regla, estacion=self.estacion, valor_disparador=95)
                 Alerta.objects.filter(pk=alerta.pk).update(
                     abierta_en=momento, resuelta_en=momento if i % 3 == 0 else None,
                 )
@@ -10052,8 +10057,15 @@ class AntiguedadDeAlertasTests(TestCase):
     def _alerta(self, *, hace, estado=Alerta.Estado.ABIERTA, estacion=None):
         """`abierta_en` es auto_now_add, así que la fecha se fija con un UPDATE posterior
         — el mismo camino que ya usan las otras pruebas de alertas del archivo."""
+        # Una regla por alerta: la base ya no admite dos alertas activas de la misma regla
+        # en la misma estación (CR-2), y el histograma no distingue reglas.
+        self._reglas_creadas = getattr(self, '_reglas_creadas', 0) + 1
+        regla = ReglaAlerta.objects.create(
+            nombre=f'{self.regla.nombre} {self._reglas_creadas}', metrica=self.regla.metrica,
+            umbral=self.regla.umbral, creado_por=self.usuario,
+        )
         alerta = Alerta.objects.create(
-            regla=self.regla, estacion=estacion or self.estacion_sg,
+            regla=regla, estacion=estacion or self.estacion_sg,
             valor_disparador=95, estado=estado,
         )
         Alerta.objects.filter(pk=alerta.pk).update(abierta_en=timezone.now() - hace)

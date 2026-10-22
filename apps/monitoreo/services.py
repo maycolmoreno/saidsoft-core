@@ -14,6 +14,7 @@ from typing import NamedTuple
 
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import IntegrityError, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
@@ -141,7 +142,17 @@ def abrir_o_mantener_alerta(regla, estacion, valor):
         return None
     if _alerta_activa(regla, estacion):
         return None
-    alerta = Alerta.objects.create(regla=regla, estacion=estacion, valor_disparador=valor)
+    try:
+        # El índice único parcial `una_alerta_activa_por_regla_y_estacion` (CR-2) decide
+        # si dos procesos llegaron a la vez: el que pierde la encuentra ya abierta y no
+        # vuelve a notificar. `atomic` para que el choque no rompa la transacción de
+        # quien llama.
+        with transaction.atomic():
+            alerta = Alerta.objects.create(regla=regla, estacion=estacion, valor_disparador=valor)
+    except IntegrityError:
+        logger.info('Alerta %s en %s: otro proceso la abrió al mismo tiempo; no se duplica.',
+                    regla.nombre, estacion.codigo)
+        return None
     encolar_notificacion_alerta(alerta)
     if regla.severidad == ReglaAlerta.Severidad.CRITICAL:
         _pedir_diagnostico_ia(alerta)

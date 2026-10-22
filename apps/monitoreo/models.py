@@ -499,6 +499,20 @@ class Alerta(models.Model):
             #   rangos amplios; un índice más en la tabla que más escribe el monitoreo
             #   no se justifica por ellas.
         ]
+        constraints = [
+            # CR-2: como máximo UNA alerta activa por regla y estación. Hasta octubre de
+            # 2026 lo garantizaba solo `_alerta_activa` en Python (consultar y después
+            # crear): dos procesos evaluando a la vez —el worker MQTT y una tarea de
+            # Celery— podían pasar los dos la consulta y abrir dos, con dos avisos. El
+            # índice único parcial lo decide la base; `abrir_o_mantener_alerta` toma el
+            # choque como "ya estaba abierta". Una vez resuelta, la misma regla puede
+            # volver a abrir otra: la condición solo mira las activas.
+            models.UniqueConstraint(
+                fields=['regla', 'estacion'],
+                condition=models.Q(estado__in=['abierta', 'reconocida']),
+                name='una_alerta_activa_por_regla_y_estacion',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.regla.nombre} · {self.estacion.codigo} ({self.get_estado_display()})'
