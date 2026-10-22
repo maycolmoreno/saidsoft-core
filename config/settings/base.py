@@ -239,6 +239,11 @@ EMQX_ADMIN_CONFIG = {
 # publish al broker podría inyectar comandos (incluyendo ejecutar_script).
 COMANDO_HMAC_SECRET = env('COMANDO_HMAC_SECRET')
 
+# Clave PRIVADA Ed25519 (32 bytes en base64) con la que se firman los catálogos del agente
+# (apps.monitoreo.firma_catalogo). Vacía = solo la firma HMAC, como antes de 0.38. Generar
+# con `python manage.py clave_firma_catalogos --generar`. En producción solo la recibe `web`.
+CATALOGO_FIRMA_PRIVADA = env('CATALOGO_FIRMA_PRIVADA', default='')
+
 # Clave de cifrado simétrico (Fernet) para datos en reposo que ameritan más que el
 # control de acceso normal de Django — hoy solo la clave de recuperación de BitLocker
 # (apps.catalogo.models.ClaveRecuperacionBitLocker). Sin default a propósito: generar

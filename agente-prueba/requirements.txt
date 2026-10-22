@@ -6,3 +6,6 @@ pysnmp>=7.1
 # variante -binary: trae la libpq compilada adentro, asi PyInstaller la empaqueta sin que
 # haga falta tener Postgres instalado en la estacion ni en la maquina que compila.
 psycopg2-binary>=2.9
+# Verificacion Ed25519 de los catalogos firmados (0.38). Ya venia dentro del ejecutable como
+# dependencia indirecta; se declara para que no dependa de eso.
+cryptography>=42

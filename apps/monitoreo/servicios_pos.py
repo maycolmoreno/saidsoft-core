@@ -85,9 +85,11 @@ def envolver_firmado(comando: str, contenido: dict) -> dict:
     """
     from apps.catalogo.services import firmar_payload
 
+    from . import firma_catalogo
+
     cuerpo = json.dumps(contenido, separators=(',', ':'), sort_keys=True)
     timestamp = int(time.time())
-    return {
+    sobre = {
         # Duplicado a propósito, para los agentes anteriores a 0.22 — ver el docstring
         # del módulo. El agente nuevo lee SOLO de `catalogo`, que es lo que está firmado.
         **contenido,
@@ -95,6 +97,12 @@ def envolver_firmado(comando: str, contenido: dict) -> dict:
         'timestamp': timestamp,
         'firma': firmar_payload(None, comando=comando, catalogo=cuerpo, timestamp=timestamp),
     }
+    # Agente 0.38: firma asimétrica del mismo mensaje (ver apps.monitoreo.firma_catalogo).
+    # Los agentes anteriores no la miran y siguen con la HMAC.
+    firma_ed25519 = firma_catalogo.firmar(comando, cuerpo, timestamp)
+    if firma_ed25519:
+        sobre['firma_ed25519'] = firma_ed25519
+    return sobre
 
 # Global y no por estación: el catálogo es uno solo para toda la flota (ver el docstring
 # del modelo sobre por qué no hay catálogo por farmacia). Mismo nivel que

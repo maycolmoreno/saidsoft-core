@@ -60,6 +60,13 @@ ARCHIVO_IDENTIDAD = 'identidad.json'
 ARCHIVO_LOG = 'agente_prueba.log'
 VERSION_AGENTE_PRUEBA = 'agente-prueba-0.38'
 
+# Claves PÚBLICAS Ed25519 (base64) con las que el servidor firma los catálogos (0.38, H-03 y
+# S-11; ver apps/monitoreo/firma_catalogo.py). Se acepta cualquiera de la lista: para rotar,
+# primero se distribuye un agente con la vieja y la nueva, y recién después el servidor
+# cambia de clave. Vacía = este agente valida los catálogos solo con HMAC, como 0.37.
+# La pública sale de `python manage.py clave_firma_catalogos` en el servidor.
+CLAVES_PUBLICAS_CATALOGO = ()
+
 # SEC-1 (auditoría 22-ago-2026): ventana de tolerancia para el `timestamp` firmado en
 # cada mensaje del servidor — sin esto, capturar un mensaje MQTT válido (comando,
 # script, despliegue o instalación de software) alcanzaba para reproducirlo indefinidamente
@@ -419,6 +426,31 @@ def firmar(secreto: str, **campos) -> str:
     pasan los kwargs (Python 3.7+ preserva ese orden)."""
     mensaje = '|'.join(str(v) for v in campos.values())
     return hmac.new(secreto.encode(), mensaje.encode(), hashlib.sha256).hexdigest()
+
+
+def firma_ed25519_valida(claves, mensaje: bytes, firma_b64) -> bool:
+    """True si `firma_b64` es una firma Ed25519 de `mensaje` hecha con la privada de
+    alguna de `claves` (públicas en base64). Cualquier dato mal formado es False.
+
+    `cryptography` ya viene dentro del ejecutable. Si faltara, se informa y se rechaza:
+    nunca se acepta un catálogo sin poder verificarlo."""
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError:
+        logging.error('Falta la librería cryptography: no se puede verificar la firma Ed25519.')
+        return False
+    try:
+        firma = base64.b64decode(str(firma_b64), validate=True)
+    except ValueError:
+        return False
+    for clave in claves:
+        try:
+            Ed25519PublicKey.from_public_bytes(base64.b64decode(clave, validate=True)).verify(firma, mensaje)
+            return True
+        except (InvalidSignature, ValueError):
+            continue
+    return False
 
 
 def offset_utc_minutos() -> int:
@@ -1413,7 +1445,37 @@ class AgentePrueba:
 
         `verificar_ventana=False` como en los otros retenidos: el mensaje puede estar
         guardado en el broker dias hasta que la estacion encienda.
+
+        Firma Ed25519 (0.38): si el catalogo la trae y este agente tiene claves publicas,
+        se verifica esa y la HMAC no se mira (las estaciones instaladas desde 0.21 no
+        tienen el secreto compartido: H-03). Una vez aceptado un catalogo firmado asi,
+        el agente lo recuerda (`catalogo_exige_ed25519` en identidad.json) y desde ahi
+        rechaza los que vengan sin ella: si no, bastaria con quitar `firma_ed25519` para
+        volver a la HMAC con el secreto compartido (S-11).
         """
+        firma_ed25519 = payload.get('firma_ed25519')
+        if firma_ed25519 and CLAVES_PUBLICAS_CATALOGO:
+            mensaje = '|'.join(
+                str(v) for v in (comando, payload.get('catalogo', ''), payload.get('timestamp'))
+            ).encode('utf-8')
+            if not firma_ed25519_valida(CLAVES_PUBLICAS_CATALOGO, mensaje, firma_ed25519):
+                logging.error('Firma Ed25519 invalida en %s — se ignora (posible suplantacion).', tipo_mensaje)
+                return None
+            try:
+                contenido = json.loads(payload['catalogo'])
+            except (TypeError, json.JSONDecodeError):
+                logging.error('%s con firma valida pero contenido ilegible — se ignora.', tipo_mensaje)
+                return None
+            if not self.identidad.get('catalogo_exige_ed25519'):
+                self.identidad['catalogo_exige_ed25519'] = True
+                self._guardar_identidad()
+                logging.info('Primer catalogo con firma Ed25519: desde ahora se exige en los catalogos.')
+            return contenido
+        if self.identidad.get('catalogo_exige_ed25519'):
+            logging.error(
+                '%s sin firma Ed25519 valida para este agente, que ya la exige — se ignora.', tipo_mensaje,
+            )
+            return None
         if not payload.get('firma'):
             # Servidor anterior al catalogo firmado. Se acepta para no quedarse con la
             # lista vieja durante el despliegue, pero queda dicho en el log: es el unico

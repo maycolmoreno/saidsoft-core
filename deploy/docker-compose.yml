@@ -188,6 +188,10 @@ services:
       # faltaban aquí — el stack tal como estaba no podía levantar `web`/`worker` en limpio.
       COMANDO_HMAC_SECRET: ${COMANDO_HMAC_SECRET}
       BITLOCKER_ENCRYPTION_KEY: ${BITLOCKER_ENCRYPTION_KEY}
+      # Clave privada de firma de catálogos (agente 0.38, apps.monitoreo.firma_catalogo).
+      # SOLO en `web`: es el único servicio que publica catálogos (admin y los comandos
+      # publicar_catalogo_*). Vacía = solo la firma HMAC, como antes.
+      CATALOGO_FIRMA_PRIVADA: ${CATALOGO_FIRMA_PRIVADA:-}
       # Aprovisionamiento de credenciales MQTT por estación (apps.mqtt_worker.emqx_admin):
       # con esto cada estación recibe, al enrolarse, su propia credencial con ACL acotada
       # a sus propios tópicos, en vez de compartir MQTT_PASSWORD_AGENTE con toda la flota.
