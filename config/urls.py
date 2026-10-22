@@ -3,8 +3,8 @@ from django.conf import settings
 from django.http import Http404
 from django.urls import include, path, re_path
 from django.views.static import serve
-from rest_framework.authtoken.views import obtain_auth_token
 
+from apps.cuentas.api_auth import ObtenerTokenConMFA
 from apps.cuentas.views import login_admin_por_panel
 from apps.whatsapp.views import webhook as whatsapp_webhook
 
@@ -15,7 +15,8 @@ admin.site.login = login_admin_por_panel
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/v1/auth/token/', obtain_auth_token, name='api-auth-token'),
+    # Con MFA y vencimiento (S-05, S-06): ver apps.cuentas.api_auth.
+    path('api/v1/auth/token/', ObtenerTokenConMFA.as_view(), name='api-auth-token'),
     # Integración de solo lectura para otros sistemas (inventario, mantenimiento).
     path('api/v1/rmm/', include('apps.catalogo.api_urls')),
     path('api/v1/', include('apps.mantenimiento.api_urls')),

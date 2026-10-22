@@ -186,6 +186,8 @@ OTP_TOTP_ISSUER = 'SAIDSOFT'
 # abierto, una contraseña robada alcanza para enrolar otro teléfono).
 MFA_OBLIGATORIO = env.bool('MFA_OBLIGATORIO', default=False)
 MFA_PLAZO_ENROLAMIENTO = env('MFA_PLAZO_ENROLAMIENTO', default='')
+# Días de vida de un token de la API (S-06). Vencido, responde 401 y hay que pedir otro.
+API_TOKEN_DIAS = env.int('API_TOKEN_DIAS', default=30)
 
 # Internacionalización
 LANGUAGE_CODE = 'es-EC'
@@ -388,11 +390,12 @@ MIKROTIK_SNMP_CONFIG = {
     'PUERTO': env.int('MIKROTIK_SNMP_PUERTO', default=161),
 }
 
-# API móvil (apps Flutter): Token Authentication de DRF, sin dependencias externas.
-# El técnico obtiene su token una vez en /api/v1/auth/token/ y lo reusa en cada request.
+# API móvil (apps Flutter) e integraciones: tokens de DRF, con MFA al pedirlos y con
+# vencimiento (S-05, S-06; ver apps.cuentas.api_auth). El técnico obtiene su token en
+# /api/v1/auth/token/ (usuario, contraseña y código) y lo reusa hasta que vence.
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
+        'apps.cuentas.autenticacion_api.TokenConVencimiento',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',

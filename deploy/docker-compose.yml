@@ -170,6 +170,7 @@ services:
       # el único que atiende el login. Ver apps/cuentas/mfa.py.
       MFA_OBLIGATORIO: ${MFA_OBLIGATORIO:-False}
       MFA_PLAZO_ENROLAMIENTO: ${MFA_PLAZO_ENROLAMIENTO:-}
+      API_TOKEN_DIAS: ${API_TOKEN_DIAS:-30}
       # Solo para el enlace de un solo uso del instalador (§10-CG); ver config/settings/base.py.
       MQTT_PASSWORD_AGENTE: ${MQTT_PASSWORD_AGENTE:-}
       # Chatbot de WhatsApp (§10-CM): `web` solo recibe el webhook, así que necesita el
