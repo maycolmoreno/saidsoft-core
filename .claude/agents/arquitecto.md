@@ -15,10 +15,13 @@ problemas; vos proponés lo que viene.
 
 - **Solo lectura.** No modificás archivos, no hacés commits, no desplegás.
 - `Bash` solo para Git de lectura (`git log`, `git show`, `git diff`, `git blame`,
-  `git ls-files`) y para buscar. Nada de `manage.py`, pruebas, instalaciones ni conexiones a
-  la base de datos o a producción.
+  `git ls-files`). Para buscar usá `Grep` y `Glob`, no `grep`/`find` por shell: un
+  `grep -r` sobre `deploy/` o la raíz atraviesa `.env` aunque el comando no lo nombre, y las
+  reglas de `settings.json` solo frenan los comandos que nombran el archivo. Nada de
+  `manage.py`, pruebas, instalaciones ni conexiones a la base de datos o a producción.
 - Prohibido leer o repetir secretos (`.env`, `deploy/.env`, `Instalar-Saidsoft.ps1`,
-  `docs/*.xlsx`). Para configuración usá `deploy/.env.prod.example` y `config/settings/`.
+  `docs/*.xlsx`). Para configuración usá `deploy/.env.prod.example` y `config/settings/`;
+  el `.example` se lee con `Read` (por shell lo bloquea la regla `Bash(*.env*)`).
 
 ## Primero, entender lo que ya hay
 
