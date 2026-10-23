@@ -9,7 +9,10 @@ cada intento). Se recupera al cerrar y volver a abrir el modal.
      hx-get="{% url 'panel:estacion_info_modal' estacion.pk %}"
      hx-target="#modal-info-content" hx-swap="innerHTML">
     <div class="flex items-center justify-between mb-4">
-        <h2 class="text-lg font-semibold">{{ estacion.codigo }}</h2>
+        <div class="flex items-baseline gap-3">
+            <h2 class="text-lg font-semibold">{{ estacion.codigo }}</h2>
+            <a href="{% url 'panel:estacion_ficha' estacion.pk %}" class="text-xs underline text-[var(--text-faint)] hover:text-[var(--text)]">Abrir ficha completa</a>
+        </div>
         <button type="button" onclick="document.getElementById('modal-info').close()"
                 class="text-[var(--text-faint)] hover:text-[var(--text)] text-xl leading-none">&times;</button>
     </div>

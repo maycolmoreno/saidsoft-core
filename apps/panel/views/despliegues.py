@@ -132,10 +132,30 @@ def despliegue_progreso_partial(request, pk):
         etiqueta_completados='aplicados',
         estados_visibles=(estados.PENDIENTE, estados.DESCARGANDO, estados.APLICANDO),
     )
+    from apps.despliegues.services import porcentaje_error
+
+    from .. import seguimiento
+
+    filas = seguimiento.rastreador(
+        seguimiento.resultados_despliegue(despliegue), seguimiento.DESPLIEGUE,
+        origen_id=despliegue.pk, modo_aplicacion=despliegue.modo_aplicacion,
+    )
+    pct = porcentaje_error(despliegue)
+    umbral = float(despliegue.umbral_error_pct) or 100.0
     return render(request, 'panel/despliegue_progreso_partial.html', {
         'despliegue': despliegue,
         'resultados': resultados,
         'progreso': progreso,
+        'filas': filas,
+        'conteos': seguimiento.conteos(filas),
+        'anillos': seguimiento.anillos(despliegue),
+        # El medidor usa EL cálculo del freno (`porcentaje_error`): lo que se ve es lo que decide.
+        'freno': {
+            'pct': pct, 'umbral': umbral, 'omitido': despliegue.freno_omitido,
+            'posicion': min(100, round(100 * (pct or 0) / umbral)),
+            'tono': 'critical' if (pct or 0) >= umbral else 'warning' if (pct or 0) >= umbral / 2 else 'good',
+        },
+        'puede_resolver': request.user.has_perm('catalogo.resolver_ordenagente'),
     })
 
 

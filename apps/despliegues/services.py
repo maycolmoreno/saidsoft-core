@@ -407,6 +407,25 @@ def orden_resuelta_a_mano(orden, *, decision, detalle):
     )
 
 
+def porcentaje_error(despliegue: Despliegue):
+    """% de estaciones en error sobre las que ya reportaron, o None si ninguna reportó.
+
+    Es EL cálculo del freno automático: lo usan `evaluar_freno_automatico` y el medidor
+    del panel, para que lo que se ve sea exactamente lo que decide.
+
+    Solo cuentan las estaciones que ya salieron de PENDIENTE (recibieron el mensaje y
+    empezaron a reportar). Antes el denominador era TODOS los destinatarios: en una
+    publicación amplia (ej. toda la cadena sin pasar por anillos), miles de estaciones
+    que ni siquiera habían descargado el paquete todavía diluían el % de error de las
+    pocas que ya habían fallado, y el freno no llegaba a activarse a tiempo."""
+    ya_reportaron = despliegue.resultados.exclude(estado=ResultadoDespliegue.Estado.PENDIENTE)
+    total = ya_reportaron.count()
+    if not total:
+        return None
+    errores = ya_reportaron.filter(estado=ResultadoDespliegue.Estado.ERROR).count()
+    return (errores / total) * 100
+
+
 def evaluar_freno_automatico(despliegue: Despliegue) -> bool:
     """Si el % de estaciones en error supera el umbral configurado, pausa el despliegue.
 
@@ -415,17 +434,9 @@ def evaluar_freno_automatico(despliegue: Despliegue) -> bool:
     if despliegue.freno_omitido:
         # El operador ya reanudó a pesar de los errores: no volver a frenar.
         return False
-    # Solo cuentan las estaciones que ya salieron de PENDIENTE (recibieron el mensaje y
-    # empezaron a reportar). Antes el denominador era TODOS los destinatarios: en una
-    # publicación amplia (ej. toda la cadena sin pasar por anillos), miles de estaciones
-    # que ni siquiera habían descargado el paquete todavía diluían el % de error de las
-    # pocas que ya habían fallado, y el freno no llegaba a activarse a tiempo.
-    ya_reportaron = despliegue.resultados.exclude(estado=ResultadoDespliegue.Estado.PENDIENTE)
-    total = ya_reportaron.count()
-    if not total:
+    porcentaje = porcentaje_error(despliegue)
+    if porcentaje is None:
         return False
-    errores = ya_reportaron.filter(estado=ResultadoDespliegue.Estado.ERROR).count()
-    porcentaje = (errores / total) * 100
     if porcentaje >= float(despliegue.umbral_error_pct) and despliegue.estado == Despliegue.Estado.PUBLICANDO:
         # La escritura del estado pasa por `pausar_despliegue` para que haya un solo
         # escritor (`D-5`). No puede lanzar desde acá: la condición de arriba ya exige

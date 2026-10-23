@@ -154,6 +154,8 @@ elegido antes. La tarjeta activa queda resaltada y su enlace vuelve a "todas".
                             onclick="document.getElementById('modal-info').showModal()">
                         {{ e.codigo }}
                     </button>
+                    <a href="{% url 'panel:estacion_ficha' e.pk %}" class="text-xs text-[var(--text-faint)] hover:text-[var(--info)] ml-1"
+                       title="Ficha completa de {{ e.codigo }}">ficha</a>
                 </td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ e.farmacia.codigo }} · {{ e.farmacia.grupo.codigo }}</td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">

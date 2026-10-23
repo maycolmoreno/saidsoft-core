@@ -1,0 +1,124 @@
+{% extends "panel/base.html" %}
+{% block title %}{{ estacion.codigo }} · SAIDSOFT{% endblock %}
+{% block content %}
+{% comment %}
+Ficha completa de una estación (apps.panel.views.estaciones.estacion_ficha). Las acciones
+siguen en la ventana emergente de siempre, que se abre con "Acciones y detalle": así no se
+duplican sus permisos, avisos ni auditoría.
+{% endcomment %}
+<p class="text-xs mb-2"><a href="{% url 'panel:estaciones_lista' %}" class="text-[var(--text-faint)] hover:text-[var(--text)]">← Estaciones</a></p>
+
+<section class="card ficha-cabecera" aria-label="Resumen de la estación">
+    <div class="salud-anillo tono-{{ salud.tono }}">
+        <svg width="84" height="84" viewBox="0 0 84 84" role="img" aria-label="Índice de salud {{ salud.puntaje }} de 100">
+            <circle cx="42" cy="42" r="34" fill="none" stroke="var(--overlay-hover)" stroke-width="9"></circle>
+            <circle cx="42" cy="42" r="34" fill="none" stroke="var(--tono)" stroke-width="9" stroke-linecap="round"
+                    stroke-dasharray="{% widthratio salud.puntaje 100 214 %} 214" transform="rotate(-90 42 42)"></circle>
+        </svg>
+        <div class="salud-anillo-valor">{{ salud.puntaje }}<small>salud</small></div>
+    </div>
+
+    <div style="flex:1 1 320px; min-width:0;">
+        <div class="flex flex-wrap items-baseline gap-3">
+            <h1 class="mono text-2xl font-semibold" style="margin:0;">{{ estacion.codigo }}</h1>
+            <span class="text-sm text-[var(--text-faint)]">Farmacia {{ estacion.farmacia.codigo }}{% if estacion.hostname %} · {{ estacion.hostname }}{% endif %}</span>
+        </div>
+        <div class="flex flex-wrap gap-2 mt-2">
+            {% if estacion.estado_conexion == 'online' %}<span class="pill good">En línea</span>
+            {% elif estacion.estado_conexion == 'offline' %}<span class="pill critical">Fuera de línea{% if estacion.ultimo_heartbeat %} · {{ estacion.ultimo_heartbeat|timesince }}{% endif %}</span>
+            {% else %}<span class="pill neutral">Nunca conectada</span>{% endif %}
+            {% if estacion.version_agente %}<span class="pill {% if agente_al_dia %}good{% else %}warning{% endif %}">Agente {{ estacion.version_agente }}</span>{% endif %}
+            {% for nombre, version, al_dia in catalogos %}
+            {% if al_dia is not None %}<span class="pill {% if al_dia %}good{% else %}warning{% endif %}">{{ nombre }} {% if al_dia %}al día{% else %}desactualizado{% endif %}</span>{% endif %}
+            {% endfor %}
+            {% if estacion.bitlocker_habilitado is True %}<span class="pill good">BitLocker activo</span>
+            {% elif estacion.bitlocker_habilitado is False %}<span class="pill critical">Sin BitLocker</span>{% endif %}
+            {% if alertas_abiertas %}<span class="pill warning">{{ alertas_abiertas|length }} alerta{{ alertas_abiertas|length|pluralize }}</span>{% endif %}
+            {% if estacion.pausado %}<span class="pill critical">Frenada</span>{% endif %}
+        </div>
+        {% if salud.motivos %}
+        <ul class="motivos" aria-label="Qué le resta puntos">
+            {% for texto, puntos in salud.motivos %}<li>{{ texto }} · −{{ puntos }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+
+    <div class="flex flex-wrap gap-2">
+        {% if puede_acceso_remoto and estacion.meshcentral_node_id %}
+        <form method="post" action="{% url 'panel:estacion_meshcentral_escritorio' estacion.pk %}" target="_blank">
+            {% csrf_token %}
+            <button type="submit" class="btn primary">Escritorio remoto</button>
+        </form>
+        {% endif %}
+        <button type="button" class="btn secondary"
+                hx-get="{% url 'panel:estacion_info_modal' estacion.pk %}" hx-target="#modal-info-content" hx-swap="innerHTML"
+                onclick="document.getElementById('modal-info').showModal()">Acciones y detalle</button>
+    </div>
+</section>
+
+<div class="ficha-columnas">
+    <div class="ficha-lateral">
+        <section class="card ficha-seccion" aria-label="Recursos">
+            <div class="ficha-seccion-titulo"><h2>Recursos</h2><span class="chip-edad tono-{{ edad_recursos.tono }}">{{ edad_recursos.texto }}</span></div>
+            {% for r in recursos %}
+            <div class="mb-3">
+                <div class="flex justify-between text-sm mb-1"><span>{{ r.nombre }}</span><span class="font-semibold num">{{ r.pct }} %</span></div>
+                <div class="barra tono-{{ r.tono }}"><span style="width:{{ r.pct }}%"></span></div>
+            </div>
+            {% empty %}
+            <p class="text-sm text-[var(--text-faint)]">La estación todavía no envió métricas de recursos.</p>
+            {% endfor %}
+        </section>
+
+        <section class="card ficha-seccion" aria-label="Equipo">
+            <div class="ficha-seccion-titulo"><h2>Equipo</h2><span class="chip-edad tono-{{ edad_equipo.tono }}">{{ edad_equipo.texto }}</span></div>
+            <dl class="datos-equipo">
+                <div><dt>Marca y modelo</dt><dd>{{ estacion.fabricante_equipo|default:"—" }} {{ estacion.modelo_equipo }}</dd></div>
+                <div><dt>Procesador</dt><dd>{{ estacion.procesador|default:"—" }}</dd></div>
+                <div><dt>RAM</dt><dd>{% if estacion.ram_total_mb %}{% widthratio estacion.ram_total_mb 1024 1 %} GB{% else %}—{% endif %}</dd></div>
+                <div><dt>Disco</dt><dd>{% if estacion.almacenamiento_total_gb %}{{ estacion.almacenamiento_total_gb }} GB{% else %}—{% endif %}</dd></div>
+                <div><dt>Serie</dt><dd class="mono">{{ estacion.numero_serie|default:"—" }}</dd></div>
+                <div><dt>Sistema</dt><dd>{{ estacion.so_nombre|default:"—" }} {{ estacion.so_build }}</dd></div>
+                <div><dt>IP de la placa</dt><dd class="mono">{{ estacion.ip_lan|default:"—" }}</dd></div>
+                <div><dt>Versión del POS</dt><dd class="mono">{{ estacion.version_pos|default:"—" }}</dd></div>
+                <div><dt>Activo</dt><dd>{% if activo %}<a href="{% url 'panel:activo_detalle' activo.pk %}" class="underline mono">{{ activo.codigo }}</a>{% else %}Sin activo vinculado{% endif %}</dd></div>
+            </dl>
+        </section>
+
+        <section class="card ficha-seccion" aria-label="Escaneos">
+            <div class="ficha-seccion-titulo"><h2>Escaneos</h2></div>
+            {% for nombre, e in escaneos %}
+            <div class="flex items-center justify-between gap-2 py-2" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <span class="text-sm">{{ nombre }}</span>
+                <span class="chip-edad tono-{{ e.tono }}">{{ e.texto }}</span>
+            </div>
+            {% endfor %}
+        </section>
+    </div>
+
+    <section class="card ficha-seccion ficha-principal" aria-label="Línea de vida">
+        <div class="ficha-seccion-titulo">
+            <h2>Línea de vida · 30 días</h2>
+            <nav class="filtros" aria-label="Filtrar la línea de vida">
+                {% for clave, nombre in categorias %}
+                <a href="?ver={{ clave }}"{% if clave == categoria %} aria-current="page"{% endif %}>{{ nombre }}</a>
+                {% endfor %}
+            </nav>
+        </div>
+        <ol class="vida">
+            {% for e in eventos %}
+            <li class="tono-{{ e.tono }}">
+                <span class="vida-hora" title="{{ e.fecha|date:'d/m/Y H:i' }}">{{ e.fecha|date:"d/m H:i" }}</span>
+                <span class="vida-punto" aria-hidden="true"></span>
+                <div>
+                    <div class="vida-titulo">{{ e.titulo }}</div>
+                    {% if e.detalle %}<div class="vida-detalle">{{ e.detalle }}</div>{% endif %}
+                </div>
+            </li>
+            {% empty %}
+            <li><span></span><span></span><p class="text-sm text-[var(--text-faint)]">Nada registrado en los últimos 30 días.</p></li>
+            {% endfor %}
+        </ol>
+    </section>
+</div>
+{% endblock %}

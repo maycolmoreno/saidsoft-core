@@ -683,3 +683,98 @@ dialog#modal-info::backdrop{ background:var(--overlay-hover); }
 }
 .mosaico-celda.est-warning::after{ content:"!"; }
 .mosaico-celda.est-critical::after{ content:"\00d7"; }
+
+/* ---------- Ficha de estación (/estaciones/<pk>/) ----------
+   Página completa de una estación: índice de salud, antigüedad de cada dato como tono y
+   línea de vida. Ver apps/panel/ficha_estacion.py. */
+.ficha-cabecera{ display:flex; flex-wrap:wrap; align-items:center; gap:20px; padding:18px 22px; }
+.ficha-columnas{ display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; margin-top:16px; }
+.ficha-lateral{ flex:1 1 340px; min-width:0; display:flex; flex-direction:column; gap:16px; }
+.ficha-principal{ flex:999 1 520px; min-width:0; }
+.ficha-seccion{ padding:16px 18px; }
+.ficha-seccion-titulo{ display:flex; justify-content:space-between; align-items:baseline; gap:8px; margin-bottom:12px; }
+.ficha-seccion-titulo h2{ margin:0; font-size:14px; font-weight:600; }
+
+.salud-anillo{ position:relative; width:84px; height:84px; flex:none; }
+.salud-anillo svg{ display:block; }
+.salud-anillo-valor{
+  position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  font-size:22px; font-weight:700; line-height:1;
+}
+.salud-anillo-valor small{ font-size:10.5px; font-weight:500; color:var(--text-faint); margin-top:3px; }
+.tono-good{ --tono:var(--good); --tono-dim:var(--good-dim); }
+.tono-warning{ --tono:var(--warning); --tono-dim:var(--warning-dim); }
+.tono-critical{ --tono:var(--critical); --tono-dim:var(--critical-dim); }
+.tono-info{ --tono:var(--info); --tono-dim:var(--info-dim); }
+.tono-accent{ --tono:var(--accent); --tono-dim:var(--accent-dim); }
+.tono-neutral{ --tono:var(--text-faint); --tono-dim:var(--overlay-hover); }
+
+.chip-edad{
+  font-size:11.5px; font-weight:600; padding:3px 9px; border-radius:99px; white-space:nowrap;
+  background:var(--tono-dim); color:var(--tono);
+}
+.barra{ height:8px; border-radius:99px; background:var(--overlay-hover); overflow:hidden; }
+.barra > span{ display:block; height:100%; border-radius:99px; background:var(--tono); }
+
+.motivos{ list-style:none; margin:8px 0 0; padding:0; display:flex; flex-wrap:wrap; gap:6px; }
+.motivos li{ font-size:11.5px; padding:3px 9px; border-radius:99px; background:var(--overlay-hover); color:var(--text-dim); }
+
+.filtros{ display:flex; flex-wrap:wrap; gap:6px; }
+.filtros a{
+  font-size:12px; padding:4px 10px; border-radius:99px; text-decoration:none;
+  background:var(--overlay-hover); color:var(--text-dim);
+}
+.filtros a[aria-current="page"]{ background:var(--text); color:var(--card); }
+
+.vida{ list-style:none; margin:0; padding:0; }
+.vida li{ display:grid; grid-template-columns:76px 18px minmax(0, 1fr); gap:10px; padding:9px 0; border-top:1px solid var(--border-soft); }
+.vida li:first-child{ border-top:none; }
+.vida-hora{ font-size:11.5px; color:var(--text-faint); text-align:right; padding-top:2px; font-variant-numeric:tabular-nums; }
+.vida-punto{ width:11px; height:11px; margin-top:4px; border-radius:50%; background:var(--tono); box-shadow:0 0 0 4px var(--tono-dim); }
+.vida-titulo{ font-size:13.5px; font-weight:600; }
+.vida-detalle{ font-size:12.5px; color:var(--text-dim); overflow-wrap:anywhere; }
+
+.datos-equipo{ margin:0; display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px 14px; }
+.datos-equipo dt{ font-size:11px; color:var(--text-faint); }
+.datos-equipo dd{ margin:2px 0 0; font-size:13px; font-weight:500; overflow-wrap:anywhere; }
+
+/* ---------- Seguimiento en vivo (despliegues e instalaciones) ----------
+   Barra segmentada, anillos, medidor del freno y rastreador por estación.
+   Ver apps/panel/seguimiento.py y templates/panel/_seguimiento.html. */
+.seg-listo{ --seg:var(--good); }
+.seg-curso{ --seg:var(--accent); }
+.seg-incierto{ --seg:var(--warning); }
+.seg-error{ --seg:var(--critical); }
+.seg-espera{ --seg:var(--overlay-hover); }
+.seg-barra{ display:flex; gap:2px; height:20px; border-radius:6px; overflow:hidden; background:var(--overlay-hover); }
+.seg-barra > span{ background:var(--seg); min-width:4px; }
+.seg-barra-fina{ height:8px; border-radius:99px; flex:1 1 160px; }
+.seg-leyenda{ display:flex; flex-wrap:wrap; gap:12px; font-size:12px; color:var(--text-dim); }
+.seg-leyenda > span{ display:inline-flex; align-items:center; gap:6px; }
+.seg-leyenda i{ width:11px; height:11px; border-radius:3px; background:var(--seg); display:inline-block; }
+
+.anillos{ list-style:none; margin:14px 0 0; padding:0; display:flex; flex-direction:column; gap:8px; }
+.anillos li{ display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12.5px; }
+.anillos li a{ font-weight:600; min-width:70px; }
+.anillos li[aria-current="step"] a{ color:var(--accent); }
+
+.medidor-pista{ height:10px; border-radius:99px; background:var(--overlay-hover); overflow:hidden; }
+.medidor-valor{ display:block; height:100%; border-radius:99px; background:var(--tono); }
+
+.rastreo{ list-style:none; margin:0; padding:0; }
+.rastreo-fila{
+  display:grid; grid-template-columns:minmax(110px, 1fr) minmax(260px, 3fr) minmax(140px, 2fr) auto;
+  gap:14px; align-items:center; padding:10px 8px; border-top:1px solid var(--border-soft);
+}
+.rastreo-fila:first-child{ border-top:none; }
+.rastreo-incierto{ background:var(--warning-dim); border-radius:var(--radius-md); }
+.rastreo-error{ background:var(--critical-dim); border-radius:var(--radius-md); }
+.rastreo-pasos{ list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:4px; }
+.rastreo-pasos li{ display:flex; flex-direction:column; gap:4px; font-size:10.5px; color:var(--text-faint); }
+.rastreo-pasos li span{ height:6px; border-radius:99px; background:var(--tono); }
+.rastreo-pasos li.tono-neutral span{ background:var(--overlay-hover); }
+.rastreo-pasos li:not(.tono-neutral){ color:var(--text); }
+.rastreo-estado{ font-size:13px; min-width:0; }
+@media (max-width: 760px){
+  .rastreo-fila{ grid-template-columns:1fr; gap:8px; }
+}

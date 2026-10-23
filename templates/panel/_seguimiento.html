@@ -1,0 +1,75 @@
+{% comment %}
+Seguimiento en vivo de una operación (despliegue del POS o instalación de software). Ver
+apps.panel.seguimiento. Contexto: `filas` (rastreador), `conteos`, y opcionales `anillos`,
+`freno` y `puede_resolver`.
+{% endcomment %}
+<section class="card ficha-seccion mb-4" aria-label="Avance">
+    <div class="ficha-seccion-titulo">
+        <h2>Avance · {{ filas|length }} estación{{ filas|length|pluralize:"es" }}</h2>
+        <div class="seg-leyenda">
+            {% for clave, nombre, cantidad, pct in conteos %}
+            <span class="seg-{{ clave }}"><i aria-hidden="true"></i>{{ nombre }} <strong class="num">{{ cantidad }}</strong></span>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="seg-barra" role="img" aria-label="{% for clave, nombre, cantidad, pct in conteos %}{{ nombre }} {{ cantidad }}{% if not forloop.last %}, {% endif %}{% endfor %}">
+        {% for clave, nombre, cantidad, pct in conteos %}<span class="seg-{{ clave }}" style="flex:{{ cantidad }} 0 0"></span>{% empty %}<span class="seg-espera" style="flex:1 0 0"></span>{% endfor %}
+    </div>
+
+    {% if anillos|length > 1 %}
+    <ol class="anillos" aria-label="Anillos de este despliegue">
+        {% for a in anillos %}
+        <li{% if a.actual %} aria-current="step"{% endif %}>
+            <a href="{% url 'panel:despliegue_detalle' a.despliegue.pk %}">Anillo {{ a.numero }}</a>
+            <span class="text-[var(--text-faint)]">{{ a.despliegue.get_destino_tipo_display }} · {{ a.total }}</span>
+            <span class="seg-barra seg-barra-fina" aria-hidden="true">
+                {% for clave, nombre, cantidad, pct in a.conteos %}<span class="seg-{{ clave }}" style="flex:{{ cantidad }} 0 0"></span>{% empty %}<span class="seg-espera" style="flex:1 0 0"></span>{% endfor %}
+            </span>
+        </li>
+        {% endfor %}
+    </ol>
+    {% endif %}
+
+    {% if freno %}
+    <div class="medidor mt-4">
+        <div class="flex justify-between text-sm mb-1">
+            <span class="font-semibold">Freno automático</span>
+            <span class="text-[var(--text-faint)]">
+                {% if freno.pct is None %}todavía no reportó ninguna estación{% else %}error {{ freno.pct|floatformat:0 }} %{% endif %}
+                · se frena al {{ freno.umbral|floatformat:0 }} %{% if freno.omitido %} · desactivado al reanudar{% endif %}
+            </span>
+        </div>
+        <div class="medidor-pista" role="img" aria-label="Error {{ freno.pct|default_if_none:0|floatformat:0 }} por ciento de un umbral de {{ freno.umbral|floatformat:0 }}">
+            <span class="medidor-valor tono-{{ freno.tono }}" style="width:{{ freno.posicion }}%"></span>
+        </div>
+    </div>
+    {% endif %}
+</section>
+
+<section class="card ficha-seccion" aria-label="Rastreador por estación">
+    <div class="ficha-seccion-titulo"><h2>Rastreador por estación</h2><span class="text-xs text-[var(--text-faint)]">lo que pide una decisión, primero</span></div>
+    <ol class="rastreo">
+        {% for f in filas %}
+        <li class="rastreo-fila{% if f.categoria == 'incierto' %} rastreo-incierto{% elif f.categoria == 'error' %} rastreo-error{% endif %}">
+            <div>
+                <a href="{% url 'panel:estacion_ficha' f.estacion.pk %}" class="mono font-medium">{{ f.estacion.codigo }}</a>
+                <div class="text-xs text-[var(--text-faint)]">{{ f.estacion.farmacia.codigo }}</div>
+            </div>
+            <ol class="rastreo-pasos" aria-label="Pasos">
+                {% for p in f.pasos %}<li class="tono-{{ p.tono }}"><span aria-hidden="true"></span>{{ p.nombre }}</li>{% endfor %}
+            </ol>
+            <div class="rastreo-estado">
+                <span class="font-semibold">{{ f.texto }}</span>
+                {% if f.detalle %}<div class="text-xs text-[var(--text-dim)]">{{ f.detalle|truncatechars:140 }}</div>{% endif %}
+            </div>
+            <div class="text-right">
+                {% if f.orden and puede_resolver %}
+                <a href="{% url 'admin:catalogo_ordenagente_resolver' f.orden.pk %}" class="btn warning">Resolver</a>
+                {% endif %}
+            </div>
+        </li>
+        {% empty %}
+        <li class="text-sm text-[var(--text-faint)] py-4">Todavía no se publicó a ninguna estación.</li>
+        {% endfor %}
+    </ol>
+</section>

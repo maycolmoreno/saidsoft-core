@@ -212,8 +212,15 @@ def solicitud_instalacion_progreso_partial(request, pk):
         etiqueta_completados='instalados',
         estados_visibles=(estados.PENDIENTE, estados.DESCARGANDO, estados.INSTALANDO),
     )
+    from .. import seguimiento
+
+    filas = seguimiento.rastreador(
+        resultados.prefetch_related('eventos'), seguimiento.SOFTWARE, origen_id=solicitud.pk,
+    )
     return render(request, 'panel/solicitud_instalacion_progreso_partial.html', {
         'solicitud': solicitud, 'resultados': resultados, 'progreso': progreso,
+        'filas': filas, 'conteos': seguimiento.conteos(filas),
+        'puede_resolver': request.user.has_perm('catalogo.resolver_ordenagente'),
     })
 
 
