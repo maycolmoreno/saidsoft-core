@@ -58,17 +58,25 @@ DISCO_LLENO_PCT = 90
 def salud(estacion, *, alertas_abiertas, ultima_version_agente, catalogos, disco_pct):
     """Índice de 0 a 100 con sus motivos. Recibe los datos ya leídos (la vista los usa
     también para otras secciones), así que no consulta la base."""
+    criticas = sum(1 for a in alertas_abiertas if a.regla.severidad == 'critical')
+    return salud_desde_conteos(
+        estacion, criticas=criticas, advertencias=len(alertas_abiertas) - criticas,
+        ultima_version_agente=ultima_version_agente, catalogos=catalogos, disco_pct=disco_pct,
+    )
+
+
+def salud_desde_conteos(estacion, *, criticas, advertencias, ultima_version_agente, catalogos, disco_pct=None):
+    """Lo mismo que `salud`, con las alertas ya contadas: la lista de estaciones lo calcula
+    para toda la página con una sola consulta, sin traer cada alerta."""
     motivos = []
     if estacion.estado_conexion != estacion.EstadoConexion.ONLINE:
         motivos.append(('Fuera de línea', RESTA_FUERA_DE_LINEA))
-    criticas = [a for a in alertas_abiertas if a.regla.severidad == 'critical']
-    advertencias = [a for a in alertas_abiertas if a.regla.severidad != 'critical']
     if criticas:
-        motivos.append((f'{len(criticas)} alerta(s) crítica(s) abierta(s)',
-                        min(TOPE_CRITICAS, RESTA_ALERTA_CRITICA * len(criticas))))
+        motivos.append((f'{criticas} alerta(s) crítica(s) abierta(s)',
+                        min(TOPE_CRITICAS, RESTA_ALERTA_CRITICA * criticas)))
     if advertencias:
-        motivos.append((f'{len(advertencias)} advertencia(s) abierta(s)',
-                        min(TOPE_ADVERTENCIAS, RESTA_ALERTA_ADVERTENCIA * len(advertencias))))
+        motivos.append((f'{advertencias} advertencia(s) abierta(s)',
+                        min(TOPE_ADVERTENCIAS, RESTA_ALERTA_ADVERTENCIA * advertencias)))
     if (ultima_version_agente and estacion.version_agente
             and estacion.version_agente != ultima_version_agente.version):
         motivos.append((f'Agente {estacion.version_agente}, hay {ultima_version_agente.version}',

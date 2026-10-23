@@ -226,6 +226,33 @@ def activo_crear(request):
     })
 
 
+# Color de cada evento en la línea de vida del activo, con la paleta de la ficha de estación.
+TONO_EVENTO = {
+    'ingreso': 'info', 'asignacion': 'accent', 'devolucion': 'neutral', 'consumible_entregado': 'neutral',
+    'envio_reparacion': 'warning', 'retorno_reparacion': 'good', 'baja': 'critical', 'baja_recomendada': 'critical',
+}
+GARANTIA_POR_VENCER_DIAS = 90
+
+
+def _con_tono(eventos):
+    eventos = list(eventos)
+    for ev in eventos:
+        ev.tono = TONO_EVENTO.get(ev.tipo_evento, 'info')
+    return eventos
+
+
+def _estado_garantia(vencimiento):
+    """`{'texto', 'tono'}` de la garantía: vencida en rojo, por vencer (90 días) en ámbar."""
+    if not vencimiento:
+        return {'texto': 'Sin dato', 'tono': 'neutral'}
+    dias = (vencimiento - timezone.localdate()).days
+    if dias < 0:
+        return {'texto': f'Vencida hace {-dias} días', 'tono': 'critical'}
+    if dias <= GARANTIA_POR_VENCER_DIAS:
+        return {'texto': f'Vence en {dias} días', 'tono': 'warning'}
+    return {'texto': f'Vigente hasta {vencimiento:%d/%m/%Y}', 'tono': 'good'}
+
+
 @login_required
 @permission_required('activos.view_activo', raise_exception=True)
 def activo_detalle(request, pk):
@@ -242,7 +269,8 @@ def activo_detalle(request, pk):
         estado_interno__in=[Mantenimiento.EstadoInterno.PENDIENTE, Mantenimiento.EstadoInterno.EN_PROCESO],
     ).order_by('-fecha_creacion').first()
     return render(request, 'panel/activo_detalle.html', {
-        'activo': activo, 'eventos': eventos, 'mantenimiento_abierto': mantenimiento_abierto,
+        'garantia': _estado_garantia(activo.vencimiento_garantia),
+        'activo': activo, 'eventos': _con_tono(eventos), 'mantenimiento_abierto': mantenimiento_abierto,
     })
 
 

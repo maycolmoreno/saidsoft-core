@@ -379,7 +379,17 @@ def centro_monitoreo_partial(request):
     # que nadie los vea.
     eventos_windows = eventos_sistema_recientes(unidades, limite=_MAX_FILAS_CENTRO)
 
+    # Pantalla de pared (23-oct-2026): la cola de "qué atender" y el mosaico, los mismos
+    # que arma el tablero, para que el monitor encendido todo el día muestre de un
+    # vistazo dónde duele y cuánto es del total.
+    from apps.monitoreo.incidencias import cola_incidencias, mosaico_farmacias
+
+    incidencias = cola_incidencias(unidades, limite=None)
+
     return render(request, 'panel/centro_monitoreo_partial.html', {
+        'incidencias': incidencias[:8],
+        'total_incidencias': len(incidencias),
+        'mosaico': mosaico_farmacias(unidades, incidencias=incidencias),
         'r': resumen,
         'eventos_windows': eventos_windows,
         'criticas': criticas,

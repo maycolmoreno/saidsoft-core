@@ -817,3 +817,93 @@ button.search:hover{ border-color:var(--border-hover); }
 .decision span{ color:var(--text-dim); font-size:12px; }
 a.mosaico-celda{ text-decoration:none; color:inherit; }
 a.mosaico-celda:hover{ outline:2px solid var(--text); outline-offset:1px; }
+
+/* ---------- Lista de estaciones: salud y vista rápida ---------- */
+.salud-punto{
+  display:inline-flex; align-items:center; justify-content:center; min-width:34px; height:24px; padding:0 8px;
+  border-radius:99px; font-size:12px; font-weight:700; font-variant-numeric:tabular-nums;
+  background:var(--tono-dim); color:var(--tono); cursor:help;
+}
+.vista-rapida{
+  display:inline-flex; vertical-align:middle; margin-left:6px; padding:3px; border:none; background:none;
+  border-radius:6px; color:var(--text-faint); cursor:pointer;
+}
+.vista-rapida svg{ width:15px; height:15px; stroke:currentColor; }
+.vista-rapida:hover{ background:var(--overlay-hover); color:var(--info); }
+
+/* ---------- Alertas: franja de gravedad por fila ---------- */
+.alerta-fila > td:first-child{ box-shadow:inset 3px 0 0 var(--tono); }
+
+/* ---------- Despliegue: cadena de aprobación como pasos ---------- */
+.pasos-aprobacion{ list-style:none; margin:0 0 20px; padding:0; display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; }
+.pasos-aprobacion li{
+  display:flex; flex-direction:column; gap:2px; padding:10px 12px; border-radius:var(--radius-md);
+  border:1px solid var(--border); background:var(--card);
+}
+.pasos-aprobacion-marca{ height:4px; border-radius:99px; background:var(--tono); margin-bottom:6px; }
+.pasos-aprobacion li.tono-neutral .pasos-aprobacion-marca{ background:var(--overlay-hover); }
+.pasos-aprobacion-titulo{ font-size:13px; font-weight:600; }
+.pasos-aprobacion-detalle{ font-size:12px; color:var(--text-dim); }
+
+/* ---------- Centro de monitoreo: pantalla de pared ----------
+   Se deja abierta en un monitor: sin menú, letra grande, color con icono y sin texto
+   explicativo. Ver templates/panel/centro_monitoreo.html. */
+.pared-body{ min-height:100vh; }
+.pared-cabecera{
+  display:flex; flex-wrap:wrap; align-items:center; gap:16px; padding:14px 28px;
+  border-bottom:1px solid var(--border); background:var(--panel);
+}
+.pared-marca{ display:flex; align-items:center; gap:10px; font-size:18px; font-weight:700; }
+.pared-marca .brand-mark{ width:26px; height:26px; }
+.pared-reloj{ display:flex; align-items:baseline; gap:12px; margin:0 auto; }
+.pared-reloj .mono{ font-size:30px; font-weight:700; }
+.pared-reloj span:last-child{ color:var(--text-faint); text-transform:capitalize; }
+.pared-controles{ display:flex; align-items:center; gap:10px; }
+.pared-refresco{ font-size:12px; color:var(--text-faint); }
+.pared{ padding:20px 28px 28px; font-size:15px; }
+.pared-cargando{ color:var(--text-faint); }
+
+.pared-kpis{ display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:14px; margin-bottom:16px; }
+.pared-kpi{
+  display:flex; flex-direction:column; gap:4px; padding:16px 18px; border-radius:var(--radius-lg);
+  background:var(--card); border:1px solid var(--border);
+}
+.pared-kpi-activo{ border-color:var(--tono); box-shadow:inset 0 0 0 1px var(--tono); }
+.pared-kpi-nombre{ font-size:14px; color:var(--text-dim); font-weight:500; }
+.pared-kpi-valor{ font-size:52px; font-weight:700; line-height:1.05; font-variant-numeric:tabular-nums; }
+.pared-kpi-activo .pared-kpi-valor{ color:var(--tono); }
+.pared-kpi-valor small{ font-size:22px; color:var(--text-faint); font-weight:500; }
+.pared-kpi-valor a{ color:inherit; text-decoration:none; }
+.pared-kpi-pie{ font-size:12.5px; color:var(--text-faint); }
+.pared-medidor{ height:6px; margin-top:4px; }
+
+.pared-ventanas{
+  display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:16px; padding:12px 16px;
+  border-radius:var(--radius-md); background:var(--info-dim); color:var(--info);
+}
+.pared-centro{ display:grid; grid-template-columns:minmax(0, 2fr) minmax(320px, 1fr); gap:16px; margin-bottom:16px; }
+.pared-detalle{ display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:16px; align-items:start; }
+@media (max-width: 1100px){ .pared-centro{ grid-template-columns:1fr; } }
+.pared-bloque{ padding:16px 18px; min-width:0; }
+.pared-bloque h2{ display:flex; align-items:center; gap:10px; margin:0 0 12px; font-size:16px; font-weight:600; }
+.pared-bloque h2 a{ color:inherit; text-decoration:none; }
+.pared-mosaico .mosaico-celda{ font-size:12px; }
+
+.pared-cola{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+.pared-cola li{
+  display:grid; grid-template-columns:auto minmax(0, 1fr) auto; gap:12px; align-items:baseline;
+  padding:10px 12px; border-radius:var(--radius-md); background:var(--tono-dim); box-shadow:inset 4px 0 0 var(--tono);
+}
+.pared-cola-sitio{ font-family:var(--font-mono); font-weight:700; font-size:17px; }
+.pared-cola-que{ font-size:14.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pared-cola-desde{ font-size:13px; color:var(--text-dim); white-space:nowrap; }
+.pared-todo-bien{ padding:28px 12px; text-align:center; font-size:22px; font-weight:600; color:var(--good); }
+
+.pared-fila{
+  display:flex; justify-content:space-between; gap:10px; align-items:baseline; padding:7px 0 7px 10px;
+  border-top:1px solid var(--border-soft); box-shadow:inset 3px 0 0 var(--tono); font-size:14px;
+}
+.pared-subtitulo{ font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.4px; color:var(--text-faint); margin:10px 0 4px; }
+.pared-tenue{ color:var(--text-dim); font-size:13px; }
+.pared-vacio{ margin:0; color:var(--text-faint); }
+.pared-calculado{ margin:14px 0 0; text-align:right; font-size:12px; color:var(--text-faint); }

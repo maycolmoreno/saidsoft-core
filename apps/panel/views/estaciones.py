@@ -1,5 +1,3 @@
-from datetime import timedelta
-
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
 from django.db.models import Q, TextField
@@ -20,6 +18,7 @@ from apps.monitoreo.services import eventos_sistema_recientes, ventana_mantenimi
 from apps.monitoreo.servicios_pos import estado_catalogo
 
 from ..paginacion import paginar
+from .estacion_ficha import salud_de_la_pagina
 
 
 def _render_info_modal(request, estacion, **extra):
@@ -148,6 +147,7 @@ def estaciones_lista(request):
         estaciones = _filtrar_por_reloj(estaciones, reloj)
 
     pagina, query_filtros = paginar(estaciones, request)
+    salud_de_la_pagina(pagina.object_list)
 
     return render(request, 'panel/estaciones_lista.html', {
         'tipos_sitio': Farmacia.Tipo.choices,
@@ -199,61 +199,6 @@ def estacion_info_modal(request, pk):
     estacion = get_object_or_404(Estacion, pk=pk)
     verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
     return _render_info_modal(request, estacion)
-
-
-@login_required
-@permission_required('catalogo.view_estacion', raise_exception=True)
-def estacion_ficha(request, pk):
-    """Ficha completa de una estación: salud, recursos, equipo, escaneos y línea de vida.
-
-    Las acciones (escanear, actualizar agente, freno, BitLocker…) siguen en la ventana
-    emergente, que esta página abre con el mismo botón que la lista: así no se duplican
-    ni sus permisos ni sus avisos. Ver apps.panel.ficha_estacion."""
-    from apps.monitoreo.models import Alerta, MuestraMetrica
-    from apps.monitoreo.servicios_pos import estado_catalogo
-
-    from .. import ficha_estacion as ficha
-
-    estacion = get_object_or_404(Estacion.objects.select_related('farmacia__unidad_negocio'), pk=pk)
-    verificar_acceso(request.user, estacion.farmacia.unidad_negocio)
-    ahora = timezone.now()
-
-    muestra = MuestraMetrica.objects.filter(estacion=estacion).order_by('-timestamp').first()
-    recursos = ficha.recursos(muestra)
-    disco = next((r['pct'] for r in recursos if r['nombre'] == 'Disco C:'), None)
-    alertas_abiertas = list(
-        Alerta.objects.filter(estacion=estacion, estado__in=[Alerta.Estado.ABIERTA, Alerta.Estado.RECONOCIDA])
-        .select_related('regla'),
-    )
-    ultima_version_agente = VersionAgente.objects.order_by('-fecha_creacion').first()
-    catalogos = estado_catalogo(estacion)
-    categoria = request.GET.get('ver', '')
-    if categoria not in dict(ficha.CATEGORIAS):
-        categoria = ''
-
-    return render(request, 'panel/estacion_ficha.html', {
-        'estacion': estacion,
-        'salud': ficha.salud(
-            estacion, alertas_abiertas=alertas_abiertas, ultima_version_agente=ultima_version_agente,
-            catalogos=catalogos, disco_pct=disco,
-        ),
-        'recursos': recursos,
-        'edad_recursos': ficha.edad(muestra.timestamp if muestra else None, ahora=ahora, vieja_tras=timedelta(minutes=30)),
-        'edad_equipo': ficha.edad(estacion.info_equipo_fecha, ahora=ahora, vieja_tras=timedelta(days=30)),
-        'escaneos': [
-            ('Software instalado', ficha.edad(estacion.software_instalado_ultima_verificacion, ahora=ahora)),
-            ('Windows Update', ficha.edad(estacion.windows_update_ultima_verificacion, ahora=ahora)),
-            ('Periféricos USB', ficha.edad(estacion.perifericos_ultima_verificacion, ahora=ahora)),
-        ],
-        'alertas_abiertas': alertas_abiertas,
-        'catalogos': catalogos,
-        'agente_al_dia': bool(ultima_version_agente and estacion.version_agente == ultima_version_agente.version),
-        'activo': getattr(estacion, 'activo_vinculado', None),
-        'puede_acceso_remoto': request.user.has_perm('catalogo.acceso_remoto_estacion'),
-        'eventos': ficha.linea_de_vida(estacion, categoria=categoria, ahora=ahora),
-        'categorias': ficha.CATEGORIAS,
-        'categoria': categoria,
-    })
 
 
 @login_required

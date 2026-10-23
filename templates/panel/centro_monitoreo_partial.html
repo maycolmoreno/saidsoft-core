@@ -1,343 +1,185 @@
-{% load panel_extras %}
 {% comment %}
-Cada refresco reemplaza este bloque entero. La animación suave de entrada es lo único
-que marca "esto se actualizó": sin sonido y sin parpadeo, porque la pantalla se deja
-abierta todo el día y algo que llama la atención cada minuto se vuelve ruido.
+Interior de la pantalla de pared del Centro de Monitoreo. Lo reemplaza HTMX cada
+SEGUNDOS_REFRESCO_CENTRO. Pensado para leerse de lejos: números grandes, color con su
+icono (los tres tonos se confunden con daltonismo) y nada de texto explicativo.
+Las reglas de fondo siguen igual que antes:
+- las ventanas de mantenimiento van primero y aparte: lo caído ahí es esperado;
+- los enlaces se agrupan por proveedor, que es como se abre el reclamo;
+- un bloque con datos viejos lo dice ("dato posiblemente viejo") en vez de verse verde;
+- solo lectura: cada fila enlaza al detalle donde está la acción.
 {% endcomment %}
 <div class="centro-fade">
 
-{% comment %}
-Resumen: todo count(), sin traer objetos.
-
-Las cinco tarjetas comunicaban el estado SOLO con el color del número (rojo = hay
-críticas, ámbar = hay advertencias). Desde el 19-sep-2026 llevan además el distintivo
-con icono del resto del panel: los tres colores de estado se parecen bastante bajo
-daltonismo, y esta es la pantalla que se deja abierta todo el día.
-
-No llevan sparkline: `resumen_operacion` es un conteo del momento, no una serie. Para
-una tendencia de estos números haría falta guardar el histórico del resumen, que hoy no
-existe — anotado como pendiente en PLAN_MODERNIZACION §10-AK.
-{% endcomment %}
-<div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
-    <div class="card p-4">
-        <div class="text-xs text-[var(--text-faint)] mb-1">Estaciones en línea</div>
-        <div class="text-2xl font-semibold">{{ r.estaciones_en_linea }}<span class="text-base text-[var(--text-faint)]">/{{ r.estaciones_total }}</span></div>
-        {% comment %}
-        La barra es la proporción, no un umbral: nadie definió a partir de qué
-        porcentaje de estaciones caídas hay que actuar, así que va en el color neutro de
-        serie. Lo que aporta es que "412/700" se lea sin dividir mentalmente.
-        {% endcomment %}
+<section class="pared-kpis" aria-label="Resumen">
+    <div class="pared-kpi">
+        <span class="pared-kpi-nombre">Estaciones en línea</span>
+        <span class="pared-kpi-valor">{{ r.estaciones_en_linea }}<small>/{{ r.estaciones_total }}</small></span>
         {% if r.estaciones_total %}
-        <div class="medidor mt-2" style="height:5px;">
-            <span class="relleno est-bg-sin_umbral" style="width:{% widthratio r.estaciones_en_linea r.estaciones_total 100 %}%;"></span>
-        </div>
+        <span class="medidor pared-medidor"><span class="relleno est-bg-sin_umbral" style="width:{% widthratio r.estaciones_en_linea r.estaciones_total 100 %}%;"></span></span>
         {% endif %}
-        {% comment %}
-        "Sin reportar" partido en dos: una aprobada que jamás dio señal es una instalación
-        fallida —el técnico se fue y nunca funcionó— y una que reportaba y calló es una
-        caída. Dos trabajos distintos que este contador sumaba en un número (hallazgo D-08
-        de docs/auditoria/centro-monitoreo/).
-
-        El umbral se dice, porque era el problema de fondo: esta pantalla contaba con 10
-        minutos y el tablero con 5, sin que ninguna de las dos dijera cuál usaba
-        (hallazgo D-01). Desde el 10-oct-2026 es el mismo y sale de un solo lugar.
-        {% endcomment %}
-        {% if r.estaciones_fuera %}
-        <div class="text-xs text-[var(--warning)] mt-1">
-            {{ r.estaciones_fuera }} sin reportar
-            <span class="text-[var(--text-faint)]">({{ r.estaciones_nunca_reporto }} nunca · {{ r.estaciones_dejaron_de_reportar }} dejaron)</span>
-        </div>
-        {% endif %}
-        <div class="text-xs text-[var(--text-faint)] mt-1" title="Una estación cuenta como en línea si su último latido llegó dentro de este umbral. Es el mismo en todas las pantallas.">
+        <span class="pared-kpi-pie">
             latido de los últimos {{ r.umbral_online_minutos }} min
-            {% if r.estaciones_pausadas %}· <span class="text-[var(--warning)]">{{ r.estaciones_pausadas }} pausada{{ r.estaciones_pausadas|pluralize:"s" }}</span>{% endif %}
-        </div>
-        {% comment %}
-        Las administrativas van APARTE y no sumadas arriba: se apagan de noche y el fin
-        de semana, asi que sumarlas haria saltar "sin reportar" ~100 todas las noches y
-        el numero dejaria de significar "hay un problema" -- que es el unico motivo por
-        el que alguien lo mira. Verlas igual importa: cero de veinte un martes a las 10
-        no es normal.
-        {% endcomment %}
-        {% if r.admin_total %}
-        <div class="text-xs text-[var(--text-faint)] mt-2" style="border-top:1px solid var(--border-soft); padding-top:6px;"
-             title="PCs administrativas. Se cuentan aparte porque se apagan fuera del horario de oficina.">
-            Administrativas: {{ r.admin_en_linea }}/{{ r.admin_total }}
-        </div>
-        {% endif %}
+            {% if r.estaciones_fuera %}· <span class="est-fg-warning">{{ r.estaciones_fuera }} sin reportar ({{ r.estaciones_nunca_reporto }} nunca · {{ r.estaciones_dejaron_de_reportar }} dejaron)</span>{% endif %}
+            {% if r.estaciones_pausadas %}· <span class="est-fg-warning">{{ r.estaciones_pausadas }} pausada{{ r.estaciones_pausadas|pluralize:"s" }}</span>{% endif %}
+            {% if r.admin_total %}· administrativas {{ r.admin_en_linea }}/{{ r.admin_total }}{% endif %}
+        </span>
     </div>
-    <div class="card p-4">
-        <div class="flex items-center justify-between gap-2 mb-1">
-            <span class="text-xs text-[var(--text-faint)]">Alertas críticas</span>
-            {% if r.alertas_criticas %}{% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
-        </div>
-        <div class="text-2xl font-semibold {% if r.alertas_criticas %}text-[var(--critical)]{% endif %}">{{ r.alertas_criticas }}</div>
+    <div class="pared-kpi {% if r.farmacias_afectadas %}tono-warning pared-kpi-activo{% endif %}">
+        <span class="pared-kpi-nombre">Farmacias afectadas</span>
+        <span class="pared-kpi-valor">{{ r.farmacias_afectadas }}</span>
+        <span class="pared-kpi-pie">sitios distintos</span>
     </div>
-    <div class="card p-4">
-        <div class="flex items-center justify-between gap-2 mb-1">
-            <span class="text-xs text-[var(--text-faint)]">Advertencias</span>
-            {% if r.alertas_advertencias %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
-        </div>
-        <div class="text-2xl font-semibold {% if r.alertas_advertencias %}text-[var(--warning)]{% endif %}">{{ r.alertas_advertencias }}</div>
-        {% comment %}
-        Las reconocidas, dichas. Los dos contadores de arriba cuentan solo ABIERTAS —que
-        es lo correcto— pero el tablero sumaba abiertas + reconocidas bajo el rótulo
-        "Alertas abiertas", así que las dos pantallas mostraban cifras distintas para algo
-        que se llamaba igual y ninguna decía qué contaba (hallazgo D-03).
-        {% endcomment %}
-        {% if r.alertas_en_atencion %}
-        <div class="text-xs text-[var(--text-faint)] mt-1">{{ r.alertas_en_atencion }} más en atención</div>
-        {% endif %}
+    <div class="pared-kpi {% if r.enlaces_caidos %}tono-critical pared-kpi-activo{% endif %}">
+        <span class="pared-kpi-nombre">Enlaces caídos</span>
+        <span class="pared-kpi-valor">{{ r.enlaces_caidos }}</span>
+        <span class="pared-kpi-pie">{% if r.ultimo_sondeo_red %}sondeo hace {{ r.ultimo_sondeo_red|timesince }}{% else %}sin sondeos{% endif %}</span>
     </div>
-    {% comment %}
-    Farmacias afectadas va JUNTO a los contadores de síntomas y no en otra pantalla,
-    porque su único valor es leerse al lado de ellos: 27 advertencias pueden ser 27
-    sitios o uno con 27 síntomas, y recién la comparación dice cuál de las dos es. Es
-    farmacias distintas, no estaciones (ver `resumen_operacion`).
-    {% endcomment %}
-    <div class="card p-4">
-        <div class="flex items-center justify-between gap-2 mb-1">
-            <span class="text-xs text-[var(--text-faint)]">Farmacias afectadas</span>
-            {% if r.farmacias_afectadas %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
-        </div>
-        <div class="text-2xl font-semibold {% if r.farmacias_afectadas %}text-[var(--warning)]{% endif %}">{{ r.farmacias_afectadas }}</div>
-        <div class="text-xs text-[var(--text-faint)] mt-1">sitios distintos, no síntomas</div>
+    <div class="pared-kpi {% if r.pos_criticos %}tono-critical pared-kpi-activo{% elif r.pos_no_criticos %}tono-warning pared-kpi-activo{% endif %}">
+        <span class="pared-kpi-nombre">POS sin responder</span>
+        <span class="pared-kpi-valor">{{ r.pos_criticos }}<small> + {{ r.pos_no_criticos }}</small></span>
+        <span class="pared-kpi-pie">críticos + no críticos</span>
     </div>
-    <div class="card p-4">
-        <div class="flex items-center justify-between gap-2 mb-1">
-            <span class="text-xs text-[var(--text-faint)]">Enlaces caídos</span>
-            {% if r.enlaces_caidos %}{% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
-        </div>
-        <div class="text-2xl font-semibold {% if r.enlaces_caidos %}text-[var(--critical)]{% endif %}">{{ r.enlaces_caidos }}</div>
+    <div class="pared-kpi {% if r.alertas_criticas %}tono-critical pared-kpi-activo{% elif r.alertas_advertencias %}tono-warning pared-kpi-activo{% endif %}">
+        <span class="pared-kpi-nombre">Alertas críticas</span>
+        <span class="pared-kpi-valor">{{ r.alertas_criticas }}</span>
+        <span class="pared-kpi-pie">{{ r.alertas_advertencias }} advertencia{{ r.alertas_advertencias|pluralize:"s" }}{% if r.alertas_en_atencion %} · {{ r.alertas_en_atencion }} en atención{% endif %}</span>
     </div>
-    <div class="card p-4">
-        <div class="flex items-center justify-between gap-2 mb-1">
-            <span class="text-xs text-[var(--text-faint)]">Servicios del POS</span>
-            {% if r.pos_criticos %}{% include "panel/_estado_chip.html" with estado="critical" solo_icono=True %}{% elif r.pos_no_criticos %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
-        </div>
-        <div class="text-2xl font-semibold {% if r.pos_criticos %}text-[var(--critical)]{% elif r.pos_no_criticos %}text-[var(--warning)]{% endif %}">{{ r.pos_criticos }}<span class="text-base text-[var(--text-faint)]"> + {{ r.pos_no_criticos }}</span></div>
-        <div class="text-xs text-[var(--text-faint)] mt-1">críticos + no críticos</div>
-    </div>
-    {% comment %}
-    Cierres de campo en conflicto. Acá y no en una pantalla aparte a la que haya que
-    entrar: el punto de esa bandeja es que NO dependa de que alguien se acuerde de
-    mirarla. El número enlaza a donde están las acciones, igual que el resto del
-    tablero — el Centro es de solo lectura a propósito.
-    {% endcomment %}
-    {% if r.cierres_en_conflicto or perms.mantenimiento.view_cierreenconflicto %}
-    <div class="card p-4">
-        <div class="flex items-center justify-between gap-2 mb-1">
-            <span class="text-xs text-[var(--text-faint)]">Cierres en conflicto</span>
-            {% if r.cierres_en_conflicto %}{% include "panel/_estado_chip.html" with estado="warning" solo_icono=True %}{% else %}{% include "panel/_estado_chip.html" with estado="ok" solo_icono=True %}{% endif %}
-        </div>
-        <div class="text-2xl font-semibold {% if r.cierres_en_conflicto %}text-[var(--warning)]{% endif %}">
-            {% if perms.mantenimiento.view_cierreenconflicto %}
-            <a href="{% url 'panel:cierres_en_conflicto_lista' %}" class="link">{{ r.cierres_en_conflicto }}</a>
-            {% else %}{{ r.cierres_en_conflicto }}{% endif %}
-        </div>
-        <div class="text-xs text-[var(--text-faint)] mt-1">cierres de campo sin revisar</div>
+    {% if r.cierres_en_conflicto %}
+    <div class="pared-kpi tono-warning pared-kpi-activo">
+        <span class="pared-kpi-nombre">Cierres en conflicto</span>
+        <span class="pared-kpi-valor">{% if perms.mantenimiento.view_cierreenconflicto %}<a href="{% url 'panel:cierres_en_conflicto_lista' %}">{{ r.cierres_en_conflicto }}</a>{% else %}{{ r.cierres_en_conflicto }}{% endif %}</span>
+        <span class="pared-kpi-pie">cierres de campo sin revisar</span>
     </div>
     {% endif %}
-</div>
+</section>
 
-{% comment %}
-Ventanas de mantenimiento: PRIMERO y aparte. Va arriba de todo a propósito: si hay una
-ventana activa, lo que sigue puede estar caído por diseño. Verlo después de la lista de
-incidentes es verlo tarde.
-{% endcomment %}
 {% if ventanas %}
-<div class="card p-4 mb-5" style="border-left:3px solid var(--info);">
-    <div class="text-sm font-medium mb-2">🔧 Mantenimiento programado en curso</div>
-    <p class="text-xs text-[var(--text-faint)] mb-3">
-        Lo que esté caído en estos destinos es <strong>esperado</strong>. Las alertas de
-        estas estaciones están silenciadas y no aparecen abajo.
-    </p>
+<section class="pared-ventanas" aria-label="Mantenimiento en curso">
+    <strong>Mantenimiento en curso · lo caído ahí es esperado</strong>
     {% for v in ventanas %}
-    <div class="flex items-center justify-between text-sm py-1">
-        <span>{{ v.motivo|default:"Sin motivo cargado" }} <span class="text-[var(--text-faint)]">· {{ v.unidad_negocio.codigo|default:"todas" }}</span></span>
-        <span class="pill info">hasta {{ v.hasta|date:"H:i" }}</span>
-    </div>
+    <span class="pill info">{{ v.motivo|default:"Sin motivo cargado" }} · {{ v.unidad_negocio.codigo|default:"todas" }} · hasta {{ v.hasta|date:"H:i" }}</span>
     {% endfor %}
-</div>
+</section>
 {% endif %}
 
-{# --- Alertas críticas --- #}
-<div class="card p-4 mb-4">
-    <div class="flex items-center justify-between mb-3">
-        <div class="text-sm font-medium">Alertas críticas</div>
-        <a href="{% url 'panel:alertas_lista' %}" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">ver todas →</a>
-    </div>
-    {% for a in criticas %}
-    <div class="flex items-center justify-between gap-3 text-sm py-1.5" style="border-top:1px solid var(--border-soft);">
-        <div class="min-w-0">
-            {% include 'panel/_enlace_estacion.html' with estacion=a.estacion %}
-            <span class="text-[var(--text-faint)]">· {{ a.estacion.farmacia.codigo }}</span>
-            <div class="text-xs text-[var(--text-dim)] truncate">{{ a.regla.nombre }}</div>
-        </div>
-        <span class="pill critical shrink-0">hace {{ a.abierta_en|timesince }}</span>
-    </div>
-    {% empty %}
-    <div class="text-sm text-[var(--text-faint)]">Ninguna. </div>
-    {% endfor %}
-    {% if r.alertas_criticas > max_filas %}
-    <div class="text-xs text-[var(--text-faint)] mt-2">Se muestran {{ max_filas }} de {{ r.alertas_criticas }}. Ver el listado completo.</div>
-    {% endif %}
-</div>
-
-{# --- Advertencias --- #}
-<div class="card p-4 mb-4">
-    <div class="text-sm font-medium mb-3">Advertencias</div>
-    {% for a in advertencias %}
-    <div class="flex items-center justify-between gap-3 text-sm py-1.5" style="border-top:1px solid var(--border-soft);">
-        <div class="min-w-0">
-            {% include 'panel/_enlace_estacion.html' with estacion=a.estacion %}
-            <div class="text-xs text-[var(--text-dim)] truncate">{{ a.regla.nombre }}</div>
-        </div>
-        <span class="pill warning shrink-0">hace {{ a.abierta_en|timesince }}</span>
-    </div>
-    {% empty %}
-    <div class="text-sm text-[var(--text-faint)]">Ninguna.</div>
-    {% endfor %}
-</div>
-
-{% comment %}
-Enlaces caídos, agrupados por proveedor: es como se abre el ticket, un reclamo por
-proveedor y no uno por farmacia. Reusa `_agrupar_por_proveedor`, la misma función del
-correo de enlaces.
-{% endcomment %}
-<div class="card p-4 mb-4">
-    <div class="flex items-center justify-between mb-3">
-        <div class="text-sm font-medium">
-            Enlaces caídos por proveedor
-            {% if stale_enlaces %}
-            <span class="pill warning ml-2" title="El último sondeo de red es más viejo de lo que su tarea periódica permite: este bloque puede estar mostrando datos congelados.">dato posiblemente viejo</span>
-            {% endif %}
-        </div>
-        {% if perms.monitoreo.view_estadoenlacefarmacia %}
-        <a href="{% url 'panel:enlaces_farmacias_lista' %}" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">ver todos →</a>
-        {% endif %}
-    </div>
-    {% for proveedor, eventos in enlaces_por_proveedor.items %}
-    <div class="mb-2">
-        <div class="text-xs font-medium text-[var(--text-dim)] mb-1">{{ proveedor }} ({{ eventos|length }})</div>
-        {% for e in eventos %}
-        <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
-            <div class="min-w-0">
-                <span class="font-medium">{{ e.farmacia.codigo }}</span>
-                <span class="mono text-xs text-[var(--text-faint)]">{{ e.farmacia.ip_router }}</span>
+<div class="pared-centro">
+    <section class="card pared-bloque pared-mosaico" aria-label="Estado por farmacia">
+        <h2>Estado por farmacia</h2>
+        {% for grupo in mosaico %}
+        <div class="mosaico-grupo">
+            <div class="mosaico-titulo">
+                <span class="font-medium text-[var(--text)]">{{ grupo.cliente }}</span>
+                <span>{{ grupo.total }} farmacia{{ grupo.total|pluralize:"s" }}</span>
+                {% if grupo.criticas %}<span class="est-fg-critical">· {{ grupo.criticas }} crítica{{ grupo.criticas|pluralize:"s" }}</span>{% endif %}
             </div>
-            <span class="pill critical shrink-0">hace {{ e.inicio|timesince }}</span>
+            <div class="mosaico-celdas">
+                {% for c in grupo.celdas %}
+                {% if perms.catalogo.view_estacion %}
+                <a href="{% url 'panel:estaciones_lista' %}?q={{ c.farmacia.codigo }}" class="mosaico-celda est-{{ c.estado }}"
+                   title="{{ c.farmacia.codigo }}{% if c.titulo %} · {{ c.titulo }}{% endif %}">{{ c.farmacia.codigo }}</a>
+                {% else %}
+                <span class="mosaico-celda est-{{ c.estado }}" title="{{ c.farmacia.codigo }}{% if c.titulo %} · {{ c.titulo }}{% endif %}">{{ c.farmacia.codigo }}</span>
+                {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+        {% empty %}
+        <p class="pared-vacio">Sin farmacias con agente en estas unidades.</p>
+        {% endfor %}
+    </section>
+
+    <section class="card pared-bloque" aria-label="Qué atender">
+        <h2>Qué atender{% if total_incidencias %} · {{ total_incidencias }}{% endif %}</h2>
+        <ol class="pared-cola">
+            {% for i in incidencias %}
+            <li class="tono-{% if i.estado == 'critical' %}critical{% else %}warning{% endif %}">
+                <span class="pared-cola-sitio">{{ i.farmacia.codigo }}{% if i.en_atencion %} <span class="pill warning">en atención</span>{% endif %}</span>
+                <span class="pared-cola-que">{{ i.titulo }}{% if i.otros_sintomas %} · +{{ i.otros_sintomas }}{% endif %}</span>
+                <span class="pared-cola-desde">{% if i.desde %}{{ i.desde|timesince }}{% endif %}</span>
+            </li>
+            {% empty %}
+            <li class="pared-todo-bien">Todo operativo</li>
+            {% endfor %}
+        </ol>
+    </section>
+</div>
+
+<div class="pared-detalle">
+    <section class="card pared-bloque" aria-label="Alertas">
+        <h2><a href="{% url 'panel:alertas_lista' %}">Alertas</a></h2>
+        {% for a in criticas %}
+        <div class="pared-fila tono-critical">
+            <span>{% include 'panel/_enlace_estacion.html' with estacion=a.estacion %} <span class="pared-tenue">{{ a.regla.nombre }}</span></span>
+            <span class="pared-tenue">{{ a.abierta_en|timesince }}</span>
         </div>
         {% endfor %}
-    </div>
-    {% empty %}
-    <div class="text-sm text-[var(--text-faint)]">Ningún enlace caído.</div>
-    {% endfor %}
-    <div class="text-xs text-[var(--text-faint)] mt-2">
-        Último sondeo de red: {% if r.ultimo_sondeo_red %}hace {{ r.ultimo_sondeo_red|timesince }}{% else %}sin datos{% endif %}
-    </div>
+        {% for a in advertencias %}
+        <div class="pared-fila tono-warning">
+            <span>{% include 'panel/_enlace_estacion.html' with estacion=a.estacion %} <span class="pared-tenue">{{ a.regla.nombre }}</span></span>
+            <span class="pared-tenue">{{ a.abierta_en|timesince }}</span>
+        </div>
+        {% endfor %}
+        {% if not criticas and not advertencias %}<p class="pared-vacio">Ninguna</p>{% endif %}
+    </section>
+
+    <section class="card pared-bloque" aria-label="Enlaces caídos por proveedor">
+        <h2>
+            {% if perms.monitoreo.view_estadoenlacefarmacia %}<a href="{% url 'panel:enlaces_farmacias_lista' %}">Enlaces caídos</a>{% else %}Enlaces caídos{% endif %}
+            {% if stale_enlaces %}<span class="pill warning">dato posiblemente viejo</span>{% endif %}
+        </h2>
+        {% for proveedor, eventos in enlaces_por_proveedor.items %}
+        <div class="pared-subtitulo">{{ proveedor }} · {{ eventos|length }}</div>
+        {% for e in eventos %}
+        <div class="pared-fila tono-critical">
+            <span class="mono">{{ e.farmacia.codigo }}</span>
+            <span class="pared-tenue">{{ e.inicio|timesince }}</span>
+        </div>
+        {% endfor %}
+        {% empty %}
+        <p class="pared-vacio">Ninguno</p>
+        {% endfor %}
+    </section>
+
+    <section class="card pared-bloque" aria-label="Servicios del POS">
+        <h2>Servicios del POS</h2>
+        {% for s in pos_criticos %}
+        <div class="pared-fila tono-critical">
+            <span>{% include 'panel/_enlace_estacion.html' with estacion=s.estacion %} <span class="pared-tenue">{{ s.get_servicio_display }}</span></span>
+            <span class="pared-tenue">no vende</span>
+        </div>
+        {% endfor %}
+        {% for s in pos_no_criticos %}
+        <div class="pared-fila tono-warning">
+            <span>{% include 'panel/_enlace_estacion.html' with estacion=s.estacion %} <span class="pared-tenue">{{ s.get_servicio_display }}</span></span>
+            <span class="pared-tenue">sigue vendiendo</span>
+        </div>
+        {% endfor %}
+        {% if not pos_criticos and not pos_no_criticos %}<p class="pared-vacio">Todos responden</p>{% endif %}
+    </section>
+
+    <section class="card pared-bloque" aria-label="Eventos de Windows">
+        <h2>Eventos de Windows</h2>
+        {% for f in eventos_windows %}
+        <div class="pared-fila tono-{% if f.severidad == 'critical' %}critical{% else %}warning{% endif %}">
+            <span>{% include 'panel/_enlace_estacion.html' with estacion=f.detectado.estacion %} <span class="pared-tenue">{{ f.nombre }}</span></span>
+            <span class="pared-tenue">{{ f.detectado.cantidad_total }}× · {{ f.detectado.ultima_vez|timesince }}</span>
+        </div>
+        {% empty %}
+        <p class="pared-vacio">Ninguno</p>
+        {% endfor %}
+        {% if sin_sondeo %}
+        <div class="pared-subtitulo">Sin sondeo reciente · {{ sin_sondeo|length }}</div>
+        {% for e in sin_sondeo %}
+        <div class="pared-fila tono-neutral"><span class="mono">{{ e.activo.codigo }}</span><span class="pared-tenue">{{ e.ultima_verificacion|timesince }}</span></div>
+        {% endfor %}
+        {% endif %}
+    </section>
 </div>
 
-{# --- Servicios del POS --- #}
-<div class="card p-4 mb-4">
-    <div class="text-sm font-medium mb-3">Servicios que consume el POS</div>
-    {% if pos_criticos %}
-    <div class="text-xs font-medium text-[var(--critical)] mb-1">Críticos — la caja no puede vender</div>
-    {% for s in pos_criticos %}
-    <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
-        <div class="min-w-0">
-            {% include 'panel/_enlace_estacion.html' with estacion=s.estacion %}
-            <span class="text-[var(--text-faint)]">· {{ s.get_servicio_display }}</span>
-            <div class="mono text-xs text-[var(--text-faint)] truncate">{{ s.endpoint }}</div>
-        </div>
-        <span class="pill critical shrink-0">sin responder</span>
-    </div>
-    {% endfor %}
-    {% endif %}
-    {% for s in pos_no_criticos %}
-    {% if forloop.first %}<div class="text-xs font-medium text-[var(--text-dim)] mt-3 mb-1">No críticos — la caja sigue vendiendo</div>{% endif %}
-    <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
-        <div class="min-w-0">
-            {% include 'panel/_enlace_estacion.html' with estacion=s.estacion %}
-            <span class="text-[var(--text-faint)]">· {{ s.get_servicio_display }}</span>
-        </div>
-        <span class="pill warning shrink-0">sin responder</span>
-    </div>
-    {% endfor %}
-    {% if not pos_criticos and not pos_no_criticos %}
-    <div class="text-sm text-[var(--text-faint)]">Todos responden.</div>
-    {% endif %}
-</div>
-
-{% comment %}
-Silencio: equipos que dejaron de ser sondeados. Distinto de "caído" — acá el equipo no
-contesta que no, directamente nadie lo está preguntando. Un tablero que solo mira caídas
-no ve este caso.
-{% endcomment %}
-<div class="card p-4">
-    <div class="text-sm font-medium mb-3">
-        Equipos sin sondeo reciente
-        <span class="text-xs font-normal text-[var(--text-faint)]">— silencio, no caída</span>
-    </div>
-    {% for e in sin_sondeo %}
-    <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
-        <div class="min-w-0">
-            <span class="font-medium">{{ e.activo.codigo }}</span>
-            <span class="mono text-xs text-[var(--text-faint)]">{{ e.ip_sondeada }}</span>
-        </div>
-        <span class="pill neutral shrink-0">hace {{ e.ultima_verificacion|timesince }}</span>
-    </div>
-    {% empty %}
-    <div class="text-sm text-[var(--text-faint)]">Todos se sondearon hace poco.</div>
-    {% endfor %}
-</div>
-
-{% comment %}
-Eventos del visor de Windows. Va al final del tablero a propósito: casi nunca exige
-acción en el momento, a diferencia de un enlace caído o un POS sin base. Lo que evita es
-que un disco muriendo, una caja apagándose sola o el propio agente cayéndose pasen meses
-sin que nadie los vea — que es exactamente lo que estaba pasando: la recolección funcionó
-desde el 21-sep y hasta hoy solo se podía mirar desde el admin de Django.
-{% endcomment %}
-<div class="card p-4">
-    <div class="text-sm font-medium mb-3">
-        Eventos de Windows
-        <span class="text-xs font-normal text-[var(--text-faint)]">— hardware y sistema, no acción inmediata</span>
-    </div>
-    {% for f in eventos_windows %}
-    <div class="flex items-center justify-between gap-3 text-sm py-1" style="border-top:1px solid var(--border-soft);">
-        <div class="min-w-0">
-            {% include 'panel/_enlace_estacion.html' with estacion=f.detectado.estacion %}
-            <span class="text-[var(--text-dim)]">{{ f.nombre }}</span>
-            {% if f.fuera_de_catalogo %}
-            <span class="text-xs text-[var(--text-faint)]" title="Ya no está en el catálogo vigilado, o la estación reporta con un catálogo viejo">(fuera de catálogo)</span>
-            {% endif %}
-            <div class="text-xs text-[var(--text-faint)] truncate">{{ f.detectado.ultimo_mensaje|truncatechars:110 }}</div>
-        </div>
-        <div class="shrink-0 text-right">
-            <span class="pill {% if f.severidad == 'critical' %}danger{% else %}warning{% endif %}">
-                {{ f.detectado.cantidad_total }}×
-            </span>
-            <div class="text-xs text-[var(--text-faint)]">hace {{ f.detectado.ultima_vez|timesince }}</div>
-        </div>
-    </div>
-    {% empty %}
-    <div class="text-sm text-[var(--text-faint)]">
-        Ningún evento vigilado en la flota. Con estaciones sanas es lo normal — no
-        significa que la recolección esté apagada.
-    </div>
-    {% endfor %}
-</div>
-
-<div class="text-xs text-[var(--text-faint)] mt-4 text-right">
-    Calculado {{ r.calculado_en|date:"H:i:s" }}
-</div>
+<p class="pared-calculado">Calculado {{ r.calculado_en|date:"H:i:s" }}</p>
 </div>
 
 <style>
-/* Entrada suave en cada refresco: alcanza para notar que la pantalla se actualizó sin
-   pedir atención. Sin sonido, que se descartó, y sin parpadeo, que a un minuto de
-   cadencia durante ocho horas sería insoportable. */
 .centro-fade { animation: centro-entra .35s ease-out; }
 @keyframes centro-entra { from { opacity: .55; } to { opacity: 1; } }
 </style>

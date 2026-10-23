@@ -27,7 +27,17 @@
 </p>
 {% endif %}
 
-<div class="grid grid-cols-4 gap-4 mb-6 text-sm">
+<ol class="pasos-aprobacion" aria-label="Cadena del despliegue">
+    {% for p in pasos_aprobacion %}
+    <li class="tono-{{ p.tono }}">
+        <span class="pasos-aprobacion-marca" aria-hidden="true"></span>
+        <span class="pasos-aprobacion-titulo">{{ p.titulo }}</span>
+        {% if p.detalle %}<span class="pasos-aprobacion-detalle">{{ p.detalle }}</span>{% endif %}
+    </li>
+    {% endfor %}
+</ol>
+
+<div class="grid grid-cols-3 gap-4 mb-6 text-sm">
     <div class="card p-4">
         <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Destino</div>
         <div class="font-medium">{{ despliegue.get_destino_tipo_display }}</div>
@@ -42,11 +52,6 @@
     <div class="card p-4">
         <div class="text-[var(--text-faint)] text-xs uppercase mb-1">SHA-256</div>
         <div class="font-mono text-xs break-all">{{ despliegue.sha256|slice:":16" }}…</div>
-    </div>
-    <div class="card p-4">
-        <div class="text-[var(--text-faint)] text-xs uppercase mb-1">Creado / aprobado por</div>
-        <div>{{ despliegue.creado_por.username }}</div>
-        <div class="text-[var(--text-faint)] text-xs">{{ despliegue.aprobado_por.username|default:"pendiente de aprobación" }}</div>
     </div>
 </div>
 

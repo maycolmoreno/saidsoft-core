@@ -90,12 +90,15 @@
         </thead>
         <tbody>
         {% for a in alertas %}
-            <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+            <tr class="alerta-fila tono-{% if a.estado == 'resuelta' %}good{% elif a.regla.severidad == 'critical' %}critical{% else %}warning{% endif %}" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
                 <td class="px-4 py-3 font-medium">
                     <span class="pill {% if a.regla.severidad == 'critical' %}critical{% else %}warning{% endif %}">{{ a.regla.get_severidad_display }}</span>
                     {{ a.regla.nombre }}
                 </td>
-                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.estacion.codigo }} · {{ a.estacion.farmacia.codigo }}</td>
+                <td class="px-4 py-3 text-[var(--text-dim)]">
+                    {% if perms.catalogo.view_estacion %}<a href="{% url 'panel:estacion_ficha' a.estacion.pk %}" class="mono hover:text-[var(--info)] hover:underline">{{ a.estacion.codigo }}</a>{% else %}<span class="mono">{{ a.estacion.codigo }}</span>{% endif %}
+                    · {{ a.estacion.farmacia.codigo }}
+                </td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">
                     {% if a.regla.metrica == 'bitlocker_deshabilitado' %}—{% else %}{{ a.valor_disparador|floatformat:1 }}{% endif %}
                 </td>
@@ -104,7 +107,10 @@
                         {{ a.get_estado_display }}
                     </span>
                 </td>
-                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ a.abierta_en|date:"d/m H:i" }}</td>
+                <td class="px-4 py-3 text-xs">
+                    {% if a.estado == 'resuelta' %}<span class="text-[var(--text-faint)]">{{ a.abierta_en|date:"d/m H:i" }}</span>
+                    {% else %}<span class="chip-edad tono-{{ a.antiguedad.tono }}" title="Abierta el {{ a.abierta_en|date:'d/m/Y H:i' }}">{{ a.antiguedad.texto }}</span>{% endif %}
+                </td>
                 <td class="px-4 py-3 text-right space-x-2">
                     {% if perms.monitoreo.change_alerta and a.estado == 'abierta' %}
                     <form method="post" action="{% url 'panel:alerta_reconocer' a.pk %}" class="inline">

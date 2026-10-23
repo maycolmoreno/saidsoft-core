@@ -78,6 +78,15 @@ def alertas_lista(request):
     # filas como reglas activas haya (una decena), y es la vista que existe para NO tener
     # que leer una lista larga.
     pagina, query_filtros = paginar(alertas, request)
+    # Antigüedad como tono, igual que en la ficha de estación: una alerta que lleva más de
+    # un día abierta se ve en ámbar sin tener que leer la fecha.
+    from datetime import timedelta
+
+    from apps.panel.ficha_estacion import edad
+
+    ahora = timezone.now()
+    for a in pagina.object_list:
+        a.antiguedad = edad(a.abierta_en, ahora=ahora, vieja_tras=timedelta(hours=24))
 
     return render(request, 'panel/alertas_lista.html', {
         # `alertas` sigue siendo el nombre que la plantilla recorre: un Page de Django es

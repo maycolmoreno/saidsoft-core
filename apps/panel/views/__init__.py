@@ -43,8 +43,9 @@ from .despliegues import (
 )
 from .agente_flota import estaciones_agente, estaciones_agente_actualizar
 from .paleta import paleta_resultados
+from .estacion_ficha import estacion_ficha
 from .estaciones import (
-    estacion_actualizar_agente_solicitar, estacion_bitlocker_ver_clave, estacion_ficha, estacion_info_modal,
+    estacion_actualizar_agente_solicitar, estacion_bitlocker_ver_clave, estacion_info_modal,
     estacion_pausar,
     estacion_info_solicitar, estacion_meshcentral_escritorio, estacion_meshcentral_terminal,
     estacion_meshcentral_vincular, estacion_perifericos_solicitar, estacion_reiniciar,

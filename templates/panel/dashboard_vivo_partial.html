@@ -631,10 +631,10 @@ Ver apps.monitoreo.incidencias.mosaico_farmacias.
         </div>
         <div class="mosaico-celdas">
             {% for c in grupo.celdas %}
-            <a href="{% url 'panel:estaciones_lista' %}?q={{ c.farmacia.codigo }}" class="mosaico-celda est-{{ c.estado }}"
+            <{% if perms.catalogo.view_estacion %}a href="{% url 'panel:estaciones_lista' %}?q={{ c.farmacia.codigo }}"{% else %}span{% endif %} class="mosaico-celda est-{{ c.estado }}"
                  title="{{ c.farmacia.codigo }}{% if c.titulo %} · {{ c.titulo }}{% if c.detalle %}: {{ c.detalle }}{% endif %}{% if c.otros %} (+{{ c.otros }} síntoma{{ c.otros|pluralize:"s" }} más){% endif %}{% else %} · operativa{% endif %}">
                 {{ c.farmacia.codigo }}
-            </a>
+            </{% if perms.catalogo.view_estacion %}a{% else %}span{% endif %}>
             {% endfor %}
         </div>
     </div>

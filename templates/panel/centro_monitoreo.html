@@ -1,23 +1,66 @@
-{% extends "panel/base.html" %}
-{% block title %}Centro de Monitoreo · SAIDSOFT{% endblock %}
-{% block content %}
-<div class="flex items-center justify-between mb-1">
-    <h1 class="text-xl font-semibold">Centro de Monitoreo</h1>
-    <span class="text-sm text-[var(--text-faint)]">se actualiza solo cada {{ segundos_refresco }} s</span>
-</div>
-<p class="text-sm text-[var(--text-faint)] mb-6">
-    Todo lo que está pasando ahora, en una pantalla. Cada fila enlaza al detalle —
-    desde acá solo se mira.
-</p>
-
+{% load static %}<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Centro de Monitoreo · SAIDSOFT</title>
+    <link rel="stylesheet" href="{% static 'css/app.css' %}">
+    <script src="{% static 'js/htmx.min.js' %}" defer></script>
+</head>
 {% comment %}
-El interior se reemplaza solo. Ver SEGUNDOS_REFRESCO_CENTRO en la vista para por qué
-60 s y no 10 como las pantallas de detalle.
+Pantalla de pared (23-oct-2026): se deja abierta todo el día en un monitor. Sin menú ni
+barra del panel, letra grande y sin texto explicativo. De solo lectura: cada fila enlaza
+al detalle donde está la acción. Arranca en tema oscuro (menos encandilamiento en una
+pantalla siempre encendida) salvo que el usuario haya elegido otro.
 {% endcomment %}
-<div id="centro-wrap"
-     hx-get="{% url 'panel:centro_monitoreo_partial' %}"
-     hx-trigger="load, every {{ segundos_refresco }}s"
-     hx-swap="innerHTML">
-    <div class="text-sm text-[var(--text-faint)]">Cargando estado de la operación…</div>
-</div>
-{% endblock %}
+<body class="app-body pared-body">
+<script>
+    (function(){
+        var saved = localStorage.getItem('saidsoft-theme');
+        document.documentElement.setAttribute('data-theme', saved || 'dark');
+    })();
+</script>
+<header class="pared-cabecera">
+    <div class="pared-marca">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>SaidSoft · Centro de operación</span>
+    </div>
+    <div class="pared-reloj">
+        <span class="mono" id="pared-hora">--:--</span>
+        <span id="pared-fecha"></span>
+    </div>
+    <div class="pared-controles">
+        <span class="pared-refresco">se actualiza cada {{ segundos_refresco }} s</span>
+        <button type="button" class="btn secondary" id="pared-completa">Pantalla completa</button>
+        <a href="{% url 'panel:dashboard' %}" class="btn secondary">Volver al panel</a>
+    </div>
+</header>
+
+<main id="centro-wrap" class="pared"
+      hx-get="{% url 'panel:centro_monitoreo_partial' %}"
+      hx-trigger="load, every {{ segundos_refresco }}s"
+      hx-swap="innerHTML">
+    <p class="pared-cargando">Cargando estado de la operación…</p>
+</main>
+
+<script>
+    (function(){
+        function tick(){
+            var ahora = new Date();
+            document.getElementById('pared-hora').textContent = ahora.toLocaleTimeString('es-EC', {hour:'2-digit', minute:'2-digit'});
+            document.getElementById('pared-fecha').textContent = ahora.toLocaleDateString('es-EC', {weekday:'long', day:'numeric', month:'long'});
+        }
+        tick();
+        setInterval(tick, 15000);
+        var boton = document.getElementById('pared-completa');
+        boton.addEventListener('click', function(){
+            if (document.fullscreenElement) { document.exitFullscreen(); }
+            else if (document.documentElement.requestFullscreen) { document.documentElement.requestFullscreen(); }
+        });
+        document.addEventListener('fullscreenchange', function(){
+            boton.textContent = document.fullscreenElement ? 'Salir de pantalla completa' : 'Pantalla completa';
+        });
+    })();
+</script>
+</body>
+</html>

@@ -135,12 +135,12 @@ elegido antes. La tarjeta activa queda resaltada y su enlace vuelve a "todas".
         <thead style="background:var(--panel);">
             <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-3">Código</th>
+                <th class="text-left px-4 py-3" title="Índice de salud de la ficha: 100 = sin problemas. Pasá el mouse por el número para ver qué le resta.">Salud</th>
                 <th class="text-left px-4 py-3" title="El sitio donde está el equipo: farmacia, tienda o sitio administrativo.">Sitio / Grupo</th>
                 <th class="text-left px-4 py-3">Equipo</th>
                 <th class="text-left px-4 py-3">Versión POS</th>
                 <th class="text-left px-4 py-3">SO</th>
-                <th class="text-left px-4 py-3">Conexión</th>
-                <th class="text-left px-4 py-3">Último heartbeat</th>
+                <th class="text-left px-4 py-3">Conexión · último latido</th>
                 <th class="text-left px-4 py-3">Reloj</th>
                 <th class="text-right px-4 py-3"></th>
             </tr>
@@ -148,14 +148,17 @@ elegido antes. La tarjeta activa queda resaltada y su enlace vuelve a "todas".
         <tbody>
         {% for e in estaciones %}
             <tr class="hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
-                <td class="px-4 py-3 font-medium">
-                    <button type="button" class="hover:text-[var(--info)] hover:underline"
+                <td class="px-4 py-3 font-medium whitespace-nowrap">
+                    <a href="{% url 'panel:estacion_ficha' e.pk %}" class="mono hover:text-[var(--info)] hover:underline">{{ e.codigo }}</a>
+                    <button type="button" class="vista-rapida" title="Vista rápida y acciones de {{ e.codigo }}" aria-label="Vista rápida de {{ e.codigo }}"
                             hx-get="{% url 'panel:estacion_info_modal' e.pk %}" hx-target="#modal-info-content" hx-swap="innerHTML"
                             onclick="document.getElementById('modal-info').showModal()">
-                        {{ e.codigo }}
+                        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
                     </button>
-                    <a href="{% url 'panel:estacion_ficha' e.pk %}" class="text-xs text-[var(--text-faint)] hover:text-[var(--info)] ml-1"
-                       title="Ficha completa de {{ e.codigo }}">ficha</a>
+                </td>
+                <td class="px-4 py-3">
+                    <span class="salud-punto tono-{{ e.salud.tono }}"
+                          title="{% for texto, puntos in e.salud.motivos %}{{ texto }} · −{{ puntos }}&#10;{% empty %}Sin problemas detectados{% endfor %}">{{ e.salud.puntaje }}</span>
                 </td>
                 <td class="px-4 py-3 text-[var(--text-dim)]">{{ e.farmacia.codigo }} · {{ e.farmacia.grupo.codigo }}</td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
@@ -170,11 +173,10 @@ elegido antes. La tarjeta activa queda resaltada y su enlace vuelve a "todas".
                 </td>
                 <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.so_nombre }} {{ e.so_build }}</td>
                 <td class="px-4 py-3">
-                    <span class="pill {% if e.estado_conexion == 'online' %}good{% elif e.estado_conexion == 'offline' %}neutral{% else %}neutral{% endif %}">
-                        {{ e.get_estado_conexion_display }}
+                    <span class="chip-edad tono-{{ e.latido.tono }}" title="{{ e.ultimo_heartbeat|default:'Nunca envió un latido' }}">
+                        {{ e.get_estado_conexion_display }} · {{ e.latido.texto }}
                     </span>
                 </td>
-                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">{{ e.ultimo_heartbeat|default:"nunca" }}</td>
                 {% comment %}
                 "Sin comandos" no es una advertencia de precisión: pasado el desfase de la
                 ventana de firma, el agente descarta todo mensaje firmado — incluido el que

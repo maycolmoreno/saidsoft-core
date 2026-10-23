@@ -56,6 +56,35 @@ def despliegue_crear(request):
     return render(request, 'panel/despliegue_form.html', {'form': form})
 
 
+def _pasos_aprobacion(d):
+    """La cadena de un despliegue como pasos: creado → aprobado → publicado → resultado.
+    Cada uno `{'titulo', 'detalle', 'tono'}`: hecho en verde, el actual en acento (o en
+    rojo si está frenado), lo que falta en gris."""
+    E = Despliegue.Estado
+    aprobado = d.aprobado_por_id is not None
+    publicado = d.fecha_publicacion is not None
+    if d.estado == E.COMPLETADO:
+        final = ('Completado', 'todas las estaciones respondieron', 'good')
+    elif d.estado == E.CERRADO:
+        final = ('Cerrado sin terminar', f'por {d.cerrado_por.username}' if d.cerrado_por else '', 'warning')
+    elif d.estado == E.PAUSADO:
+        final = ('Frenado', 'revisar y reanudar o cerrar', 'critical')
+    elif d.estado == E.CANCELADO:
+        final = ('Cancelado', '', 'neutral')
+    elif d.estado == E.PUBLICANDO:
+        final = ('En curso', 'esperando a las estaciones', 'accent')
+    else:
+        final = ('Resultado', 'todavía no publicado', 'neutral')
+    return [
+        {'titulo': 'Creado', 'detalle': f'{d.creado_por.username} · {d.fecha_creacion:%d/%m %H:%M}', 'tono': 'good'},
+        {'titulo': 'Aprobado', 'tono': 'good' if aprobado else ('accent' if d.estado == E.PENDIENTE_APROBACION else 'neutral'),
+         'detalle': f'por {d.aprobado_por.username}' if aprobado else 'falta una segunda persona'},
+        {'titulo': 'Publicado', 'tono': 'good' if publicado else ('accent' if d.estado == E.APROBADO else 'neutral'),
+         'detalle': f'{d.fecha_publicacion:%d/%m %H:%M}' if publicado else 'sin publicar'},
+        {'titulo': final[0], 'detalle': final[1], 'tono': final[2]},
+    ]
+
+
 @login_required
 @permission_required('despliegues.view_despliegue', raise_exception=True)
 def despliegue_detalle(request, pk):
@@ -72,6 +101,7 @@ def despliegue_detalle(request, pk):
     )
     puede_promover = despliegue.estado == Despliegue.Estado.COMPLETADO
     return render(request, 'panel/despliegue_detalle.html', {
+        'pasos_aprobacion': _pasos_aprobacion(despliegue),
         'despliegue': despliegue,
         'puede_aprobar': puede_aprobar,
         'puede_promover': puede_promover,
