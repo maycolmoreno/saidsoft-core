@@ -128,3 +128,39 @@ class PantallaDeParedTests(Base):
         self.assertContains(resp, 'Qué atender')
         self.assertIn('incidencias', resp.context)
         self.assertIn('mosaico', resp.context)
+
+
+class InventarioDeEquiposTests(Base):
+    def setUp(self):
+        super().setUp()
+        hoy = timezone.localdate()
+        self.vencida = Activo.objects.create(codigo='CR-DSK-0301', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg,
+                                             estacion=self.estacion, estado=Activo.Estado.ASIGNADO,
+                                             vencimiento_garantia=hoy - timedelta(days=3))
+        self.por_vencer = Activo.objects.create(codigo='CR-IMP-0302', tipo=Activo.Tipo.IMPRESORA, unidad_negocio=self.sg,
+                                                vencimiento_garantia=hoy + timedelta(days=20))
+        Activo.objects.create(codigo='CR-UPS-0303', tipo=Activo.Tipo.UPS, unidad_negocio=self.sg,
+                              estado=Activo.Estado.EN_REPARACION)
+        self.url = reverse('panel:activos_lista')
+
+    def test_tarjetas_y_composicion_cuentan_todo_el_inventario(self):
+        resp = self.client.get(self.url, {'tipo': 'UPS'})
+        r = resp.context['resumen']
+        self.assertEqual(r['total'], 3)
+        self.assertEqual((r['garantia_vencida'], r['garantia_por_vencer']), (1, 1))
+        self.assertEqual(dict((v, n) for v, _, n in r['estados'])['en_reparacion'], 1)
+        self.assertEqual({c['tipo'] for c in r['composicion']}, {'DSK', 'IMP', 'UPS'})
+        self.assertEqual([a.codigo for a in resp.context['activos']], ['CR-UPS-0303'])
+
+    def test_filtro_de_garantia(self):
+        resp = self.client.get(self.url, {'garantia': 'vencida'})
+        self.assertEqual([a.codigo for a in resp.context['activos']], ['CR-DSK-0301'])
+        resp = self.client.get(self.url, {'garantia': 'por_vencer'})
+        self.assertEqual([a.codigo for a in resp.context['activos']], ['CR-IMP-0302'])
+
+    def test_fila_con_icono_conexion_a_la_ficha_y_garantia(self):
+        resp = self.client.get(self.url)
+        self.assertContains(resp, 'class="icono-tipo"')
+        self.assertContains(resp, reverse('panel:estacion_ficha', args=[self.estacion.pk]))
+        self.assertContains(resp, 'Vencida hace 3 días')
+        self.assertContains(resp, 'Vence en 20 días')

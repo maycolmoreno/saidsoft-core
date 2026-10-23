@@ -1,114 +1,147 @@
 {% extends "panel/base.html" %}
 {% block title %}Inventario de activos · SAIDSOFT{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold">Inventario de activos</h1>
-    <div class="flex gap-3">
+{% comment %}
+Inventario de equipos (apps.panel.views.activos_lista). Arriba, tarjetas que cuentan el
+inventario completo y se pulsan para filtrar, y la composición por tipo. La tabla muestra
+cada equipo con su tipo, dónde está, si tiene conexión (con enlace a la ficha cuando hay
+agente) y su garantía.
+{% endcomment %}
+<div class="flex items-center justify-between flex-wrap gap-3 mb-4">
+    <div>
+        <h1 class="text-xl font-semibold">Inventario de equipos</h1>
+        <p class="text-sm text-[var(--text-faint)]">{{ resumen.total }} equipo{{ resumen.total|pluralize }} en tus unidades de negocio</p>
+    </div>
+    <div class="flex gap-2">
         <a href="{% url 'panel:activos_avisos' %}" class="btn secondary">Avisos</a>
-        <a href="{% url 'panel:activo_crear' %}" class="btn primary">+ Registrar ingreso</a>
+        {% if perms.activos.add_activo %}<a href="{% url 'panel:activo_crear' %}" class="btn primary">+ Registrar equipo</a>{% endif %}
     </div>
 </div>
 
-<form method="get" class="flex items-center gap-3 mb-4 flex-wrap">
+<div class="inventario-tarjetas mb-3" role="navigation" aria-label="Filtrar por estado">
+    <a href="?" class="inventario-tarjeta{% if sin_filtro_de_tarjeta %} activa{% endif %}">
+        <span class="inventario-tarjeta-valor num">{{ resumen.total }}</span><span>Todos</span>
+    </a>
+    {% for valor, etiqueta, n in resumen.estados %}
+    <a href="?estado={{ valor }}" class="inventario-tarjeta tono-{% if valor == 'asignado' %}good{% elif valor == 'en_bodega' %}info{% elif valor == 'en_reparacion' %}warning{% else %}neutral{% endif %}{% if filtro_estado == valor %} activa{% endif %}">
+        <span class="inventario-tarjeta-valor num">{{ n }}</span><span>{% if valor == 'asignado' %}En servicio{% else %}{{ etiqueta }}{% endif %}</span>
+    </a>
+    {% endfor %}
+    <a href="?garantia=vencida" class="inventario-tarjeta tono-critical{% if filtro_garantia == 'vencida' %} activa{% endif %}">
+        <span class="inventario-tarjeta-valor num">{{ resumen.garantia_vencida }}</span><span>Garantía vencida</span>
+    </a>
+    <a href="?garantia=por_vencer" class="inventario-tarjeta tono-warning{% if filtro_garantia == 'por_vencer' %} activa{% endif %}">
+        <span class="inventario-tarjeta-valor num">{{ resumen.garantia_por_vencer }}</span><span>Vence en 90 días</span>
+    </a>
+</div>
+
+{% if resumen.composicion %}
+<div class="card ficha-seccion mb-4" aria-label="Composición por tipo">
+    <div class="composicion-barra" role="img" aria-label="{% for c in resumen.composicion %}{{ c.nombre }} {{ c.n }}{% if not forloop.last %}, {% endif %}{% endfor %}">
+        {% for c in resumen.composicion %}<span class="comp-{{ forloop.counter0 }}" style="flex:{{ c.n }} 0 0" title="{{ c.nombre }}: {{ c.n }}"></span>{% endfor %}
+    </div>
+    <div class="composicion-leyenda">
+        {% for c in resumen.composicion %}
+        <a href="?tipo={{ c.tipo }}" class="comp-{{ forloop.counter0 }}{% if filtro_tipo == c.tipo %} activa{% endif %}">
+            <i aria-hidden="true"></i>{% include "panel/_icono_tipo_activo.html" with tipo=c.tipo %}{{ c.nombre }} <strong class="num">{{ c.n }}</strong>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<form method="get" class="inventario-filtros mb-4">
     {% include "panel/_buscador.html" %}
-    <select name="tipo" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+    {% if filtro_estado %}<input type="hidden" name="estado" value="{{ filtro_estado }}">{% endif %}
+    {% if filtro_garantia %}<input type="hidden" name="garantia" value="{{ filtro_garantia }}">{% endif %}
+    <select name="tipo" onchange="this.form.submit()" aria-label="Tipo">
         <option value="">Todos los tipos</option>
-        {% for valor, etiqueta in tipos %}
-        <option value="{{ valor }}" {% if valor == filtro_tipo %}selected{% endif %}>{{ etiqueta }}</option>
-        {% endfor %}
+        {% for valor, etiqueta in tipos %}<option value="{{ valor }}" {% if valor == filtro_tipo %}selected{% endif %}>{{ etiqueta }}</option>{% endfor %}
     </select>
-    <select name="estado" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
-        <option value="">Cualquier estado</option>
-        {% for valor, etiqueta in estados %}
-        <option value="{{ valor }}" {% if valor == filtro_estado %}selected{% endif %}>{{ etiqueta }}</option>
-        {% endfor %}
-    </select>
-    <select name="bodega" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
-        <option value="">Todas las bodegas</option>
-        {% for b in bodegas %}
-        <option value="{{ b.codigo }}" {% if b.codigo == filtro_bodega %}selected{% endif %}>{{ b.codigo }}</option>
-        {% endfor %}
-    </select>
-    <select name="ubicacion" onchange="this.form.submit()" class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+    <select name="ubicacion" onchange="this.form.submit()" aria-label="Dónde">
         <option value="">Farmacia y administrativo</option>
         <option value="farmacia" {% if filtro_ubicacion == 'farmacia' %}selected{% endif %}>Solo farmacia (PDV)</option>
         <option value="administrativo" {% if filtro_ubicacion == 'administrativo' %}selected{% endif %}>Solo administrativo</option>
     </select>
+    <select name="bodega" onchange="this.form.submit()" aria-label="Bodega">
+        <option value="">Todas las bodegas</option>
+        {% for b in bodegas %}<option value="{{ b.codigo }}" {% if b.codigo == filtro_bodega %}selected{% endif %}>{{ b.codigo }}</option>{% endfor %}
+    </select>
     {# Texto libre: 700 farmacias no entran en un desplegable usable. #}
-    <input type="search" name="farmacia" value="{{ filtro_farmacia }}" placeholder="Farmacia (código o nombre)"
-           class="rounded-md px-3 py-1.5 text-sm bg-[var(--bg)] text-[var(--text)]" style="border:1px solid var(--border);">
+    <input type="search" name="farmacia" value="{{ filtro_farmacia }}" placeholder="Farmacia (código o nombre)" aria-label="Farmacia">
     <button type="submit" class="btn secondary">Filtrar</button>
-    {% if filtro_farmacia %}
-    <a href="?{% if filtro_tipo %}tipo={{ filtro_tipo }}&{% endif %}{% if filtro_estado %}estado={{ filtro_estado }}&{% endif %}{% if filtro_bodega %}bodega={{ filtro_bodega }}&{% endif %}{% if filtro_ubicacion %}ubicacion={{ filtro_ubicacion }}{% endif %}"
-       class="text-sm" style="color:var(--text-faint);">Limpiar</a>
+    {% if busqueda or filtro_tipo or filtro_ubicacion or filtro_bodega or filtro_farmacia or filtro_estado or filtro_garantia %}
+    <a href="?" class="text-sm text-[var(--text-faint)] hover:text-[var(--text)]">Limpiar filtros</a>
     {% endif %}
 </form>
 
-<div class="card" style="overflow:hidden;">
-    <table class="w-full text-sm">
+<div class="card" style="overflow-x:auto;">
+    <table class="w-full text-sm inventario-tabla">
         <thead style="background:var(--panel);">
             <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
-                <th class="text-left px-4 py-3">Código</th>
-                <th class="text-left px-4 py-3">Tipo</th>
+                <th class="text-left px-4 py-3">Equipo</th>
                 <th class="text-left px-4 py-3">Marca / Modelo</th>
                 <th class="text-left px-4 py-3">Estado</th>
-                <th class="text-left px-4 py-3">Ubicación / responsable</th>
-                <th class="text-left px-4 py-3">Puesto / IP</th>
+                <th class="text-left px-4 py-3">Dónde</th>
+                <th class="text-left px-4 py-3">Conexión</th>
+                <th class="text-left px-4 py-3">Garantía</th>
             </tr>
         </thead>
         <tbody>
         {% for a in activos %}
-            <tr class="cursor-pointer hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}" onclick="window.location='{% url 'panel:activo_detalle' a.pk %}'">
-                <td class="px-4 py-3 font-mono">{{ a.codigo }}</td>
-                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.get_tipo_display }}</td>
-                <td class="px-4 py-3 text-[var(--text-dim)]">{{ a.marca }} {{ a.modelo }}</td>
+            <tr class="hover:bg-[var(--overlay-hover)]" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+                <td class="px-4 py-3">
+                    <div class="inventario-equipo">
+                        <span class="inventario-icono" title="{{ a.get_tipo_display }}">{% include "panel/_icono_tipo_activo.html" with tipo=a.tipo %}</span>
+                        <div class="min-w-0">
+                            <a href="{% url 'panel:activo_detalle' a.pk %}" class="mono font-medium hover:text-[var(--info)] hover:underline">{{ a.codigo }}</a>
+                            <div class="text-xs text-[var(--text-faint)] mono">{{ a.numero_serie|default:"sin serie" }}</div>
+                        </div>
+                    </div>
+                </td>
+                <td class="px-4 py-3">
+                    <div>{{ a.marca|default:"—" }}</div>
+                    <div class="text-xs text-[var(--text-faint)]">{{ a.modelo|default:a.get_tipo_display }}</div>
+                </td>
                 <td class="px-4 py-3">
                     <span class="pill {% if a.estado == 'en_bodega' %}info{% elif a.estado == 'asignado' %}good{% elif a.estado == 'en_reparacion' %}warning{% elif a.estado == 'dado_de_baja' %}critical{% else %}neutral{% endif %}">
-                        {{ a.get_estado_display }}
+                        {% if a.estado == 'asignado' %}En servicio{% else %}{{ a.get_estado_display }}{% endif %}
                     </span>
                 </td>
-                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
-                    {% if a.farmacia %}<span class="pill info">{{ a.farmacia.codigo }}</span>{% endif %}
-                    {% if a.colaborador_actual %}{{ a.colaborador_actual.nombre }}{% elif a.bodega_actual %}{{ a.bodega_actual.codigo }}{% elif not a.farmacia %}—{% endif %}
+                <td class="px-4 py-3">
+                    {% if a.farmacia %}<div class="mono">{{ a.farmacia.codigo }}</div>{% endif %}
+                    <div class="text-xs text-[var(--text-faint)]">
+                        {% if a.colaborador_actual %}{{ a.colaborador_actual.nombre }}{% elif a.bodega_actual %}Bodega {{ a.bodega_actual.codigo }}{% elif not a.farmacia %}Administrativo{% endif %}
+                        {% if a.slot %}· <span class="mono">{{ a.slot }}</span>{% endif %}
+                    </div>
                 </td>
                 {% comment %}
-                `ip_efectiva` devuelve (ip, origen): con estación vinculada manda la que
-                reporta el agente, que es la única que se actualiza sola.
+                Con estación (agente): su conexión y enlace a la ficha. Sin agente: el estado
+                de red sondeado (monitoreo.EstadoRedActivo), "sin verificar" si la
+                verificación quedó vieja — no "caído", que mandaría a alguien por nada.
                 {% endcomment %}
-                <td class="px-4 py-3 text-[var(--text-faint)] text-xs">
-                    {% if a.slot %}<span class="mono">{{ a.slot }}</span>{% endif %}
-                    {% if a.ip_efectiva.0 %}
-                        <div class="mono">{{ a.ip_efectiva.0 }}
-                            {% if a.ip_efectiva.1 == 'agente' %}<span class="pill good">agente</span>{% endif %}
-                        </div>
-                    {% elif a.slot %}<div>sin IP cargada</div>{% endif %}
-                    {% if not a.slot and not a.ip_efectiva.0 %}—{% endif %}
-                    {% comment %}
-                    Estado de red de los equipos SIN agente (ver monitoreo.EstadoRedActivo).
-                    Se muestra "sin verificar" y no "caído" cuando la verificación quedó
-                    vieja: eso significa que la estación que sondeaba está apagada, no que
-                    el equipo se haya caído — y confundirlos mandaría a alguien a la
-                    farmacia por nada.
-                    {% endcomment %}
-                    {% with er=a.estado_red %}
-                    {% if er %}
-                        {% if not er.verificacion_vigente %}
-                            <span class="pill neutral">sin verificar</span>
-                        {% elif er.responde %}
-                            <span class="pill good">en línea</span>
-                        {% elif er.horas_sin_responder %}
-                            <span class="pill critical">sin respuesta {{ er.horas_sin_responder }} h</span>
-                        {% else %}
-                            <span class="pill warning">nunca respondió</span>
-                        {% endif %}
+                <td class="px-4 py-3">
+                    {% if a.estacion %}
+                        {% if perms.catalogo.view_estacion %}<a href="{% url 'panel:estacion_ficha' a.estacion.pk %}" class="chip-edad tono-{% if a.estacion.estado_conexion == 'online' %}good{% elif a.estacion.estado_conexion == 'offline' %}critical{% else %}neutral{% endif %}" title="Ficha de {{ a.estacion.codigo }}">{{ a.estacion.codigo }} · {{ a.latido.texto }}</a>
+                        {% else %}<span class="chip-edad tono-neutral">{{ a.estacion.codigo }}</span>{% endif %}
+                    {% else %}
+                        {% with er=a.estado_red %}
+                        {% if er %}
+                            {% if not er.verificacion_vigente %}<span class="pill neutral">sin verificar</span>
+                            {% elif er.responde %}<span class="pill good">en línea</span>
+                            {% elif er.horas_sin_responder %}<span class="pill critical">sin respuesta {{ er.horas_sin_responder }} h</span>
+                            {% else %}<span class="pill warning">nunca respondió</span>{% endif %}
+                        {% else %}<span class="text-xs text-[var(--text-faint)]">sin agente</span>{% endif %}
+                        {% endwith %}
                     {% endif %}
-                    {% endwith %}
+                    {% if a.ip_efectiva.0 %}<div class="mono text-xs text-[var(--text-faint)] mt-1">{{ a.ip_efectiva.0 }}</div>{% endif %}
                 </td>
+                <td class="px-4 py-3"><span class="chip-edad tono-{{ a.garantia.tono }}">{{ a.garantia.texto }}</span></td>
             </tr>
         {% empty %}
             <tr><td colspan="6">
                 {% url 'panel:activo_crear' as alta %}
-                {% include "panel/_estado_vacio.html" with titulo="El inventario de activos está vacío" pista="Cada ingreso registra un equipo con su categoría y su responsable. También se pueden crear desde el RMM con el comando crear_activos_desde_rmm." accion_url=alta accion_etiqueta="+ Registrar ingreso" accion_puede=True %}
+                {% include "panel/_estado_vacio.html" with titulo="El inventario de activos está vacío" pista="Cada ingreso registra un equipo con su categoría y su responsable. También se pueden crear desde el RMM con el comando crear_activos_desde_rmm." accion_url=alta accion_etiqueta="+ Registrar equipo" accion_puede=perms.activos.add_activo %}
             </td></tr>
         {% endfor %}
         </tbody>

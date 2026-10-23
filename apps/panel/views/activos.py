@@ -12,75 +12,8 @@ from apps.mantenimiento import services as mantenimiento_services
 from apps.mantenimiento.models import Mantenimiento
 from ..busqueda import buscar
 from ..paginacion import paginar
+from .activos_lista import GARANTIA_POR_VENCER_DIAS, _estado_garantia  # noqa: F401 (las usa el detalle)
 from apps.cuentas.services import scope_opcional_por_unidad_negocio, scope_opcional_por_unidad_negocio_activa, verificar_acceso
-
-
-@login_required
-@permission_required('activos.view_activo', raise_exception=True)
-def activos_lista(request):
-    activos = scope_opcional_por_unidad_negocio_activa(
-        Activo.objects.select_related('bodega_actual', 'colaborador_actual', 'marca', 'categoria'),
-        request, 'unidad_negocio',
-    ).order_by('codigo')
-
-    tipo = request.GET.get('tipo')
-    estado = request.GET.get('estado')
-    bodega = request.GET.get('bodega')
-    ubicacion = request.GET.get('ubicacion')
-    # Texto libre y no un desplegable: son ~700 farmacias, y un <select> con 700 opciones
-    # es peor que no tener filtro. Busca por código y también por nombre, porque no todo
-    # el mundo se acuerda del código (busca "machala" y encuentra MMAC1).
-    farmacia = (request.GET.get('farmacia') or '').strip()
-    if tipo:
-        activos = activos.filter(tipo=tipo)
-    if estado:
-        activos = activos.filter(estado=estado)
-    if bodega:
-        activos = activos.filter(bodega_actual__codigo=bodega)
-    if ubicacion == 'farmacia':
-        activos = activos.filter(farmacia__isnull=False)
-    elif ubicacion == 'administrativo':
-        activos = activos.filter(farmacia__isnull=True)
-    if farmacia:
-        activos = activos.filter(
-            Q(farmacia__codigo__icontains=farmacia) | Q(farmacia__nombre__icontains=farmacia),
-        )
-
-    # Búsqueda libre sobre el EQUIPO. Convive con el filtro `farmacia` de arriba y no lo
-    # reemplaza: ese pregunta "dónde está" y este "cuál es", y se combinan. Hasta el
-    # 4-oct-2026 solo existía el primero, así que con miles de activos no había forma de
-    # llegar a uno por su serie o su código SAP desde el panel.
-    #
-    # `ip` es `inet`: el helper lo detecta y lo convierte solo (ver apps.panel.busqueda).
-    activos, busqueda = buscar(activos, request, (
-        'codigo', 'numero_serie', 'codigo_sap', 'modelo', 'marca__nombre',
-        'mac', 'ip', 'estacion__codigo',
-    ))
-
-    # Se pagina con 18 filas en producción y no cuando haya 1.800: el parque son ~1.800
-    # estaciones más sus periféricos, y paginar una lista corta es barato — hacerlo sobre
-    # una tabla ya grande, no (mismo criterio con el que se paginó estaciones_lista).
-    pagina, query_filtros = paginar(
-        # `estacion` va en el select_related porque la columna "Puesto / IP" usa
-        # `ip_efectiva`, que para un activo vinculado lee `estacion.ip_lan`: sin esto
-        # sería una consulta por fila (el mismo N+1 que la auditoría sacó de
-        # monitoreo_lista).
-        # `estado_red` en el select_related por el mismo motivo que `estacion`: la
-        # columna lo consulta por fila y sin esto serían 18 consultas por página.
-        activos.select_related('farmacia', 'estacion', 'estado_red'), request,
-    )
-    return render(request, 'panel/activos_lista.html', {
-        'activos': pagina.object_list,
-        'pagina': pagina,
-        'query_filtros': query_filtros,
-        'tipos': Activo.Tipo.choices,
-        'estados': Activo.Estado.choices,
-        'bodegas': scope_opcional_por_unidad_negocio(Bodega.objects.all(), request.user, 'unidad_negocio').order_by('codigo'),
-        'filtro_tipo': tipo or '', 'filtro_estado': estado or '', 'filtro_bodega': bodega or '',
-        'filtro_ubicacion': ubicacion or '', 'filtro_farmacia': farmacia,
-        'busqueda': busqueda,
-        'busqueda_pista': 'Código, serie, SAP, modelo, marca o IP…',
-    })
 
 
 @login_required
@@ -231,7 +164,6 @@ TONO_EVENTO = {
     'ingreso': 'info', 'asignacion': 'accent', 'devolucion': 'neutral', 'consumible_entregado': 'neutral',
     'envio_reparacion': 'warning', 'retorno_reparacion': 'good', 'baja': 'critical', 'baja_recomendada': 'critical',
 }
-GARANTIA_POR_VENCER_DIAS = 90
 
 
 def _con_tono(eventos):
@@ -239,18 +171,6 @@ def _con_tono(eventos):
     for ev in eventos:
         ev.tono = TONO_EVENTO.get(ev.tipo_evento, 'info')
     return eventos
-
-
-def _estado_garantia(vencimiento):
-    """`{'texto', 'tono'}` de la garantía: vencida en rojo, por vencer (90 días) en ámbar."""
-    if not vencimiento:
-        return {'texto': 'Sin dato', 'tono': 'neutral'}
-    dias = (vencimiento - timezone.localdate()).days
-    if dias < 0:
-        return {'texto': f'Vencida hace {-dias} días', 'tono': 'critical'}
-    if dias <= GARANTIA_POR_VENCER_DIAS:
-        return {'texto': f'Vence en {dias} días', 'tono': 'warning'}
-    return {'texto': f'Vigente hasta {vencimiento:%d/%m/%Y}', 'tono': 'good'}
 
 
 @login_required

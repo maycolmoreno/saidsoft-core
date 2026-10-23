@@ -10,8 +10,9 @@ submódulo se re-exporta aquí.
 from .activos import (
     activo_asignar, activo_baja, activo_consumible_entregar, activo_crear, activo_detalle,
     activo_devolver, activo_reparacion_enviar, activo_reparacion_retorno, activo_ubicar_farmacia,
-    activos_avisos, activos_lista, especificaciones_por_serie_partial,
+    activos_avisos, especificaciones_por_serie_partial,
 )
+from .activos_lista import activos_lista
 from .bodegas import bodega_ajuste_stock, bodega_stock_ingresar, bodegas_lista
 from .compras import (
     movimientos_inventario_lista, orden_compra_crear, orden_compra_detalle,
