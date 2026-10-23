@@ -118,6 +118,39 @@ def verificar_ping_disponible():
         )
 
 
+class ResultadoSondeo(tuple):
+    """`(alcanzable, latencia_ms)` —lo que siempre devolvió `sondear_enlace`— más la
+    calidad del sondeo en atributos: `perdida_pct` y `latencia_max_ms`.
+
+    Es una tupla de DOS elementos a propósito: todo lo que ya desempaquetaba
+    `alcanzable, latencia = sondear_enlace(ip)` (el barrido, la API, las pruebas que lo
+    sustituyen) sigue igual. Lo nuevo se lee con `getattr(r, 'perdida_pct', None)`, que
+    también funciona cuando alguien devuelve una tupla común.
+    """
+
+    def __new__(cls, alcanzable, latencia_ms, perdida_pct=None, latencia_max_ms=None):
+        resultado = super().__new__(cls, (alcanzable, latencia_ms))
+        resultado.perdida_pct = perdida_pct
+        resultado.latencia_max_ms = latencia_max_ms
+        return resultado
+
+
+def _calidad(salida: str):
+    """`(promedio, máximo, pérdida %)` a partir de las líneas de respuesta de `ping`.
+
+    Se cuentan las respuestas con tiempo ("time=" / "tiempo=") en vez de leer el resumen
+    final, porque el resumen cambia de formato e idioma entre Linux y Windows y estas
+    líneas no. Si no calza ninguna, devuelve `(None, None, None)`: mejor sin dato que una
+    pérdida inventada por un problema de locale.
+    """
+    tiempos = [float(t.replace(',', '.')) for t in _RE_LATENCIA.findall(salida)]
+    if not tiempos:
+        return None, None, None
+    recibidos = min(len(tiempos), PAQUETES_POR_SONDEO)
+    perdida = round(100 * (PAQUETES_POR_SONDEO - recibidos) / PAQUETES_POR_SONDEO, 1)
+    return round(sum(tiempos) / len(tiempos), 1), max(tiempos), perdida
+
+
 def sondear_enlace(ip: str, timeout=TIMEOUT_SEGUNDOS) -> tuple[bool, float | None]:
     """Un ping. Devuelve `(alcanzable, latencia_ms)`.
 
@@ -143,7 +176,7 @@ def sondear_enlace(ip: str, timeout=TIMEOUT_SEGUNDOS) -> tuple[bool, float | Non
         )
     except subprocess.TimeoutExpired:
         # Esto sí es del enlace: el ping salió y nadie contestó a tiempo.
-        return False, None
+        return ResultadoSondeo(False, None, 100.0)
     except OSError as error:
         # Esto NO es del enlace: no se pudo arrancar el proceso. Se propaga para que el
         # barrido aborte diciendo el motivo real, en vez de anotar una caída falsa por
@@ -155,7 +188,7 @@ def sondear_enlace(ip: str, timeout=TIMEOUT_SEGUNDOS) -> tuple[bool, float | Non
         ) from error
 
     if proceso.returncode != 0:
-        return False, None
+        return ResultadoSondeo(False, None, 100.0)
 
     # returncode 0 no alcanza en Windows: `ping` devuelve 0 aunque la respuesta sea
     # "Host de destino inaccesible", que es un ICMP de otro equipo, no del destino.
@@ -163,9 +196,14 @@ def sondear_enlace(ip: str, timeout=TIMEOUT_SEGUNDOS) -> tuple[bool, float | Non
     coincidencia = _RE_LATENCIA.search(salida)
     if coincidencia is None:
         if 'inaccesible' in salida.lower() or 'unreachable' in salida.lower():
-            return False, None
-        return True, None
-    return True, float(coincidencia.group(1).replace(',', '.'))
+            return ResultadoSondeo(False, None, 100.0)
+        return ResultadoSondeo(True, None)
+    # La latencia del estado sigue siendo la del PRIMER paquete, como siempre; el promedio,
+    # el máximo y la pérdida van aparte, para el historial.
+    promedio, maximo, perdida = _calidad(salida)
+    resultado = ResultadoSondeo(True, float(coincidencia.group(1).replace(',', '.')), perdida, maximo)
+    resultado.latencia_promedio_ms = promedio
+    return resultado
 
 
 def registrar_sondeo(farmacia, alcanzable: bool, latencia_ms: float | None):
@@ -362,7 +400,7 @@ def sondear_enlaces_farmacias(farmacias=None, *, flota_entera=None) -> dict:
 
     try:
         with ThreadPoolExecutor(max_workers=MAX_SONDEOS_CONCURRENTES) as pool:
-            resultados = list(pool.map(lambda f: (f, *sondear_enlace(str(f.ip_router))), farmacias))
+            crudos = list(pool.map(lambda f: (f, sondear_enlace(str(f.ip_router))), farmacias))
     except FalloLocalDeSondeo as error:
         # El problema es de este host, así que no hay NINGÚN resultado que valga: anotar
         # las farmacias que alcanzamos a sondear antes del fallo mezclaría medidas buenas
@@ -371,6 +409,8 @@ def sondear_enlaces_farmacias(farmacias=None, *, flota_entera=None) -> dict:
         resumen.update(abortado=True)
         return resumen
 
+    resultados = [(f, r[0], r[1]) for f, r in crudos]
+    calidades = crudos
     fallidos = sum(1 for _, alcanzable, _lat in resultados if not alcanzable)
     pct_fallido = 100 * fallidos / len(resultados)
     if pct_fallido >= UMBRAL_BARRIDO_SOSPECHOSO_PCT:
@@ -396,9 +436,43 @@ def sondear_enlaces_farmacias(farmacias=None, *, flota_entera=None) -> dict:
         registrar_sondeo(farmacia, alcanzable, latencia_ms)
         resumen['sondeadas'] += 1
         resumen['activas' if alcanzable else 'caidas'] += 1
+    guardar_muestras_de_enlace(calidades)
     if es_flota_entera:
         _marcar_barrido_completo()
     return resumen
+
+
+def guardar_muestras_de_enlace(calidades) -> int:
+    """Guarda el historial de latencia y pérdida de un barrido, en UN insert.
+
+    `calidades`: `[(farmacia, resultado_de_sondear_enlace)]`. Solo se llama con un barrido
+    que NO abortó: si falló casi entero, el problema era la ruta desde acá, y guardar 700
+    "pérdida 100 %" ensuciaría la evidencia de cada farmacia con un fallo nuestro.
+
+    Nunca lanza: el historial es un agregado, y un problema escribiéndolo no puede
+    impedir que el barrido registre caídas y recuperaciones, que es lo que avisa.
+    """
+    from .models import MuestraEnlaceFarmacia
+
+    ahora = timezone.now()
+    filas = []
+    for farmacia, resultado in calidades:
+        alcanzable, latencia_ms = resultado[0], resultado[1]
+        perdida = getattr(resultado, 'perdida_pct', None)
+        if perdida is None and not alcanzable:
+            perdida = 100.0
+        filas.append(MuestraEnlaceFarmacia(
+            farmacia=farmacia, timestamp=ahora,
+            latencia_ms=getattr(resultado, 'latencia_promedio_ms', None) or latencia_ms,
+            latencia_max_ms=getattr(resultado, 'latencia_max_ms', None),
+            perdida_pct=perdida,
+        ))
+    try:
+        MuestraEnlaceFarmacia.objects.bulk_create(filas)
+    except Exception:
+        logger.exception('No se pudo guardar el historial de %d sondeos de enlace.', len(filas))
+        return 0
+    return len(filas)
 
 
 def nombre_proveedor(farmacia) -> str:
@@ -419,6 +493,31 @@ def nombre_proveedor(farmacia) -> str:
     TELCONET 579, PUNTO NET 109, FIBROMARK 5, ETAPA 4, y tres sueltas.
     """
     return (getattr(farmacia, 'tipo_enlace', '') or '').strip() or '(proveedor sin cargar)'
+
+
+def lineas_de_contacto(farmacia, sangria='      ') -> list[str]:
+    """Quién atiende en el local y qué técnico va, para los avisos de enlace caído.
+
+    Lo pidió la operación (23-oct-2026): con el aviso en la mano, lo siguiente siempre era
+    buscar en otra planilla a quién llamar. El dato ya estaba en la ficha de la farmacia
+    (`administrador`, `telefono`, `extension_telefonica`, `tecnico_asignado`).
+
+    Si falta, se dice que falta en vez de omitir la línea: así el aviso mismo muestra qué
+    hay que completar. Sin la cédula del técnico: no hace falta para llamarlo y es un dato
+    personal que no tiene por qué viajar en un chat.
+    """
+    partes = [farmacia.administrador.strip()] if farmacia.administrador.strip() else []
+    if farmacia.telefono.strip():
+        partes.append(farmacia.telefono.strip())
+    if farmacia.extension_telefonica:
+        partes.append(f'ext {farmacia.extension_telefonica}')
+    sitio = ' · '.join(partes) if partes else 'sin contacto cargado'
+    tecnico = farmacia.tecnico_asignado
+    if tecnico is None:
+        texto_tecnico = 'sin asignar'
+    else:
+        texto_tecnico = tecnico.nombre + (f' · {tecnico.telefono}' if tecnico.telefono else ' · sin teléfono')
+    return [f'{sangria}En sitio: {sitio}', f'{sangria}Técnico:  {texto_tecnico}']
 
 
 def _agrupar_por_proveedor(eventos):
@@ -1010,7 +1109,7 @@ def notificar_cambios_enlaces() -> dict:
         .filter(fin__isnull=True, notificado_en__isnull=True, inicio__lte=corte,
                 farmacia__activa=True)
         .exclude(farmacia__estado_enlace__respondio_alguna_vez=False)
-        .select_related('farmacia').order_by('inicio')
+        .select_related('farmacia', 'farmacia__tecnico_asignado').order_by('inicio')
     )
     # Solo la recuperacion de lo que SI se aviso como caido. Sin este filtro llegaba
     # "GP092 estuvo caido 2 min" sin que antes se hubiera avisado nada: la caida nacia y
@@ -1050,6 +1149,7 @@ def notificar_cambios_enlaces() -> dict:
                     f'    {e.farmacia.codigo:<10} {e.farmacia.ip_router}  '
                     f'desde {timezone.localtime(e.inicio):%H:%M}  circuito: {e.circuito_proveedor or "-"}'
                 )
+                lineas.extend(lineas_de_contacto(e.farmacia))
     if recuperados:
         if lineas:
             lineas.append('')

@@ -159,7 +159,9 @@ def enlaces_farmacias_lista(request):
     # Disponibilidad de 24 h de TODO el alcance (no solo la página): el KPI promedio y el
     # orden "menor disponibilidad primero" la necesitan entera. Son las caídas que tocan
     # la ventana, que en un día normal son decenas de filas, no 700.
-    from ..disponibilidad import caidas_por_proveedor, intervalos_24h, pct_disponible, resumen_de_fila
+    from ..disponibilidad import (
+        caidas_por_proveedor, intervalos_24h, muestras_24h, pct_disponible, resumen_de_fila,
+    )
 
     ahora = timezone.now()
     alcance_ids = list(base.values_list('pk', flat=True))
@@ -209,6 +211,10 @@ def enlaces_farmacias_lista(request):
     simultaneas = incidentes['clase_por_farmacia']
 
     filas = []
+    # Historial de latencia y pérdida solo de la página (una consulta). Una farmacia sin
+    # ninguna muestra en 24 h (p. ej. el día que se activó el historial) pasa None y su
+    # franja se arma solo con las caídas, como antes.
+    sondeos_24h = muestras_24h([f.pk for f in pagina.object_list], ahora)
     for farmacia in pagina.object_list:
         estado = getattr(farmacia, 'estado_enlace', None)
         total_kbps = None
@@ -218,7 +224,9 @@ def enlaces_farmacias_lista(request):
         filas.append({
             'farmacia': farmacia,
             'estado': estado,
-            'disponibilidad': resumen_de_fila(caidas_24h.get(farmacia.pk, []), sondeada, ahora),
+            'disponibilidad': resumen_de_fila(
+                caidas_24h.get(farmacia.pk, []), sondeada, ahora, sondeos_24h.get(farmacia.pk),
+            ),
             'alcanzable': estado.alcanzable if estado else None,
             # La fila tiene que decir lo mismo que el KPI: marcar "Caído" un sitio que
             # nunca respondió manda a alguien a abrir un ticket con el proveedor por un

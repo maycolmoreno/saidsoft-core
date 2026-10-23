@@ -4089,6 +4089,35 @@ class NotificarCambiosEnlacesTests(TestCase):
         evento.refresh_from_db()
         self.assertIsNotNone(evento.notificado_en)
 
+    def test_la_caida_trae_contacto_en_sitio_y_tecnico(self):
+        """Con el aviso en la mano, lo siguiente era buscar a quién llamar (23-oct-2026)."""
+        from apps.activos.models import Colaborador
+        from apps.monitoreo.enlaces import notificar_cambios_enlaces
+
+        tecnico = Colaborador.objects.create(nombre='Lopez Barros Luis', cedula='0706390663', telefono='0987654321')
+        self.f1.administrador = 'VERA CHEVEZ EVELYN'
+        self.f1.telefono = '0959277913'
+        self.f1.extension_telefonica = 2421
+        self.f1.tecnico_asignado = tecnico
+        self.f1.save()
+        self._caida(self.f1)
+        self._caida(self.f2)  # sin nada cargado
+        notificar_cambios_enlaces()
+
+        cuerpo = mail.outbox[0].body
+        self.assertIn('En sitio: VERA CHEVEZ EVELYN · 0959277913 · ext 2421', cuerpo)
+        self.assertIn('Técnico:  Lopez Barros Luis · 0987654321', cuerpo)
+        self.assertIn('En sitio: sin contacto cargado', cuerpo)
+        self.assertIn('Técnico:  sin asignar', cuerpo)
+        self.assertNotIn('0706390663', cuerpo)  # la cédula del técnico no viaja
+
+    def test_el_tecnico_sin_telefono_se_dice(self):
+        from apps.activos.models import Colaborador
+        from apps.monitoreo.enlaces import lineas_de_contacto
+
+        self.f1.tecnico_asignado = Colaborador.objects.create(nombre='Villacres Hjalmar', cedula='0999999999')
+        self.assertIn('Técnico:  Villacres Hjalmar · sin teléfono', lineas_de_contacto(self.f1, sangria=''))
+
     def test_no_se_avisa_dos_veces_de_la_misma_caida(self):
         """Lo que hace usable el aviso: sin esto, cada corrida (cada 5 min) repetiria
         las 162 caidas abiertas hasta que alguien las arregle."""
@@ -5337,6 +5366,9 @@ class TecladoInlineTests(TestCase):
         texto, _teclado = responder_a_callback('farm:TSTK10')
         self.assertIn('TSTK10', texto)
         self.assertIn('telconet-uno', texto)
+        # El mismo dato de contacto que el aviso de enlace caído.
+        self.assertIn('En sitio: sin contacto cargado', texto)
+        self.assertIn('Técnico:  sin asignar', texto)
 
     def test_un_callback_desconocido_no_hace_nada(self):
         from apps.monitoreo.telegram_bot import responder_a_callback

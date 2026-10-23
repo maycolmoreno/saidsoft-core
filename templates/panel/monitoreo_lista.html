@@ -77,9 +77,11 @@
         {% endcomment %}
         <div class="servidor-pie">
             {% if t.ultima.temperatura_c is not None %}<span>Temperatura <b>{{ t.ultima.temperatura_c|floatformat:0 }} °C</b></span>{% endif %}
-            {% for i in t.indicadores %}{% if i.clave == 'latencia_ms' or i.clave == 'red_total_kbps' %}
-            <span>{{ i.etiqueta }} <b class="{% if i.mostrar_estado %}est-fg-{{ i.estado }}{% endif %}">{% if i.valor is not None %}{{ i.valor|floatformat:i.decimales }}{{ i.unidad }}{% else %}—{% endif %}</b></span>
-            {% endif %}{% endfor %}
+            {% if t.latencia_nodo is not None %}<span title="Latencia de la base del POS (nodo {{ t.estacion.farmacia.grupo.codigo }}) vista desde este equipo">Nodo POS <b>{{ t.latencia_nodo }} ms</b></span>{% endif %}
+            {% comment %} Solo lo que llegó: un guion en "Latencia" o "Red" parecía un dato y era un campo que el agente no mandó. {% endcomment %}
+            {% for i in t.indicadores %}{% if i.valor is not None %}{% if i.clave == 'latencia_ms' or i.clave == 'red_total_kbps' %}
+            <span>{{ i.etiqueta }} <b class="{% if i.mostrar_estado %}est-fg-{{ i.estado }}{% endif %}">{{ i.valor|floatformat:i.decimales }}{{ i.unidad }}</b></span>
+            {% endif %}{% endif %}{% endfor %}
             {% if t.cpu_pico is not None %}<span>Pico CPU {{ rango.etiqueta }} <b>{{ t.cpu_pico|floatformat:0 }} %</b></span>{% endif %}
             <span class="ml-auto">Última muestra {{ t.ultima.timestamp|date:"d/m H:i" }}</span>
         </div>

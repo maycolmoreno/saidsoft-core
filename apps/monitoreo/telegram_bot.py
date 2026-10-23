@@ -360,7 +360,9 @@ def _comando_farmacia(codigo: str) -> str:
     if not codigo:
         return 'Falta el código. Ejemplo: /farmacia ML016'
 
-    farmacia = Farmacia.objects.filter(codigo=codigo).select_related('unidad_negocio').first()
+    farmacia = Farmacia.objects.filter(codigo=codigo).select_related(
+        'unidad_negocio', 'tecnico_asignado',
+    ).first()
     if farmacia is None:
         # Sugerir por prefijo ahorra el viaje de ir al panel a buscar el código exacto.
         parecidas = list(
@@ -381,6 +383,10 @@ def _comando_farmacia(codigo: str) -> str:
     else:
         lineas.append(f'Enlace: 🔴 caído hace {_texto_duracion(enlace.ultimo_cambio_estado)}')
     lineas.append(f'Router: {farmacia.ip_router} · circuito: {farmacia.circuito_proveedor or "sin dato"}')
+    # Mismo criterio que el aviso de enlace caído: a quién llamar sin abrir otra planilla.
+    from .enlaces import lineas_de_contacto
+
+    lineas.extend(lineas_de_contacto(farmacia, sangria=''))
 
     # El tráfico se acota a una muestra RECIENTE, no a la última que exista. Sin esta cota,
     # una farmacia con el enlace caído mostraba el último tráfico medido antes de caerse

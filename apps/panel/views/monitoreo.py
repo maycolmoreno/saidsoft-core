@@ -123,9 +123,17 @@ def monitoreo_lista(request):
 
     vigente_desde = timezone.now() - timedelta(hours=EstadoServicioPos.HORAS_VERIFICACION_VIGENTE)
     caidos = {}
+    # En la misma consulta: la latencia a la base del POS (`pg_local`, que es el NODO al
+    # que apunta la caja, no una base dentro del local). Es la latencia que importa en el
+    # pie de la tarjeta; `MuestraMetrica.latencia_ms` el agente no la mide.
+    latencia_nodo = {}
     for estado in EstadoServicioPos.objects.filter(
-        estacion_id__in=ids, disponible=False, ultima_verificacion__gte=vigente_desde,
+        estacion_id__in=ids, ultima_verificacion__gte=vigente_desde,
     ):
+        if estado.servicio == 'pg_local' and estado.disponible:
+            latencia_nodo[estado.estacion_id] = estado.latencia_ms
+        if estado.disponible:
+            continue
         marca = caidos.setdefault(estado.estacion_id, {'total': 0, 'criticos': 0})
         marca['total'] += 1
         marca['criticos'] += 1 if estado.critico else 0
@@ -154,6 +162,7 @@ def monitoreo_lista(request):
             'graficas': graficas,
             'estado_tarjeta': estado_de_tarjeta(graficas),
             'cpu_pico': serie_rango.get('cpu_pico'),
+            'latencia_nodo': latencia_nodo.get(estacion.pk),
             'estacion': estacion,
             'ultima': ultima,
             'servicios_caidos': caidos.get(estacion.pk),

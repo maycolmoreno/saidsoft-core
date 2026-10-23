@@ -1025,6 +1025,48 @@ class EventoEnlaceFarmacia(models.Model):
         return int((self.fin - self.inicio).total_seconds() // 60)
 
 
+class MuestraEnlaceFarmacia(models.Model):
+    """Latencia y pérdida de UN sondeo del enlace de una farmacia (ping cada 2 min desde
+    el servidor central, ver `apps.monitoreo.enlaces.sondear_enlaces_farmacias`).
+
+    `EstadoEnlaceFarmacia` guarda solo el último sondeo y `EventoEnlaceFarmacia` solo las
+    caídas. Lo que faltaba es lo de en medio: un enlace que NO se cae pero pierde paquetes
+    o se pone lento por ráfagas. Es lo que un cajero ve como "el POS está lento" y lo que
+    no aparecía en ningún lado (ML001, 23-oct-2026: picos de 0,8-1,3 s hacia el nodo y la
+    base central a la vez, sin caída registrada y con el tráfico SNMP al 28 %).
+
+    Serie temporal como `MuestraRedFarmacia`: hypertable de 1 día, compresión a los 7 y
+    retención de 30 (migración 0051). Una fila por farmacia cada 2 minutos — a 700 son
+    ~500.000 por día; comprimida, el orden de `muestra_servicio_pos`.
+    """
+
+    # Sin índice propio: `(farmacia_id, timestamp DESC)` lo cubre (criterio de la 0041).
+    farmacia = models.ForeignKey(
+        Farmacia, on_delete=models.CASCADE, related_name='muestras_enlace', db_index=False,
+    )
+    # null = no respondió ningún paquete (pérdida 100 %).
+    latencia_ms = models.FloatField(null=True, blank=True, help_text='Promedio de los paquetes que volvieron.')
+    latencia_max_ms = models.FloatField(null=True, blank=True)
+    perdida_pct = models.FloatField(
+        null=True, blank=True,
+        help_text='Paquetes perdidos sobre los enviados en el sondeo. null = no se pudo saber.',
+    )
+    # default y no auto_now_add, por el hypertable — ver MuestraMetrica.timestamp.
+    timestamp = models.DateTimeField(default=timezone.now, editable=False, db_index=True)
+
+    class Meta:
+        db_table = 'muestra_enlace_farmacia'
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['farmacia', '-timestamp']),
+        ]
+        verbose_name = 'Muestra de enlace de farmacia'
+        verbose_name_plural = 'Muestras de enlace de farmacia'
+
+    def __str__(self):
+        return f'{self.farmacia.codigo} @ {self.timestamp:%Y-%m-%d %H:%M} ({self.latencia_ms} ms, {self.perdida_pct} %)'
+
+
 class EventoSaturacionEnlace(models.Model):
     """Un período en que el enlace de una farmacia estuvo saturado — ver
     apps.monitoreo.saturacion (§10-CS).

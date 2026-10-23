@@ -6,7 +6,8 @@ from .enlaces import avisar_reanudacion_monitoreo, notificar_cambios_enlaces, so
 from .mikrotik import sincronizar_ancho_banda_farmacias, solicitar_sondeo_red_farmacias_via_agente
 from .services import (
     escalar_alertas_abiertas, evaluar_cruce_monitoreo, purgar_eventos_monitoreo_antiguos, purgar_metricas_antiguas,
-    purgar_muestras_red_antiguas, purgar_muestras_servicio_pos_antiguas, resolver_alertas_de_reglas_que_no_aplican,
+    purgar_muestras_enlace_antiguas, purgar_muestras_red_antiguas, purgar_muestras_servicio_pos_antiguas,
+    resolver_alertas_de_reglas_que_no_aplican,
     solicitar_sondeo_activos_via_agente,
 )
 
@@ -37,6 +38,13 @@ def purgar_muestras_red_task():
     política nativa que la respalda desde la migración 0035."""
     resultado = purgar_muestras_red_antiguas(dias=30)
     return f'muestra_red_farmacia: {resultado}.'
+
+
+@shared_task(name='apps.monitoreo.tasks.purgar_muestras_enlace_task')
+def purgar_muestras_enlace_task():
+    """Diaria (ver CELERY_BEAT_SCHEDULE). Historial de latencia y pérdida de enlaces."""
+    resultado = purgar_muestras_enlace_antiguas(dias=30)
+    return f'muestra_enlace_farmacia: {resultado}.'
 
 
 @shared_task(name='apps.monitoreo.tasks.purgar_muestras_servicio_pos_task')

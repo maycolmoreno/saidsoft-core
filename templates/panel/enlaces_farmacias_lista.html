@@ -362,16 +362,19 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
                 <td class="px-3 py-2.5">
                     <span class="franja-24h" role="img"
                           aria-label="{% if d.pct is None %}Sin sondeo en las últimas 24 horas{% else %}{{ d.caidas }} caída{{ d.caidas|pluralize }} en 24 horas, disponibilidad {{ d.pct|floatformat:1 }} por ciento{% endif %}">
-                        {% for b in d.franja %}<i class="franja-{{ b }}"></i>{% endfor %}
+                        {% for b in d.franja %}<i class="franja-{{ b.estado }}" title="{{ b.titulo }}"></i>{% endfor %}
                     </span>
                 </td>
                 <td class="px-3 py-2.5 text-right num font-semibold tono-{{ d.tono }}" style="color:var(--tono);">
                     {% if d.pct is not None %}{{ d.pct|floatformat:1 }} %{% else %}—{% endif %}
+                    {% comment %} Pérdida del día sin contar las caídas (esas ya restan disponibilidad). {% endcomment %}
+                    {% if d.perdida %}<div class="text-xs font-normal {% if d.perdida >= 10 %}text-[var(--warning)]{% else %}text-[var(--text-faint)]{% endif %}" title="Paquetes perdidos en los sondeos de 24 h que no fueron caída">pérdida {{ d.perdida|floatformat:1 }} %</div>{% endif %}
                 </td>
-                {% endwith %}
                 <td class="px-3 py-2.5 text-right num text-[var(--text-faint)] text-xs">
                     {% if fila.estado.latencia_ms %}{{ fila.estado.latencia_ms|floatformat:0 }} ms{% else %}—{% endif %}
+                    {% if d.latencia_mediana is not None %}<div title="Mediana y pico de las últimas 24 h">24 h: {{ d.latencia_mediana }} / pico {{ d.latencia_pico }} ms</div>{% endif %}
                 </td>
+                {% endwith %}
                 <td class="px-3 py-2.5 text-right num text-xs">
                     {% if fila.total_kbps is not None %}
                     <div class="flex items-center justify-end gap-1.5">
@@ -423,9 +426,10 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
 
 <div class="franja-leyenda">
     <span><i class="franja-arriba"></i>Arriba</span>
+    <span><i class="franja-degradado"></i>Con pérdida o lento</span>
     <span><i class="franja-caido"></i>Caído</span>
     <span><i class="franja-sin"></i>Sin sondeo</span>
-    <span>Cada bloque = 30 minutos. Orden: primero las caídas, después las de menor disponibilidad.</span>
+    <span>Cada bloque = 30 minutos; pasa el mouse para ver la pérdida y el pico. Orden: primero las caídas, después las de menor disponibilidad.</span>
 </div>
 {% include "panel/_paginador.html" %}
 {% endblock %}

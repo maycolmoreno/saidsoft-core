@@ -1167,6 +1167,15 @@ def purgar_muestras_red_antiguas(*, dias: int = 30) -> ResultadoPurga:
     return _purgar_serie(MuestraRedFarmacia, 'muestra_red_farmacia', dias)
 
 
+def purgar_muestras_enlace_antiguas(*, dias: int = 30) -> ResultadoPurga:
+    """Acota `MuestraEnlaceFarmacia` (historial de latencia y pérdida de enlaces) a
+    `dias`. Misma relación con la retención nativa de la migración 0051 que las demás
+    series: en TimescaleDB suelta chunks, sin él borra filas. Ver `_purgar_serie`."""
+    from .models import MuestraEnlaceFarmacia
+
+    return _purgar_serie(MuestraEnlaceFarmacia, 'muestra_enlace_farmacia', dias)
+
+
 def purgar_muestras_servicio_pos_antiguas(*, dias: int = 30) -> ResultadoPurga:
     """Borra MuestraServicioPos más viejas que `dias`.
 

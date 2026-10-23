@@ -13,11 +13,25 @@ apps.activos.management.commands.crear_tecnicos_soporte.NOMBRE_DIRECTORIO_A_CEDU
 comparar texto) — correr `crear_tecnicos_soporte` antes de este comando.
 
 Uso:
-    python manage.py importar_directorio_sucursales directorio_sucursal_Agosto.xlsx
     python manage.py importar_directorio_sucursales directorio_sucursal_Agosto.xlsx            # simulacro
     python manage.py importar_directorio_sucursales directorio_sucursal_Agosto.xlsx --aplicar
+    python manage.py importar_directorio_sucursales data.cresio.com.json --solo-vacios       # simulacro
+    python manage.py importar_directorio_sucursales data.cresio.com.json --solo-vacios --aplicar
+
+**Dos formatos, el mismo directorio.** El Excel mensual de RRHH y el JSON que exporta
+data.cresio.com traen las mismas columnas con otros nombres; se reconoce por la extensión.
+El JSON no trae técnico: con él `tecnico_asignado` no se toca.
+
+**`--solo-vacios`** completa únicamente los campos que hoy están vacíos en SAIDSOFT y no
+pisa nada cargado (sin él, el directorio manda sobre lo que haya, que es el uso mensual).
+Existe para llenar huecos -teléfono y administrador para los avisos de enlace caído
+(23-oct-2026)- sin arriesgar datos que alguien corrigió a mano. El simulacro lista, farmacia
+por farmacia, qué campo cambiaría y a qué valor.
 """
 import datetime
+import json
+from email.utils import parsedate_to_datetime
+from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
@@ -33,13 +47,6 @@ COLUMNAS = {
     'tipo_sucursal': 14, 'latitud': 15, 'longitud': 16, 'formato_farmacia': 17,
     'parroquia': 18, 'fecha_inicio_op': 19, 'fecha_inicio_ruc': 20, 'tecnico': 21,
 }
-
-CAMPOS_ACTUALIZABLES = [
-    'nombre', 'administrador', 'coordinador_zonal', 'coordinador_regional', 'ciudad', 'provincia',
-    'parroquia', 'direccion', 'horario', 'tipo_sucursal', 'formato_farmacia', 'latitud', 'longitud',
-    'fecha_inicio_operacion', 'fecha_inicio_ruc', 'extension_telefonica', 'telefono', 'email',
-    'tecnico_asignado',
-]
 
 
 def _limpiar_texto(valor):
@@ -71,14 +78,64 @@ def _a_fecha(valor):
         return valor.date()
     if isinstance(valor, datetime.date):
         return valor
+    if isinstance(valor, str) and valor.strip():
+        # El JSON trae fechas HTTP ("Mon, 22 Nov 2021 00:00:00 GMT").
+        try:
+            return parsedate_to_datetime(valor).date()
+        except (TypeError, ValueError):
+            return None
     return None
+
+
+# Nombre en el JSON de data.cresio.com -> clave de COLUMNAS (las demás se llaman igual).
+CLAVES_JSON = {'ext_ip': 'extension', 'correo_electronico': 'correo'}
+
+
+def _filas_xlsx(ruta):
+    """`(numero_de_fila, {clave: valor})` del Excel de RRHH, hoja "Directorio Personal"."""
+    import openpyxl
+
+    try:
+        libro = openpyxl.load_workbook(ruta, data_only=True)
+    except (OSError, KeyError) as exc:
+        raise CommandError(f'No se pudo abrir {ruta}: {exc}')
+    if 'Directorio Personal' not in libro.sheetnames:
+        raise CommandError(f'No se encontró la hoja "Directorio Personal" en {ruta}.')
+    hoja = libro['Directorio Personal']
+    for fila_num, fila in enumerate(hoja.iter_rows(min_row=2, values_only=True), start=2):
+        yield fila_num, {
+            clave: (fila[indice - 1] if indice - 1 < len(fila) else None)
+            for clave, indice in COLUMNAS.items()
+        }
+
+
+def _filas_json(ruta):
+    """Lo mismo desde el JSON de data.cresio.com (una lista de objetos)."""
+    try:
+        datos = json.loads(Path(ruta).read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError) as exc:
+        raise CommandError(f'No se pudo leer {ruta}: {exc}')
+    if not isinstance(datos, list):
+        raise CommandError(f'{ruta}: se esperaba una lista de sucursales.')
+    for numero, registro in enumerate(datos, start=1):
+        if isinstance(registro, dict):
+            yield numero, {CLAVES_JSON.get(k, k): v for k, v in registro.items()}
+
+
+def _codigo(valor):
+    """El JSON trae "GES02 - 232" (código + número interno): el código es lo de antes."""
+    return _limpiar_texto(valor).split(' - ')[0].strip().upper()
 
 
 class Command(BaseCommand):
     help = 'Enriquece las Farmacia ya existentes con el directorio de sucursales de RRHH.'
 
     def add_arguments(self, parser):
-        parser.add_argument('xlsx_path')
+        parser.add_argument('xlsx_path', help='Excel de RRHH (.xlsx) o JSON de data.cresio.com (.json).')
+        parser.add_argument(
+            '--solo-vacios', action='store_true',
+            help='Completa solo los campos vacíos; no pisa nada que ya esté cargado.',
+        )
         # `--aplicar` y no `--dry-run`: la diferencia es cual es el DEFAULT. Con
         # --dry-run habia que acordarse de pedir el simulacro, asi que correr el comando
         # sin flags reescribia los datos de las 700 farmacias. CLAUDE.md lo fija al reves —
@@ -96,35 +153,27 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        import openpyxl
-
         ruta = options['xlsx_path']
         dry_run = not options['aplicar']
-        try:
-            libro = openpyxl.load_workbook(ruta, data_only=True)
-        except (OSError, KeyError) as exc:
-            raise CommandError(f'No se pudo abrir {ruta}: {exc}')
-
-        if 'Directorio Personal' not in libro.sheetnames:
-            raise CommandError(f'No se encontró la hoja "Directorio Personal" en {ruta}.')
-        hoja = libro['Directorio Personal']
+        solo_vacios = options['solo_vacios']
+        es_json = ruta.lower().endswith('.json')
+        filas = _filas_json(ruta) if es_json else _filas_xlsx(ruta)
 
         valores_tipo_sucursal = {c[0] for c in Farmacia.TipoSucursal.choices}
         valores_formato = {c[0] for c in Farmacia.FormatoFarmacia.choices}
         colaboradores_por_cedula = {c.cedula: c for c in Colaborador.objects.all()}
 
-        actualizadas, sin_farmacia, sin_tecnico, errores = [], [], [], []
+        actualizadas, sin_farmacia, sin_tecnico, errores, cambios = [], [], [], [], []
         # Una consulta para todas, no una por fila.
         farmacias = {f.codigo: f for f in Farmacia.objects.all()}
 
         with transaction.atomic():
             sp = transaction.savepoint()
-            for fila_num, fila in enumerate(hoja.iter_rows(min_row=2, values_only=True), start=2):
-                def _col(clave):
-                    indice = COLUMNAS[clave] - 1
-                    return fila[indice] if indice < len(fila) else None
+            for fila_num, datos in filas:
+                def _col(clave, datos=datos):
+                    return datos.get(clave)
 
-                codigo = _limpiar_texto(_col('sucursal')).upper()
+                codigo = _codigo(_col('sucursal'))
                 if not codigo:
                     continue
 
@@ -145,7 +194,7 @@ class Command(BaseCommand):
                     )
                     formato_farmacia = ''
 
-                nombre_tecnico = _limpiar_texto(_col('tecnico')).upper()
+                nombre_tecnico = '' if es_json else _limpiar_texto(_col('tecnico')).upper()
                 tecnico = None
                 if nombre_tecnico and nombre_tecnico != 'N/D':
                     cedula_tecnico = NOMBRE_DIRECTORIO_A_CEDULA.get(nombre_tecnico)
@@ -156,7 +205,8 @@ class Command(BaseCommand):
                 extension = _col('extension')
                 try:
                     extension = int(extension) if extension not in (None, '') else None
-                    if extension is not None and extension < 0:
+                    # 0 no es una extensión: así marca el directorio "sin extensión".
+                    if extension is not None and extension <= 0:
                         extension = None
                 except (TypeError, ValueError):
                     extension = None
@@ -186,8 +236,12 @@ class Command(BaseCommand):
                     'email': _limpiar_texto(_col('correo')),
                     'tecnico_asignado': tecnico,
                 }
+                cambiados = []
                 for campo, valor in nuevos.items():
                     if valor in (None, ''):
+                        continue
+                    actual = getattr(farmacia, campo)
+                    if solo_vacios and actual not in (None, ''):
                         continue
                     # Una celda más larga que la columna abortaba la importación ENTERA con
                     # un DataError de PostgreSQL. Se recorta y se avisa.
@@ -195,10 +249,15 @@ class Command(BaseCommand):
                     if largo and isinstance(valor, str) and len(valor) > largo:
                         errores.append(f'fila {fila_num} ({codigo}): {campo} recortado a {largo} caracteres.')
                         valor = valor[:largo]
+                    if actual != valor:
+                        cambios.append(f'{codigo}: {campo}: {actual!r} -> {valor!r}')
+                        cambiados.append(campo)
                     setattr(farmacia, campo, valor)
 
+                if not cambiados:
+                    continue
                 if not dry_run:
-                    farmacia.save(update_fields=CAMPOS_ACTUALIZABLES)
+                    farmacia.save(update_fields=cambiados)
                 actualizadas.append(codigo)
 
             if dry_run:
@@ -207,7 +266,13 @@ class Command(BaseCommand):
                 transaction.savepoint_commit(sp)
 
         prefijo = '[SIMULACRO] ' if dry_run else ''
-        self.stdout.write(self.style.SUCCESS(f'{prefijo}{len(actualizadas)} farmacia(s) enriquecida(s).'))
+        modo = ' (solo campos vacíos)' if solo_vacios else ''
+        self.stdout.write(self.style.SUCCESS(
+            f'{prefijo}{len(actualizadas)} farmacia(s) con cambios{modo}.',
+        ))
+        if cambios and (dry_run or solo_vacios):
+            for linea in cambios:
+                self.stdout.write(f'  {linea}')
         if sin_farmacia:
             self.stdout.write(self.style.ERROR(
                 f'{len(sin_farmacia)} código(s) del directorio sin Farmacia todavía en SAIDSOFT '

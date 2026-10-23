@@ -762,6 +762,60 @@ class ImportarDirectorioSucursalesTests(TestCase):
         self.assertEqual(self.farmacia.tecnico_asignado, self.tecnico)
         self.assertEqual(self.farmacia.administrador, 'SASINTUÑA BONE MARTHA')  # lo que sí vino
 
+    def _json(self, **registro):
+        import json
+
+        base = {
+            'sucursal': 'GES07 - 246', 'nombre_sucursal': 'FARMACIAS SAN GREGORIO GES07',
+            'administrador': 'SASINTUÑA BONE MARTHA', 'celular': '0990051735', 'ext_ip': 0,
+            'correo_electronico': 'ges07@sangregorio.com.ec', 'tipo_sucursal': 'PROPIA',
+            'formato_farmacia': 'MOSTRADOR', 'latitud': '0.97', 'longitud': '-79.65',
+            'fecha_inicio_op': 'Mon, 07 Feb 2022 00:00:00 GMT', 'fecha_inicio_ruc': None,
+        }
+        base.update(registro)
+        ruta = tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w', encoding='utf-8')
+        json.dump([base], ruta)
+        ruta.close()
+        return ruta.name
+
+    def test_lee_el_json_de_data_cresio(self):
+        """El código viene como "GES07 - 246", las fechas en formato HTTP y ext_ip 0 = sin extensión."""
+        call_command('importar_directorio_sucursales', self._json(), '--aplicar', stdout=io.StringIO())
+        self.farmacia.refresh_from_db()
+        self.assertEqual(self.farmacia.telefono, '0990051735')
+        self.assertEqual(self.farmacia.administrador, 'SASINTUÑA BONE MARTHA')
+        self.assertEqual(self.farmacia.email, 'ges07@sangregorio.com.ec')
+        self.assertEqual(self.farmacia.fecha_inicio_operacion, datetime.date(2022, 2, 7))
+        self.assertIsNone(self.farmacia.extension_telefonica)
+
+    def test_el_json_no_toca_el_tecnico(self):
+        self.farmacia.tecnico_asignado = self.tecnico
+        self.farmacia.save()
+        call_command('importar_directorio_sucursales', self._json(), '--aplicar', stdout=io.StringIO())
+        self.farmacia.refresh_from_db()
+        self.assertEqual(self.farmacia.tecnico_asignado, self.tecnico)
+
+    def test_solo_vacios_completa_huecos_y_no_pisa_lo_cargado(self):
+        self.farmacia.administrador = 'CARGADO A MANO'
+        self.farmacia.save()
+        salida = io.StringIO()
+        call_command(
+            'importar_directorio_sucursales', self._json(), '--solo-vacios', '--aplicar', stdout=salida,
+        )
+        self.farmacia.refresh_from_db()
+        self.assertEqual(self.farmacia.administrador, 'CARGADO A MANO')
+        self.assertEqual(self.farmacia.telefono, '0990051735')
+        self.assertIn("GES07: telefono: '' -> '0990051735'", salida.getvalue())
+        self.assertNotIn('administrador', salida.getvalue())
+
+    def test_el_simulacro_lista_los_cambios_y_no_escribe(self):
+        salida = io.StringIO()
+        call_command('importar_directorio_sucursales', self._json(), '--solo-vacios', stdout=salida)
+        self.assertIn('[SIMULACRO] 1 farmacia(s) con cambios (solo campos vacíos)', salida.getvalue())
+        self.assertIn("GES07: telefono: '' -> '0990051735'", salida.getvalue())
+        self.farmacia.refresh_from_db()
+        self.assertEqual(self.farmacia.telefono, '')
+
 
 class ComandoFirmadoTests(TestCase):
     """SEC-1 (auditoría 22-ago-2026): la firma HMAC de un comando sin parámetros
