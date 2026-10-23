@@ -196,6 +196,29 @@ POS no crítico > advertencia. Ver apps/monitoreo/incidencias.py para por qué e
 
 Solo aparece si hay algo. Un bloque vacío permanente enseña a no mirarlo.
 {% endcomment %}
+{% comment %}
+Decisiones pendientes: operaciones que esperan a una persona, no alertas. Una orden incierta
+salió y no se sabe si se ejecutó: no se reenvía sola, hay que mirar la estación y resolverla.
+Solo aparece si hay algo, como la cola de abajo.
+{% endcomment %}
+{% if decisiones.hay %}
+<div class="decisiones mb-4" role="region" aria-label="Decisiones pendientes">
+    <span class="decisiones-titulo">Esperan una decisión</span>
+    {% if decisiones.ordenes_inciertas %}
+    <a href="{% if perms.catalogo.view_ordenagente %}/admin/catalogo/ordenagente/?requiere_revision__exact=1{% else %}#{% endif %}" class="decision tono-warning">
+        <strong class="num">{{ decisiones.ordenes_inciertas }}</strong> orden{{ decisiones.ordenes_inciertas|pluralize:"es" }} incierta{{ decisiones.ordenes_inciertas|pluralize:"s" }}
+        <span>salieron y no se sabe si se ejecutaron</span>
+    </a>
+    {% endif %}
+    {% if decisiones.despliegues_pausados %}
+    <a href="{% url 'panel:despliegues_lista' %}?q=pausado" class="decision tono-critical">
+        <strong class="num">{{ decisiones.despliegues_pausados }}</strong> despliegue{{ decisiones.despliegues_pausados|pluralize:"s" }} frenado{{ decisiones.despliegues_pausados|pluralize:"s" }}
+        <span>revisar y reanudar o cerrar</span>
+    </a>
+    {% endif %}
+</div>
+{% endif %}
+
 {% if incidencias %}
 <div class="mb-6">
     <div class="flex items-baseline justify-between mb-3">
@@ -608,10 +631,10 @@ Ver apps.monitoreo.incidencias.mosaico_farmacias.
         </div>
         <div class="mosaico-celdas">
             {% for c in grupo.celdas %}
-            <div class="mosaico-celda est-{{ c.estado }}"
+            <a href="{% url 'panel:estaciones_lista' %}?q={{ c.farmacia.codigo }}" class="mosaico-celda est-{{ c.estado }}"
                  title="{{ c.farmacia.codigo }}{% if c.titulo %} · {{ c.titulo }}{% if c.detalle %}: {{ c.detalle }}{% endif %}{% if c.otros %} (+{{ c.otros }} síntoma{{ c.otros|pluralize:"s" }} más){% endif %}{% else %} · operativa{% endif %}">
                 {{ c.farmacia.codigo }}
-            </div>
+            </a>
             {% endfor %}
         </div>
     </div>

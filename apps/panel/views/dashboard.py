@@ -55,6 +55,22 @@ from apps.mqtt_worker.services import NOMBRE_WORKER_MQTT
 SEGUNDOS_REFRESCO_TABLERO = 60
 
 
+def _decisiones_pendientes(visibles):
+    """Lo que espera una decisión del operador, no una alerta: órdenes inciertas (salieron y
+    no se sabe si se ejecutaron: no se reenvían solas) y despliegues frenados. La cola de
+    incidencias mira la salud de las farmacias; esto mira las operaciones."""
+    from apps.catalogo.models import OrdenAgente
+    from apps.catalogo.ordenes import INCIERTAS, VIVOS
+    from apps.despliegues.models import Despliegue
+
+    inciertas = OrdenAgente.objects.filter(
+        Q(estado__in=list(INCIERTAS)) | Q(requiere_revision=True, estado__in=list(VIVOS)),
+        estacion__farmacia__unidad_negocio__in=visibles,
+    ).count()
+    pausados = Despliegue.objects.filter(estado=Despliegue.Estado.PAUSADO, unidad_negocio__in=visibles).count()
+    return {'ordenes_inciertas': inciertas, 'despliegues_pausados': pausados, 'hay': bool(inciertas or pausados)}
+
+
 def _contexto_vivo(request):
     """Todo lo que cambia solo. Lo comparten la carga inicial y el refresco de HTMX.
 
@@ -360,6 +376,7 @@ def _contexto_vivo(request):
         # cada fila de la Zona 0 dice cuando llego SU dato. El tablero no tenia ninguna de
         # las dos, asi que una pantalla abierta desde las 8:00 mostraba las 8:00 y no lo
         # decia (hallazgo D-07).
+        'decisiones': _decisiones_pendientes(visibles),
         'calculado_en': timezone.now(),
         'segundos_refresco': SEGUNDOS_REFRESCO_TABLERO,
     }

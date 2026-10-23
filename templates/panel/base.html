@@ -244,11 +244,13 @@
     </aside>
 
     <header class="topbar">
-        <div class="search">
-            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <span>Buscar estación, activo, script…</span>
+        {% comment %} Búsqueda rápida (Ctrl K). Hasta el 23-oct-2026 era solo este texto, sin
+           buscar nada. Ver apps/panel/views/paleta.py. {% endcomment %}
+        <button type="button" class="search" id="paleta-abrir" aria-haspopup="dialog" aria-controls="paleta">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <span>Buscar estación, farmacia, activo…</span>
             <kbd>Ctrl K</kbd>
-        </div>
+        </button>
         <div class="topbar-spacer"></div>
         {% if unidades_negocio_selector %}
         <form method="post" action="{% url 'panel:unidad_negocio_activar' %}" style="display:flex;align-items:center;gap:6px;">
@@ -328,6 +330,39 @@
 <dialog id="modal-form" class="modal" aria-modal="true">
     <div id="modal-form-content"></div>
 </dialog>
+<dialog id="paleta" class="paleta" aria-label="Búsqueda rápida">
+    <label for="paleta-q" class="sr-only">Buscar</label>
+    <input type="search" id="paleta-q" name="q" autocomplete="off" placeholder="Código de estación o farmacia, serie, activo, versión del POS…"
+           hx-get="{% url 'panel:paleta_resultados' %}" hx-trigger="input changed delay:200ms, search"
+           hx-target="#paleta-resultados" hx-swap="innerHTML">
+    <div id="paleta-resultados" class="paleta-resultados" aria-live="polite"></div>
+    <div class="paleta-pie"><kbd>↑</kbd><kbd>↓</kbd> moverse · <kbd>Enter</kbd> abrir · <kbd>Esc</kbd> cerrar</div>
+</dialog>
+<script>
+    // Búsqueda rápida: Ctrl K (o Cmd K) desde cualquier pantalla, flechas para moverse.
+    (function(){
+        var paleta = document.getElementById('paleta');
+        var campo = document.getElementById('paleta-q');
+        function abrir(){
+            if (!paleta.open) { paleta.showModal(); }
+            campo.select();
+        }
+        document.getElementById('paleta-abrir').addEventListener('click', abrir);
+        document.addEventListener('keydown', function(e){
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); abrir(); }
+        });
+        paleta.addEventListener('keydown', function(e){
+            if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') { return; }
+            var items = Array.prototype.slice.call(paleta.querySelectorAll('.paleta-item'));
+            if (!items.length) { return; }
+            e.preventDefault();
+            var i = items.indexOf(document.activeElement);
+            var siguiente = e.key === 'ArrowDown' ? Math.min(i + 1, items.length - 1) : i - 1;
+            if (siguiente < 0) { campo.focus(); } else { items[siguiente].focus(); }
+        });
+        paleta.addEventListener('click', function(e){ if (e.target === paleta) { paleta.close(); } });
+    })();
+</script>
 <script>
     // Reloj en vivo del topbar
     function tick(){

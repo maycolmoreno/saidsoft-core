@@ -40,6 +40,7 @@ urlpatterns = [
     path('estaciones/<int:pk>/rechazar/', views.estacion_rechazar, name='estacion_rechazar'),
     path('estaciones/<int:pk>/reiniciar/', views.estacion_reiniciar, name='estacion_reiniciar'),
     path('estaciones/<int:pk>/', views.estacion_ficha, name='estacion_ficha'),
+    path('buscar/', views.paleta_resultados, name='paleta_resultados'),
     path('estaciones/<int:pk>/info/', views.estacion_info_modal, name='estacion_info_modal'),
     path('estaciones/<int:pk>/info/solicitar/', views.estacion_info_solicitar, name='estacion_info_solicitar'),
     path(

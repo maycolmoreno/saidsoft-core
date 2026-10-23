@@ -1,0 +1,18 @@
+{% comment %} Resultados de la búsqueda rápida (Ctrl K). Ver apps/panel/views/paleta.py. {% endcomment %}
+{% if corto %}
+<p class="paleta-vacio">Escribí al menos 2 caracteres: código de estación o farmacia, serie, activo, versión del POS o el nombre de una página.</p>
+{% else %}
+{% for grupo, filas in grupos %}
+<div class="paleta-grupo">
+    <div class="paleta-grupo-titulo">{{ grupo }}</div>
+    {% for f in filas %}
+    <a href="{{ f.url }}" class="paleta-item">
+        <span class="paleta-item-titulo">{{ f.titulo }}</span>
+        {% if f.detalle %}<span class="paleta-item-detalle">{{ f.detalle }}</span>{% endif %}
+    </a>
+    {% endfor %}
+</div>
+{% empty %}
+<p class="paleta-vacio">Nada coincide con «{{ termino }}».</p>
+{% endfor %}
+{% endif %}
