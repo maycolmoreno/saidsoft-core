@@ -659,7 +659,7 @@ que siguen estan en el orden en que hay que hacerlos.
 
 Que entra: las cuatro fases del tablero (§10-BI) y cinco hallazgos ALTO de la auditoria
 —`INV-01`, `RIESGO-06`, `B-1`, `B-2` y `A-6`— documentados en §10-BJ a §10-BM y en
-`docs/auditoria/fase5-triage.md`.
+`docs/auditoria/fase5-triage.md` (retirado, ver `docs/RETIRADOS.md`).
 
 ### 1. Antes de tocar nada: anotar los numeros viejos
 

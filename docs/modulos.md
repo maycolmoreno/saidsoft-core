@@ -12,17 +12,16 @@ desarrolladores externos.
 | Cómo se usa una funcionalidad del panel | [`README.md`](../README.md) |
 | Por qué se decidió algo, y qué costó descubrirlo | [`PLAN_MODERNIZACION.md`](../PLAN_MODERNIZACION.md) |
 | Cómo levantar, desplegar y qué pendientes hay | [`CLAUDE.md`](../CLAUDE.md) |
-| Problemas de arquitectura y consultas pesadas | [`auditoria-arquitectura.md`](auditoria-arquitectura.md) |
+| Mapa de dependencias y puntos únicos de falla | [`consolidacion/MAPA_DEPENDENCIAS.md`](consolidacion/MAPA_DEPENDENCIAS.md) |
 | Casos de uso y diagrama de clases | [`entrega-proyecto/`](entrega-proyecto/) |
 | Alcance y decisiones de la app de campo | [`movil-campo/README.md`](../movil-campo/README.md) |
 
 ---
 
 > **Documentos relacionados.** Este archivo es la referencia del día a día: qué hace cada
-> app y qué mirar cuando algo falla. Para la foto de la plataforma completa:
-> [`auditoria-capacidades.md`](auditoria-capacidades.md) (qué puede responder hoy),
-> [`capacidad-2030.md`](capacidad-2030.md) (si aguanta 1.300 farmacias) y
-> [`prioridad-2030.md`](prioridad-2030.md) (qué atender primero).
+> app y qué mirar cuando algo falla. El alcance vigente está en
+> [`producto/SAIDSOFT_RMM_1_0_ALCANCE.md`](producto/SAIDSOFT_RMM_1_0_ALCANCE.md). Las auditorías
+> de septiembre y octubre de 2026 se retiraron: ver [`RETIRADOS.md`](RETIRADOS.md).
 
 ## El mapa en 30 segundos
 

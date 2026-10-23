@@ -14,17 +14,12 @@ Este es un proyecto independiente: no comparte carpeta con el sistema viejo.
 > falla**. Está escrito para mesa de ayuda y equipo interno: contexto técnico, sin tener
 > que leer el código.
 
-> **¿Buscás la foto de la plataforma?** Tres auditorías del 27-sep-2026, hechas solo por
-> lectura de código con producción inalcanzable:
-> - [`docs/auditoria-capacidades.md`](docs/auditoria-capacidades.md) — qué tiene, qué datos
->   maneja y **qué preguntas puede responder hoy**. Incluye el estado real de Odoo, Zabbix,
->   AD y ESET.
-> - [`docs/capacidad-2030.md`](docs/capacidad-2030.md) — **¿aguanta 1.300 farmacias?**
->   Escenarios de carga, límites técnicos y puntos únicos de falla.
-> - [`docs/prioridad-2030.md`](docs/prioridad-2030.md) — **qué atender primero**: cada
->   módulo en camino crítico, necesario para escalar, aguas abajo o prematuro.
-> - [`docs/auditoria-arquitectura.md`](docs/auditoria-arquitectura.md) — auditoría técnica
->   del panel y addendum trazable de modularidad y ciclo de vida de una estación.
+> **¿Buscás la foto de la plataforma?** Lo vigente está en
+> [`docs/producto/SAIDSOFT_RMM_1_0_ALCANCE.md`](docs/producto/SAIDSOFT_RMM_1_0_ALCANCE.md) y en
+> [`docs/consolidacion/`](docs/consolidacion/). Las auditorías de septiembre y octubre de 2026
+> (capacidad 2030, arquitectura, centro de monitoreo, SNMP…) se retiraron porque ya no
+> describían el sistema: siguen en el historial de git, ver
+> [`docs/RETIRADOS.md`](docs/RETIRADOS.md).
 
 Nació como el reemplazo del panel de una sola operación (despliegues de POS +
 inventario de activos IT para CRESIO), y se extendió a una plataforma multi-cliente
@@ -474,7 +469,7 @@ Visibles/filtrables desde `/admin/catalogo/farmacia/`.
 La portada del panel: la primera pantalla que ve cualquiera al entrar. Hasta el
 11-oct-2026 era el tablero más pobre del sistema —sin refresco, sin hora del dato y sin
 forma de decir "no sé"— mientras el Centro de Monitoreo, a un clic de distancia, hacía todo
-eso bien. La auditoría completa está en **`docs/auditoria/centro-monitoreo/`** y el
+eso bien. La auditoría completa estaba en **`docs/auditoria/centro-monitoreo/`** (retirada, ver `docs/RETIRADOS.md`) y el
 resumen del cambio en `PLAN_MODERNIZACION.md` §10-BI.
 
 **El orden responde a cuatro preguntas, en secuencia.** No es estético: antes lo primero
@@ -1118,7 +1113,7 @@ contra qué decir "saturado". Se carga en lote con `fijar_ancho_contratado`. Ló
 Todo el resto del monitoreo de este proyecto depende de que la farmacia tenga un **agente
 instalado**, y eso hoy cubre 8 de ~1.800 estaciones. Un ping al equipo de borde no necesita
 nada instalado del otro lado: cubre las ~704 sucursales desde el día uno. Es la capacidad
-que tenía `Cresio_enlaces`, el sistema anterior (ver `docs/evaluacion-cresio-enlaces.md`).
+que tenía `Cresio_enlaces`, el sistema anterior (ver `docs/evaluacion-cresio-enlaces.md`, retirado: `docs/RETIRADOS.md`).
 
 - **`apps/monitoreo/enlaces.py`** — `sondear_enlace()` (ping vía el binario del sistema, no
   una librería ICMP: evita necesitar root/CAP_NET_RAW) y `registrar_sondeo()`, que es el
