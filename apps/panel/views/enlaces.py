@@ -57,7 +57,9 @@ def enlaces_farmacias_lista(request):
     Los KPI se calculan sobre el conjunto COMPLETO, no sobre la página: "154 caídos"
     tiene que seguir diciendo 154 aunque estés mirando la página 3 con 25 filas.
     """
-    from django.db.models import Case, IntegerField, OuterRef, Q, Subquery, TextField, When
+    from django.db.models import (
+        Case, FloatField, IntegerField, OuterRef, Q, Subquery, TextField, Value, When,
+    )
     from django.db.models.functions import Cast
 
     from apps.catalogo.models import Grupo
@@ -154,7 +156,36 @@ def enlaces_farmacias_lista(request):
     # Caídos primero: es lo que el operador vino a ver. Después activos, y al final los
     # que nunca se sondearon. El orden se hace en la base porque ahora se pagina: un
     # `sorted()` en Python solo ordenaría las 25 filas de la página.
+    # Disponibilidad de 24 h de TODO el alcance (no solo la página): el KPI promedio y el
+    # orden "menor disponibilidad primero" la necesitan entera. Son las caídas que tocan
+    # la ventana, que en un día normal son decenas de filas, no 700.
+    from ..disponibilidad import caidas_por_proveedor, intervalos_24h, pct_disponible, resumen_de_fila
+
+    ahora = timezone.now()
+    alcance_ids = list(base.values_list('pk', flat=True))
+    sin_historia = set(base.filter(sin_dato | nunca).values_list('pk', flat=True))
+    caidas_24h = intervalos_24h(alcance_ids, ahora)
+    pct_por_farmacia = {
+        fid: pct_disponible(iv) for fid, iv in caidas_24h.items() if fid not in sin_historia
+    }
+    medibles = len(alcance_ids) - len(sin_historia)
+    disponibilidad_red = (
+        round(100 - sum(100 - p for p in pct_por_farmacia.values()) / medibles, 2) if medibles else None
+    )
+    caida_mas_vieja = (
+        EventoEnlaceFarmacia.objects
+        .filter(fin__isnull=True, farmacia_id__in=alcance_ids)
+        .exclude(farmacia_id__in=sin_historia)
+        .order_by('inicio').values_list('inicio', flat=True).first()
+    )
+
     listado = listado.annotate(
+        # Dentro de cada estado, la de menor disponibilidad primero. Solo las farmacias
+        # con alguna caída en 24 h tienen un When; el resto es 100.
+        orden_disponibilidad=Case(
+            *[When(pk=fid, then=Value(pct)) for fid, pct in pct_por_farmacia.items()],
+            default=Value(100.0), output_field=FloatField(),
+        ),
         orden_estado=Case(
             # Las caidas reales primero; las que nunca respondieron despues de las
             # activas, porque no son trabajo de hoy sino de revisar la carga de datos.
@@ -164,7 +195,7 @@ def enlaces_farmacias_lista(request):
             default=2,
             output_field=IntegerField(),
         ),
-    ).order_by('orden_estado', 'codigo')
+    ).order_by('orden_estado', 'orden_disponibilidad', 'codigo')
 
     pagina, query_filtros = paginar(listado, request)
 
@@ -173,7 +204,7 @@ def enlaces_farmacias_lista(request):
     # cortes de "Que atender primero", para que la fila y el bloque no se contradigan.
     from apps.monitoreo.enlaces import incidentes_de_enlace, reanudacion_vigente
 
-    alcance = list(base.values_list('pk', flat=True))
+    alcance = alcance_ids
     incidentes = incidentes_de_enlace(alcance)
     simultaneas = incidentes['clase_por_farmacia']
 
@@ -183,9 +214,11 @@ def enlaces_farmacias_lista(request):
         total_kbps = None
         if farmacia.bw_rx is not None or farmacia.bw_tx is not None:
             total_kbps = round((farmacia.bw_rx or 0) + (farmacia.bw_tx or 0), 1)
+        sondeada = bool(estado and estado.alcanzable is not None and not estado.nunca_respondio)
         filas.append({
             'farmacia': farmacia,
             'estado': estado,
+            'disponibilidad': resumen_de_fila(caidas_24h.get(farmacia.pk, []), sondeada, ahora),
             'alcanzable': estado.alcanzable if estado else None,
             # La fila tiene que decir lo mismo que el KPI: marcar "Caído" un sitio que
             # nunca respondió manda a alguien a abrir un ticket con el proveedor por un
@@ -222,6 +255,10 @@ def enlaces_farmacias_lista(request):
     return render(request, 'panel/enlaces_farmacias_lista.html', {
         # Qué atender primero: cortes masivos como un incidente, y las aisladas aparte.
         'incidentes': incidentes,
+        'disponibilidad_red': disponibilidad_red,
+        'medibles': medibles,
+        'caida_mas_vieja': caida_mas_vieja,
+        'caidas_por_proveedor': caidas_por_proveedor(alcance_ids, ahora),
         'reanudacion': reanudacion_vigente(alcance),
         'filas': filas,
         'activas': activas,

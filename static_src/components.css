@@ -948,3 +948,48 @@ a.mosaico-celda:hover{ outline:2px solid var(--text); outline-offset:1px; }
 .inventario-icono .icono-tipo{ width:19px; height:19px; stroke:var(--text-dim); }
 a.chip-edad{ text-decoration:none; display:inline-block; }
 a.chip-edad:hover{ box-shadow:inset 0 0 0 1px var(--tono); }
+
+/* ---------- Monitoreo de servidores (/monitoreo/) ----------
+   Tarjeta con CPU, memoria y disco en el rango elegido. El borde toma el tono de la
+   peor métrica. Ver apps/panel/series_rango.py. */
+.rango-selector{ display:inline-flex; gap:4px; padding:3px; border-radius:var(--radius-md); background:var(--overlay-hover); }
+.rango-selector a{ padding:5px 12px; border-radius:var(--radius-sm); font-size:13px; color:var(--text-dim); text-decoration:none; }
+.rango-selector a:hover{ color:var(--text); }
+.rango-selector a.activo{ background:var(--card); color:var(--text); font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+.servidor-tarjeta{ padding:16px 18px; border-color:var(--border); }
+.servidor-tarjeta.tono-warning, .servidor-tarjeta.tono-critical{ border-color:var(--tono); box-shadow:inset 3px 0 0 var(--tono); }
+.servidor-codigo{ display:block; font-family:var(--font-mono, ui-monospace, monospace); font-size:15.5px; font-weight:600; color:var(--text); text-decoration:none; }
+.servidor-codigo:hover{ color:var(--accent); }
+.servidor-graficas{ display:flex; flex-direction:column; gap:8px; }
+.servidor-fila{ display:grid; grid-template-columns:72px minmax(0,1fr) 70px; gap:12px; align-items:center; }
+.servidor-fila-etq{ font-size:12.5px; color:var(--text-dim); }
+.servidor-fila .spark{ height:44px; }
+.servidor-fila-valor{ text-align:right; font-size:17px; font-weight:700; }
+.servidor-fila-valor small{ font-size:11px; font-weight:600; }
+.servidor-pie{
+  display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:12px; padding-top:10px;
+  border-top:1px solid var(--border); font-size:12px; color:var(--text-faint);
+}
+.servidor-pie b{ color:var(--text-dim); font-weight:600; }
+
+/* ---------- Enlaces de farmacias: últimas 24 h ----------
+   KPIs del día y franja de 48 bloques de 30 min por farmacia. Ver apps/panel/disponibilidad.py. */
+.enlaces-24h{ display:grid; gap:12px; grid-template-columns:repeat(4, minmax(0,1fr)); }
+.enlaces-24h > .card[class*="tono-"]{ border-color:var(--tono); }
+.enlaces-24h > .tono-good{ border-color:var(--border); }
+.enlaces-24h-valor{ font-size:28px; font-weight:700; line-height:1.15; color:var(--tono); }
+.enlaces-24h-proveedores{ grid-column:span 2; }
+@media (max-width: 900px){ .enlaces-24h{ grid-template-columns:1fr 1fr; } }
+@media (max-width: 560px){ .enlaces-24h{ grid-template-columns:1fr; } .enlaces-24h-proveedores{ grid-column:auto; } }
+.proveedor-barra{ display:grid; grid-template-columns:110px minmax(0,1fr) 36px; gap:10px; align-items:center; font-size:12.5px; margin-bottom:5px; }
+.proveedor-barra b{ text-align:right; }
+.proveedor-barra-pista{ height:9px; border-radius:99px; background:var(--overlay-hover); overflow:hidden; }
+.proveedor-barra-pista > span{ display:block; height:100%; border-radius:99px; background:var(--critical); }
+.franja-24h{ display:flex; gap:1px; height:20px; min-width:240px; }
+.franja-24h i, .franja-leyenda i{ flex:1; border-radius:2px; }
+.franja-arriba{ background:var(--good); opacity:.85; }
+.franja-caido{ background:var(--critical); }
+.franja-sin{ background:var(--overlay-hover); box-shadow:inset 0 0 0 1px var(--border); }
+.franja-leyenda{ display:flex; flex-wrap:wrap; gap:8px 16px; margin-top:10px; font-size:12px; color:var(--text-faint); }
+.franja-leyenda span{ display:inline-flex; align-items:center; gap:6px; }
+.franja-leyenda i{ flex:none; width:12px; height:12px; display:inline-block; }

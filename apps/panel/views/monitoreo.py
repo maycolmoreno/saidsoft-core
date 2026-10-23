@@ -16,8 +16,10 @@ from apps.cuentas.services import (
 from apps.monitoreo.forms import VentanaMantenimientoForm
 from apps.monitoreo.models import MuestraMetrica, VentanaMantenimiento
 from ..indicadores import (
-    METRICAS_RECURSOS, estado_de, indicadores_de_recursos, series_por_estacion,
+    METRICAS_RECURSOS, Metrica, estado_de, indicador, indicadores_de_recursos,
+    series_por_estacion,
 )
+from ..series_rango import RANGOS, estado_de_tarjeta, rango_de, series_en_rango
 from ..busqueda import buscar
 from ..paginacion import paginar
 from ..umbrales import umbrales_de_reglas
@@ -53,6 +55,15 @@ def valores_actuales(muestra):
     el mismo que muestra el resto de la pantalla.
     """
     return {m.clave: getattr(muestra, m.clave, None) if muestra else None for m in METRICAS_RECURSOS}
+
+
+# Las tres métricas que la tarjeta dibuja en grande. Latencia y red siguen en el pie,
+# con su valor de ahora: en un servidor son contexto, no lo que se vigila.
+_POR_CLAVE = {m.clave: m for m in METRICAS_RECURSOS}
+GRAFICAS_DE_TARJETA = tuple(
+    Metrica(c, etiqueta, _POR_CLAVE[c].unidad, _POR_CLAVE[c].decimales, _POR_CLAVE[c].escala_fija)
+    for c, etiqueta in (('cpu_carga_pct', 'CPU'), ('ram_usada_pct', 'Memoria'), ('disco_usado_pct', 'Disco C:'))
+)
 
 
 @login_required
@@ -124,11 +135,25 @@ def monitoreo_lista(request):
     # había que abrir el detalle de la estación para saber si alguno estaba mal.
     reglas = umbrales_de_reglas(unidades_negocio_en_foco(request))
     series = series_por_estacion(ids)
+    # Las tres gráficas grandes de cada tarjeta, en el rango elegido (24 h / 7 / 30 días).
+    # Una consulta agrupada más, también fija para toda la página.
+    rango = rango_de(request)
+    en_rango = series_en_rango(ids, rango)
 
     tarjetas = []
     for estacion in servidores:
         ultima = por_estacion.get(estacion.pk)
+        actuales = valores_actuales(ultima)
+        serie_rango = en_rango.get(estacion.pk, {})
+        graficas = [
+            indicador(m, serie_rango.get(m.clave, []), reglas, ancho=300, alto=48,
+                      valor=actuales.get(m.clave))
+            for m in GRAFICAS_DE_TARJETA
+        ]
         tarjetas.append({
+            'graficas': graficas,
+            'estado_tarjeta': estado_de_tarjeta(graficas),
+            'cpu_pico': serie_rango.get('cpu_pico'),
             'estacion': estacion,
             'ultima': ultima,
             'servicios_caidos': caidos.get(estacion.pk),
@@ -144,6 +169,8 @@ def monitoreo_lista(request):
         'query_filtros': query_filtros,
         'busqueda': busqueda,
         'busqueda_pista': 'Estación, hostname, farmacia o canal…',
+        'rango': rango,
+        'rangos': RANGOS.values(),
     })
 
 

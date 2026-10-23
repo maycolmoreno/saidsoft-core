@@ -56,6 +56,35 @@ tarjeta ya sabía. El href limpia los demás filtros a propósito: la tarjeta cu
 el total, así que al pulsarla tiene que mostrar ese mismo conjunto, no la intersección
 con una búsqueda anterior. La tarjeta activa queda resaltada y su enlace vuelve a "Todos".
 {% endcomment %}
+{% comment %}
+Las últimas 24 horas, sacadas de cada caída registrada (apps/panel/disponibilidad.py).
+Las tarjetas de abajo dicen cómo está la red AHORA; esto dice cómo le fue en el día.
+{% endcomment %}
+<div class="enlaces-24h mb-4">
+    <div class="card p-4 tono-{% if disponibilidad_red is None %}neutral{% elif disponibilidad_red < 95 %}critical{% elif disponibilidad_red < 99 %}warning{% else %}good{% endif %}">
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Disponibilidad de la red · 24 h</div>
+        <div class="enlaces-24h-valor num">{% if disponibilidad_red is not None %}{{ disponibilidad_red|floatformat:1 }} %{% else %}—{% endif %}</div>
+        <div class="text-xs text-[var(--text-faint)]">promedio de {{ medibles }} farmacia{{ medibles|pluralize }} sondeada{{ medibles|pluralize }}</div>
+    </div>
+    <div class="card p-4 tono-{% if caidas %}critical{% else %}good{% endif %}">
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Caídas ahora</div>
+        <div class="enlaces-24h-valor num">{{ caidas }}</div>
+        <div class="text-xs text-[var(--text-faint)]">{% if caida_mas_vieja %}la más vieja desde hace {{ caida_mas_vieja|timesince }}{% else %}ninguna en curso{% endif %}</div>
+    </div>
+    <div class="card p-4 enlaces-24h-proveedores">
+        <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-2">Caídas en 24 h por proveedor</div>
+        {% for p in caidas_por_proveedor %}
+        <div class="proveedor-barra">
+            <span class="truncate">{{ p.nombre }}</span>
+            {% localize off %}<span class="proveedor-barra-pista"><span style="width:{{ p.pct }}%"></span></span>{% endlocalize %}
+            <b class="num">{{ p.n }}</b>
+        </div>
+        {% empty %}
+        <div class="text-sm text-[var(--text-faint)]">Ninguna caída empezó en las últimas 24 horas.</div>
+        {% endfor %}
+    </div>
+</div>
+
 <div class="grid gap-3 mb-5" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));">
     <a href="?" class="card p-4 block hover:opacity-80 transition-opacity" {% if not filtros.estado and not filtros.trafico %}style="outline:2px solid var(--border-strong,var(--border));"{% endif %}>
         <div class="text-[var(--text-faint)] text-xs uppercase tracking-wide mb-1">Total enlaces</div>
@@ -286,12 +315,14 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
 </form>
 
 <div class="card" style="overflow-x:auto;">
-    <table class="w-full text-sm" style="min-width:820px;">
+    <table class="w-full text-sm" style="min-width:1120px;">
         <thead style="background:var(--panel);">
             <tr class="text-[var(--text-faint)] text-xs uppercase tracking-wide">
                 <th class="text-left px-4 py-2.5">Farmacia</th>
                 <th class="text-left px-3 py-2.5">Grupo</th>
                 <th class="text-left px-3 py-2.5">Estado</th>
+                <th class="text-left px-3 py-2.5" style="min-width:250px;">Últimas 24 h <span class="normal-case tracking-normal">(hace 24 h → ahora)</span></th>
+                <th class="text-right px-3 py-2.5">Disponib.</th>
                 <th class="text-right px-3 py-2.5">Latencia</th>
                 <th class="text-right px-3 py-2.5">Tráfico</th>
                 <th class="text-left px-3 py-2.5">Proveedor</th>
@@ -327,6 +358,17 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
                     {% endif %}
                     {% endif %}
                 </td>
+                {% with d=fila.disponibilidad %}
+                <td class="px-3 py-2.5">
+                    <span class="franja-24h" role="img"
+                          aria-label="{% if d.pct is None %}Sin sondeo en las últimas 24 horas{% else %}{{ d.caidas }} caída{{ d.caidas|pluralize }} en 24 horas, disponibilidad {{ d.pct|floatformat:1 }} por ciento{% endif %}">
+                        {% for b in d.franja %}<i class="franja-{{ b }}"></i>{% endfor %}
+                    </span>
+                </td>
+                <td class="px-3 py-2.5 text-right num font-semibold tono-{{ d.tono }}" style="color:var(--tono);">
+                    {% if d.pct is not None %}{{ d.pct|floatformat:1 }} %{% else %}—{% endif %}
+                </td>
+                {% endwith %}
                 <td class="px-3 py-2.5 text-right num text-[var(--text-faint)] text-xs">
                     {% if fila.estado.latencia_ms %}{{ fila.estado.latencia_ms|floatformat:0 }} ms{% else %}—{% endif %}
                 </td>
@@ -371,7 +413,7 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
                 <td class="px-4 py-2.5 text-right text-[var(--text-faint)] text-xs">Ver ›</td>
             </tr>
         {% empty %}
-            <tr><td colspan="9">
+            <tr><td colspan="11">
                 {% include "panel/_estado_vacio.html" with titulo="Ninguna farmacia tiene IP de enlace cargada" pista="Se cargan desde el Excel de operaciones con importar_red_farmacias_xlsx. Sin IP no hay a qué hacerle ping." pista_filtro="Hay enlaces cargados, pero ninguno coincide con este filtro." accion_puede=False %}
             </td></tr>
         {% endfor %}
@@ -379,5 +421,11 @@ pantalla y volvía inútil justamente la herramienta que venías a usar.
     </table>
 </div>
 
+<div class="franja-leyenda">
+    <span><i class="franja-arriba"></i>Arriba</span>
+    <span><i class="franja-caido"></i>Caído</span>
+    <span><i class="franja-sin"></i>Sin sondeo</span>
+    <span>Cada bloque = 30 minutos. Orden: primero las caídas, después las de menor disponibilidad.</span>
+</div>
 {% include "panel/_paginador.html" %}
 {% endblock %}

@@ -8,30 +8,40 @@
         <a href="{% url 'panel:tendencia_flota' %}" class="btn secondary">Tendencia de flota</a>
     </div>
 </div>
-<p class="text-sm text-[var(--text-faint)] mb-6" style="max-width:74ch;">
-    Recursos de las estaciones marcadas para monitoreo. Cada métrica muestra su valor
-    actual, si pasó el umbral que tiene configurado y cómo viene en los últimos minutos —
-    sin tener que abrir el detalle para saber si algo está mal.
+<p class="text-sm text-[var(--text-faint)] mb-4" style="max-width:74ch;">
+    CPU, memoria y disco de cada servidor a lo largo del rango elegido. La línea roja es el
+    umbral de la regla de alerta: la distancia entre la curva y la línea es el margen que queda.
 </p>
 
-<form method="get" class="flex items-center gap-3 mb-4 flex-wrap">
-    {% include "panel/_buscador.html" %}
-    <button type="submit" class="btn secondary text-xs" style="padding:6px 12px;">Buscar</button>
-    {% if busqueda %}
-    <a href="?" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">limpiar</a>
-    {% endif %}
-</form>
+<div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+    <form method="get" class="flex items-center gap-3 flex-wrap">
+        <input type="hidden" name="rango" value="{{ rango.clave }}">
+        {% include "panel/_buscador.html" %}
+        <button type="submit" class="btn secondary text-xs" style="padding:6px 12px;">Buscar</button>
+        {% if busqueda %}
+        <a href="?rango={{ rango.clave }}" class="text-xs text-[var(--text-faint)] hover:text-[var(--text)]">limpiar</a>
+        {% endif %}
+    </form>
+    <nav class="rango-selector" aria-label="Rango de las gráficas">
+        {% for r in rangos %}
+        <a href="?rango={{ r.clave }}{% if busqueda %}&amp;q={{ busqueda|urlencode }}{% endif %}"
+           class="{% if r.clave == rango.clave %}activo{% endif %}"
+           {% if r.clave == rango.clave %}aria-current="true"{% endif %}>{{ r.etiqueta }}</a>
+        {% endfor %}
+    </nav>
+</div>
+<p class="text-xs text-[var(--text-faint)] mb-3">{{ rango.descripcion }}</p>
 
-<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
 {% for t in tarjetas %}
-    <a href="{% url 'panel:monitoreo_detalle' t.estacion.pk %}" class="card hoverable block p-4">
+    <article class="card servidor-tarjeta tono-{{ t.estado_tarjeta.tono }}">
         <div class="flex items-start justify-between gap-2 mb-3">
             <div class="min-w-0">
                 {% comment %} truncate + shrink-0: hay códigos largos (MC014-SRV-PRINCIPAL) que empujaban los distintivos de estado fuera de la tarjeta. {% endcomment %}
-                <div class="font-medium truncate">{{ t.estacion.codigo }}</div>
-                <div class="text-xs text-[var(--text-faint)] truncate">{{ t.estacion.farmacia.codigo }} · {{ t.estacion.farmacia.grupo.codigo }}</div>
+                <a href="{% url 'panel:monitoreo_detalle' t.estacion.pk %}" class="servidor-codigo truncate">{{ t.estacion.codigo }}</a>
+                <div class="text-xs text-[var(--text-faint)] truncate">{{ t.estacion.farmacia.codigo }} · {{ t.estacion.farmacia.grupo.codigo }}{% if t.estacion.hostname %} · {{ t.estacion.hostname }}{% endif %}</div>
             </div>
-            <div class="flex items-center gap-2 shrink-0">
+            <div class="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                 {% comment %}
                 Servicios del POS caidos, de un vistazo a nivel flota. Solo se muestran los
                 chequeos vigentes: una estacion apagada deja su ultimo resultado congelado
@@ -43,33 +53,48 @@
                     POS: {{ t.servicios_caidos.total }} sin responder
                 </span>
                 {% endif %}
-                <span class="pill {% if t.estacion.estado_conexion == 'online' %}good{% else %}neutral{% endif %}">
-                    {{ t.estacion.get_estado_conexion_display }}
-                </span>
+                {% if t.estacion.estado_conexion != 'online' %}
+                <span class="pill neutral">{{ t.estacion.get_estado_conexion_display }}</span>
+                {% endif %}
+                <span class="chip-edad">{{ t.estado_tarjeta.texto }}</span>
             </div>
         </div>
         {% if t.ultima %}
-        {% comment %}
-        Las cinco métricas con el MISMO patrón que el detalle y la tendencia
-        (panel/_indicador.html, versión compacta). Antes eran cinco números sueltos y
-        solo tres tenían color: latencia y red se mostraban en gris pase lo que pasase,
-        así que un enlace saturado se veía igual que uno sano.
-        {% endcomment %}
-        <div class="metricas-grid">
-            {% for i in t.indicadores %}
-                {% include "panel/_indicador.html" with i=i compacto=True %}
+        <div class="servidor-graficas">
+            {% for g in t.graficas %}
+            <div class="servidor-fila">
+                <span class="servidor-fila-etq">{{ g.etiqueta }}</span>
+                {% include "panel/_sparkline.html" with g=g.grafico estado=g.estado compacto=True %}
+                <span class="servidor-fila-valor num est-fg-{{ g.estado }}">
+                    {% if g.valor is not None %}{{ g.valor|floatformat:g.decimales }}<small>{{ g.unidad }}</small>{% else %}—{% endif %}
+                </span>
+            </div>
             {% endfor %}
         </div>
-        <div class="text-xs text-[var(--text-faint)] mt-3">Última muestra: {{ t.ultima.timestamp|date:"d/m H:i:s" }}</div>
+        {% comment %}
+        El pie: lo que acompaña pero no se vigila en el servidor. Latencia y red salen de
+        los mismos indicadores de 20 minutos de antes (t.indicadores), con su color.
+        {% endcomment %}
+        <div class="servidor-pie">
+            {% if t.ultima.temperatura_c is not None %}<span>Temperatura <b>{{ t.ultima.temperatura_c|floatformat:0 }} °C</b></span>{% endif %}
+            {% for i in t.indicadores %}{% if i.clave == 'latencia_ms' or i.clave == 'red_total_kbps' %}
+            <span>{{ i.etiqueta }} <b class="{% if i.mostrar_estado %}est-fg-{{ i.estado }}{% endif %}">{% if i.valor is not None %}{{ i.valor|floatformat:i.decimales }}{{ i.unidad }}{% else %}—{% endif %}</b></span>
+            {% endif %}{% endfor %}
+            {% if t.cpu_pico is not None %}<span>Pico CPU {{ rango.etiqueta }} <b>{{ t.cpu_pico|floatformat:0 }} %</b></span>{% endif %}
+            <span class="ml-auto">Última muestra {{ t.ultima.timestamp|date:"d/m H:i" }}</span>
+        </div>
         {% else %}
         <div class="text-sm text-[var(--text-faint)] py-4 text-center">Sin métricas recibidas todavía.</div>
         {% endif %}
-    </a>
+    </article>
 {% empty %}
-    <div class="card md:col-span-2 xl:col-span-3">
+    <div class="card lg:col-span-2">
         {% include "panel/_estado_vacio.html" with titulo="Ninguna estación marcada para monitoreo" pista="El monitoreo de recursos se activa por estación con el flag monitorear_recursos, desde el admin de Django." %}
     </div>
 {% endfor %}
 </div>
+<p class="text-xs text-[var(--text-faint)] mt-3">
+    Línea punteada ámbar = umbral de advertencia; línea roja = umbral crítico. Clic en el código del servidor para ver el detalle.
+</p>
 {% include "panel/_paginador.html" %}
 {% endblock %}
