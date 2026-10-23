@@ -207,8 +207,14 @@ def mantenimiento_detalle(request, pk):
     checklist = [{'item': item, 'realizada': realizadas.get(item.pk, False)} for item in checklist_items]
     repuestos = mantenimiento.repuestos_utilizados.select_related('tipo_consumible', 'bodega')
 
+    from .. import mantenimiento_vista as vista
+
+    eventos = vista.con_tono(eventos)
     return render(request, 'panel/mantenimiento_detalle.html', {
-        'mantenimiento': mantenimiento, 'equipos': equipos, 'eventos': eventos, 'checklist': checklist,
+        'ciclo': vista.ciclo(mantenimiento, eventos), 'sla': vista.sla(mantenimiento),
+        'checklist_hechas': sum(1 for c in checklist if c['realizada']),
+        'mantenimiento': mantenimiento, 'equipos': equipos.select_related('equipo__estacion'),
+        'eventos': eventos, 'checklist': checklist,
         'repuestos': repuestos, 'costo_total_repuestos': mantenimiento.costo_total_repuestos,
     })
 

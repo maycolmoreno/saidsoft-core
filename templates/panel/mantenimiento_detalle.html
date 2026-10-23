@@ -7,7 +7,24 @@
         {{ mantenimiento.get_estado_interno_display }}
     </span>
 </div>
-<p class="text-sm text-[var(--text-faint)] mb-6">{{ mantenimiento.descripcion }}</p>
+<p class="text-sm text-[var(--text-faint)] mb-4">{{ mantenimiento.descripcion }}</p>
+
+<ol class="pasos-aprobacion" aria-label="Ciclo del mantenimiento">
+    {% for p in ciclo %}
+    <li class="tono-{{ p.tono }}">
+        <span class="pasos-aprobacion-marca" aria-hidden="true"></span>
+        <span class="pasos-aprobacion-titulo">{{ p.titulo }}</span>
+        <span class="pasos-aprobacion-detalle">{% if p.fecha %}{{ p.fecha|date:"d/m H:i" }}{% else %}pendiente{% endif %}</span>
+    </li>
+    {% endfor %}
+    {% if sla %}
+    <li class="tono-{{ sla.tono }}" title="Límite de resolución: {{ mantenimiento.limite_resolucion|date:'d/m/Y H:i' }}">
+        <span class="medidor-pista" style="height:4px; margin-bottom:6px;" aria-hidden="true"><span class="medidor-valor" style="width:{{ sla.pct }}%"></span></span>
+        <span class="pasos-aprobacion-titulo">SLA</span>
+        <span class="pasos-aprobacion-detalle">{{ sla.texto }}</span>
+    </li>
+    {% endif %}
+</ol>
 
 <div class="grid grid-cols-4 gap-4 mb-6 text-sm">
     <div class="card p-4">
@@ -86,10 +103,20 @@
         {% for me in equipos %}
             <tr style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
                 <td class="px-4 py-3">
-                    <a href="{% url 'panel:activo_detalle' me.equipo.pk %}" class="font-mono hover:underline">{{ me.equipo.codigo }}</a>
-                    {% if me.es_principal %}<span class="ml-2 text-xs text-[var(--text-faint)]">(principal)</span>{% endif %}
+                    <div class="inventario-equipo">
+                        <span class="inventario-icono" title="{{ me.equipo.get_tipo_display }}">{% include "panel/_icono_tipo_activo.html" with tipo=me.equipo.tipo %}</span>
+                        <div>
+                            <a href="{% url 'panel:activo_detalle' me.equipo.pk %}" class="font-mono hover:underline">{{ me.equipo.codigo }}</a>
+                            {% if me.es_principal %}<span class="ml-2 text-xs text-[var(--text-faint)]">(principal)</span>{% endif %}
+                            <div class="text-xs text-[var(--text-faint)]">{{ me.equipo.get_tipo_display }} · {{ me.equipo.marca|default:"" }} {{ me.equipo.modelo }}</div>
+                        </div>
+                    </div>
                 </td>
-                <td class="px-4 py-3 text-[var(--text-dim)]">{{ me.equipo.get_tipo_display }} · {{ me.equipo.marca }} {{ me.equipo.modelo }}</td>
+                <td class="px-4 py-3 text-right">
+                    {% if me.equipo.estacion and perms.catalogo.view_estacion %}
+                    <a href="{% url 'panel:estacion_ficha' me.equipo.estacion.pk %}" class="chip-edad tono-{% if me.equipo.estacion.estado_conexion == 'online' %}good{% else %}neutral{% endif %}">Ficha de {{ me.equipo.estacion.codigo }}</a>
+                    {% endif %}
+                </td>
             </tr>
         {% empty %}
             <tr><td class="px-4 py-4 text-center text-[var(--text-faint)]">Sin equipos vinculados.</td></tr>
@@ -128,6 +155,10 @@
 <h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Checklist</h2>
 <form method="post" action="{% url 'panel:mantenimiento_checklist_actualizar' mantenimiento.pk %}" class="card p-4 mb-8">
     {% csrf_token %}
+    {% if checklist %}
+    <div class="flex justify-between text-sm mb-1"><span class="font-semibold">Avance</span><span class="num">{{ checklist_hechas }} de {{ checklist|length }} actividades</span></div>
+    <div class="barra tono-{% if checklist_hechas == checklist|length %}good{% else %}accent{% endif %} mb-3"><span style="width:{% widthratio checklist_hechas checklist|length 100 %}%"></span></div>
+    {% endif %}
     {% for c in checklist %}
     <label class="flex items-center gap-2 py-1 text-sm text-[var(--text-dim)]">
         <input type="checkbox" name="actividad_{{ c.item.pk }}" {% if c.realizada %}checked{% endif %}
@@ -195,24 +226,20 @@
 </div>
 
 <h2 class="text-sm font-medium uppercase tracking-wide mb-3 text-[var(--text-faint)]">Historial</h2>
-<div class="card" style="overflow:hidden;">
+<div class="card ficha-seccion">
+    <ol class="vida">
     {% for ev in eventos %}
-    <div class="px-4 py-3 flex items-start justify-between gap-4" style="{% if not forloop.first %}border-top:1px solid var(--border-soft);{% endif %}">
+    <li class="tono-{{ ev.tono }}">
+        <span class="vida-hora" title="{{ ev.timestamp|date:'d/m/Y H:i' }}">{{ ev.timestamp|date:"d/m/y H:i" }}</span>
+        <span class="vida-punto" aria-hidden="true"></span>
         <div>
-            <span class="text-sm font-medium">{{ ev.get_tipo_evento_display }}</span>
-            <div class="text-xs text-[var(--text-faint)] mt-0.5">
-                {% for clave, valor in ev.detalle.items %}
-                    <span class="mr-3">{{ clave }}: {{ valor|default:"—" }}</span>
-                {% endfor %}
-            </div>
+            <div class="vida-titulo">{{ ev.get_tipo_evento_display }} <span class="text-xs font-normal text-[var(--text-faint)]">· {{ ev.usuario.username|default:"sistema" }}</span></div>
+            {% if ev.detalle %}<div class="vida-detalle">{% for clave, valor in ev.detalle.items %}<span class="mr-3">{{ clave }}: {{ valor|default:"—" }}</span>{% endfor %}</div>{% endif %}
         </div>
-        <div class="text-right text-xs text-[var(--text-faint)] whitespace-nowrap">
-            <div>{{ ev.timestamp|date:"d/m/Y H:i" }}</div>
-            <div>{{ ev.usuario.username|default:"sistema" }}</div>
-        </div>
-    </div>
+    </li>
     {% empty %}
-    <div class="px-4 py-6 text-center text-[var(--text-faint)] text-sm">Sin eventos registrados.</div>
+    <li><span></span><span></span><p class="text-sm text-[var(--text-faint)]">Sin eventos registrados.</p></li>
     {% endfor %}
+    </ol>
 </div>
 {% endblock %}

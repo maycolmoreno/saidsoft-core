@@ -164,3 +164,42 @@ class InventarioDeEquiposTests(Base):
         self.assertContains(resp, reverse('panel:estacion_ficha', args=[self.estacion.pk]))
         self.assertContains(resp, 'Vencida hace 3 días')
         self.assertContains(resp, 'Vence en 20 días')
+
+
+class DetalleDeMantenimientoTests(Base):
+    def setUp(self):
+        super().setUp()
+        from apps.activos.models import Colaborador
+        from apps.mantenimiento.models import AcuerdoNivelServicio, PrioridadMantenimiento, TipoMantenimiento
+        from apps.mantenimiento.services import crear_mantenimiento_manual
+
+        AcuerdoNivelServicio.objects.update_or_create(
+            prioridad=PrioridadMantenimiento.NORMAL,
+            defaults={'horas_respuesta': 4, 'horas_resolucion': 24, 'activo': True},
+        )
+        self.equipo = Activo.objects.create(codigo='CR-DSK-0401', tipo=Activo.Tipo.DESKTOP, unidad_negocio=self.sg,
+                                            estacion=self.estacion)
+        self.m = crear_mantenimiento_manual(
+            equipos=[self.equipo], tecnico=self.usuario,
+            cliente=Colaborador.objects.create(nombre='Ana', cedula='9401', unidad_negocio=self.sg),
+            tipo_mantenimiento=TipoMantenimiento.objects.get(codigo='correctivo'),
+            descripcion='No enciende', fecha_programada=timezone.now() - timedelta(hours=6), usuario=self.usuario,
+        )
+        self.usuario.user_permissions.add(Permission.objects.get(codename='view_mantenimiento'))
+
+    def test_ciclo_y_sla(self):
+        from apps.panel import mantenimiento_vista as vista
+
+        pasos = vista.ciclo(self.m, list(self.m.eventos.all()))
+        self.assertEqual([p['titulo'] for p in pasos], ['Programado', 'Iniciado', 'Cierre'])
+        self.assertEqual(pasos[1]['tono'], 'accent')  # pendiente: lo que sigue es iniciarlo
+        s = vista.sla(self.m)
+        self.assertTrue(s['texto'].startswith('Quedan'))
+        self.assertEqual(s['pct'], 25)  # 6 de 24 horas
+
+    def test_la_pagina_muestra_ciclo_avance_ficha_y_linea_de_vida(self):
+        resp = self.client.get(reverse('panel:mantenimiento_detalle', args=[self.m.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Ciclo del mantenimiento')
+        self.assertContains(resp, reverse('panel:estacion_ficha', args=[self.estacion.pk]))
+        self.assertContains(resp, 'class="vida"')
