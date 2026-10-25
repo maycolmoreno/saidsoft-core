@@ -24,6 +24,21 @@ if [ "$RUN_MIGRATIONS" = "1" ]; then
     echo "Aplicando migraciones..."
     python manage.py migrate --noinput
     echo "Recolectando estáticos..."
+    # Un staticfiles.json dañado tumba collectstatic ANTES de que pueda reescribirlo
+    # ("Couldn't load manifest"), y el contenedor queda en bucle de reinicio: 502 en todo
+    # el panel. Pasó el 25-oct-2026 tras un corte de luz que dejó el archivo a medio
+    # escribir. Si no se puede leer como JSON se descarta; collectstatic lo regenera.
+    python - <<'PY'
+import json, os
+ruta = "/app/staticfiles/staticfiles.json"
+if os.path.exists(ruta):
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            json.load(f)
+    except (ValueError, UnicodeDecodeError, OSError) as exc:
+        print(f"staticfiles.json dañado ({exc}): se descarta y se regenera.")
+        os.remove(ruta)
+PY
     python manage.py collectstatic --noinput
 fi
 
