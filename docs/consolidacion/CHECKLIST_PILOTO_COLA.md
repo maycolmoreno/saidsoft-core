@@ -6,7 +6,7 @@ campañas de software ni despliegues del POS a muchas farmacias: eso necesita ot
 autorización, con el resultado de este piloto a la vista.
 
 **Por qué un piloto y no staging:** hoy no hay un entorno de staging con agente real y
-EMQX con TLS. Si se arma uno, se usa primero `GUIA_STAGING_COLA.md`. Este checklist es la
+EMQX con TLS. Si se arma uno, se recupera `GUIA_STAGING_COLA.md` (retirada, ver `docs/RETIRADOS.md`). Este checklist es la
 alternativa limitada.
 
 Marcar cada casilla al completarla. Un paso que no se pueda hacer se marca **NO PROBADO**,

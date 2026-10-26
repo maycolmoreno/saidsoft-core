@@ -23,7 +23,7 @@ Marcas:
    - cuatro modelos de resultado distintos;
    - comandos sin seguimiento.
 
-   De ahí salen E-01, E-07 y el defecto de la pausa (`AUDITORIA_SEGURIDAD_ESTABILIDAD.md`).
+   De ahí salen E-01, E-07 y el defecto de la pausa (`AUDITORIA_SEGURIDAD_ESTABILIDAD.md`, retirada: ver `docs/RETIRADOS.md`).
 3. **HTTPS sí aporta ventajas reales:**
    - el alta de estaciones deja de exponerse a la credencial compartida, porque la respuesta va
      solo a quien la pidió (cierra P0-2);

@@ -12,7 +12,8 @@ software, despliegues y scripts):
    ResultadoEjecucionScript) y las estaciones quedan intactos, fila por fila;
 4. volver a aplicar 0039 y cargar el respaldo restaura las órdenes tal cual.
 
-NO es el procedimiento de producción: ver docs/consolidacion/GUIA_STAGING_COLA.md §9.
+NO es el procedimiento de producción: ver docs/consolidacion/GUIA_STAGING_COLA.md §9 (retirada:
+docs/RETIRADOS.md).
 """
 import os
 import tempfile

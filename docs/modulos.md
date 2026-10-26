@@ -2,8 +2,7 @@
 
 **Para quién es esto.** Mesa de ayuda y equipo interno de CRESIO: gente con contexto
 técnico que no escribió el código y necesita orientarse rápido. No es un manual de
-usuario (eso es `docs/entrega-proyecto/manual-usuario.md`) ni documentación para
-desarrolladores externos.
+usuario ni documentación para desarrolladores externos.
 
 **Qué NO está acá, para no duplicar:**
 
@@ -12,8 +11,6 @@ desarrolladores externos.
 | Cómo se usa una funcionalidad del panel | [`README.md`](../README.md) |
 | Por qué se decidió algo, y qué costó descubrirlo | [`PLAN_MODERNIZACION.md`](../PLAN_MODERNIZACION.md) |
 | Cómo levantar, desplegar y qué pendientes hay | [`CLAUDE.md`](../CLAUDE.md) |
-| Mapa de dependencias y puntos únicos de falla | [`consolidacion/MAPA_DEPENDENCIAS.md`](consolidacion/MAPA_DEPENDENCIAS.md) |
-| Casos de uso y diagrama de clases | [`entrega-proyecto/`](entrega-proyecto/) |
 | Alcance y decisiones de la app de campo | [`movil-campo/README.md`](../movil-campo/README.md) |
 
 ---

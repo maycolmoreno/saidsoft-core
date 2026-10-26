@@ -33,6 +33,24 @@ arriba.
 | `docs/auditoria-arquitectura.md` | 12-sep-2026 | Auditoría de arquitectura del panel |
 | `docs/evaluacion-cresio-enlaces.md` | 11-sep-2026 | Evaluación del sistema anterior de enlaces |
 
+## Segunda tanda (26-oct-2026)
+
+Mismo criterio: fotos de un momento ya superado. Existen tal cual en el commit `9c9405b`
+(`git show 9c9405b:<ruta>`).
+
+| Documento | Fecha | Qué era |
+|---|---|---|
+| `docs/consolidacion/AUDITORIA_FLUJO_ESTACION.md` | 20-oct-2026 | Recorrido de una estación, de enrolamiento a confirmaciones |
+| `docs/consolidacion/AUDITORIA_SEGURIDAD_ESTABILIDAD.md` | 20-oct-2026 | Estado de seguridad y estabilidad (S-xx, E-xx) |
+| `docs/consolidacion/INVENTARIO_TECNICO.md` | 20-oct-2026 | Foto de lo que existía en el commit `68d0045` |
+| `docs/consolidacion/MAPA_DEPENDENCIAS.md` | 20-oct-2026 | Dependencias entre apps y puntos únicos de falla |
+| `docs/consolidacion/MATRIZ_CONSOLIDACION.md` | 20-oct-2026 | Qué conservar, consolidar o retirar |
+| `docs/consolidacion/ROADMAP_SAIDSOFT.md` | 20-oct-2026 | Roadmap por fases (lo reemplaza el plan estratégico 2027) |
+| `docs/consolidacion/GUIA_STAGING_COLA.md` | 21-oct-2026 | Validación de la cola en staging (no se armó staging; se fue al piloto) |
+| `docs/entrega-proyecto/` (3 archivos) | 27-ago-2026 | Casos de uso, diagrama de clases y manual de usuario de la entrega del proyecto |
+| `docs/proyecto-despliegue-pos.md` | 5-oct-2026 | Propuesta a dirección: actualización del POS en la cadena |
+| `docs/requerimiento-despliegue-pos.md` | 5-oct-2026 | Requerimiento a dirección: control de versiones del POS |
+
 Se conservaron las consultas `docs/auditoria-*.sql`: son herramientas de verificación que
 se pueden volver a correr (el runbook de `deploy/README-produccion.md` usa
 `auditoria-fase5-verificacion.sql`).
