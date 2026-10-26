@@ -567,9 +567,12 @@ class RedFarmaciasListaTests(TestCase):
     def test_farmacia_con_ip_router_pero_nunca_sondeada_aparece_sin_consumo(self):
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertContains(resp, 'ML001')
-        # Sin SNMP habilitado en el router no hay consumo, y la pantalla lo dice así en
-        # vez de mostrar un cero que se leería como "no consume nada".
-        self.assertContains(resp, 'sin SNMP')
+        # Sin SNMP habilitado en el router no hay consumo, y el listado no lo convierte en
+        # un cero que se leería como "no consume nada". Desde el 26-oct-2026 el consumo no
+        # tiene columna: está en el detalle de la farmacia, que explica cómo habilitar SNMP.
+        fila = next(f for f in resp.context['filas'] if f['farmacia'].codigo == 'ML001')
+        self.assertIsNone(fila['total_kbps'])
+        self.assertNotContains(resp, '0 kbps')
 
     def test_muestra_el_consumo_de_la_ultima_muestra(self):
         MuestraRedFarmacia.objects.create(
@@ -4945,15 +4948,17 @@ class EnlacesFarmaciasPanelTests(TestCase):
         self.assertEqual(resp.context['sin_sondear'], 2)
         self.assertContains(resp, 'sondear_enlaces')
 
-    def test_lista_las_caidas_en_curso_con_su_circuito(self):
+    def test_la_caida_se_ve_con_su_circuito_al_filtrar_caidos(self):
         """El circuito es lo que el proveedor pide al abrir el ticket: tenerlo a la vista
-        evita ir a buscarlo a una planilla mientras la farmacia está sin vender."""
-        from apps.monitoreo.models import EstadoEnlaceFarmacia
+        evita ir a buscarlo a una planilla mientras la farmacia está sin vender.
 
+        Hasta el 26-oct-2026 esto lo mostraba una lista aparte, "Caídas en curso"; el
+        rediseño la quitó porque repetía lo que da la tarjeta "Caídos ahora", y el circuito
+        quedó en la fila de la tabla, debajo del código."""
         self._caer(self.caida)
         self.client.force_login(self.usuario)
-        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
-        self.assertEqual([e.farmacia for e in resp.context['en_curso']], [self.caida])
+        resp = self.client.get(reverse('panel:enlaces_farmacias_lista'), {'estado': 'caidos'})
+        self.assertEqual([f['farmacia'] for f in resp.context['filas']], [self.caida])
         self.assertContains(resp, 'sangregorio2-santana')
 
     def test_aislamiento_por_unidad_de_negocio(self):
@@ -5213,12 +5218,16 @@ class EnlacesListaFiltrosYPaginacionTests(TestCase):
         resp = self.client.get(self.url)
         self.assertEqual([g.codigo for g in resp.context['grupos']], ['TRX001', 'TRX002'])
 
-    def test_las_caidas_en_curso_van_colapsadas(self):
-        """154 caídas abiertas empujaban la tabla fuera de la pantalla."""
+    def test_las_caidas_en_curso_no_empujan_la_tabla(self):
+        """154 caídas abiertas empujaban la tabla fuera de la pantalla. Desde el 26-oct-2026
+        no hay lista aparte: la tarjeta cuenta y su filtro las muestra en la tabla."""
         resp = self.client.get(self.url)
-        self.assertEqual(resp.context['en_curso_total'], 1)
-        self.assertContains(resp, '<details')
-        self.assertNotContains(resp, '<details open')
+        self.assertNotContains(resp, 'Caídas en curso')
+        self.assertEqual(resp.context['caidas'], 1)
+        self.assertEqual(
+            resp.context['caidas'],
+            len(self.client.get(self.url, {'estado': 'caidos'}).context['filas']),
+        )
 
 
 class UmbralesDeRecursosTests(TestCase):

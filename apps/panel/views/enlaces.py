@@ -238,27 +238,14 @@ def enlaces_farmacias_lista(request):
             # instrumentacion actual no se puede saber.
             'simultanea': simultaneas.get(farmacia.pk, ('individual', ''))[0],
             'simultanea_detalle': simultaneas.get(farmacia.pk, ('individual', ''))[1],
+            # El consumo ya no tiene columna (rediseño del 26-oct-2026): se ve en el modal,
+            # con su color y el medidor del ancho contratado. Se sigue calculando porque lo
+            # usan el filtro por tráfico y el conteo "con tráfico SNMP".
             'total_kbps': total_kbps,
-            # Mismo criterio que el modal de esta farmacia: % de SU ancho contratado
-            # cuando se conoce, y recién si no, el umbral absoluto en kbps. Antes la
-            # columna usaba siempre el absoluto y el modal el porcentaje, así que la
-            # misma farmacia salía verde en la tabla y roja al abrirla.
-            'estado_bw': clasificar(total_kbps, *limites_de_enlace(farmacia.ancho_contratado_mbps)),
-            # Qué parte del enlace contratado es ese consumo, para el medidor de la
-            # columna. None cuando no se sabe el contratado: sin eso no hay medidor,
-            # solo el número.
-            'pct_contratado': (
-                min(round(100 * total_kbps / (farmacia.ancho_contratado_mbps * 1000)), 100)
-                if total_kbps is not None and farmacia.ancho_contratado_mbps else None
-            ),
         })
 
-    # Las caídas en curso se listan completas pero la plantilla las trae colapsadas: 154
-    # ítems abiertos empujan la tabla fuera de la pantalla, que es el problema que tenía
-    # esta vista. El conteo va aparte para poder mostrarlo sin recorrer la lista.
-    en_curso = EventoEnlaceFarmacia.objects.filter(
-        fin__isnull=True, farmacia__in=base.values('pk'),
-    ).select_related('farmacia').order_by('inicio')
+    # La lista "Caídas en curso" se quitó el 26-oct-2026: repetía lo que muestra la
+    # tarjeta "Caídos ahora" al filtrar, y "Qué atender primero" ya agrupa las caídas.
 
     return render(request, 'panel/enlaces_farmacias_lista.html', {
         # Qué atender primero: cortes masivos como un incidente, y las aisladas aparte.
@@ -275,8 +262,6 @@ def enlaces_farmacias_lista(request):
         'sin_sondear': sin_sondear,
         'total': total,
         'con_ancho_banda': con_ancho_banda,
-        'en_curso': en_curso,
-        'en_curso_total': en_curso.count(),
         'pagina': pagina,
         'filtros': filtros,
         'query_filtros': query_filtros,
