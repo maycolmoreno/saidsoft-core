@@ -306,11 +306,6 @@ ofrece además "sin sondear" y el filtro por tráfico.
                     <div class="text-[var(--text-faint)]" style="font-size:11px;">desde {{ fila.estado.ultimo_cambio_estado|date:"d/m H:i" }}</div>
                     {% endif %}
                     {% endif %}
-                    {% if fila.simultanea == 'proveedor' %}
-                    <div class="text-xs text-[var(--warning)] mt-0.5" title="{{ fila.simultanea_detalle }}">probable corte del proveedor</div>
-                    {% elif fila.simultanea == 'ceguera' %}
-                    <div class="text-xs text-[var(--info)] mt-0.5" title="{{ fila.simultanea_detalle }}">¿el monitoreo perdió visibilidad?</div>
-                    {% endif %}
                 </td>
                 {% with d=fila.disponibilidad %}
                 <td class="px-3 py-2.5">

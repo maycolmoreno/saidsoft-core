@@ -7546,7 +7546,10 @@ class ColumnaProveedorEnLaTablaTests(TestCase):
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
         self.assertNotContains(resp, 'probable corte del proveedor')
 
-    def test_tres_caidas_del_mismo_proveedor_marcan_la_fila(self):
+    def test_tres_caidas_del_mismo_proveedor_se_avisan_una_vez_como_corte(self):
+        """Hasta el 26-oct-2026 cada fila decía "probable corte del proveedor"; se quitó
+        de la tabla porque repetía lo que "Qué atender primero" muestra como un solo
+        incidente. El corte se sigue avisando, pero una vez y no en cada fila."""
         from apps.catalogo.models import Farmacia
         from apps.monitoreo.models import EstadoEnlaceFarmacia, EventoEnlaceFarmacia
 
@@ -7566,7 +7569,8 @@ class ColumnaProveedorEnLaTablaTests(TestCase):
         self.client.force_login(self.usuario)
         resp = self.client.get(reverse('panel:enlaces_farmacias_lista'))
 
-        self.assertContains(resp, 'probable corte del proveedor')
+        self.assertContains(resp, 'Corte masivo')
+        self.assertNotContains(resp, 'probable corte del proveedor')
 
 
 class EstacionPausarDesdeElPanelTests(TestCase):

@@ -208,7 +208,9 @@ def enlaces_farmacias_lista(request):
 
     alcance = alcance_ids
     incidentes = incidentes_de_enlace(alcance)
-    simultaneas = incidentes['clase_por_farmacia']
+    # Las filas ya no llevan la etiqueta "probable corte del proveedor" ni "¿el monitoreo
+    # perdió visibilidad?" (26-oct-2026): el corte se informa una sola vez, como
+    # incidente, en "Qué atender primero".
 
     filas = []
     # Historial de latencia y pérdida solo de la página (una consulta). Una farmacia sin
@@ -232,12 +234,6 @@ def enlaces_farmacias_lista(request):
             # nunca respondió manda a alguien a abrir un ticket con el proveedor por un
             # enlace que nunca estuvo arriba.
             'nunca_respondio': bool(estado and estado.nunca_respondio),
-            # Inferencia por correlacion, no una lectura: ver
-            # `clasificar_caidas_simultaneas`. Dice si esto parece un sitio, el proveedor,
-            # o que el servidor perdio visibilidad -- NO si fue corte de luz, que con la
-            # instrumentacion actual no se puede saber.
-            'simultanea': simultaneas.get(farmacia.pk, ('individual', ''))[0],
-            'simultanea_detalle': simultaneas.get(farmacia.pk, ('individual', ''))[1],
             # El consumo ya no tiene columna (rediseño del 26-oct-2026): se ve en el modal,
             # con su color y el medidor del ancho contratado. Se sigue calculando porque lo
             # usan el filtro por tráfico y el conteo "con tráfico SNMP".
