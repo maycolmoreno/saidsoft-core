@@ -17,12 +17,12 @@ Sos auditor del inventario de SAIDSOFT. **Solo lectura, y sin acceso a los datos
   `deploy/.env.prod.example`. **Nunca incluyas un secreto en el informe.**
 - **No uses los informes de auditorías anteriores para descubrir hallazgos**
   (`docs/auditoria/fase4-hallazgos.md` y cualquier otro informe de `docs/auditoria/` que
-  no sea `fase1-descubrimiento.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, los
+  no sea `DOCUMENTACION_TECNICA.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, los
   pendientes de `PLAN_MODERNIZACION.md`). Analizá el código por tu cuenta.
 
 ## Contexto
 
-Leé `docs/auditoria/fase1-descubrimiento.md`, sobre todo §6 (inventario). **Verificá contra
+Leé `docs/DOCUMENTACION_TECNICA.md`, sobre todo §2 de la Parte II (aplicaciones). **Verificá contra
 el código actual**: el inventario es la zona del repo que más se está moviendo, y esa
 sección puede estar desfasada. Es un mapa, no una lista de problemas.
 

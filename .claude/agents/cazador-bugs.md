@@ -26,7 +26,7 @@ modificás, no implementás.
   parcial, ni "de ejemplo".
 - **No uses los informes de auditorías anteriores para descubrir hallazgos**
   (`docs/auditoria/fase4-hallazgos.md` y cualquier otro informe de `docs/auditoria/` que
-  no sea `fase1-descubrimiento.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, los
+  no sea `DOCUMENTACION_TECNICA.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, los
   pendientes de `PLAN_MODERNIZACION.md`). Analizá el código por tu cuenta.
 
 ## Primero, tu línea base
@@ -36,7 +36,7 @@ Verificá sobre qué trabajás: `git branch --show-current`, `git rev-parse --sh
 
 ## Contexto
 
-Leé `docs/auditoria/fase1-descubrimiento.md`. Su §9.2 explica por qué las pruebas no se
+Leé `docs/DOCUMENTACION_TECNICA.md`. Su §15 de la Parte II (pruebas) explica por qué las pruebas no se
 pueden correr acá y qué esconde un run en SQLite. No contiene hallazgos: el análisis es
 tuyo.
 

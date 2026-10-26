@@ -9,16 +9,12 @@ extensión multi-tenant/RMM) — esta es la copia viva del plan, se actualiza aq
 
 Este es un proyecto independiente: no comparte carpeta con el sistema viejo.
 
-> **¿Buscás orientarte rápido en el código?** [`docs/modulos.md`](docs/modulos.md) explica
-> qué hace cada una de las 15 apps, cómo se relacionan y **qué mirar primero cuando algo
-> falla**. Está escrito para mesa de ayuda y equipo interno: contexto técnico, sin tener
-> que leer el código.
-
-> **¿Buscás la foto de la plataforma?** Lo vigente está en
-> [`docs/producto/SAIDSOFT_RMM_1_0_ALCANCE.md`](docs/producto/SAIDSOFT_RMM_1_0_ALCANCE.md) y en
-> [`docs/consolidacion/`](docs/consolidacion/). Las auditorías de septiembre y octubre de 2026
-> (capacidad 2030, arquitectura, centro de monitoreo, SNMP…) se retiraron porque ya no
-> describían el sistema: siguen en el historial de git, ver
+> **¿Buscás orientarte en el código o la foto de la plataforma?**
+> [`docs/DOCUMENTACION_TECNICA.md`](docs/DOCUMENTACION_TECNICA.md) es el documento técnico
+> único (26-oct-2026): arquitectura, las 16 apps, modelo de datos, workers, MQTT, agente,
+> despliegues del POS, infraestructura, seguridad, alcance 1.0, riesgos y preguntas abiertas.
+> Los documentos anteriores (auditorías, consolidación, módulos, alcance) se retiraron porque
+> ya no describían el sistema: siguen en el historial de git, ver
 > [`docs/RETIRADOS.md`](docs/RETIRADOS.md).
 
 Nació como el reemplazo del panel de una sola operación (despliegues de POS +

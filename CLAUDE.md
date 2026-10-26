@@ -172,11 +172,11 @@ corre sobre `timescale/timescaledb`.
 
 ## Arquitectura: dónde está cada cosa
 
-El mapa completo (stack con versiones, 95 modelos, flujos, convenciones, entorno de
-pruebas) está en **`docs/auditoria/fase1-descubrimiento.md`**. Leelo antes de trabajar
+El mapa completo (arquitectura, 109 modelos, workers, flujos, riesgos, entorno de
+pruebas) está en **`docs/DOCUMENTACION_TECNICA.md`**. Leelo antes de trabajar
 sobre un módulo que no conocés; acá va solo lo que hay que tener a mano siempre.
 
-15 apps Django bajo `apps/`. La lógica de negocio vive en `apps/<app>/services.py`, nunca
+16 apps Django bajo `apps/`. La lógica de negocio vive en `apps/<app>/services.py`, nunca
 en las vistas. `apps/panel` es presentación de todo el sistema y no tiene modelos.
 Tres componentes separados: backend (`saidsoft-core`), agente Windows (`agente-prueba/`)
 y app Flutter (`movil-campo/`).

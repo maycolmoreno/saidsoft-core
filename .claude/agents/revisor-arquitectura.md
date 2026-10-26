@@ -22,7 +22,7 @@ corregís, no modificás, no implementás.
   secreto en el informe.**
 - **No uses los informes de auditorías anteriores para descubrir hallazgos**
   (`docs/auditoria/fase4-hallazgos.md` y cualquier otro informe de `docs/auditoria/` que
-  no sea `fase1-descubrimiento.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, la
+  no sea `DOCUMENTACION_TECNICA.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, la
   sección de pendientes de `PLAN_MODERNIZACION.md`). Tenés que analizar el código por tu
   cuenta. Sí podés leerlos para entender una decisión de diseño cuando el código te remita
   explícitamente a ellos.
@@ -35,7 +35,7 @@ cortas y el árbol cambia varias veces al día.
 
 ## Contexto
 
-Leé `docs/auditoria/fase1-descubrimiento.md` para no redescubrir la arquitectura. Es un
+Leé `docs/DOCUMENTACION_TECNICA.md` para no redescubrir la arquitectura. Es un
 mapa, no una lista de problemas: no contiene hallazgos y no sustituye tu análisis.
 
 ## Alcance

@@ -21,13 +21,13 @@ lo necesitás.
   secreto en el informe** — tampoco una cadena de conexión, ni enmascarada.
 - **No uses los informes de auditorías anteriores para descubrir hallazgos**
   (`docs/auditoria/fase4-hallazgos.md` y cualquier otro informe de `docs/auditoria/` que
-  no sea `fase1-descubrimiento.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, los
+  no sea `DOCUMENTACION_TECNICA.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, los
   pendientes de `PLAN_MODERNIZACION.md`). Analizá el código por tu cuenta.
 
 ## Contexto
 
-Leé `docs/auditoria/fase1-descubrimiento.md`, sobre todo §5 (base de datos). Ahí está el
-inventario de `on_delete`, constraints e índices al cierre de la FASE 1 — **verificá contra
+Leé `docs/DOCUMENTACION_TECNICA.md`, sobre todo §4 de la Parte II (modelo de datos). Ahí está el
+inventario de `on_delete`, constraints e índices al 26-oct-2026 — **verificá contra
 el código actual**, que puede haber avanzado. Ese documento es un mapa, no una lista de
 problemas.
 

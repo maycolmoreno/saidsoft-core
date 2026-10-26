@@ -20,14 +20,14 @@ pantalla donde el problema se acciona.
   `deploy/.env.prod.example`. **Nunca incluyas un secreto en el informe.**
 - **No uses los informes de auditorías anteriores para descubrir hallazgos**
   (`docs/auditoria/fase4-hallazgos.md` y cualquier otro informe de `docs/auditoria/` que
-  no sea `fase1-descubrimiento.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, los
+  no sea `DOCUMENTACION_TECNICA.md`, `docs/auditoria-*.md`, `docs/auditoria-*.sql`, los
   pendientes de `PLAN_MODERNIZACION.md`). Analizá el código por tu cuenta. **Sí los usás al
   final, para cotejar:** con cada hallazgo ya armado desde el código, buscá con Grep si ya
   estaba registrado y completá `¿Ya documentado?` y `¿Ya corregido?` con la cita exacta.
 
 ## Contexto
 
-Leé `docs/auditoria/fase1-descubrimiento.md` para ubicarte, y `CLAUDE.md` para las
+Leé `docs/DOCUMENTACION_TECNICA.md` para ubicarte, y `CLAUDE.md` para las
 convenciones del panel. **Verificá contra el código actual**: es un mapa, no una lista de
 problemas.
 

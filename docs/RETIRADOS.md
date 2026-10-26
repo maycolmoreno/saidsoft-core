@@ -51,6 +51,22 @@ Mismo criterio: fotos de un momento ya superado. Existen tal cual en el commit `
 | `docs/proyecto-despliegue-pos.md` | 5-oct-2026 | Propuesta a dirección: actualización del POS en la cadena |
 | `docs/requerimiento-despliegue-pos.md` | 5-oct-2026 | Requerimiento a dirección: control de versiones del POS |
 
+## Tercera tanda (26-oct-2026): reemplazados por el documento técnico único
+
+Su contenido, verificado contra el código, quedó en
+[`DOCUMENTACION_TECNICA.md`](DOCUMENTACION_TECNICA.md). Existen tal cual en el commit
+`1fa16d6` (`git show 1fa16d6:<ruta>`). Los comentarios del código que los citan (por
+ejemplo "BUG-4, ver docs/modulos.md" o "PROPUESTA_AGENTE_HTTPS.md §5") siguen siendo
+válidos: se leen con ese comando.
+
+| Documento | Fecha | Qué era |
+|---|---|---|
+| `docs/modulos.md` | 22-oct-2026 | Los 15 módulos y qué mirar cuando falla cada uno |
+| `docs/auditoria/fase1-descubrimiento.md` | 12-oct-2026 | Mapa del proyecto: stack, modelos, convenciones, entorno de pruebas |
+| `docs/producto/SAIDSOFT_RMM_1_0_ALCANCE.md` | 20-oct-2026 | Alcance de RMM 1.0 y módulos diferidos |
+| `docs/consolidacion/PROPUESTA_AGENTE_HTTPS.md` | 20-oct-2026 | Evaluación del agente por HTTPS y diseño de la cola de órdenes (§5) |
+| `docs/consolidacion/CHECKLIST_PILOTO_COLA.md` | 21-oct-2026 | Checklist del piloto de la cola de órdenes con una PC |
+
 Se conservaron las consultas `docs/auditoria-*.sql`: son herramientas de verificación que
 se pueden volver a correr (el runbook de `deploy/README-produccion.md` usa
 `auditoria-fase5-verificacion.sql`).
