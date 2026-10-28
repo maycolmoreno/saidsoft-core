@@ -208,8 +208,11 @@ class ContratoTenantDeAuditoriaTests(TestCase):
                     sitios.append(f'{archivo.name}:{nodo.lineno}')
 
         self.assertEqual(
-            len(sitios), 111,
-            'Cambió la cantidad de llamadas a registrar_evento (eran 111 el 21-oct-2026 con la cola de órdenes al agente —cancelar y resolver a mano—, sobre catalogo.OrdenAgente; 109 el 18-oct-2026 con el rollout del agente por tandas, sobre catalogo.Estacion; 108 el 17-oct-2026 con la bandeja de WhatsApp; 107 antes ese día; 106 el 16-oct-2026; 104 el 15-oct-2026; 102 el '
+            len(sitios), 116,
+            'Cambió la cantidad de llamadas a registrar_evento (eran 116 el 22-oct-2026 con '
+            'cerrar y reintentar pendientes de despliegues y de solicitudes de instalación '
+            '(despliegues.Despliegue y software.SolicitudInstalacion, en CON_TENANT por '
+            'unidad_negocio) y consultar info desde la ficha (catalogo.Estacion, por farmacia); 111 el 21-oct-2026 con la cola de órdenes al agente —cancelar y resolver a mano—, sobre catalogo.OrdenAgente; 109 el 18-oct-2026 con el rollout del agente por tandas, sobre catalogo.Estacion; 108 el 17-oct-2026 con la bandeja de WhatsApp; 107 antes ese día; 106 el 16-oct-2026; 104 el 15-oct-2026; 102 el '
             '11-oct-2026; 101 el 1-oct). Si agregaste una sobre un modelo que todavía no figura en '
             'CON_TENANT / COMPARTIDOS_LEGITIMOS / SIN_TENANT_POR_NOMBRE_DEL_CAMPO, '
             'clasificalo ahí y actualizá este número. Un modelo sin clasificar se '
