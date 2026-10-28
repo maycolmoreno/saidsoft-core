@@ -34,7 +34,7 @@ ver `docs/gobernanza/matriz-riesgos.md` y `docs/gobernanza/politica-seguridad-in
 | 5.14 | Transferencia de información | Parcial | El canal panel↔agente va cifrado (TLS/HMAC); no hay política formal de transferencia de información entre personas (correo, mensajería) | Pendiente |
 | 5.15 | Control de acceso | Sí | Implementado — RBAC por Django Groups/permisos, mínimo privilegio | AC-1, `seed_permisos.py` |
 | 5.16 | Gestión de identidades | Sí | Implementado — un usuario Django por persona, sin cuentas compartidas | `politica-seguridad-informacion.md` §6 |
-| 5.17 | Información de autenticación | Sí | Parcial — contraseñas ≥12 caracteres, hash estándar de Django, bloqueo tras 5 intentos. MFA disponible pero opcional: al 22-oct-2026 ninguna de las 12 cuentas activas lo usa (riesgo R-13b, plan de activación obligatoria) | SEC-4, `config/settings/base.py`, R-13b |
+| 5.17 | Información de autenticación | Sí | Parcial — contraseñas ≥12 caracteres, hash estándar de Django, bloqueo tras 5 intentos. Cuenta de pruebas desactivada (27-oct-2026). MFA disponible pero opcional: al 22-oct-2026 ninguna cuenta activa lo usa (riesgo R-13b, plan de activación obligatoria) | SEC-4, `config/settings/base.py`, R-13b |
 | 5.18 | Derechos de acceso | Sí | Implementado — permisos por rol, revisables vía `seed_permisos.py` y el admin de Django | AC-1 |
 | 5.19 | Seguridad de la información en relaciones con proveedores | Parcial | No hay proveedores de TI externos con acceso al sistema hoy más allá del propio equipo | Pendiente si esto cambia |
 | 5.20 | Tratamiento de la seguridad en acuerdos con proveedores | No aplica | Sin proveedores externos con acceso al sistema actualmente | — |
@@ -89,7 +89,7 @@ pendientes de una revisión de sitio.
 | 7.8 | Ubicación y protección de equipos | Sí | No evaluado | R-20 |
 | 7.9 | Seguridad de activos fuera de las instalaciones | Sí | Parcialmente aplicable — las estaciones del piloto están en las farmacias, fuera del sitio del servidor; sin control físico sobre ellas más allá del control lógico (agente + firma de comandos) | SEC-1 |
 | 7.10 | Medios de almacenamiento | Sí | No evaluado (discos, backups en medios físicos) | Pendiente |
-| 7.11 | Servicios de suministro | Sí | Parcial — UPS instalada el 27-oct-2026 tras los cortes del 24–25-oct; falta confirmar encendido automático y apagado ordenado. Climatización no evaluada | R-20 |
+| 7.11 | Servicios de suministro | Sí | Parcial — UPS instalada y encendido automático tras corte activado en BIOS (27-oct-2026), tras los cortes del 24–25-oct. Falta apagado ordenado por USB. Climatización no evaluada | R-20 |
 | 7.12 | Seguridad del cableado | Sí | No evaluado | R-20 |
 | 7.13 | Mantenimiento de equipos | Sí | No evaluado | R-20 |
 | 7.14 | Eliminación o reutilización segura de equipos | Sí | Parcialmente aplicable a nivel lógico: `registrar_baja` distingue motivos (destrucción, donación) pero no hay procedimiento de borrado seguro de disco documentado | `apps/activos/models.py` (MotivoBaja) |
@@ -110,7 +110,7 @@ pendientes de una revisión de sitio.
 | 8.10 | Eliminación de información | Parcial | El kardex de inventario nunca borra filas (por diseño, trazabilidad); sin política de retención/purga de datos viejos más allá de `purgar_metricas` (métricas de monitoreo) | `apps/monitoreo` |
 | 8.11 | Enmascaramiento de datos | Parcial | Las claves de recuperación de BitLocker se cifran en reposo (Fernet) y solo se muestran bajo demanda con permiso y auditoría | `apps/catalogo/crypto.py` |
 | 8.12 | Prevención de fuga de datos | No | No implementado — sin DLP formal | Pendiente |
-| 8.13 | Respaldo de la información | Sí | Parcial — respaldo cifrado diario (base, media y EMQX) con aviso por Telegram si falla, restauración probada (última 21-oct-2026). Sin copia automática fuera del servidor; MeshCentral no entra en el respaldo | OPS-1, OPS-2, R-17, R-31 |
+| 8.13 | Respaldo de la información | Sí | Parcial — respaldo cifrado diario (base, media y EMQX) con aviso por Telegram si falla, restauración probada (última 21-oct-2026). Copia en disco USB conectado al servidor (no protege ante robo, incendio o ransomware); sin copia fuera del sitio; MeshCentral no entra en el respaldo | OPS-1, OPS-2, R-17, R-31 |
 | 8.14 | Redundancia de instalaciones de procesamiento de información | No | Sin redundancia — un único servidor. Proporcional al tamaño actual del piloto | R-21 |
 | 8.15 | Registro (logging) | Sí | Implementado — `EventoAuditoria`, logs de aplicación, logs del agente | `apps/auditoria` |
 | 8.16 | Actividades de monitoreo | Sí | Implementado — monitoreo de enlaces de farmacias (ping cada 2 min), estaciones (latido, CPU/RAM/disco), alertas por Telegram, y verificación de salud del propio servidor cada 15 min con aviso por Telegram si falla | `apps.monitoreo`, R-30 |
