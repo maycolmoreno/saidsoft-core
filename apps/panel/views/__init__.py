@@ -65,7 +65,7 @@ from .novedades import novedad_accion, novedades_lista
 from .actividades import (
     actividad_planificada_completar, actividad_planificada_crear, actividades_planificadas_lista,
 )
-from .archivos import mantenimiento_imagen, mantenimiento_informe
+from .archivos import mantenimiento_imagen, mantenimiento_informe, viatico_factura
 from .conflictos import (
     cierre_en_conflicto_aplicar, cierre_en_conflicto_descartar, cierres_en_conflicto_lista,
 )

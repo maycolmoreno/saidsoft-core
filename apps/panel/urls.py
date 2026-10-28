@@ -326,5 +326,8 @@ urlpatterns = [
     path('viaticos/zonas/nueva/', diferido('viaticos', views.zona_crear), name='viaticos_zona_crear'),
     path('viaticos/<int:pk>/corregir/', diferido('viaticos', views.viatico_editar), name='viatico_editar'),
     path('viaticos/<int:pk>/', diferido('viaticos', views.viatico_detalle), name='viatico_detalle'),
+    # La factura sale por esta vista y no por /media/: `location /media/viaticos/` es
+    # `internal` en nginx y config/urls.py la niega en el /media/ público.
+    path('viaticos/<int:pk>/factura/', diferido('viaticos', views.viatico_factura), name='viatico_factura'),
     path('viaticos/<int:pk>/<str:accion>/', diferido('viaticos', views.viatico_revisar), name='viatico_revisar'),
 ]

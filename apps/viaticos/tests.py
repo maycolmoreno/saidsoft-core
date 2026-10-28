@@ -9,7 +9,8 @@ from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.urls import reverse
 
 from apps.activos.models import Colaborador
 from apps.catalogo.models import Farmacia, Grupo, UnidadNegocio
@@ -400,3 +401,75 @@ class ColaboradorDeTests(BaseViaticos):
     def test_usuario_sin_colaborador_devuelve_none(self):
         suelto = User.objects.create_user(username='sin_colaborador', password='x')
         self.assertIsNone(services.colaborador_de(suelto))
+
+
+class FacturaProtegidaTests(BaseViaticos):
+    """La factura adjunta no se baja sin sesión, permiso y acceso al cliente (S-08).
+
+    Hasta el 27-oct-2026 la plantilla enlazaba `factura_adjunta.url`, que caía en el
+    /media/ público: cualquiera con la ruta (año/mes/nombre) bajaba la factura.
+    """
+
+    def setUp(self):
+        from django.contrib.auth.models import Permission
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from apps.cuentas.models import PerfilUsuario
+
+        super().setUp()
+        self.PerfilUsuario = PerfilUsuario
+        self.reporte = self._reporte(
+            factura_adjunta=SimpleUploadedFile('factura.pdf', b'%PDF-factura', content_type='application/pdf'),
+            total_factura=Decimal('4.00'),
+        )
+        self.url = reverse('panel:viatico_factura', args=[self.reporte.pk])
+        self.permiso = Permission.objects.get(content_type__app_label='viaticos', codename='view_reporteviatico')
+
+    def tearDown(self):
+        self.reporte.factura_adjunta.delete(save=False)
+
+    def _usuario(self, username, unidad=None, con_permiso=True):
+        user = User.objects.create_user(username=username, password='x')
+        perfil = self.PerfilUsuario.objects.create(usuario=user, acceso_todas_unidades=unidad is None)
+        if unidad is not None:
+            perfil.unidades_negocio.add(unidad)
+        if con_permiso:
+            user.user_permissions.add(self.permiso)
+        return user
+
+    def test_sin_sesion_no_la_entrega(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_sin_permiso_da_403(self):
+        self.client.force_login(self._usuario('u_fact_sin_perm', con_permiso=False))
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+
+    def test_de_otro_cliente_da_403(self):
+        self.client.force_login(self._usuario('u_fact_mia', unidad=UnidadNegocio.objects.get(codigo='MIA')))
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+
+    @override_settings(SERVIR_MEDIA_CON_NGINX=False)
+    def test_con_permiso_la_entrega(self):
+        self.client.force_login(self._usuario('u_fact_ok'))
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(b''.join(resp.streaming_content), b'%PDF-factura')
+
+    @override_settings(SERVIR_MEDIA_CON_NGINX=True)
+    def test_detras_de_nginx_delega_en_la_ruta_interna(self):
+        self.client.force_login(self._usuario('u_fact_nginx'))
+        resp = self.client.get(self.url)
+        self.assertEqual(resp['X-Accel-Redirect'], f'/media/{self.reporte.factura_adjunta.name}')
+
+    def test_el_media_publico_no_la_sirve(self):
+        """Aunque se conozca la ruta, /media/viaticos/ no sale por el /media/ público."""
+        resp = self.client.get(f'/media/{self.reporte.factura_adjunta.name}')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_el_detalle_enlaza_a_la_vista_y_no_al_archivo(self):
+        self.client.force_login(self._usuario('u_fact_detalle'))
+        html = self.client.get(reverse('panel:viatico_detalle', args=[self.reporte.pk])).content.decode()
+        self.assertIn(self.url, html)
+        self.assertNotIn(f'/media/{self.reporte.factura_adjunta.name}', html)

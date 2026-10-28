@@ -17,7 +17,7 @@ cd "$(dirname "$0")"
 
 i=0
 while [ "$i" -lt "$INTENTOS" ]; do
-    CONTENEDOR="$(docker-compose -f docker-compose.yml ps -q db 2>/dev/null || true)"
+    CONTENEDOR="$(docker compose -f docker-compose.yml ps -q db 2>/dev/null || true)"
     if [ -n "$CONTENEDOR" ]; then
         ESTADO="$(docker inspect -f '{{.State.Health.Status}}' "$CONTENEDOR" 2>/dev/null || true)"
         if [ "$ESTADO" = 'healthy' ]; then

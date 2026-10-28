@@ -10,7 +10,8 @@ con honestidad — "No evaluado" significa exactamente eso, no se disfraza como
 cumplimiento. La columna *Referencia* apunta a dónde vive la evidencia real (código,
 `PLAN_MODERNIZACION.md`, u otro documento de gobernanza).
 
-Este documento se revisa junto con la matriz de riesgos y la política de seguridad —
+**Última revisión: 27-oct-2026** (controles 5.17, 5.23, 5.28, 5.33, 5.35, 7.11, 8.13,
+8.16 y 8.20). Este documento se revisa junto con la matriz de riesgos y la política de seguridad —
 ver `docs/gobernanza/matriz-riesgos.md` y `docs/gobernanza/politica-seguridad-informacion.md`.
 
 ## A.5 — Controles organizacionales (37)
@@ -33,25 +34,25 @@ ver `docs/gobernanza/matriz-riesgos.md` y `docs/gobernanza/politica-seguridad-in
 | 5.14 | Transferencia de información | Parcial | El canal panel↔agente va cifrado (TLS/HMAC); no hay política formal de transferencia de información entre personas (correo, mensajería) | Pendiente |
 | 5.15 | Control de acceso | Sí | Implementado — RBAC por Django Groups/permisos, mínimo privilegio | AC-1, `seed_permisos.py` |
 | 5.16 | Gestión de identidades | Sí | Implementado — un usuario Django por persona, sin cuentas compartidas | `politica-seguridad-informacion.md` §6 |
-| 5.17 | Información de autenticación | Sí | Implementado — contraseñas ≥12 caracteres, hash estándar de Django, MFA opcional | SEC-4, `config/settings/base.py` |
+| 5.17 | Información de autenticación | Sí | Parcial — contraseñas ≥12 caracteres, hash estándar de Django, bloqueo tras 5 intentos. MFA disponible pero opcional: al 22-oct-2026 ninguna de las 12 cuentas activas lo usa (riesgo R-13b, plan de activación obligatoria) | SEC-4, `config/settings/base.py`, R-13b |
 | 5.18 | Derechos de acceso | Sí | Implementado — permisos por rol, revisables vía `seed_permisos.py` y el admin de Django | AC-1 |
 | 5.19 | Seguridad de la información en relaciones con proveedores | Parcial | No hay proveedores de TI externos con acceso al sistema hoy más allá del propio equipo | Pendiente si esto cambia |
 | 5.20 | Tratamiento de la seguridad en acuerdos con proveedores | No aplica | Sin proveedores externos con acceso al sistema actualmente | — |
 | 5.21 | Gestión de la seguridad en la cadena de suministro TIC | Parcial | Dependencias de software (`requirements.txt`) sin proceso formal de escaneo de vulnerabilidades | Pendiente |
 | 5.22 | Supervisión y revisión de servicios de proveedores | No aplica | Sin servicios de proveedores externos gestionando el sistema | — |
-| 5.23 | Seguridad de la información en el uso de servicios en la nube | No aplica hoy | El stack corre on-premises (servidor físico); no se usan servicios en la nube todavía — reevaluar si se define un destino de backup en la nube (ver R-17, matriz de riesgos) | OPS-2 |
+| 5.23 | Seguridad de la información en el uso de servicios en la nube | Sí | Parcial — el stack corre on-premises, pero usa servicios externos: Telegram (avisos y bot), y de forma opcional Anthropic (diagnóstico de alertas críticas, solo con `ANTHROPIC_API_KEY`), Meta WhatsApp (apagado) y OneDrive (respaldo externo, sin configurar). Corregido el 27-oct-2026: antes decía que no se usaban | R-40, R-17 |
 | 5.24 | Planificación de la gestión de incidentes | Parcial | Existe el mecanismo (bitácora `EventoAuditoria`); falta un procedimiento formal escrito de respuesta a incidentes | Pendiente |
 | 5.25 | Evaluación y decisión sobre eventos de seguridad | Parcial | Sin un procedimiento formal; se resuelve caso a caso hoy | Pendiente |
 | 5.26 | Respuesta a incidentes de seguridad | Parcial | Igual que 5.24/5.25 — falta formalizar | Pendiente |
 | 5.27 | Aprendizaje de incidentes de seguridad | Sí | Implementado de facto — `PLAN_MODERNIZACION.md` documenta cada incidente/hallazgo real y su causa raíz | `PLAN_MODERNIZACION.md` |
-| 5.28 | Recolección de evidencia | Sí | Implementado — `EventoAuditoria` conserva usuario, acción, objeto y fecha de cada acción relevante | `apps/auditoria` |
+| 5.28 | Recolección de evidencia | Sí | Implementado — `EventoAuditoria` conserva usuario, acción, objeto, IP y fecha de cada acción relevante del panel y la API. No cubre cambios de usuarios/permisos hechos en `/admin/` (quedan en el registro propio de Django) | `apps/auditoria`, R-37 |
 | 5.29 | Seguridad de la información durante la disrupción | Parcial | Backups + procedimiento de restauración probado; sin plan formal de continuidad de negocio más amplio | OPS-1, OPS-2 |
 | 5.30 | Preparación TIC para la continuidad del negocio | Parcial | Backups cifrados con restore probado; sin sitio de respaldo/failover | OPS-2, R-21 |
 | 5.31 | Requisitos legales, estatutarios, regulatorios y contractuales | No evaluado | Fuera del alcance de esta auditoría técnica — requiere revisión legal/normativa propia | Pendiente |
 | 5.32 | Derechos de propiedad intelectual | No evaluado | Fuera del alcance de esta auditoría | Pendiente |
-| 5.33 | Protección de los registros | Sí | Implementado — backups cifrados, `EventoAuditoria` como registro append-only en la práctica | OPS-2 |
+| 5.33 | Protección de los registros | Sí | Parcial — backups cifrados; `EventoAuditoria` impide el borrado desde la aplicación pero no a nivel de base de datos | OPS-2, R-37 |
 | 5.34 | Privacidad y protección de datos personales | Parcial | Se manejan datos personales de colaboradores (`apps.activos.Colaborador`) y credenciales de bitlocker cifradas; sin un análisis formal de protección de datos personales (DPIA) | Pendiente |
-| 5.35 | Revisión independiente de la seguridad de la información | Sí | Esta auditoría (22-ago-2026) es la primera revisión formal — se recomienda repetirla periódicamente, idealmente con un tercero | `PLAN_MODERNIZACION.md` |
+| 5.35 | Revisión independiente de la seguridad de la información | Sí | Revisiones internas el 22-ago-2026 y el 26-oct-2026 (auditoría técnica completa, `docs/DOCUMENTACION_TECNICA.md`). Auditoría externa programada para la semana del 2-nov-2026 | `PLAN_MODERNIZACION.md`, `docs/DOCUMENTACION_TECNICA.md` |
 | 5.36 | Cumplimiento de políticas, reglas y normas de seguridad | Parcial | Sin un proceso formal de verificación periódica de cumplimiento (más allá de esta auditoría puntual) | Pendiente |
 | 5.37 | Procedimientos operativos documentados | Sí | Implementado — `deploy/README-produccion.md`, `deploy/backup.sh`/`restaurar-backup.sh`, `agente-prueba/README.md` | `deploy/` |
 
@@ -88,7 +89,7 @@ pendientes de una revisión de sitio.
 | 7.8 | Ubicación y protección de equipos | Sí | No evaluado | R-20 |
 | 7.9 | Seguridad de activos fuera de las instalaciones | Sí | Parcialmente aplicable — las estaciones del piloto están en las farmacias, fuera del sitio del servidor; sin control físico sobre ellas más allá del control lógico (agente + firma de comandos) | SEC-1 |
 | 7.10 | Medios de almacenamiento | Sí | No evaluado (discos, backups en medios físicos) | Pendiente |
-| 7.11 | Servicios de suministro | Sí | No evaluado (energía, climatización del sitio del servidor) | R-20 |
+| 7.11 | Servicios de suministro | Sí | Parcial — UPS instalada el 27-oct-2026 tras los cortes del 24–25-oct; falta confirmar encendido automático y apagado ordenado. Climatización no evaluada | R-20 |
 | 7.12 | Seguridad del cableado | Sí | No evaluado | R-20 |
 | 7.13 | Mantenimiento de equipos | Sí | No evaluado | R-20 |
 | 7.14 | Eliminación o reutilización segura de equipos | Sí | Parcialmente aplicable a nivel lógico: `registrar_baja` distingue motivos (destrucción, donación) pero no hay procedimiento de borrado seguro de disco documentado | `apps/activos/models.py` (MotivoBaja) |
@@ -109,14 +110,14 @@ pendientes de una revisión de sitio.
 | 8.10 | Eliminación de información | Parcial | El kardex de inventario nunca borra filas (por diseño, trazabilidad); sin política de retención/purga de datos viejos más allá de `purgar_metricas` (métricas de monitoreo) | `apps/monitoreo` |
 | 8.11 | Enmascaramiento de datos | Parcial | Las claves de recuperación de BitLocker se cifran en reposo (Fernet) y solo se muestran bajo demanda con permiso y auditoría | `apps/catalogo/crypto.py` |
 | 8.12 | Prevención de fuga de datos | No | No implementado — sin DLP formal | Pendiente |
-| 8.13 | Respaldo de la información | Sí | Implementado — backup cifrado nocturno, restauración probada | OPS-1, OPS-2 |
+| 8.13 | Respaldo de la información | Sí | Parcial — respaldo cifrado diario (base, media y EMQX) con aviso por Telegram si falla, restauración probada (última 21-oct-2026). Sin copia automática fuera del servidor; MeshCentral no entra en el respaldo | OPS-1, OPS-2, R-17, R-31 |
 | 8.14 | Redundancia de instalaciones de procesamiento de información | No | Sin redundancia — un único servidor. Proporcional al tamaño actual del piloto | R-21 |
 | 8.15 | Registro (logging) | Sí | Implementado — `EventoAuditoria`, logs de aplicación, logs del agente | `apps/auditoria` |
-| 8.16 | Actividades de monitoreo | Sí | Implementado — monitoreo de estaciones (CPU/RAM/disco/red), alertas configurables | `apps.monitoreo` |
+| 8.16 | Actividades de monitoreo | Sí | Implementado — monitoreo de enlaces de farmacias (ping cada 2 min), estaciones (latido, CPU/RAM/disco), alertas por Telegram, y verificación de salud del propio servidor cada 15 min con aviso por Telegram si falla | `apps.monitoreo`, R-30 |
 | 8.17 | Sincronización de reloj | Parcial | La firma de comandos depende de una ventana de tiempo (120s) — implica que servidor y agentes deben tener el reloj razonablemente sincronizado; sin verificación explícita de NTP documentada | SEC-1 |
 | 8.18 | Uso de programas de utilidad privilegiados | Parcial | Acceso a `manage.py shell`/Django admin limitado a superusuarios | AC-1 |
 | 8.19 | Instalación de software en sistemas operativos | Sí | Implementado — instalación de software a las estaciones vía el canal firmado y auditado del panel (catálogo de software), no manual | `apps.software` |
-| 8.20 | Seguridad de redes | Parcial | TLS en MQTT y HTTPS en el panel; sin segmentación de red documentada más allá de lo que provee el propio EMQX/Docker | SEC-1, SEC-2 |
+| 8.20 | Seguridad de redes | Parcial | TLS en MQTT y HTTPS en el panel; dashboard de EMQX y base de datos solo en `127.0.0.1`. Puertos publicados sin filtrado en el host y servidor en la red WiFi de invitados: migración a red cableada solicitada a redes (27-oct-2026) | SEC-1, SEC-2, R-29 |
 | 8.21 | Seguridad de los servicios de red | Sí | Implementado — ACLs de EMQX por estación (parcialmente migrado, ver R-19) | `apps/mqtt_worker/emqx_admin.py` |
 | 8.22 | Segregación de redes | Parcial | Los servicios corren en contenedores Docker separados con su propia red interna; sin segmentación de red física más amplia evaluada | `deploy/docker-compose.yml` |
 | 8.23 | Filtrado web | No aplica | No es un control relevante para este sistema (no hay navegación de usuarios finales a través del sistema) | — |

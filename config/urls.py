@@ -37,7 +37,8 @@ urlpatterns = [
 # delante —o perder el bloque `internal` en un cambio de configuración— reabriría la
 # ruta cruda sin que nada fallara. Las rutas son adivinables (el pk es secuencial y
 # la carpeta es el año/mes), así que "nadie sabe la URL" no es una protección.
-PREFIJOS_MEDIA_PROTEGIDOS = ('mantenimiento/',)
+# viaticos/ desde el 27-oct-2026: las facturas adjuntas no son públicas (hallazgo S-08).
+PREFIJOS_MEDIA_PROTEGIDOS = ('mantenimiento/', 'viaticos/')
 
 
 def servir_media_publico(request, path, **kwargs):

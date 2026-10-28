@@ -1,0 +1,17 @@
+# Aviso por Telegram cuando falla una unidad de SAIDSOFT (%i = la unidad que falló).
+# Lo disparan las líneas OnFailure= de saidsoft-salud.service y saidsoft-respaldo.service.
+#
+# Instalación (junto con las otras unidades):
+#   sudo cp deploy/saidsoft-aviso@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+# Prueba sin esperar a una falla real:
+#   sudo systemctl start saidsoft-aviso@prueba.service
+
+[Unit]
+Description=Aviso de falla de %i por Telegram
+
+[Service]
+Type=oneshot
+User=glpi
+WorkingDirectory=/home/glpi/Documentos/Said/saidsoft-core
+ExecStart=/bin/sh deploy/avisar-falla.sh %i

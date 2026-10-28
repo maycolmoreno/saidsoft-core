@@ -42,13 +42,17 @@ echo "Descifrando y descomprimiendo $ARCHIVO..."
 printf '%s' "$BACKUP_ENCRYPTION_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 -d "$ARCHIVO" | gunzip > "$SQL_TMP"
 
 echo "Recreando la base '$BD_DESTINO' en el contenedor db..."
-docker-compose -f docker-compose.yml exec -T db psql -U "$POSTGRES_USER" -d postgres \
+docker compose -f docker-compose.yml exec -T db psql -U "$POSTGRES_USER" -d postgres \
     -c "DROP DATABASE IF EXISTS \"$BD_DESTINO\";" \
     -c "CREATE DATABASE \"$BD_DESTINO\" OWNER $POSTGRES_USER;"
 
 echo "Restaurando (esto puede tardar varios minutos con una base grande)..."
-docker-compose -f docker-compose.yml exec -T db psql -U "$POSTGRES_USER" -d "$BD_DESTINO" < "$SQL_TMP"
+# ON_ERROR_STOP + una sola transacción: si una sentencia falla, psql corta y deshace
+# todo, en vez de seguir y dejar una base a medias que parece restaurada (S-21,
+# 27-oct-2026). docker compose v2: el host dejó v1 el 4-sep-2026.
+docker compose -f docker-compose.yml exec -T db psql -U "$POSTGRES_USER" -d "$BD_DESTINO" \
+    -v ON_ERROR_STOP=1 --single-transaction < "$SQL_TMP"
 
 echo ""
 echo "Listo. Verificar cantidad de tablas y alguna fila real, por ejemplo:"
-echo "  docker-compose exec db psql -U $POSTGRES_USER -d $BD_DESTINO -c '\\dt' | wc -l"
+echo "  docker compose exec db psql -U $POSTGRES_USER -d $BD_DESTINO -c '\\dt' | wc -l"

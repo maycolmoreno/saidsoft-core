@@ -117,8 +117,15 @@ definir_acl() {
     rm -f "$resp_body"
 }
 
+# La credencial COMPARTIDA del agente solo sirve para enrolarse: la misma regla que dejó
+# deploy/emqx-narrow-acl-agente.sh en producción el 12-oct-2026. Hasta el 27-oct-2026
+# este script sembraba "/saidsof/#" con allow all, así que re-correrlo para recuperar
+# EMQX reabría en silencio el acceso total de una credencial que está escrita en el
+# config.json de cada caja (hallazgo S-05 de docs/DOCUMENTACION_TECNICA.md).
+# Cada estación opera con su credencial propia, que Django crea al enrolarla.
 definir_acl "$MQTT_USERNAME_AGENTE" '[
-    {"topic": "/saidsof/#", "permission": "allow", "action": "all"}
+    {"topic": "/saidsof/enrolamiento/solicitar/", "permission": "allow", "action": "publish"},
+    {"topic": "/saidsof/enrolamiento/respuesta/+/", "permission": "allow", "action": "subscribe"}
 ]'
 
 definir_acl "$MQTT_USERNAME_WORKER" '[

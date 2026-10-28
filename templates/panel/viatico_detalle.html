@@ -50,7 +50,7 @@
         <div class="text-xs text-[var(--text-faint)] uppercase tracking-wide">Factura</div>
         <div class="text-sm mt-1">
             {% if reporte.factura_adjunta %}
-                <a href="{{ reporte.factura_adjunta.url }}" class="underline">Ver adjunto</a>
+                <a href="{% url 'panel:viatico_factura' reporte.pk %}" class="underline">Ver adjunto</a>
                 {% if reporte.total_factura %}<span class="text-[var(--text-faint)]"> · total ${{ reporte.total_factura }}</span>{% endif %}
             {% else %}<span class="text-[var(--text-faint)]">Sin adjunto</span>{% endif %}
         </div>

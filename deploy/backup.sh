@@ -46,14 +46,14 @@ DB_SIN_CIFRAR="$DESTINO/db_$FECHA.sql.gz"
 MEDIA_SIN_CIFRAR="$DESTINO/media_$FECHA.tar.gz"
 
 echo "Respaldando base de datos..."
-docker-compose -f docker-compose.yml exec -T db \
+docker compose -f docker-compose.yml exec -T db \
     pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" | gzip > "$DB_SIN_CIFRAR"
 printf '%s' "$BACKUP_ENCRYPTION_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 \
     --symmetric --cipher-algo AES256 -o "$DB_SIN_CIFRAR.gpg" "$DB_SIN_CIFRAR"
 rm -f "$DB_SIN_CIFRAR"
 
 echo "Respaldando media (paquetes de despliegue, imágenes de mantenimiento, etc.)..."
-docker-compose -f docker-compose.yml exec -T web \
+docker compose -f docker-compose.yml exec -T web \
     tar czf - -C /app/media . > "$MEDIA_SIN_CIFRAR"
 printf '%s' "$BACKUP_ENCRYPTION_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 \
     --symmetric --cipher-algo AES256 -o "$MEDIA_SIN_CIFRAR.gpg" "$MEDIA_SIN_CIFRAR"
@@ -67,22 +67,22 @@ rm -f "$MEDIA_SIN_CIFRAR"
 # el script termina sin registrar el latido y el panel lo marca.
 echo "Respaldando EMQX (usuarios, credenciales de las estaciones y ACL)..."
 EMQX_SIN_CIFRAR="$DESTINO/emqx_$FECHA.tar.gz"
-EXPORT_EMQX=$(docker-compose -f docker-compose.yml exec -T emqx emqx ctl data export \
+EXPORT_EMQX=$(docker compose -f docker-compose.yml exec -T emqx emqx ctl data export \
     | grep -o 'emqx-export-[^" ]*\.tar\.gz' | tail -1 || true)
 if [ -z "$EXPORT_EMQX" ]; then
     # Si el formato del mensaje cambia en otra versión de EMQX, el export igual se hizo:
     # se toma el más reciente de la carpeta (nombres `emqx-export-AAAA-MM-DD-...`).
-    EXPORT_EMQX=$(docker-compose -f docker-compose.yml exec -T emqx \
+    EXPORT_EMQX=$(docker compose -f docker-compose.yml exec -T emqx \
         sh -c 'ls -t /opt/emqx/data/backup/ | grep "^emqx-export-.*\.tar\.gz$" | head -1' || true)
 fi
 if [ -z "$EXPORT_EMQX" ]; then
     echo "ERROR: 'emqx ctl data export' no dejó ningún archivo en /opt/emqx/data/backup/." >&2
     exit 1
 fi
-docker-compose -f docker-compose.yml exec -T emqx \
+docker compose -f docker-compose.yml exec -T emqx \
     cat "/opt/emqx/data/backup/$EXPORT_EMQX" > "$EMQX_SIN_CIFRAR"
 # El export queda dentro del volumen de EMQX: se borra para que no se acumule uno por día.
-docker-compose -f docker-compose.yml exec -T emqx rm -f "/opt/emqx/data/backup/$EXPORT_EMQX"
+docker compose -f docker-compose.yml exec -T emqx rm -f "/opt/emqx/data/backup/$EXPORT_EMQX"
 printf '%s' "$BACKUP_ENCRYPTION_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 \
     --symmetric --cipher-algo AES256 -o "$EMQX_SIN_CIFRAR.gpg" "$EMQX_SIN_CIFRAR"
 rm -f "$EMQX_SIN_CIFRAR"
@@ -99,7 +99,7 @@ echo "Listo: $DB_SIN_CIFRAR.gpg, $MEDIA_SIN_CIFRAR.gpg y $EMQX_SIN_CIFRAR.gpg"
 # en el caso que importa. `|| true` porque un respaldo bueno no debe reportarse como
 # fallido solo porque el panel no atendió.
 echo "Registrando el latido del respaldo en el panel..."
-docker-compose -f docker-compose.yml exec -T web     python manage.py registrar_latido respaldo ||     echo "AVISO: el respaldo quedó bien pero no se pudo registrar el latido en el panel." >&2
+docker compose -f docker-compose.yml exec -T web     python manage.py registrar_latido respaldo ||     echo "AVISO: el respaldo quedó bien pero no se pudo registrar el latido en el panel." >&2
 
 # Copia fuera del servidor. Un respaldo en el mismo disco que respalda no protege del
 # caso que más caro sale: el NUC está en sitio, sin UPS, y ya se apagó por corte de
@@ -171,7 +171,7 @@ else
         rclone delete "$REMOTO" --min-age "${RETENCION}d" \
             --include 'db_*.sql.gz.gpg' --include 'media_*.tar.gz.gpg' --include 'emqx_*.tar.gz.gpg' \
             || echo "AVISO: no se pudo aplicar la retención en OneDrive (la copia de hoy sí quedó)." >&2
-        docker-compose -f docker-compose.yml exec -T web python manage.py registrar_latido respaldo_externo \
+        docker compose -f docker-compose.yml exec -T web python manage.py registrar_latido respaldo_externo \
             || echo "AVISO: la copia a OneDrive quedó bien pero no se pudo registrar su latido." >&2
         echo "Copia a OneDrive completada."
     else

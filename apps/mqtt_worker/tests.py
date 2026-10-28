@@ -2233,3 +2233,41 @@ class AclDelPanelCubreLoQuePublicaTests(TestCase):
         }
         self.assertIn(TOPICO_CATALOGO, topicos)
         self.assertIn(TOPICO_CATALOGO_EVENTOS, topicos)
+
+
+class BootstrapNoReabreLaCredencialCompartidaTests(TestCase):
+    """`bootstrap-emqx.sh` siembra la credencial compartida del agente SOLO para enrolarse.
+
+    El 12-oct-2026 se angostó en producción con `emqx-narrow-acl-agente.sh`, pero el
+    bootstrap seguía escribiendo `/saidsof/#` con allow all: re-correrlo para recuperar
+    EMQX (el runbook lo presentaba como seguro de repetir) reabría en silencio el acceso
+    total de una credencial que está en el config.json de cada caja (S-05, 27-oct-2026).
+    Esta prueba ata el bootstrap a la misma regla que el script de angostamiento.
+    """
+
+    def _reglas(self, archivo, marcador):
+        import re
+
+        from django.conf import settings
+
+        texto = (settings.BASE_DIR / 'deploy' / archivo).read_text(encoding='utf-8')
+        inicio = texto.index(marcador)
+        bloque = texto[inicio:texto.index(']', inicio)].replace('\\"', '"')
+        return set(re.findall(
+            r'\{"topic":\s*"([^"]+)",\s*"permission":\s*"(allow|deny)",\s*"action":\s*"(\w+)"\}', bloque,
+        ))
+
+    def test_el_bootstrap_no_da_acceso_total_a_la_credencial_compartida(self):
+        reglas = self._reglas('bootstrap-emqx.sh', 'definir_acl "$MQTT_USERNAME_AGENTE"')
+        self.assertNotIn(('/saidsof/#', 'allow', 'all'), reglas)
+        self.assertEqual(reglas, {
+            ('/saidsof/enrolamiento/solicitar/', 'allow', 'publish'),
+            ('/saidsof/enrolamiento/respuesta/+/', 'allow', 'subscribe'),
+        })
+
+    def test_coincide_con_el_script_de_angostamiento(self):
+        bootstrap = self._reglas('bootstrap-emqx.sh', 'definir_acl "$MQTT_USERNAME_AGENTE"')
+        # En ese script las reglas van dentro del JSON del curl, con comillas escapadas.
+        angosto = self._reglas('emqx-narrow-acl-agente.sh', r'\"rules\": [')
+        self.assertTrue(angosto, 'no se pudieron leer las reglas de emqx-narrow-acl-agente.sh')
+        self.assertEqual(bootstrap, angosto)

@@ -19,9 +19,11 @@ def enviar_push(*, usuario, titulo, cuerpo, data=None):
     if perfil is None or not perfil.fcm_token:
         logger.info('Push omitido (sin fcm_token): usuario=%s titulo=%r', usuario, titulo)
         return False
+    # El token FCM identifica el teléfono y permite mandarle notificaciones: no va al log
+    # (hallazgo S-16, 27-oct-2026). Alcanza con saber que el usuario tiene uno.
     logger.info(
-        'Push simulado (sin proveedor real configurado): usuario=%s token=%s titulo=%r cuerpo=%r data=%s',
-        usuario, perfil.fcm_token, titulo, cuerpo, data or {},
+        'Push simulado (sin proveedor real configurado): usuario=%s titulo=%r cuerpo=%r data=%s',
+        usuario, titulo, cuerpo, data or {},
     )
     return True
 

@@ -12,6 +12,8 @@
 [Unit]
 Description=Respaldo de la base y media de SAIDSOFT
 Documentation=file:/home/glpi/Documentos/Said/saidsoft-core/deploy/README-produccion.md
+# Si el respaldo falla, aviso por Telegram (deploy/saidsoft-aviso@.service, 27-oct-2026).
+OnFailure=saidsoft-aviso@%n.service
 # El respaldo habla con los contenedores por `docker-compose exec`: sin Docker arriba no
 # hay nada que respaldar. En un arranque tras un corte de energía, esto es lo que evita
 # que la ejecución atrasada de Persistent=true se dispare antes que el stack.

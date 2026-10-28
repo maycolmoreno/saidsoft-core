@@ -25,6 +25,22 @@ deploy/.env.*
 deploy/certs/key.pem
 db.sqlite3
 db.sqlite3.bak*
+# Cualquier base SQLite suelta (demo-local.sqlite3, t-*.sqlite3...): pueden tener datos
+# de pruebas o copias de producción, y la app en el contenedor usa PostgreSQL.
+*.sqlite3
+# El instalador generado por generar_script_instalacion lleva MQTT_PASSWORD_AGENTE
+# escrita adentro (ver .gitignore). Y la configuración local del agente.
+Instalar-Saidsoft.ps1
+agente-prueba/config.txt
+agente-prueba/identidad.json
+# Las planillas y exportaciones de docs/ (datos de sucursales y personas) no hacen falta
+# para correr la app. Hallazgos S-01/S-23, auditoría del 26-oct-2026. movil-campo/ se
+# queda: publicar_apk lee su pubspec.yaml.
+/docs/*.xlsx
+/docs/*.xls
+/docs/*.csv
+/docs/*.json
+/docs/*.pdf
 
 .venv/
 __pycache__/

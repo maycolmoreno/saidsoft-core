@@ -62,3 +62,19 @@ def mantenimiento_informe(request, pk):
     mantenimiento = get_object_or_404(Mantenimiento, pk=pk)
     verificar_acceso(request.user, mantenimiento.unidad_negocio)
     return _servir_archivo_protegido(mantenimiento.informe_pdf)
+
+
+@login_required
+@permission_required('viaticos.view_reporteviatico', raise_exception=True)
+def viatico_factura(request, pk):
+    """Factura adjunta de un reporte de viático, mismo criterio que las fotos.
+
+    Hasta el 27-oct-2026 la plantilla enlazaba `factura_adjunta.url`, que caía en el
+    /media/ público: una factura (datos personales y tributarios) se bajaba sin sesión
+    conociendo la ruta, que sale del año, el mes y el nombre del archivo (hallazgo S-08).
+    """
+    from apps.viaticos.models import ReporteViatico
+
+    reporte = get_object_or_404(ReporteViatico.objects.select_related('colaborador'), pk=pk)
+    verificar_acceso(request.user, reporte.colaborador.unidad_negocio)
+    return _servir_archivo_protegido(reporte.factura_adjunta)
